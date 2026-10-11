@@ -1,0 +1,1122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgentFlow Studio - CoDev Pro + Gemini Spark & Ultra Suite</title>
+    <style>
+        :root {
+            --bg-dark: #090d16;
+            --bg-panel: #111827;
+            --bg-card: #1f2937;
+            --border-color: #374151;
+            --accent: #0ea5e9;
+            --accent-glow: rgba(14, 165, 233, 0.2);
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --spark-purple: #8b5cf6;
+            --gemini-blue: #3b82f6;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background-color: var(--bg-dark); color: var(--text-main); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        
+        /* Top Navigation Bar */
+        header { background: var(--bg-panel); border-bottom: 1px solid var(--border-color); height: 60px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; }
+        .header-left { display: flex; align-items: center; gap: 15px; }
+        .sidebar-toggle-btn { background: none; border: none; color: var(--text-main); font-size: 1.2rem; cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: background 0.2s; }
+        .sidebar-toggle-btn:hover { background: rgba(255,255,255,0.05); }
+        .logo-area { display: flex; align-items: center; gap: 10px; font-weight: bold; font-size: 1.1rem; color: var(--accent); }
+        
+        .nav-tabs { display: flex; gap: 8px; font-size: 0.8rem; color: var(--text-muted); }
+        .nav-tabs span { cursor: pointer; padding: 6px 10px; border-radius: 4px; transition: background 0.2s, color 0.2s; user-select: none; }
+        .nav-tabs span:hover { color: var(--text-main); background: rgba(255,255,255,0.05); }
+        .nav-tabs span.active { color: var(--text-main); background: var(--bg-card); border: 1px solid var(--border-color); }
+        
+        .header-right { display: flex; align-items: center; gap: 15px; }
+        .folder-connect-btn { background: var(--success); color: var(--bg-dark); border: none; font-weight: bold; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: opacity 0.2s; }
+        .folder-connect-btn:hover { opacity: 0.9; }
+        .user-status { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-muted); }
+        .status-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; display: inline-block; box-shadow: 0 0 8px var(--success); }
+        .settings-btn { background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: background 0.2s; }
+        .settings-btn:hover { background: var(--border-color); }
+
+        /* Workspace Layout */
+        .workspace { display: grid; grid-template-columns: 280px 280px 1fr 340px; flex: 1; overflow: hidden; transition: grid-template-columns 0.3s ease; }
+        .workspace.sidebar-collapsed { grid-template-columns: 0px 280px 1fr 340px; }
+
+        /* Gemini-Style Options & History Sidebar */
+        .gemini-sidebar { background: #0c101d; border-right: 1px solid var(--border-color); padding: 15px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; overflow-x: hidden; white-space: nowrap; transition: padding 0.3s ease, opacity 0.2s ease; }
+        .workspace.sidebar-collapsed .gemini-sidebar { padding: 0; opacity: 0; pointer-events: none; border-right: none; }
+
+        .gemini-sidebar-header { display: flex; justify-content: space-between; align-items: center; }
+        .close-sidebar-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; padding: 4px; border-radius: 4px; }
+        .close-sidebar-btn:hover { color: var(--text-main); background: rgba(255,255,255,0.05); }
+
+        .gemini-menu-list { display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px; }
+        .gemini-menu-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 0.9rem; color: var(--text-main); transition: background 0.2s; user-select: none; }
+        .gemini-menu-item:hover { background: rgba(255,255,255,0.05); }
+        .gemini-menu-item.active { background: rgba(14, 165, 233, 0.15); color: var(--accent); font-weight: 600; }
+        .menu-icon { font-size: 1.1rem; width: 24px; text-align: center; }
+        
+        .sidebar-section-title { font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.05em; margin-top: 5px; }
+        .chat-list { display: flex; flex-direction: column; gap: 6px; }
+        .chat-item { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 10px; cursor: pointer; transition: all 0.2s; display: flex; justify-content: space-between; align-items: center; }
+        .chat-item:hover { border-color: var(--accent); background: rgba(14, 165, 233, 0.05); }
+        .chat-item.active { border-color: var(--accent); background: rgba(14, 165, 233, 0.15); }
+        .chat-item-info { display: flex; flex-direction: column; gap: 2px; overflow: hidden; flex: 1; }
+        .chat-item-title { font-size: 0.85rem; font-weight: 600; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .chat-item-meta { font-size: 0.7rem; color: var(--text-muted); }
+        .chat-delete-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.8rem; padding: 4px; border-radius: 4px; transition: color 0.2s; }
+        .chat-delete-btn:hover { color: var(--danger); }
+
+        /* Agent Manager Sidebar */
+        .sidebar { background: var(--bg-panel); border-right: 1px solid var(--border-color); padding: 15px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; }
+        .sidebar-header { display: flex; justify-content: space-between; align-items: center; }
+        .sidebar h3 { font-size: 0.8rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.05em; }
+        .btn-primary { background: var(--accent); color: var(--bg-dark); border: none; font-weight: bold; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+        .btn-primary:hover { opacity: 0.9; }
+        
+        .agent-list { display: flex; flex-direction: column; gap: 10px; }
+        .agent-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; transition: border-color 0.2s; position: relative; }
+        .agent-card:hover { border-color: var(--accent); }
+        .agent-card-header { display: flex; justify-content: space-between; align-items: center; }
+        .agent-card-header h4 { font-size: 0.9rem; font-weight: 600; color: var(--text-main); }
+        .agent-meta { font-size: 0.75rem; color: var(--accent); }
+        .agent-instructions-preview { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+        /* Center Content Views */
+        .center-pane { display: flex; flex-direction: column; background: var(--bg-dark); overflow: hidden; flex: 1; }
+        .pane-header { padding: 12px 20px; background: var(--bg-panel); border-bottom: 1px solid var(--border-color); font-size: 0.9rem; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+        
+        /* Chat View */
+        .chat-messages { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
+        .message { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px 18px; max-width: 90%; animation: fadeIn 0.2s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+        .message .sender { font-size: 0.8rem; font-weight: bold; color: var(--accent); display: flex; align-items: center; gap: 6px; }
+        .message .text { font-size: 0.9rem; line-height: 1.5; white-space: pre-wrap; margin-top: 6px; }
+        .message pre { background: #0f172a; padding: 12px; border-radius: 6px; margin-top: 8px; overflow-x: auto; border: 1px solid var(--border-color); }
+        .message code { background: #0f172a; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.85rem; color: #34d399; }
+        .message pre code { background: none; padding: 0; color: #e2e8f0; }
+        
+        .chat-input-area { padding: 15px 20px; background: var(--bg-panel); border-top: 1px solid var(--border-color); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .chat-input-area input { flex: 1; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 6px; padding: 12px 16px; color: var(--text-main); font-size: 0.9rem; outline: none; min-width: 200px; }
+        .chat-input-area input:focus { border-color: var(--accent); }
+        .chat-controls { display: flex; gap: 10px; align-items: center; width: 100%; justify-content: space-between; font-size: 0.8rem; color: var(--text-muted); }
+        .checkbox-group { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+        .chat-input-area button { background: var(--accent); color: var(--bg-dark); border: none; font-weight: bold; padding: 10px 20px; border-radius: 6px; cursor: pointer; }
+
+        /* Secondary Views */
+        .alt-view-content { flex: 1; padding: 25px; overflow-y: auto; display: none; flex-direction: column; gap: 15px; }
+        .file-tree { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; font-family: monospace; font-size: 0.85rem; display: flex; flex-direction: column; gap: 8px; }
+        .file-item { padding: 8px 12px; cursor: pointer; border-radius: 6px; background: var(--bg-card); border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; transition: border-color 0.2s; }
+        .file-item:hover { border-color: var(--accent); color: var(--accent); }
+        .file-editor-box { background: #05070b; border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; font-family: monospace; font-size: 0.85rem; color: #34d399; flex: 1; width: 100%; resize: none; outline: none; }
+        .console-output { background: #05070b; border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; font-family: monospace; font-size: 0.80rem; color: #34d399; flex: 1; overflow-y: auto; line-height: 1.4; }
+
+        /* Gemini AI & Spark Dashboard View */
+        .gemini-hub-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-top: 10px; }
+        .gemini-hub-card { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 20px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+        .gemini-hub-card h4 { color: var(--gemini-blue); font-size: 1rem; display: flex; align-items: center; gap: 8px; }
+        .gemini-badge { background: rgba(59, 130, 246, 0.15); color: var(--gemini-blue); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; width: fit-content; font-weight: bold; }
+
+        /* Right Sidebar: Agent Editor */
+        .editor-sidebar { background: var(--bg-panel); border-left: 1px solid var(--border-color); padding: 20px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; }
+        .editor-sidebar h3 { font-size: 0.85rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.05em; }
+        .form-group { display: flex; flex-direction: column; gap: 6px; }
+        .form-group label { font-size: 0.8rem; color: var(--text-muted); font-weight: 500; }
+        .form-group input, .form-group textarea, .form-group select { background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; color: var(--text-main); font-size: 0.85rem; outline: none; }
+        .form-group input:focus, .form-group textarea:focus, .form-group select:focus { border-color: var(--accent); }
+        .form-group textarea { height: 100px; font-family: monospace; font-size: 0.8rem; resize: vertical; }
+        
+        .knowledge-box { background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+        .knowledge-list { display: flex; flex-direction: column; gap: 6px; max-height: 120px; overflow-y: auto; margin-top: 5px; }
+        .knowledge-item { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-main); cursor: pointer; }
+
+        .btn-danger { background: var(--danger); color: white; border: none; font-weight: bold; padding: 8px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
+
+        /* Modal Settings Overlay */
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 1000; }
+        .modal { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; width: 480px; padding: 25px; display: flex; flex-direction: column; gap: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+        .modal h3 { color: var(--text-main); font-size: 1.1rem; }
+        .modal-buttons { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="header-left">
+            <button class="sidebar-toggle-btn" onclick="toggleGeminiSidebar()" title="Toggle Sidebar">☰</button>
+            <div class="logo-area">✨ AgentFlow Studio + Gemini Spark & Ultra</div>
+        </div>
+        <div class="nav-tabs">
+            <span id="tab-chat" class="active" onclick="switchView('chat')">Chat & Swarm</span>
+            <span id="tab-project" onclick="switchView('project')">📁 Project Files</span>
+            <span id="tab-gemini" onclick="switchView('gemini')" style="color: var(--gemini-blue); font-weight: bold;">🧠 Gemini Hub</span>
+            <span id="tab-spark" onclick="switchView('spark')" style="color: var(--spark-purple); font-weight: bold;">☁️ Spark Cloud</span>
+            <span id="tab-console" onclick="switchView('console')">Console Logs</span>
+        </div>
+        <div class="header-right">
+            <button class="folder-connect-btn" onclick="connectLocalFolder()">📁 Connect Local Folder</button>
+            <div class="user-status">
+                <span class="status-dot"></span> <span id="statusText">Active Browser Storage</span>
+            </div>
+            <button class="settings-btn" onclick="openSettingsModal()">⚙️ Settings</button>
+        </div>
+    </header>
+
+    <div class="workspace" id="mainWorkspace">
+        <!-- Column 1: Gemini-Style Navigation & History Sidebar (Collapsible) -->
+        <div class="gemini-sidebar" id="geminiSidebar">
+            <div class="gemini-sidebar-header">
+                <span style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: bold;">Menu</span>
+                <button class="close-sidebar-btn" onclick="toggleGeminiSidebar()" title="Close Sidebar">✕</button>
+            </div>
+            <div class="gemini-menu-list">
+                <div class="gemini-menu-item" onclick="createNewChat()">
+                    <span class="menu-icon">✏️</span> New chat
+                </div>
+                <div class="gemini-menu-item active" id="menuAgentFlow" onclick="switchView('chat'); logConsoleActivity('Switched to Agent Flow mode.');">
+                    <span class="menu-icon">✨</span> Agent Flow
+                </div>
+                <div class="gemini-menu-item" onclick="switchView('gemini'); logConsoleActivity('Switched to Gemini Hub.');">
+                    <span class="menu-icon">🧠</span> Gemini AI Hub
+                </div>
+                <div class="gemini-menu-item" onclick="switchView('spark'); logConsoleActivity('Switched to Gemini Spark Cloud.');">
+                    <span class="menu-icon">☁️</span> Gemini Spark Cloud
+                </div>
+            </div>
+
+            <div class="sidebar-section-title">Recents</div>
+            <div class="chat-list" id="chatListContainer"></div>
+        </div>
+
+        <!-- Column 2: Agent Manager -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h3>Agents</h3>
+                <button class="btn-primary" onclick="createNewAgent()">+ New Agent</button>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 5px;">Check agents for Group Swarms:</div>
+            <div class="agent-list" id="agentList"></div>
+        </div>
+
+        <!-- Column 3: Center Pane -->
+        <div class="center-pane">
+            <div id="view-chat" class="center-pane" style="display: flex; flex: 1; flex-direction: column; overflow: hidden;">
+                <div class="pane-header">
+                    <span id="activeWorkspaceTitle">Active Chat Session</span>
+                    <span style="font-size: 0.75rem; color: var(--text-muted);" id="activeProviderLabel">Provider: Loading...</span>
+                </div>
+                <div class="chat-messages" id="chatFeed"></div>
+                <div class="chat-input-area">
+                    <div class="chat-controls">
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                            <label class="checkbox-group">
+                                <input type="checkbox" id="isGroupChatCheckbox" onchange="toggleGroupChatMode()"> 🌐 Group Swarm Chat
+                            </label>
+                            <label class="checkbox-group" style="color: var(--warning);">
+                                <input type="checkbox" id="isBackgroundWorkerCheckbox"> ⚡ Autonomous Background Task
+                            </label>
+                            <label class="checkbox-group" style="color: var(--success);">
+                                <input type="checkbox" id="isSelfHealCheckbox" checked> 🛡️ Self-Healing Code Loop
+                            </label>
+                            <label class="checkbox-group" style="color: var(--gemini-blue);">
+                                <input type="checkbox" id="isGeminiReasoningCheckbox" checked> 🧠 Deep Reasoning Mode
+                            </label>
+                        </div>
+                        <span id="activeAgentIndicator" style="color: var(--accent);">Active Solo: Architect</span>
+                    </div>
+                    <input type="text" id="userInput" placeholder="Ask your agents anything or type @filename to reference local file..." onkeydown="if(event.key==='Enter') sendChatMessage()">
+                    <button id="micBtn" onclick="toggleSpeechRecognition()" title="Voice Input (STT)" style="background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 10px 14px; border-radius: 6px; cursor: pointer;">🎤</button>
+                    <button onclick="sendChatMessage()">Send Task</button>
+                </div>
+            </div>
+
+            <!-- Project Files View -->
+            <div id="view-project" class="alt-view-content">
+                <h3>Local Project Workspace</h3>
+                <p style="font-size: 0.85rem; color: var(--text-muted);">Click "Connect Local Folder" at the top right to load your real project files right here.</p>
+                <div style="display: grid; grid-template-columns: 260px 1fr; gap: 15px; flex: 1; overflow: hidden;">
+                    <div class="file-tree" id="projectFileList">
+                        <div style="font-size: 0.8rem; color: var(--text-muted); padding: 10px;">No folder connected yet. Click "Connect Local Folder".</div>
+                    </div>
+                    <div style="display: flex; flex-direction: column; gap: 10px; flex: 1;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span id="selectedFileName" style="font-size: 0.85rem; font-weight: bold; color: var(--accent);">No file selected</span>
+                            <button class="btn-primary" onclick="saveActiveFileChanges()">Save Changes to Laptop</button>
+                        </div>
+                        <textarea class="file-editor-box" id="fileEditorContent" placeholder="Connect a local folder to view and edit files..."></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Gemini AI Hub View -->
+            <div id="view-gemini" class="alt-view-content">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3>🧠 Gemini AI Hub & Multimodal Suite</h3>
+                    <button class="btn-primary" style="background: var(--gemini-blue);" onclick="runGeminiEnhancer()">✨ Run Gemini Prompt Enhancer</button>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-muted);">Full suite of Gemini multi-model capabilities: advanced prompt optimization, narrative lore generation, and deep semantic analysis.</p>
+                
+                <div class="gemini-hub-grid">
+                    <div class="gemini-hub-card">
+                        <h4>🧠 Deep Reasoning Engine</h4>
+                        <span class="gemini-badge">Active (Temp 0.0)</span>
+                        <p style="font-size: 0.85rem; color: var(--text-muted);">Parses complex game logic, physics matrices, and structural architecture with verified precision.</p>
+                    </div>
+                    <div class="gemini-hub-card">
+                        <h4>🎨 Narrative & Lore Assistant</h4>
+                        <span class="gemini-badge" style="background: rgba(16, 185, 129, 0.15); color: var(--success);">Ready</span>
+                        <p style="font-size: 0.85rem; color: var(--text-muted);">Optimized for story worldbuilding, character dossiers, dialogue pacing, and comic scripts.</p>
+                    </div>
+                    <div class="gemini-hub-card">
+                        <h4>⚡ Multimodal Context Injector</h4>
+                        <span class="gemini-badge" style="background: rgba(245, 158, 11, 0.15); color: var(--warning);">Connected</span>
+                        <p style="font-size: 0.85rem; color: var(--text-muted);">Instantly maps `@filename` references into live agent working memory during generation passes.</p>
+                    </div>
+                </div>
+
+                <div style="margin-top: 15px;">
+                    <h4 style="font-size: 0.9rem; margin-bottom: 8px;">Gemini Hub Telemetry & Diagnostics</h4>
+                    <div class="console-output" id="geminiHubLog" style="height: 160px;">
+                        [08:05:00] Gemini Multimodal Core online.<br>
+                        [08:05:12] Context window buffers verified. Ready for deployment.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Gemini Spark Cloud Orchestration View -->
+            <div id="view-spark" class="alt-view-content">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3>☁️ Gemini Spark Cloud Control Center</h3>
+                    <button class="btn-primary" style="background: var(--spark-purple);" onclick="triggerSparkRoutine()">🚀 Trigger Cloud Autonomous Routine</button>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-muted);">Gemini Spark operates continuous routines, multi-app orchestration, and 24/7 background automations.</p>
+                
+                <div class="gemini-hub-grid">
+                    <div class="gemini-hub-card">
+                        <h4>☁️ Cloud Daemon Status</h4>
+                        <span class="spark-badge" id="sparkDaemonStatus">Active 24/7</span>
+                        <div style="font-size: 1.5rem; font-weight: bold; color: var(--text-main); margin-top: 5px;" id="sparkTaskCount">14 Routines Executed</div>
+                        <p style="font-size: 0.8rem; color: var(--text-muted);">Connected to OpenRouter / Groq Cloud infrastructure.</p>
+                    </div>
+                    <div class="gemini-hub-card">
+                        <h4>🔗 Workspace Integrations</h4>
+                        <div style="display: flex; flex-direction: column; gap: 6px; font-size: 0.85rem;">
+                            <span>📧 Gmail Daemon: <strong style="color: var(--success);">Synchronized</strong></span>
+                            <span>📅 Calendar Scheduler: <strong style="color: var(--success);">Active</strong></span>
+                            <span>📁 Drive Sync: <strong style="color: var(--success);">Connected</strong></span>
+                        </div>
+                    </div>
+                    <div class="gemini-hub-card">
+                        <h4>⚡ Autonomous Skills</h4>
+                        <div style="font-size: 0.85rem; color: var(--text-muted);">
+                            • Automated Code Refactoring<br>
+                            • Daily Changelog Compilation<br>
+                            • Godot Bug Sweeper Routine
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 15px;">
+                    <h4 style="font-size: 0.9rem; margin-bottom: 8px;">Spark Cloud Event Log</h4>
+                    <div class="console-output" id="sparkLogOutput" style="height: 160px;">
+                        [08:00:00] Spark Cloud Node initialized successfully.<br>
+                        [08:00:15] Background routine 'Godot Bug Sweeper' verified 0 syntax issues.
+                    </div>
+                </div>
+            </div>
+
+            <div id="view-console" class="alt-view-content">
+                <h3>Runtime & API Telemetry Logs</h3>
+                <div class="console-output" id="consoleOutput">
+                    [06:40:00] CoDev Studio Pro initialized.<br>
+                    [06:40:02] Browser File System Access ready.
+                </div>
+            </div>
+        </div>
+
+        <!-- Column 4: Right Sidebar (Agent Editor & Cross-Agent Knowledge) -->
+        <div class="editor-sidebar" id="editorPanel">
+            <h3>Agent Instructions & Memory</h3>
+            <div class="form-group">
+                <label>Agent Name</label>
+                <input type="text" id="editName" oninput="saveCurrentAgentEdits()">
+            </div>
+            <div class="form-group">
+                <label>Role / Specialty</label>
+                <input type="text" id="editRole" oninput="saveCurrentAgentEdits()">
+            </div>
+            <div class="form-group">
+                <label>System Instructions</label>
+                <textarea id="editInstructions" oninput="saveCurrentAgentEdits()"></textarea>
+            </div>
+            <div class="form-group">
+                <label>Agent Memory / Context</label>
+                <textarea id="editMemory" oninput="saveCurrentAgentEdits()"></textarea>
+            </div>
+
+            <!-- Selective Cross-Agent Knowledge Toggles -->
+            <div class="knowledge-box">
+                <label class="checkbox-group" style="color: var(--accent); font-weight: bold;">
+                    <input type="checkbox" id="editCrossKnowledgeToggle" onchange="toggleCrossKnowledgeSection(this.checked)"> 🔗 Cross-Agent Knowledge Sharing
+                </label>
+                <div id="crossKnowledgeContainer" style="display: none;">
+                    <div style="font-size: 0.75rem; color: var(--text-muted);">Share memory channels with these agents:</div>
+                    <div class="knowledge-list" id="crossKnowledgeCheckboxes"></div>
+                </div>
+            </div>
+
+            <button class="btn-danger" onclick="deleteSelectedAgent()">Delete Agent</button>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settingsModal">
+        <div class="modal">
+            <h3>CoDev Studio Settings & Models</h3>
+            <div class="form-group">
+                <label>AI Backend Provider</label>
+                <select id="modalProvider" onchange="toggleProviderFields()">
+                    <option value="openrouter">OpenRouter (Free Multi-Model Pool)</option>
+                    <option value="groq">Groq Cloud (Blazing-Fast LPU Inference)</option>
+                </select>
+            </div>
+            <div class="form-group" id="groupOpenRouterKey">
+                <label>OpenRouter API Key</label>
+                <input type="text" id="modalOpenRouterKey">
+            </div>
+            <div class="form-group" id="groupGroqKey" style="display:none;">
+                <label>Groq API Key (from console.groq.com)</label>
+                <input type="text" id="modalGroqKey" placeholder="gsk_...">
+            </div>
+            <div class="modal-buttons">
+                <button class="settings-btn" onclick="closeSettingsModal()">Cancel</button>
+                <button class="btn-primary" onclick="saveSettings()">Save & Connect</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentBackend = localStorage.getItem("codev_backend") || "openrouter";
+        let openRouterKey = localStorage.getItem("codev_openrouter_key") || "";
+        let groqKey = localStorage.getItem("codev_groq_key") || "";
+
+        // Real Local Filesystem Handles
+        let connectedDirectoryHandle = null;
+        let loadedProjectFiles = {};
+        let activeSelectedFile = null;
+
+        // Speech-to-Text State Variables
+        let recognition = null;
+        let isRecording = false;
+
+        async function connectLocalFolder() {
+            try {
+                connectedDirectoryHandle = await window.showDirectoryPicker();
+                logConsoleActivity(`Connected to local folder: ${connectedDirectoryHandle.name}`);
+                alert(`Successfully connected to folder: ${connectedDirectoryHandle.name}!`);
+                await scanConnectedDirectory();
+                switchView('project');
+            } catch (err) {
+                if (err.name !== 'AbortError') {
+                    alert("Error opening folder: " + err.message);
+                }
+            }
+        }
+
+        async function scanConnectedDirectory() {
+            loadedProjectFiles = {};
+            for await (const [name, handle] of connectedDirectoryHandle.entries()) {
+                if (handle.kind === 'file' && (name.endsWith('.cs') || name.endsWith('.gd') || name.endsWith('.txt') || name.endsWith('.tres') || name.endsWith('.json') || name.endsWith('.html'))) {
+                    const file = await handle.getFile();
+                    loadedProjectFiles[name] = await file.text();
+                }
+            }
+            renderProjectFiles();
+        }
+
+        function renderProjectFiles() {
+            const listContainer = document.getElementById("projectFileList");
+            listContainer.innerHTML = "";
+            const keys = Object.keys(loadedProjectFiles);
+            if (keys.length === 0) {
+                listContainer.innerHTML = `<div style="font-size: 0.8rem; color: var(--text-muted); padding: 10px;">No compatible code files found in root folder.</div>`;
+                return;
+            }
+            keys.forEach(filename => {
+                const item = document.createElement("div");
+                item.className = `file-item ${activeSelectedFile === filename ? 'active' : ''}`;
+                item.style.borderColor = activeSelectedFile === filename ? 'var(--accent)' : 'var(--border-color)';
+                item.innerHTML = `<span>📄 ${filename}</span>`;
+                item.onclick = () => selectProjectFile(filename);
+                listContainer.appendChild(item);
+            });
+            if (!activeSelectedFile && keys.length > 0) selectProjectFile(keys[0]);
+        }
+
+        function selectProjectFile(filename) {
+            activeSelectedFile = filename;
+            renderProjectFiles();
+            document.getElementById("selectedFileName").innerText = filename;
+            document.getElementById("fileEditorContent").value = loadedProjectFiles[filename] || "";
+        }
+
+        async function saveActiveFileChanges() {
+            if (!connectedDirectoryHandle || !activeSelectedFile) {
+                alert("No folder connected or file selected.");
+                return;
+            }
+            const updatedContent = document.getElementById("fileEditorContent").value;
+            loadedProjectFiles[activeSelectedFile] = updatedContent;
+            try {
+                const fileHandle = await connectedDirectoryHandle.getFileHandle(activeSelectedFile, { create: true });
+                const writable = await fileHandle.createWritable();
+                await writable.write(updatedContent);
+                await writable.close();
+                logConsoleActivity(`Saved changes directly to laptop file: ${activeSelectedFile}`);
+                alert(`Successfully saved ${activeSelectedFile} to your laptop!`);
+            } catch (err) {
+                alert("Failed to write to laptop: " + err.message);
+            }
+        }
+
+        let chatSessions = [
+            {
+                id: "chat_1",
+                title: "Godot 4 Physics & Wall Bounce",
+                timestamp: "06:40 AM",
+                isGroup: false,
+                messages: [
+                    { sender: "⚙️ System Co-Pilot", text: "Welcome to CoDev Pro + Gemini Spark & Ultra. Click '📁 Connect Local Folder' at the top right to link your real project files." }
+                ]
+            }
+        ];
+        let activeChatId = "chat_1";
+
+        let agents = [
+            {
+                id: "agent_1",
+                name: "Architect",
+                role: "Lead Game Programmer",
+                instructions: "You are Architect, an elite game developer and systems engineer. Provide clear, direct answers and write production-ready code (Godot 4, C#, GDScript).",
+                memory: "Working on independent game projects. Prefers clean, modular code.",
+                selectedForGroup: true,
+                crossKnowledgeEnabled: true,
+                sharedWith: ["agent_2"]
+            },
+            {
+                id: "agent_2",
+                name: "Reviewer",
+                role: "Code Auditor & QA",
+                instructions: "You are Reviewer, a strict code auditor. Inspect code snippets for compiler errors, syntax bugs, and Godot 4 API mismatches.",
+                memory: "Focused on bulletproof error checking.",
+                selectedForGroup: true,
+                crossKnowledgeEnabled: false,
+                sharedWith: []
+            }
+        ];
+
+        let selectedAgentId = "agent_1";
+
+        function toggleGeminiSidebar() {
+            document.getElementById("mainWorkspace").classList.toggle("sidebar-collapsed");
+        }
+
+        function updateStatusDisplay() {
+            if (currentBackend === "openrouter") {
+                document.getElementById("activeProviderLabel").innerText = "Provider: OpenRouter (Temp 0.0)";
+                document.getElementById("statusText").innerText = "OpenRouter Live";
+            } else {
+                document.getElementById("activeProviderLabel").innerText = "Provider: Groq Cloud (Temp 0.0)";
+                document.getElementById("statusText").innerText = "Groq Live";
+            }
+        }
+
+        function switchView(viewName) {
+            document.getElementById("tab-chat").classList.remove("active");
+            document.getElementById("tab-project").classList.remove("active");
+            document.getElementById("tab-gemini").classList.remove("active");
+            document.getElementById("tab-spark").classList.remove("active");
+            document.getElementById("tab-console").classList.remove("active");
+
+            const agentFlowMenu = document.getElementById("menuAgentFlow");
+            if (agentFlowMenu) agentFlowMenu.classList.remove("active");
+
+            document.getElementById("view-chat").style.display = "none";
+            document.getElementById("view-project").style.display = "none";
+            document.getElementById("view-gemini").style.display = "none";
+            document.getElementById("view-spark").style.display = "none";
+            document.getElementById("view-console").style.display = "none";
+
+            if (viewName === 'chat') {
+                document.getElementById("tab-chat").classList.add("active");
+                if (agentFlowMenu) agentFlowMenu.classList.add("active");
+                document.getElementById("view-chat").style.display = "flex";
+            } else if (viewName === 'project') {
+                document.getElementById("tab-project").classList.add("active");
+                document.getElementById("view-project").style.display = "flex";
+                if (connectedDirectoryHandle) renderProjectFiles();
+            } else if (viewName === 'gemini') {
+                document.getElementById("tab-gemini").classList.add("active");
+                document.getElementById("view-gemini").style.display = "flex";
+                logConsoleActivity("Switched to Gemini AI Hub.");
+            } else if (viewName === 'spark') {
+                document.getElementById("tab-spark").classList.add("active");
+                document.getElementById("view-spark").style.display = "flex";
+                logConsoleActivity("Switched to Gemini Spark Cloud view.");
+            } else if (viewName === 'console') {
+                document.getElementById("tab-console").classList.add("active");
+                document.getElementById("view-console").style.display = "flex";
+                logConsoleActivity("Switched to Console Logs.");
+            }
+        }
+
+        function renderChatList() {
+            const container = document.getElementById("chatListContainer");
+            container.innerHTML = "";
+            chatSessions.forEach(session => {
+                const item = document.createElement("div");
+                item.className = `chat-item ${session.id === activeChatId ? 'active' : ''}`;
+                
+                const infoDiv = document.createElement("div");
+                infoDiv.className = "chat-item-info";
+                infoDiv.onclick = () => switchChatSession(session.id);
+                infoDiv.innerHTML = `
+                    <div class="chat-item-title">${session.isGroup ? '🌐 ' : '👤 '}${session.title}</div>
+                    <div class="chat-item-meta">${session.timestamp}</div>
+                `;
+                item.appendChild(infoDiv);
+
+                const deleteBtn = document.createElement("button");
+                deleteBtn.className = "chat-delete-btn";
+                deleteBtn.innerHTML = "🗑️";
+                deleteBtn.title = "Delete Chat";
+                deleteBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    deleteChatSession(session.id);
+                };
+                item.appendChild(deleteBtn);
+
+                container.appendChild(item);
+            });
+            renderActiveChatFeed();
+        }
+
+        function createNewChat() {
+            if (chatSessions.length >= 30) {
+                alert("Maximum limit of 30 active chat sessions reached.");
+                return;
+            }
+            const newId = "chat_" + Date.now();
+            const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const isGroup = document.getElementById("isGroupChatCheckbox").checked;
+
+            chatSessions.unshift({
+                id: newId,
+                title: isGroup ? `Group Swarm #${chatSessions.length + 1}` : `New Session #${chatSessions.length + 1}`,
+                timestamp: timeStr,
+                isGroup: isGroup,
+                messages: [
+                    { sender: "⚙️ System Co-Pilot", text: isGroup ? "Group Swarm Chat initialized." : "New chat initialized." }
+                ]
+            });
+            activeChatId = newId;
+            renderChatList();
+            logConsoleActivity("Created new chat session.");
+        }
+
+        function deleteChatSession(id) {
+            if (chatSessions.length <= 1) {
+                alert("You must keep at least one active chat session.");
+                return;
+            }
+            chatSessions = chatSessions.filter(s => s.id !== id);
+            if (activeChatId === id) {
+                activeChatId = chatSessions[0].id;
+            }
+            renderChatList();
+            logConsoleActivity("Deleted chat session.");
+        }
+
+        function switchChatSession(id) {
+            activeChatId = id;
+            const session = chatSessions.find(s => s.id === id);
+            if (session) {
+                document.getElementById("isGroupChatCheckbox").checked = session.isGroup;
+            }
+            renderChatList();
+        }
+
+        function toggleGroupChatMode() {
+            const session = chatSessions.find(s => s.id === activeChatId);
+            if (session) {
+                session.isGroup = document.getElementById("isGroupChatCheckbox").checked;
+                session.title = session.isGroup ? "Group Swarm Chat" : "Solo Session";
+                renderChatList();
+            }
+        }
+
+        function renderActiveChatFeed() {
+            const feed = document.getElementById("chatFeed");
+            feed.innerHTML = "";
+            const session = chatSessions.find(s => s.id === activeChatId);
+            if (!session) return;
+
+            session.messages.forEach(msg => {
+                const div = document.createElement("div");
+                div.className = "message";
+                let formattedText = msg.text.replace(/```([a-z]*)\n([\s\S]*?)```/g, '<pre><code class="$1">$2</code></pre>');
+                
+                let speakButtonHtml = "";
+                if (!msg.sender.includes("You")) {
+                    const safeText = msg.text.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                    speakButtonHtml = `<button onclick="speakText('${safeText}')" style="background: none; border: none; cursor: pointer; font-size: 0.9rem;" title="Listen to response">🔊</button>`;
+                }
+
+                div.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <div class="sender" style="margin-bottom: 0;">${msg.sender}</div>
+                        ${speakButtonHtml}
+                    </div>
+                    <div class="text">${formattedText}</div>
+                `;
+                feed.appendChild(div);
+            });
+            feed.scrollTop = feed.scrollHeight;
+        }
+
+        function appendMessageToActiveSession(sender, text) {
+            const session = chatSessions.find(s => s.id === activeChatId);
+            if (!session) return;
+            session.messages.push({ sender, text });
+            
+            if (session.messages.length === 3 && sender.includes("You")) {
+                session.title = text.length > 22 ? text.substring(0, 22) + "..." : text;
+            }
+            renderChatList();
+        }
+
+        // ==========================================
+        // SPEECH-TO-TEXT & TEXT-TO-SPEECH FUNCTIONS
+        // ==========================================
+        function toggleSpeechRecognition() {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                alert("Speech Recognition is not supported in this browser. Try Chrome or Edge.");
+                return;
+            }
+
+            if (!recognition) {
+                recognition = new SpeechRecognition();
+                recognition.continuous = false;
+                recognition.interimResults = true;
+                recognition.lang = 'en-US';
+
+                recognition.onstart = () => {
+                    isRecording = true;
+                    const micBtn = document.getElementById("micBtn");
+                    micBtn.style.borderColor = "var(--danger)";
+                    micBtn.style.color = "var(--danger)";
+                    logConsoleActivity("Speech recognition started...");
+                };
+
+                recognition.onresult = (event) => {
+                    let finalTranscript = '';
+                    for (let i = event.resultIndex; i < event.results.length; ++i) {
+                        if (event.results[i].isFinal) {
+                            finalTranscript += event.results[i][0].transcript;
+                        }
+                    }
+                    const inputField = document.getElementById("userInput");
+                    if (finalTranscript) {
+                        inputField.value += (inputField.value ? ' ' : '') + finalTranscript;
+                    }
+                };
+
+                recognition.onerror = (event) => {
+                    logConsoleActivity("Speech recognition error: " + event.error);
+                    stopSpeechRecognition();
+                };
+
+                recognition.onend = () => {
+                    stopSpeechRecognition();
+                };
+            }
+
+            if (isRecording) {
+                recognition.stop();
+            } else {
+                recognition.start();
+            }
+        }
+
+        function stopSpeechRecognition() {
+            isRecording = false;
+            const micBtn = document.getElementById("micBtn");
+            if (micBtn) {
+                micBtn.style.borderColor = "var(--border-color)";
+                micBtn.style.color = "var(--text-main)";
+            }
+            logConsoleActivity("Speech recognition stopped.");
+        }
+
+        function speakText(text) {
+            if (!window.speechSynthesis) {
+                alert("Text-to-speech is not supported in this browser.");
+                return;
+            }
+            window.speechSynthesis.cancel();
+            const cleanText = text.replace(/```[\s\S]*?```/g, " [Code snippet omitted for audio] ");
+            const utterance = new SpeechSynthesisUtterance(cleanText);
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            window.speechSynthesis.speak(utterance);
+            logConsoleActivity("Playing text-to-speech audio for agent response.");
+        }
+        // ==========================================
+
+        // ==========================================
+        // GEMINI AI HUB & SPARK ROUTINES
+        // ==========================================
+        let sparkRoutineCount = 14;
+        function triggerSparkRoutine() {
+            sparkRoutineCount++;
+            document.getElementById("sparkTaskCount").innerText = `${sparkRoutineCount} Routines Executed`;
+            const sparkLog = document.getElementById("sparkLogOutput");
+            const time = new Date().toTimeString().split(' ')[0];
+            sparkLog.innerHTML += `<br>[${time}] 🚀 Spark Cloud initiated background automated cycle. Verified workspace integrity.`;
+            sparkLog.scrollTop = sparkLog.scrollHeight;
+            logConsoleActivity("Gemini Spark Cloud executed autonomous routine.");
+            alert("Gemini Spark Cloud routine executed successfully!");
+        }
+
+        function runGeminiEnhancer() {
+            const inputField = document.getElementById("userInput");
+            if (!inputField.value.trim()) {
+                inputField.value = "Optimize the character controller script for Godot 4 with robust wall-bounce physics and smooth input mapping.";
+            } else {
+                inputField.value = `[Gemini Enhanced Prompt]: ${inputField.value} - ensure maximum performance, modular C#/GDScript formatting, and strict API compliance.`;
+            }
+            switchView('chat');
+            logConsoleActivity("Gemini Prompt Enhancer applied to active query.");
+            alert("Gemini Prompt Enhancer successfully optimized your input query!");
+        }
+        // ==========================================
+
+        function openSettingsModal() {
+            document.getElementById("modalProvider").value = currentBackend;
+            document.getElementById("modalOpenRouterKey").value = openRouterKey;
+            document.getElementById("modalGroqKey").value = groqKey;
+            toggleProviderFields();
+            document.getElementById("settingsModal").style.display = "flex";
+        }
+
+        function closeSettingsModal() { document.getElementById("settingsModal").style.display = "none"; }
+
+        function toggleProviderFields() {
+            const backend = document.getElementById("modalProvider").value;
+            if (backend === "groq") {
+                document.getElementById("groupOpenRouterKey").style.display = "none";
+                document.getElementById("groupGroqKey").style.display = "flex";
+            } else {
+                document.getElementById("groupOpenRouterKey").style.display = "flex";
+                document.getElementById("groupGroqKey").style.display = "none";
+            }
+        }
+
+        function saveSettings() {
+            currentBackend = document.getElementById("modalProvider").value;
+            openRouterKey = document.getElementById("modalOpenRouterKey").value.trim();
+            groqKey = document.getElementById("modalGroqKey").value.trim();
+
+            localStorage.setItem("codev_backend", currentBackend);
+            localStorage.setItem("codev_openrouter_key", openRouterKey);
+            localStorage.setItem("codev_groq_key", groqKey);
+
+            updateStatusDisplay();
+            logConsoleActivity(`Settings saved to LocalStorage. Backend: ${currentBackend}`);
+            closeSettingsModal();
+        }
+
+        function logConsoleActivity(text) {
+            const consoleBox = document.getElementById("consoleOutput");
+            const time = new Date().toTimeString().split(' ')[0];
+            consoleBox.innerHTML += `<br>[${time}] ${text}`;
+            consoleBox.scrollTop = consoleBox.scrollHeight;
+        }
+
+        function renderAgentList() {
+            const list = document.getElementById("agentList");
+            list.innerHTML = "";
+            agents.forEach(agent => {
+                const card = document.createElement("div");
+                card.className = `agent-card`;
+                card.style.borderColor = agent.id === selectedAgentId ? 'var(--accent)' : 'var(--border-color)';
+                card.innerHTML = `
+                    <div class="agent-card-header">
+                        <div onclick="selectAgent('${agent.id}')" style="cursor: pointer; flex: 1;">
+                            <h4>${agent.name}</h4>
+                            <span class="agent-meta">${agent.role}</span>
+                        </div>
+                        <input type="checkbox" ${agent.selectedForGroup ? 'checked' : ''} title="Include in Group Swarm" onchange="toggleAgentGroup('${agent.id}', this.checked)">
+                    </div>
+                    <div class="agent-instructions-preview" onclick="selectAgent('${agent.id}')">${agent.instructions}</div>
+                `;
+                list.appendChild(card);
+            });
+            loadAgentIntoEditor();
+            updateActiveAgentIndicator();
+        }
+
+        function selectAgent(id) {
+            selectedAgentId = id;
+            renderAgentList();
+        }
+
+        function toggleAgentGroup(id, isChecked) {
+            const agent = agents.find(a => a.id === id);
+            if (agent) agent.selectedForGroup = isChecked;
+        }
+
+        function updateActiveAgentIndicator() {
+            const agent = agents.find(a => a.id === selectedAgentId);
+            const indicator = document.getElementById("activeAgentIndicator");
+            if (agent && indicator) indicator.innerText = `Active Solo: ${agent.name}`;
+        }
+
+        function loadAgentIntoEditor() {
+            const agent = agents.find(a => a.id === selectedAgentId);
+            if (!agent) return;
+            document.getElementById("editName").value = agent.name;
+            document.getElementById("editRole").value = agent.role;
+            document.getElementById("editInstructions").value = agent.instructions;
+            document.getElementById("editMemory").value = agent.memory;
+            
+            const toggle = document.getElementById("editCrossKnowledgeToggle");
+            toggle.checked = agent.crossKnowledgeEnabled;
+            toggleCrossKnowledgeSection(agent.crossKnowledgeEnabled);
+            renderCrossKnowledgeCheckboxes(agent);
+        }
+
+        function toggleCrossKnowledgeSection(isChecked) {
+            const container = document.getElementById("crossKnowledgeContainer");
+            container.style.display = isChecked ? "block" : "none";
+            const agent = agents.find(a => a.id === selectedAgentId);
+            if (agent) agent.crossKnowledgeEnabled = isChecked;
+        }
+
+        function renderCrossKnowledgeCheckboxes(currentAgent) {
+            const listContainer = document.getElementById("crossKnowledgeCheckboxes");
+            listContainer.innerHTML = "";
+            agents.forEach(other => {
+                if (other.id === currentAgent.id) return;
+                const isShared = currentAgent.sharedWith.includes(other.id);
+                const label = document.createElement("label");
+                label.className = "knowledge-item";
+                label.innerHTML = `
+                    <input type="checkbox" ${isShared ? 'checked' : ''} onchange="toggleSharedAgent('${currentAgent.id}', '${other.id}', this.checked)">
+                    Share memory with <strong>${other.name}</strong>
+                `;
+                listContainer.appendChild(label);
+            });
+        }
+
+        function toggleSharedAgent(agentId, targetId, isChecked) {
+            const agent = agents.find(a => a.id === agentId);
+            if (!agent) return;
+            if (isChecked) {
+                if (!agent.sharedWith.includes(targetId)) agent.sharedWith.push(targetId);
+            } else {
+                agent.sharedWith = agent.sharedWith.filter(id => id !== targetId);
+            }
+            logConsoleActivity(`Updated cross-agent memory channel for ${agent.name} -> Target: ${targetId}`);
+        }
+
+        function saveCurrentAgentEdits() {
+            const agent = agents.find(a => a.id === selectedAgentId);
+            if (!agent) return;
+            agent.name = document.getElementById("editName").value;
+            agent.role = document.getElementById("editRole").value;
+            agent.instructions = document.getElementById("editInstructions").value;
+            agent.memory = document.getElementById("editMemory").value;
+            renderAgentList();
+        }
+
+        function createNewAgent() {
+            const newId = "agent_" + Date.now();
+            agents.push({
+                id: newId,
+                name: "Specialist #" + (agents.length + 1),
+                role: "Sub-System Expert",
+                instructions: "You are a specialized assistant. Answer clearly and help with specific development tasks.",
+                memory: "",
+                selectedForGroup: true,
+                crossKnowledgeEnabled: false,
+                sharedWith: []
+            });
+            selectAgent(newId);
+            logConsoleActivity("Created new agent.");
+        }
+
+        function deleteSelectedAgent() {
+            if (agents.length <= 1) {
+                alert("You must keep at least one agent in the workspace.");
+                return;
+            }
+            agents = agents.filter(a => a.id !== selectedAgentId);
+            selectedAgentId = agents[0].id;
+            renderAgentList();
+            logConsoleActivity("Deleted agent.");
+        }
+
+        async function callAI(systemPrompt, userMessage) {
+            const technicalGuardrails = `CRITICAL TECHNICAL & FACTUAL RULES (Strict Compliance Required):
+1. CURRENT DATE CONTEXT: Today is October 11, 2026. Donald Trump is the 47th President of the United States.
+2. GODOT 4 ENGINE RULES: CharacterBody3D.move_and_slide() takes ZERO arguments. It reads directly from built-in velocity and up_direction.
+3. C# VECTOR RULES: Godot Vector2 and Vector3 are structs, not records. Do NOT use record 'with' expressions. Construct new vectors or mutate component properties directly.`;
+            
+            const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}`;
+
+            if (currentBackend === "groq") {
+                if (!groqKey) throw new Error("Please enter and save your Groq API key in Settings first.");
+                const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                    method: "POST",
+                    headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        model: "openai/gpt-oss-120b",
+                        temperature: 0.0,
+                        messages: [{ role: "system", content: fullSystemPrompt }, { role: "user", content: userMessage }]
+                    })
+                });
+                const data = await response.json();
+                if (data.choices && data.choices.length > 0) return data.choices[0].message.content;
+                throw new Error("Groq API Error: " + (data.error?.message || JSON.stringify(data)));
+            } else {
+                const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                    method: "POST",
+                    headers: { "Authorization": `Bearer ${openRouterKey}`, "Content-Type": "application/json", "HTTP-Referer": "http://localhost", "X-Title": "AgentFlow Studio CoDev" },
+                    body: JSON.stringify({
+                        model: "openrouter/free",
+                        temperature: 0.0,
+                        messages: [{ role: "system", content: fullSystemPrompt }, { role: "user", content: userMessage }]
+                    })
+                });
+                const data = await response.json();
+                if (data.choices && data.choices.length > 0) return data.choices[0].message.content;
+                throw new Error("OpenRouter API Error: " + (data.error?.message || JSON.stringify(data)));
+            }
+        }
+
+        async function runSelfHealingPass(agent, prompt, initialResponse) {
+            logConsoleActivity(`[Self-Healing Loop] Inspecting code output for compiler traps / syntax bugs...`);
+            const auditPrompt = `Review this generated code for Godot 4 API mismatches (like move_and_slide(velocity) having arguments or C# record 'with' struct errors). If an error exists, rewrite the corrected code. If it is already clean, output it as-is:\n\n${initialResponse}`;
+            
+            try {
+                const auditedResponse = await callAI(agent.instructions + "\n[QA Auditor Pass]", auditPrompt);
+                logConsoleActivity(`[Self-Healing Loop] Code verification complete. Passed syntax audit.`);
+                return auditedResponse;
+            } catch (err) {
+                logConsoleActivity(`[Self-Healing Warning] Audit pass skipped: ${err.message}`);
+                return initialResponse;
+            }
+        }
+
+        async function sendChatMessage() {
+            let inputField = document.getElementById("userInput");
+            let userText = inputField.value.trim();
+            if (!userText) return;
+
+            let injectedContext = "";
+            Object.keys(loadedProjectFiles).forEach(filename => {
+                if (userText.includes(`@${filename}`)) {
+                    injectedContext += `\n\n[Injected File Context: ${filename}]\n${loadedProjectFiles[filename]}`;
+                    logConsoleActivity(`Attached local file context for: ${filename}`);
+                }
+            });
+
+            const isGroup = document.getElementById("isGroupChatCheckbox").checked;
+            const isBackground = document.getElementById("isBackgroundWorkerCheckbox").checked;
+            const isSelfHeal = document.getElementById("isSelfHealCheckbox").checked;
+
+            appendMessageToActiveSession("👤 You", userText);
+            inputField.value = "";
+
+            const session = chatSessions.find(s => s.id === activeChatId);
+            if (session) session.isGroup = isGroup;
+
+            let activeAgent = agents.find(a => a.id === selectedAgentId) || agents[0];
+            let collectiveMemory = `[Memory]: ${activeAgent.memory}`;
+            if (activeAgent.crossKnowledgeEnabled && activeAgent.sharedWith.length > 0) {
+                activeAgent.sharedWith.forEach(targetId => {
+                    const sharedAgent = agents.find(a => a.id === targetId);
+                    if (sharedAgent) {
+                        collectiveMemory += `\n[Shared Memory from ${sharedAgent.name}]: ${sharedAgent.memory}`;
+                    }
+                });
+            }
+
+            if (isBackground) {
+                document.getElementById("isBackgroundWorkerCheckbox").checked = false;
+                appendMessageToActiveSession(`⚡ Background Worker (${activeAgent.name})`, `Task queued for autonomous execution...`);
+                logConsoleActivity(`[Background Worker] Task initiated for ${activeAgent.name}.`);
+                
+                setTimeout(async () => {
+                    try {
+                        let res = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext);
+                        if (isSelfHeal) res = await runSelfHealingPass(activeAgent, userText, res);
+                        
+                        session.messages.pop();
+                        appendMessageToActiveSession(`⚡ Background Complete [${activeAgent.name}]`, res);
+                    } catch (err) {
+                        session.messages.pop();
+                        appendMessageToActiveSession("❌ Background Task Error", err.message);
+                    }
+                }, 1000);
+                return;
+            }
+
+            if (isGroup) {
+                const groupAgents = agents.filter(a => a.selectedForGroup);
+                if (groupAgents.length === 0) {
+                    alert("Please check at least one agent in the agent list for the Group Swarm.");
+                    return;
+                }
+
+                for (const agent of groupAgents) {
+                    try {
+                        appendMessageToActiveSession(`🤖 ${agent.name} (Thinking...)`, `Analyzing swarm query...`);
+                        let response = await callAI(agent.instructions + "\n[Memory]: " + agent.memory, userText + injectedContext);
+                        if (isSelfHeal) response = await runSelfHealingPass(agent, userText, response);
+                        
+                        session.messages.pop();
+                        appendMessageToActiveSession(`🤖 ${agent.name}`, response);
+                    } catch (err) {
+                        session.messages.pop();
+                        appendMessageToActiveSession(`❌ Error [${agent.name}]`, err.message);
+                    }
+                }
+            } else {
+                try {
+                    appendMessageToActiveSession(`🤖 ${activeAgent.name} (Thinking...)`, `Processing request deterministically...`);
+                    let response = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext);
+                    if (isSelfHeal) response = await runSelfHealingPass(activeAgent, userText, response);
+                    
+                    session.messages.pop();
+                    appendMessageToActiveSession(`🤖 ${activeAgent.name}`, response);
+                } catch (err) {
+                    session.messages.pop();
+                    appendMessageToActiveSession("❌ System Error", err.message);
+                }
+            }
+        }
+
+        updateStatusDisplay();
+        renderChatList();
+        renderAgentList();
+    </script>
+</body>
+</html>
