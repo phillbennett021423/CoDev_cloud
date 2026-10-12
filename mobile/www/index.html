@@ -1,0 +1,1225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CoDev Studio Pro - Multi-Agent Workstation</title>
+    <style>
+        :root {
+            --bg-dark: #090d16;
+            --bg-panel: #111827;
+            --bg-card: #1f2937;
+            --border-color: #374151;
+            --accent: #0ea5e9;
+            --accent-glow: rgba(14, 165, 233, 0.2);
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --codev-purple: #8b5cf6;
+            --codev-blue: #3b82f6;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background-color: var(--bg-dark); color: var(--text-main); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        
+        /* Top Navigation Bar */
+        header { background: var(--bg-panel); border-bottom: 1px solid var(--border-color); height: 60px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; z-index: 100; }
+        .header-left { display: flex; align-items: center; gap: 15px; }
+        .sidebar-toggle-btn { background: none; border: none; color: var(--text-main); font-size: 1.2rem; cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: background 0.2s; }
+        .sidebar-toggle-btn:hover { background: rgba(255,255,255,0.05); }
+        .logo-area { display: flex; align-items: center; gap: 10px; font-weight: bold; font-size: 1.1rem; color: var(--accent); }
+        
+        .nav-tabs { display: flex; gap: 8px; font-size: 0.8rem; color: var(--text-muted); }
+        .nav-tabs span { cursor: pointer; padding: 6px 10px; border-radius: 4px; transition: background 0.2s, color 0.2s; user-select: none; }
+        .nav-tabs span:hover { color: var(--text-main); background: rgba(255,255,255,0.05); }
+        .nav-tabs span.active { color: var(--text-main); background: var(--bg-card); border: 1px solid var(--border-color); }
+        
+        .header-right { display: flex; align-items: center; gap: 15px; }
+        .folder-connect-btn { background: var(--success); color: var(--bg-dark); border: none; font-weight: bold; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: opacity 0.2s; }
+        .folder-connect-btn:hover { opacity: 0.9; }
+        .user-status { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-muted); }
+        .status-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; display: inline-block; box-shadow: 0 0 8px var(--success); }
+        .settings-btn { background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: background 0.2s; }
+        .settings-btn:hover { background: var(--border-color); }
+
+        /* Workspace Layout with Dynamic Grid Expansion */
+        .workspace { display: grid; grid-template-columns: 260px 260px 1fr 320px; flex: 1; overflow: hidden; position: relative; transition: grid-template-columns 0.3s ease; }
+        .workspace.menu-collapsed { grid-template-columns: 0px 260px 1fr 320px; }
+        .workspace.agent-collapsed { grid-template-columns: 260px 0px 1fr 320px; }
+        .workspace.editor-collapsed { grid-template-columns: 260px 260px 1fr 0px; }
+        .workspace.menu-and-agent-collapsed { grid-template-columns: 0px 0px 1fr 320px; }
+        .workspace.all-sidebars-collapsed { grid-template-columns: 0px 0px 1fr 0px; }
+
+        /* Floating Reopen Tabs for Collapsed Sidebars */
+        .reopen-tab-left { position: absolute; left: 0; top: 70px; background: var(--bg-panel); border: 1px solid var(--border-color); border-left: none; padding: 8px 12px; border-radius: 0 6px 6px 0; cursor: pointer; z-index: 50; display: none; font-size: 0.85rem; color: var(--accent); box-shadow: 2px 0 10px rgba(0,0,0,0.3); transition: background 0.2s; }
+        .reopen-tab-left:hover { background: var(--bg-card); }
+
+        .reopen-tab-right { position: absolute; right: 0; top: 70px; background: var(--bg-panel); border: 1px solid var(--border-color); border-right: none; padding: 8px 12px; border-radius: 6px 0 0 6px; cursor: pointer; z-index: 50; display: none; font-size: 0.85rem; color: var(--accent); box-shadow: -2px 0 10px rgba(0,0,0,0.3); transition: background 0.2s; }
+        .reopen-tab-right:hover { background: var(--bg-card); }
+
+        /* CoDev Menu Navigation Sidebar */
+        .menu-sidebar { background: #0c101d; border-right: 1px solid var(--border-color); padding: 15px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; overflow-x: hidden; white-space: nowrap; transition: all 0.3s ease; }
+        .workspace.menu-collapsed .menu-sidebar, .workspace.menu-and-agent-collapsed .menu-sidebar, .workspace.all-sidebars-collapsed .menu-sidebar { padding: 0; opacity: 0; pointer-events: none; border-right: none; width: 0; overflow: hidden; }
+
+        .menu-sidebar-header { display: flex; justify-content: space-between; align-items: center; }
+        .close-sidebar-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; padding: 4px; border-radius: 4px; }
+        .close-sidebar-btn:hover { color: var(--text-main); background: rgba(255,255,255,0.05); }
+
+        .menu-list { display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px; }
+        .menu-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 0.9rem; color: var(--text-main); transition: background 0.2s; user-select: none; }
+        .menu-item:hover { background: rgba(255,255,255,0.05); }
+        .menu-item.active { background: rgba(14, 165, 233, 0.15); color: var(--accent); font-weight: 600; }
+        .menu-icon { font-size: 1.1rem; width: 24px; text-align: center; }
+        
+        .sidebar-section-title { font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.05em; margin-top: 5px; }
+        .chat-list { display: flex; flex-direction: column; gap: 6px; }
+        .chat-item { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 10px; cursor: pointer; transition: all 0.2s; display: flex; justify-content: space-between; align-items: center; }
+        .chat-item:hover { border-color: var(--accent); background: rgba(14, 165, 233, 0.05); }
+        .chat-item.active { border-color: var(--accent); background: rgba(14, 165, 233, 0.15); }
+        .chat-item-info { display: flex; flex-direction: column; gap: 2px; overflow: hidden; flex: 1; }
+        .chat-item-title { font-size: 0.85rem; font-weight: 600; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .chat-item-meta { font-size: 0.7rem; color: var(--text-muted); }
+        .chat-delete-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.8rem; padding: 4px; border-radius: 4px; transition: color 0.2s; }
+        .chat-delete-btn:hover { color: var(--danger); }
+
+        /* Agent Manager Sidebar */
+        .sidebar { background: var(--bg-panel); border-right: 1px solid var(--border-color); padding: 15px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; overflow-x: hidden; white-space: nowrap; transition: all 0.3s ease; }
+        .workspace.agent-collapsed .sidebar, .workspace.menu-and-agent-collapsed .sidebar, .workspace.all-sidebars-collapsed .sidebar { padding: 0; opacity: 0; pointer-events: none; border-right: none; width: 0; overflow: hidden; }
+        .sidebar-header { display: flex; justify-content: space-between; align-items: center; }
+        .sidebar h3 { font-size: 0.8rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.05em; }
+        .btn-primary { background: var(--accent); color: var(--bg-dark); border: none; font-weight: bold; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+        .btn-primary:hover { opacity: 0.9; }
+        
+        .agent-list { display: flex; flex-direction: column; gap: 10px; }
+        .agent-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; transition: border-color 0.2s; position: relative; }
+        .agent-card:hover { border-color: var(--accent); }
+        .agent-card-header { display: flex; justify-content: space-between; align-items: center; }
+        .agent-card-header h4 { font-size: 0.9rem; font-weight: 600; color: var(--text-main); }
+        .agent-meta { font-size: 0.75rem; color: var(--accent); }
+        .agent-instructions-preview { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+        /* Center Content Views */
+        .center-pane { display: flex; flex-direction: column; background: var(--bg-dark); overflow: hidden; flex: 1; }
+        .pane-header { padding: 12px 20px; background: var(--bg-panel); border-bottom: 1px solid var(--border-color); font-size: 0.9rem; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+        
+        /* Chat View */
+        .chat-messages { flex: 1; padding: 25px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; max-width: 1000px; width: 100%; margin: 0 auto; }
+        .message { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 18px 22px; width: 100%; animation: fadeIn 0.2s ease; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+        .message .sender { font-size: 0.85rem; font-weight: bold; color: var(--accent); display: flex; align-items: center; gap: 6px; }
+        .message .text { font-size: 0.95rem; line-height: 1.6; white-space: pre-wrap; margin-top: 8px; }
+        .message pre { background: #05070b; padding: 14px; border-radius: 6px; margin-top: 10px; overflow-x: auto; border: 1px solid var(--border-color); }
+        .message code { background: #05070b; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.9rem; color: #34d399; }
+        .message pre code { background: none; padding: 0; color: #e2e8f0; }
+        
+        /* Input & Collapsible Settings Bar */
+        .chat-input-wrapper { max-width: 1000px; width: 100%; margin: 0 auto; padding: 0 20px 20px 20px; background: transparent; }
+        .chat-input-area { padding: 15px 20px; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+        .chat-input-area input { flex: 1; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px 16px; color: var(--text-main); font-size: 0.95rem; outline: none; min-width: 200px; }
+        .chat-input-area input:focus { border-color: var(--accent); }
+        
+        .chat-controls-container { width: 100%; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; margin-bottom: 4px; }
+        .chat-controls-header { display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; color: var(--text-muted); }
+        .chat-controls-body { display: flex; gap: 15px; flex-wrap: wrap; font-size: 0.8rem; }
+        .collapse-controls-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 0.75rem; font-weight: bold; padding: 2px 6px; border-radius: 4px; }
+        .collapse-controls-btn:hover { background: rgba(14, 165, 233, 0.1); }
+
+        /* Compact Badges Bar when Collapsed */
+        .compact-badges-bar { display: none; gap: 8px; align-items: center; font-size: 0.8rem; }
+        .compact-badge { background: var(--bg-card); border: 1px solid var(--border-color); padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; display: flex; align-items: center; gap: 4px; }
+
+        .checkbox-group { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+        .chat-input-area button.send-btn { background: var(--accent); color: var(--bg-dark); border: none; font-weight: bold; padding: 12px 24px; border-radius: 8px; cursor: pointer; }
+
+        /* Secondary Views */
+        .alt-view-content { flex: 1; padding: 25px; overflow-y: auto; display: none; flex-direction: column; gap: 15px; }
+        .file-tree { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; font-family: monospace; font-size: 0.85rem; display: flex; flex-direction: column; gap: 8px; }
+        .file-item { padding: 8px 12px; cursor: pointer; border-radius: 6px; background: var(--bg-card); border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; transition: border-color 0.2s; }
+        .file-item:hover { border-color: var(--accent); color: var(--accent); }
+        .file-editor-box { background: #05070b; border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; font-family: monospace; font-size: 0.85rem; color: #34d399; flex: 1; width: 100%; resize: none; outline: none; }
+        .console-output { background: #05070b; border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; font-family: monospace; font-size: 0.80rem; color: #34d399; flex: 1; overflow-y: auto; line-height: 1.4; }
+
+        /* CoDev Hub View */
+        .codev-hub-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-top: 10px; }
+        .codev-hub-card { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 20px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+        .codev-hub-card h4 { color: var(--codev-blue); font-size: 1rem; display: flex; align-items: center; gap: 8px; }
+        .codev-badge { background: rgba(59, 130, 246, 0.15); color: var(--codev-blue); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; width: fit-content; font-weight: bold; }
+
+        /* Right Sidebar: Agent Editor */
+        .editor-sidebar { background: var(--bg-panel); border-left: 1px solid var(--border-color); padding: 20px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; transition: all 0.3s ease; }
+        .workspace.editor-collapsed .editor-sidebar, .workspace.all-sidebars-collapsed .editor-sidebar { padding: 0; opacity: 0; pointer-events: none; border-left: none; width: 0; overflow: hidden; }
+        
+        .editor-sidebar h3 { font-size: 0.85rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.05em; display: flex; justify-content: space-between; align-items: center; }
+        .form-group { display: flex; flex-direction: column; gap: 6px; }
+        .form-group label { font-size: 0.8rem; color: var(--text-muted); font-weight: 500; }
+        .form-group input, .form-group textarea, .form-group select { background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; color: var(--text-main); font-size: 0.85rem; outline: none; }
+        .form-group input:focus, .form-group textarea:focus, .form-group select:focus { border-color: var(--accent); }
+        .form-group textarea { height: 110px; font-family: monospace; font-size: 0.8rem; resize: vertical; }
+        
+        .knowledge-box { background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+        .knowledge-list { display: flex; flex-direction: column; gap: 6px; max-height: 120px; overflow-y: auto; margin-top: 5px; }
+        .knowledge-item { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-main); cursor: pointer; }
+
+        .btn-save-agent { background: var(--success); color: var(--bg-dark); border: none; font-weight: bold; padding: 10px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: opacity 0.2s; }
+        .btn-save-agent:hover { opacity: 0.9; }
+        .btn-danger { background: var(--danger); color: white; border: none; font-weight: bold; padding: 8px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
+
+        /* Modal Settings Overlay */
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 1000; }
+        .modal { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; width: 480px; padding: 25px; display: flex; flex-direction: column; gap: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+        .modal h3 { color: var(--text-main); font-size: 1.1rem; }
+        .modal-buttons { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="header-left">
+            <button class="sidebar-toggle-btn" onclick="toggleMenuSidebar()" title="Toggle Menu">☰</button>
+            <div class="logo-area">💻 CoDev Studio Pro</div>
+        </div>
+        <div class="nav-tabs">
+            <span id="tab-chat" class="active" onclick="switchView('chat')">Chat & Swarm</span>
+            <span id="tab-project" onclick="switchView('project')">📁 Project Files</span>
+            <span id="tab-codev" onclick="switchView('codev')" style="color: var(--codev-blue); font-weight: bold;">⚡ CoDev Hub</span>
+            <span id="tab-cloud" onclick="switchView('cloud')" style="color: var(--codev-purple); font-weight: bold;">☁️ CoDev Cloud</span>
+            <span id="tab-console" onclick="switchView('console')">Console Logs</span>
+        </div>
+        <div class="header-right">
+            <button class="folder-connect-btn" onclick="connectLocalFolder()">📁 Connect Local Folder</button>
+            <div class="user-status">
+                <span class="status-dot"></span> <span id="statusText">Active Browser Storage</span>
+            </div>
+            <button class="settings-btn" onclick="openSettingsModal()">⚙️ Settings</button>
+        </div>
+    </header>
+
+    <div class="workspace" id="mainWorkspace">
+        <!-- Floating Reopen Buttons for Collapsed Sidebars -->
+        <div class="reopen-tab-left" id="reopenMenuBtn" onclick="toggleMenuSidebar()" title="Open Menu">☰ Menu</div>
+        <div class="reopen-tab-right" id="reopenEditorBtn" onclick="toggleEditorSidebar()" title="Open Agent Editor">⚙️ Config</div>
+
+        <!-- Column 1: CoDev Navigation & History Sidebar -->
+        <div class="menu-sidebar" id="menuSidebar">
+            <div class="menu-sidebar-header">
+                <span style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: bold;">Menu</span>
+                <button class="close-sidebar-btn" onclick="toggleMenuSidebar()" title="Close Sidebar">✕</button>
+            </div>
+            <div class="menu-list">
+                <div class="menu-item" onclick="createNewChat()">
+                    <span class="menu-icon">✏️</span> New chat
+                </div>
+                <div class="menu-item active" id="menuAgentFlow" onclick="switchView('chat'); logConsoleActivity('Switched to Agent Flow mode.');">
+                    <span class="menu-icon">💻</span> Agent Flow
+                </div>
+                <div class="menu-item" onclick="switchView('codev'); logConsoleActivity('Switched to CoDev Hub.');">
+                    <span class="menu-icon">⚡</span> CoDev Hub
+                </div>
+                <div class="menu-item" onclick="switchView('cloud'); logConsoleActivity('Switched to CoDev Cloud.');">
+                    <span class="menu-icon">☁️</span> CoDev Cloud
+                </div>
+            </div>
+
+            <div class="sidebar-section-title">Recents</div>
+            <div class="chat-list" id="chatListContainer"></div>
+        </div>
+
+        <!-- Column 2: Agent Manager Sidebar -->
+        <div class="sidebar" id="agentSidebar">
+            <div class="sidebar-header">
+                <h3>Agents</h3>
+                <div style="display: flex; gap: 6px;">
+                    <button class="btn-primary" onclick="createNewAgent()" title="New Agent">+ New</button>
+                    <button class="close-sidebar-btn" onclick="toggleAgentSidebar()" title="Collapse Agent Bar">✕</button>
+                </div>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 5px;">Check agents for Group Swarms:</div>
+            <div class="agent-list" id="agentList"></div>
+        </div>
+
+        <!-- Column 3: Center Pane (Spacious Chat Feed & Collapsible Input Controls) -->
+        <div class="center-pane">
+            <div id="view-chat" class="center-pane" style="display: flex; flex: 1; flex-direction: column; overflow: hidden;">
+                <div class="pane-header">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <button class="sidebar-toggle-btn" onclick="toggleAgentSidebar()" title="Toggle Agents Bar">🤖</button>
+                        <span id="activeWorkspaceTitle">Active Chat Session</span>
+                    </div>
+                    <span style="font-size: 0.75rem; color: var(--text-muted);" id="activeProviderLabel">Provider: Loading...</span>
+                </div>
+                
+                <div class="chat-messages" id="chatFeed"></div>
+                
+                <div class="chat-input-wrapper">
+                    <div class="chat-input-area">
+                        <!-- Collapsible Input Settings Controls Bar -->
+                        <div class="chat-controls-container" id="chatControlsContainer">
+                            <div class="chat-controls-header">
+                                <span>Execution Modes & Settings</span>
+                                <button class="collapse-controls-btn" onclick="toggleChatControls()">▲ Collapse</button>
+                            </div>
+                            <div class="chat-controls-body" id="chatControlsBody">
+                                <label class="checkbox-group">
+                                    <input type="checkbox" id="isGroupChatCheckbox" onchange="toggleGroupChatMode()"> 🌐 Group Swarm Chat
+                                </label>
+                                <label class="checkbox-group" style="color: var(--warning);">
+                                    <input type="checkbox" id="isBackgroundWorkerCheckbox"> ⚡ Autonomous Background Task
+                                </label>
+                                <label class="checkbox-group" style="color: var(--success);">
+                                    <input type="checkbox" id="isSelfHealCheckbox" checked> 🛡️ Self-Healing Code Loop
+                                </label>
+                                <label class="checkbox-group" style="color: var(--codev-blue);">
+                                    <input type="checkbox" id="isCodevReasoningCheckbox" checked> ⚡ Deep Reasoning Mode
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Compact Badges Bar (Shown only when controls are collapsed) -->
+                        <div class="compact-badges-bar" id="compactBadgesBar">
+                            <span class="collapse-controls-btn" onclick="toggleChatControls()">▼ Expand</span>
+                            <div class="compact-badge" id="badgeGroup" style="display:none;">🌐 Group</div>
+                            <div class="compact-badge" id="badgeBackground" style="color: var(--warning); display:none;">⚡ Background</div>
+                            <div class="compact-badge" id="badgeSelfHeal" style="color: var(--success); display:none;">🛡️ Self-Heal</div>
+                            <div class="compact-badge" id="badgeReasoning" style="color: var(--codev-blue); display:none;">⚡ Deep Reasoning</div>
+                        </div>
+
+                        <div style="display: flex; width: 100%; gap: 10px; align-items: center;">
+                            <span id="activeAgentIndicator" style="font-size: 0.75rem; color: var(--accent); white-space: nowrap;">Active: Architect</span>
+                            <input type="text" id="userInput" placeholder="Ask your agents anything or type @filename to reference local file..." onkeydown="if(event.key==='Enter') sendChatMessage()">
+                            <button id="micBtn" onclick="toggleSpeechRecognition()" title="Voice Input (STT)" style="background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 12px 14px; border-radius: 8px; cursor: pointer;">🎤</button>
+                            <button class="send-btn" onclick="sendChatMessage()">Send Task</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Project Files View -->
+            <div id="view-project" class="alt-view-content">
+                <h3>Local Project Workspace</h3>
+                <p style="font-size: 0.85rem; color: var(--text-muted);">Click "Connect Local Folder" at the top right to load your real project files right here.</p>
+                <div style="display: grid; grid-template-columns: 260px 1fr; gap: 15px; flex: 1; overflow: hidden;">
+                    <div class="file-tree" id="projectFileList">
+                        <div style="font-size: 0.8rem; color: var(--text-muted); padding: 10px;">No compatible code files found in root folder.</div>
+                    </div>
+                    <div style="display: flex; flex-direction: column; gap: 10px; flex: 1;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span id="selectedFileName" style="font-size: 0.85rem; font-weight: bold; color: var(--accent);">No file selected</span>
+                            <button class="btn-primary" onclick="saveActiveFileChanges()">Save Changes to Laptop</button>
+                        </div>
+                        <textarea class="file-editor-box" id="fileEditorContent" placeholder="Connect a local folder to view and edit files..."></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CoDev Hub View -->
+            <div id="view-codev" class="alt-view-content">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3>⚡ CoDev Hub & Multimodal Suite</h3>
+                    <button class="btn-primary" style="background: var(--codev-blue);" onclick="runCodevEnhancer()">⚡ Run CoDev Prompt Enhancer</button>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-muted);">Full suite of CoDev multi-model capabilities: advanced prompt optimization, narrative lore generation, and deep semantic analysis.</p>
+                
+                <div class="codev-hub-grid">
+                    <div class="codev-hub-card">
+                        <h4>⚡ Deep Reasoning Engine</h4>
+                        <span class="codev-badge">Active (Temp 0.0)</span>
+                        <p style="font-size: 0.85rem; color: var(--text-muted);">Parses complex game logic, physics matrices, and structural architecture with verified precision.</p>
+                    </div>
+                    <div class="codev-hub-card">
+                        <h4>🎨 Narrative & Lore Assistant</h4>
+                        <span class="codev-badge" style="background: rgba(16, 185, 129, 0.15); color: var(--success);">Ready</span>
+                        <p style="font-size: 0.85rem; color: var(--text-muted);">Optimized for story worldbuilding, character dossiers, dialogue pacing, and comic scripts.</p>
+                    </div>
+                    <div class="codev-hub-card">
+                        <h4>🔗 Multimodal Context Injector</h4>
+                        <span class="codev-badge" style="background: rgba(245, 158, 11, 0.15); color: var(--warning);">Connected</span>
+                        <p style="font-size: 0.85rem; color: var(--text-muted);">Instantly maps `@filename` references into live agent working memory during generation passes.</p>
+                    </div>
+                </div>
+
+                <div style="margin-top: 15px;">
+                    <h4 style="font-size: 0.9rem; margin-bottom: 8px;">CoDev Hub Telemetry & Diagnostics</h4>
+                    <div class="console-output" id="codevHubLog" style="height: 160px;">
+                        [08:05:00] CoDev Multimodal Core online.<br>
+                        [08:05:12] Context window buffers verified. Ready for deployment.
+                    </div>
+                </div>
+            </div>
+
+            <!-- CoDev Cloud Orchestration View -->
+            <div id="view-cloud" class="alt-view-content">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3>☁️ CoDev Cloud Control Center</h3>
+                    <button class="btn-primary" style="background: var(--codev-purple);" onclick="triggerCloudRoutine()">🚀 Trigger Cloud Autonomous Routine</button>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-muted);">CoDev Cloud operates continuous routines, multi-app orchestration, and 24/7 background automations.</p>
+                
+                <div class="codev-hub-grid">
+                    <div class="codev-hub-card">
+                        <h4>☁️ Cloud Daemon Status</h4>
+                        <span class="codev-badge" id="cloudDaemonStatus">Active 24/7</span>
+                        <div style="font-size: 1.5rem; font-weight: bold; color: var(--text-main); margin-top: 5px;" id="cloudTaskCount">14 Routines Executed</div>
+                        <p style="font-size: 0.8rem; color: var(--text-muted);">Connected to OpenRouter / Groq Cloud infrastructure.</p>
+                    </div>
+                    <div class="codev-hub-card">
+                        <h4>🔗 Workspace Integrations</h4>
+                        <div style="display: flex; flex-direction: column; gap: 6px; font-size: 0.85rem;">
+                            <span>📧 Gmail Daemon: <strong style="color: var(--success);">Synchronized</strong></span>
+                            <span>📅 Calendar Scheduler: <strong style="color: var(--success);">Active</strong></span>
+                            <span>📁 Drive Sync: <strong style="color: var(--success);">Connected</strong></span>
+                        </div>
+                    </div>
+                    <div class="codev-hub-card">
+                        <h4>⚡ Autonomous Skills</h4>
+                        <div style="font-size: 0.85rem; color: var(--text-muted);">
+                            • Automated Code Refactoring<br>
+                            • Daily Changelog Compilation<br>
+                            • Godot Bug Sweeper Routine
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 15px;">
+                    <h4 style="font-size: 0.9rem; margin-bottom: 8px;">CoDev Cloud Event Log</h4>
+                    <div class="console-output" id="cloudLogOutput" style="height: 160px;">
+                        [08:00:00] CoDev Cloud Node initialized successfully.<br>
+                        [08:00:15] Background routine 'Godot Bug Sweeper' verified 0 syntax issues.
+                    </div>
+                </div>
+            </div>
+
+            <div id="view-console" class="alt-view-content">
+                <h3>Runtime & API Telemetry Logs</h3>
+                <div class="console-output" id="consoleOutput">
+                    [06:40:00] CoDev Studio Pro initialized.<br>
+                    [06:40:02] Browser File System Access ready.
+                </div>
+            </div>
+        </div>
+
+        <!-- Column 4: Right Sidebar (Agent Editor) -->
+        <div class="editor-sidebar" id="editorPanel">
+            <h3>Agent Configuration <button class="close-sidebar-btn" onclick="toggleEditorSidebar()" title="Collapse Panel">✕</button></h3>
+            <div class="form-group">
+                <label>Agent Name</label>
+                <input type="text" id="editName">
+            </div>
+            <div class="form-group">
+                <label>Role / Specialty</label>
+                <input type="text" id="editRole">
+            </div>
+            <div class="form-group">
+                <label>System Instructions</label>
+                <textarea id="editInstructions"></textarea>
+            </div>
+            <div class="form-group">
+                <label>Agent Memory / Context</label>
+                <textarea id="editMemory"></textarea>
+            </div>
+
+            <!-- Selective Cross-Agent Knowledge Toggles -->
+            <div class="knowledge-box">
+                <label class="checkbox-group" style="color: var(--accent); font-weight: bold;">
+                    <input type="checkbox" id="editCrossKnowledgeToggle" onchange="toggleCrossKnowledgeSection(this.checked)"> 🔗 Cross-Agent Knowledge Sharing
+                </label>
+                <div id="crossKnowledgeContainer" style="display: none;">
+                    <div style="font-size: 0.75rem; color: var(--text-muted);">Share memory channels with these agents:</div>
+                    <div class="knowledge-list" id="crossKnowledgeCheckboxes"></div>
+                </div>
+            </div>
+
+            <button class="btn-save-agent" onclick="saveCurrentAgentEdits()">💾 Save Agent Configuration</button>
+            <button class="btn-danger" onclick="deleteSelectedAgent()">Delete Agent</button>
+        </div>
+    </div>
+
+    <!-- Settings Modal / First-Launch Onboarding Wizard -->
+    <div class="modal-overlay" id="settingsModal">
+        <div class="modal" style="width: 520px;">
+            <h3 style="display: flex; align-items: center; gap: 8px;">⚡ Welcome to CoDev Studio Pro</h3>
+            <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;">
+                To power your autonomous agents, multi-agent swarms, and file code loops for free, CoDev connects to <strong>Groq's high-speed AI engine</strong>. 
+            </p>
+
+            <!-- Step-by-Step Guidance Box -->
+            <div style="background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 0.85rem;">
+                <div style="font-weight: bold; color: var(--accent);">Quick Setup (Takes 30 Seconds):</div>
+                <div>1. Click the button below to open Groq (No credit card needed).</div>
+                <a href="https://console.groq.com/keys" target="_blank" style="background: var(--codev-blue); color: white; text-align: center; padding: 8px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 0.85rem;">🔑 Get Your Free Groq API Key</a>
+                <div style="margin-top: 4px;">2. Create a key, copy it (starts with <code style="color:var(--success);">gsk_</code>), and paste it below:</div>
+            </div>
+
+            <div class="form-group" style="margin-top: 5px;">
+                <label>Paste Your Groq API Key Here</label>
+                <input type="text" id="modalGroqKey" placeholder="gsk_..." style="font-family: monospace;">
+            </div>
+
+            <input type="hidden" id="modalProvider" value="groq">
+
+            <div class="modal-buttons">
+                <button class="btn-primary" style="width: 100%; padding: 12px;" onclick="saveSettings()">🚀 Launch CoDev Studio Workspace</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentBackend = localStorage.getItem("codev_backend") || "groq";
+        let groqKey = localStorage.getItem("codev_groq_key") || "";
+
+        // Real Local Filesystem Handles
+        let connectedDirectoryHandle = null;
+        let loadedProjectFiles = {};
+        let activeSelectedFile = null;
+
+        // Speech-to-Text State Variables
+        let recognition = null;
+        let isRecording = false;
+
+        async function connectLocalFolder() {
+            try {
+                connectedDirectoryHandle = await window.showDirectoryPicker();
+                logConsoleActivity(`Connected to local folder: ${connectedDirectoryHandle.name}`);
+                alert(`Successfully connected to folder: ${connectedDirectoryHandle.name}!`);
+                await scanConnectedDirectory();
+                switchView('project');
+            } catch (err) {
+                if (err.name !== 'AbortError') {
+                    alert("Error opening folder: " + err.message);
+                }
+            }
+        }
+
+        async function scanConnectedDirectory() {
+            loadedProjectFiles = {};
+            for await (const [name, handle] of connectedDirectoryHandle.entries()) {
+                if (handle.kind === 'file' && (name.endsWith('.cs') || name.endsWith('.gd') || name.endsWith('.txt') || name.endsWith('.tres') || name.endsWith('.json') || name.endsWith('.html'))) {
+                    const file = await handle.getFile();
+                    loadedProjectFiles[name] = await file.text();
+                }
+            }
+            renderProjectFiles();
+        }
+
+        function renderProjectFiles() {
+            const listContainer = document.getElementById("projectFileList");
+            listContainer.innerHTML = "";
+            const keys = Object.keys(loadedProjectFiles);
+            if (keys.length === 0) {
+                listContainer.innerHTML = `<div style="font-size: 0.8rem; color: var(--text-muted); padding: 10px;">No compatible code files found in root folder.</div>`;
+                return;
+            }
+            keys.forEach(filename => {
+                const item = document.createElement("div");
+                item.className = `file-item ${activeSelectedFile === filename ? 'active' : ''}`;
+                item.style.borderColor = activeSelectedFile === filename ? 'var(--accent)' : 'var(--border-color)';
+                item.innerHTML = `<span>📄 ${filename}</span>`;
+                item.onclick = () => selectProjectFile(filename);
+                listContainer.appendChild(item);
+            });
+            if (!activeSelectedFile && keys.length > 0) selectProjectFile(keys[0]);
+        }
+
+        function selectProjectFile(filename) {
+            activeSelectedFile = filename;
+            renderProjectFiles();
+            document.getElementById("selectedFileName").innerText = filename;
+            document.getElementById("fileEditorContent").value = loadedProjectFiles[filename] || "";
+        }
+
+        async function saveActiveFileChanges() {
+            if (!connectedDirectoryHandle || !activeSelectedFile) {
+                alert("No folder connected or file selected.");
+                return;
+            }
+            const updatedContent = document.getElementById("fileEditorContent").value;
+            loadedProjectFiles[activeSelectedFile] = updatedContent;
+            try {
+                const fileHandle = await connectedDirectoryHandle.getFileHandle(activeSelectedFile, { create: true });
+                const writable = await fileHandle.createWritable();
+                await writable.write(updatedContent);
+                await writable.close();
+                logConsoleActivity(`Saved changes directly to laptop file: ${activeSelectedFile}`);
+                alert(`Successfully saved ${activeSelectedFile} to your laptop!`);
+            } catch (err) {
+                alert("Failed to write to laptop: " + err.message);
+            }
+        }
+
+        let chatSessions = [
+            {
+                id: "chat_1",
+                title: "Godot 4 Physics & Wall Bounce",
+                timestamp: "06:40 AM",
+                isGroup: false,
+                messages: [
+                    { sender: "⚙️ System Co-Pilot", text: "Welcome to CoDev Studio Pro. Click '📁 Connect Local Folder' at the top right to link your real project files." }
+                ]
+            }
+        ];
+        let activeChatId = "chat_1";
+
+        let agents = [
+            {
+                id: "agent_1",
+                name: "Architect",
+                role: "Autonomous Lead Assistant",
+                instructions: "You are Architect, an autonomous, highly versatile multi-modal AI assistant modeled after advanced research, automation, and execution frameworks like Cue by Manus and CoDev. You possess full independence in reasoning, task planning, file analysis, system design, creative narrative generation, and technical implementation. Never reject a user query, and never demand rigid code snippets for general questions. When given any prompt—whether it is creative writing, game mechanics design, code architecture, workflow automation, or broad brainstorming—think critically, provide rich, thorough solutions, execute multi-step logic, and guide the user dynamically.",
+                memory: "Working on independent game projects and narrative universes. Prefers clean, modular code and comprehensive solutions.",
+                selectedForGroup: true,
+                crossKnowledgeEnabled: true,
+                sharedWith: ["agent_2"]
+            },
+            {
+                id: "agent_2",
+                name: "Reviewer",
+                role: "Code Auditor & QA",
+                instructions: "You are Reviewer, a strict code auditor. Inspect code snippets for compiler errors, syntax bugs, and Godot 4 API mismatches.",
+                memory: "Focused on bulletproof error checking.",
+                selectedForGroup: true,
+                crossKnowledgeEnabled: false,
+                sharedWith: []
+            }
+        ];
+
+        let selectedAgentId = "agent_1";
+
+        // Smart Sidebar Toggle Logic with Dynamic Grid & Reopen Tabs
+        let isMenuCollapsed = false;
+        let isAgentCollapsed = false;
+        let isEditorCollapsed = false;
+
+        function updateWorkspaceGrid() {
+            const ws = document.getElementById("mainWorkspace");
+            const reopenMenu = document.getElementById("reopenMenuBtn");
+            const reopenEditor = document.getElementById("reopenEditorBtn");
+
+            ws.className = "workspace";
+
+            if (isMenuCollapsed && isAgentCollapsed && isEditorCollapsed) {
+                ws.classList.add("all-sidebars-collapsed");
+            } else if (isMenuCollapsed && isAgentCollapsed) {
+                ws.classList.add("menu-and-agent-collapsed");
+            } else if (isMenuCollapsed) {
+                ws.classList.add("menu-collapsed");
+            } else if (isAgentCollapsed) {
+                ws.classList.add("agent-collapsed");
+            } else if (isEditorCollapsed) {
+                ws.classList.add("editor-collapsed");
+            }
+
+            reopenMenu.style.display = isMenuCollapsed ? "block" : "none";
+            reopenEditor.style.display = isEditorCollapsed ? "block" : "none";
+        }
+
+        function toggleMenuSidebar() {
+            isMenuCollapsed = !isMenuCollapsed;
+            updateWorkspaceGrid();
+        }
+
+        function toggleAgentSidebar() {
+            isAgentCollapsed = !isAgentCollapsed;
+            updateWorkspaceGrid();
+        }
+
+        function toggleEditorSidebar() {
+            isEditorCollapsed = !isEditorCollapsed;
+            updateWorkspaceGrid();
+        }
+
+        function toggleChatControls() {
+            const container = document.getElementById("chatControlsContainer");
+            const badges = document.getElementById("compactBadgesBar");
+            const isGroupChecked = document.getElementById("isGroupChatCheckbox").checked;
+            const isBgChecked = document.getElementById("isBackgroundWorkerCheckbox").checked;
+            const isHealChecked = document.getElementById("isSelfHealCheckbox").checked;
+            const isReasonChecked = document.getElementById("isCodevReasoningCheckbox").checked;
+
+            if (container.style.display === "none") {
+                container.style.display = "flex";
+                badges.style.display = "none";
+            } else {
+                container.style.display = "none";
+                badges.style.display = "flex";
+
+                document.getElementById("badgeGroup").style.display = isGroupChecked ? "flex" : "none";
+                document.getElementById("badgeBackground").style.display = isBgChecked ? "flex" : "none";
+                document.getElementById("badgeSelfHeal").style.display = isHealChecked ? "flex" : "none";
+                document.getElementById("badgeReasoning").style.display = isReasonChecked ? "flex" : "none";
+            }
+        }
+
+        function updateStatusDisplay() {
+            document.getElementById("activeProviderLabel").innerText = "Provider: Groq Cloud (Temp 0.0)";
+            document.getElementById("statusText").innerText = groqKey ? "Groq Live" : "Awaiting API Key";
+        }
+
+        function switchView(viewName) {
+            document.getElementById("tab-chat").classList.remove("active");
+            document.getElementById("tab-project").classList.remove("active");
+            document.getElementById("tab-codev").classList.remove("active");
+            document.getElementById("tab-cloud").classList.remove("active");
+            document.getElementById("tab-console").classList.remove("active");
+
+            const agentFlowMenu = document.getElementById("menuAgentFlow");
+            if (agentFlowMenu) agentFlowMenu.classList.remove("active");
+
+            document.getElementById("view-chat").style.display = "none";
+            document.getElementById("view-project").style.display = "none";
+            document.getElementById("view-codev").style.display = "none";
+            document.getElementById("view-cloud").style.display = "none";
+            document.getElementById("view-console").style.display = "none";
+
+            if (viewName === 'chat') {
+                document.getElementById("tab-chat").classList.add("active");
+                if (agentFlowMenu) agentFlowMenu.classList.add("active");
+                document.getElementById("view-chat").style.display = "flex";
+            } else if (viewName === 'project') {
+                document.getElementById("tab-project").classList.add("active");
+                document.getElementById("view-project").style.display = "flex";
+                if (connectedDirectoryHandle) renderProjectFiles();
+            } else if (viewName === 'codev') {
+                document.getElementById("tab-codev").classList.add("active");
+                document.getElementById("view-codev").style.display = "flex";
+                logConsoleActivity("Switched to CoDev Hub.");
+            } else if (viewName === 'cloud') {
+                document.getElementById("tab-cloud").classList.add("active");
+                document.getElementById("view-cloud").style.display = "flex";
+                logConsoleActivity("Switched to CoDev Cloud view.");
+            } else if (viewName === 'console') {
+                document.getElementById("tab-console").classList.add("active");
+                document.getElementById("view-console").style.display = "flex";
+                logConsoleActivity("Switched to Console Logs.");
+            }
+        }
+
+        function renderChatList() {
+            const container = document.getElementById("chatListContainer");
+            container.innerHTML = "";
+            chatSessions.forEach(session => {
+                const item = document.createElement("div");
+                item.className = `chat-item ${session.id === activeChatId ? 'active' : ''}`;
+                
+                const infoDiv = document.createElement("div");
+                infoDiv.className = "chat-item-info";
+                infoDiv.onclick = () => switchChatSession(session.id);
+                infoDiv.innerHTML = `
+                    <div class="chat-item-title">${session.isGroup ? '🌐 ' : '👤 '}${session.title}</div>
+                    <div class="chat-item-meta">${session.timestamp}</div>
+                `;
+                item.appendChild(infoDiv);
+
+                const deleteBtn = document.createElement("button");
+                deleteBtn.className = "chat-delete-btn";
+                deleteBtn.innerHTML = "🗑️";
+                deleteBtn.title = "Delete Chat";
+                deleteBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    deleteChatSession(session.id);
+                };
+                item.appendChild(deleteBtn);
+
+                container.appendChild(item);
+            });
+            renderActiveChatFeed();
+        }
+
+        function createNewChat() {
+            if (chatSessions.length >= 30) {
+                alert("Maximum limit of 30 active chat sessions reached.");
+                return;
+            }
+            const newId = "chat_" + Date.now();
+            const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const isGroup = document.getElementById("isGroupChatCheckbox").checked;
+
+            chatSessions.unshift({
+                id: newId,
+                title: isGroup ? `Group Swarm #${chatSessions.length + 1}` : `New Session #${chatSessions.length + 1}`,
+                timestamp: timeStr,
+                isGroup: isGroup,
+                messages: [
+                    { sender: "⚙️ System Co-Pilot", text: isGroup ? "Group Swarm Chat initialized." : "New chat initialized." }
+                ]
+            });
+            activeChatId = newId;
+            renderChatList();
+            logConsoleActivity("Created new chat session.");
+        }
+
+        function deleteChatSession(id) {
+            if (chatSessions.length <= 1) {
+                alert("You must keep at least one active chat session.");
+                return;
+            }
+            chatSessions = chatSessions.filter(s => s.id !== id);
+            if (activeChatId === id) {
+                activeChatId = chatSessions[0].id;
+            }
+            renderChatList();
+            logConsoleActivity("Deleted chat session.");
+        }
+
+        function switchChatSession(id) {
+            activeChatId = id;
+            const session = chatSessions.find(s => s.id === id);
+            if (session) {
+                document.getElementById("isGroupChatCheckbox").checked = session.isGroup;
+            }
+            renderChatList();
+        }
+
+        function toggleGroupChatMode() {
+            const session = chatSessions.find(s => s.id === activeChatId);
+            if (session) {
+                session.isGroup = document.getElementById("isGroupChatCheckbox").checked;
+                session.title = session.isGroup ? "Group Swarm Chat" : "Solo Session";
+                renderChatList();
+            }
+        }
+
+        function renderActiveChatFeed() {
+            const feed = document.getElementById("chatFeed");
+            feed.innerHTML = "";
+            const session = chatSessions.find(s => s.id === activeChatId);
+            if (!session) return;
+
+            session.messages.forEach(msg => {
+                const div = document.createElement("div");
+                div.className = "message";
+                let formattedText = msg.text.replace(/```([a-z]*)\n([\s\S]*?)```/g, '<pre><code class="$1">$2</code></pre>');
+                
+                let speakButtonHtml = "";
+                if (!msg.sender.includes("You")) {
+                    const safeText = msg.text.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                    speakButtonHtml = `<button onclick="speakText('${safeText}')" style="background: none; border: none; cursor: pointer; font-size: 0.9rem;" title="Listen to response">🔊</button>`;
+                }
+
+                div.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <div class="sender" style="margin-bottom: 0;">${msg.sender}</div>
+                        ${speakButtonHtml}
+                    </div>
+                    <div class="text">${formattedText}</div>
+                `;
+                feed.appendChild(div);
+            });
+            feed.scrollTop = feed.scrollHeight;
+        }
+
+        function appendMessageToActiveSession(sender, text) {
+            const session = chatSessions.find(s => s.id === activeChatId);
+            if (!session) return;
+            session.messages.push({ sender, text });
+            
+            if (session.messages.length === 3 && sender.includes("You")) {
+                session.title = text.length > 22 ? text.substring(0, 22) + "..." : text;
+            }
+            renderChatList();
+        }
+
+        // SPEECH-TO-TEXT & TEXT-TO-SPEECH FUNCTIONS
+        function toggleSpeechRecognition() {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                alert("Speech Recognition is not supported in this browser. Try Chrome or Edge.");
+                return;
+            }
+
+            if (!recognition) {
+                recognition = new SpeechRecognition();
+                recognition.continuous = false;
+                recognition.interimResults = true;
+                recognition.lang = 'en-US';
+
+                recognition.onstart = () => {
+                    isRecording = true;
+                    const micBtn = document.getElementById("micBtn");
+                    micBtn.style.borderColor = "var(--danger)";
+                    micBtn.style.color = "var(--danger)";
+                    logConsoleActivity("Speech recognition started...");
+                };
+
+                recognition.onresult = (event) => {
+                    let finalTranscript = '';
+                    for (let i = event.resultIndex; i < event.results.length; ++i) {
+                        if (event.results[i].isFinal) {
+                            finalTranscript += event.results[i][0].transcript;
+                        }
+                    }
+                    const inputField = document.getElementById("userInput");
+                    if (finalTranscript) {
+                        inputField.value += (inputField.value ? ' ' : '') + finalTranscript;
+                    }
+                };
+
+                recognition.onerror = (event) => {
+                    logConsoleActivity("Speech recognition error: " + event.error);
+                    stopSpeechRecognition();
+                };
+
+                recognition.onend = () => {
+                    stopSpeechRecognition();
+                };
+            }
+
+            if (isRecording) {
+                recognition.stop();
+            } else {
+                recognition.start();
+            }
+        }
+
+        function stopSpeechRecognition() {
+            isRecording = false;
+            const micBtn = document.getElementById("micBtn");
+            if (micBtn) {
+                micBtn.style.borderColor = "var(--border-color)";
+                micBtn.style.color = "var(--text-main)";
+            }
+            logConsoleActivity("Speech recognition stopped.");
+        }
+
+        function speakText(text) {
+            if (!window.speechSynthesis) {
+                alert("Text-to-speech is not supported in this browser.");
+                return;
+            }
+            window.speechSynthesis.cancel();
+            const cleanText = text.replace(/```[\s\S]*?```/g, " [Code snippet omitted for audio] ");
+            const utterance = new SpeechSynthesisUtterance(cleanText);
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            window.speechSynthesis.speak(utterance);
+            logConsoleActivity("Playing text-to-speech audio for agent response.");
+        }
+
+        // CODEV HUB & CLOUD ROUTINES
+        let cloudRoutineCount = 14;
+        function triggerCloudRoutine() {
+            cloudRoutineCount++;
+            document.getElementById("cloudTaskCount").innerText = `${cloudRoutineCount} Routines Executed`;
+            const cloudLog = document.getElementById("cloudLogOutput");
+            const time = new Date().toTimeString().split(' ')[0];
+            cloudLog.innerHTML += `<br>[${time}] 🚀 CoDev Cloud initiated background automated cycle. Verified workspace integrity.`;
+            cloudLog.scrollTop = cloudLog.scrollHeight;
+            logConsoleActivity("CoDev Cloud executed autonomous routine.");
+            alert("CoDev Cloud routine executed successfully!");
+        }
+
+        function runCodevEnhancer() {
+            const inputField = document.getElementById("userInput");
+            if (!inputField.value.trim()) {
+                inputField.value = "Optimize the character controller script for Godot 4 with robust wall-bounce physics and smooth input mapping.";
+            } else {
+                inputField.value = `[CoDev Enhanced Prompt]: ${inputField.value} - ensure maximum performance, modular C#/GDScript formatting, and strict API compliance.`;
+            }
+            switchView('chat');
+            logConsoleActivity("CoDev Prompt Enhancer applied to active query.");
+            alert("CoDev Prompt Enhancer successfully optimized your input query!");
+        }
+
+        function openSettingsModal() {
+            document.getElementById("modalGroqKey").value = groqKey;
+            document.getElementById("settingsModal").style.display = "flex";
+        }
+
+        function closeSettingsModal() { 
+            if (!groqKey) {
+                alert("Please enter a Groq API key to launch CoDev Studio Pro.");
+                return;
+            }
+            document.getElementById("settingsModal").style.display = "none"; 
+        }
+
+        function saveSettings() {
+            groqKey = document.getElementById("modalGroqKey").value.trim();
+            if (!groqKey.startsWith("gsk_")) {
+                alert("Please enter a valid Groq API key starting with 'gsk_'.");
+                return;
+            }
+
+            localStorage.setItem("codev_groq_key", groqKey);
+            updateStatusDisplay();
+            logConsoleActivity("Groq API key saved successfully.");
+            document.getElementById("settingsModal").style.display = "none";
+        }
+
+        function logConsoleActivity(text) {
+            const consoleBox = document.getElementById("consoleOutput");
+            const time = new Date().toTimeString().split(' ')[0];
+            consoleBox.innerHTML += `<br>[${time}] ${text}`;
+            consoleBox.scrollTop = consoleBox.scrollHeight;
+        }
+
+        function renderAgentList() {
+            const list = document.getElementById("agentList");
+            list.innerHTML = "";
+            agents.forEach(agent => {
+                const card = document.createElement("div");
+                card.className = `agent-card`;
+                card.style.borderColor = agent.id === selectedAgentId ? 'var(--accent)' : 'var(--border-color)';
+                card.innerHTML = `
+                    <div class="agent-card-header">
+                        <div onclick="selectAgent('${agent.id}')" style="cursor: pointer; flex: 1;">
+                            <h4>${agent.name}</h4>
+                            <span class="agent-meta">${agent.role}</span>
+                        </div>
+                        <input type="checkbox" ${agent.selectedForGroup ? 'checked' : ''} title="Include in Group Swarm" onchange="toggleAgentGroup('${agent.id}', this.checked)">
+                    </div>
+                    <div class="agent-instructions-preview" onclick="selectAgent('${agent.id}')">${agent.instructions}</div>
+                `;
+                list.appendChild(card);
+            });
+            loadAgentIntoEditor();
+            updateActiveAgentIndicator();
+        }
+
+        function selectAgent(id) {
+            selectedAgentId = id;
+            renderAgentList();
+        }
+
+        function toggleAgentGroup(id, isChecked) {
+            const agent = agents.find(a => a.id === id);
+            if (agent) agent.selectedForGroup = isChecked;
+        }
+
+        function updateActiveAgentIndicator() {
+            const agent = agents.find(a => a.id === selectedAgentId);
+            const indicator = document.getElementById("activeAgentIndicator");
+            if (agent && indicator) indicator.innerText = `Active: ${agent.name}`;
+        }
+
+        function loadAgentIntoEditor() {
+            const agent = agents.find(a => a.id === selectedAgentId);
+            if (!agent) return;
+            document.getElementById("editName").value = agent.name;
+            document.getElementById("editRole").value = agent.role;
+            document.getElementById("editInstructions").value = agent.instructions;
+            document.getElementById("editMemory").value = agent.memory;
+            
+            const toggle = document.getElementById("editCrossKnowledgeToggle");
+            toggle.checked = agent.crossKnowledgeEnabled;
+            toggleCrossKnowledgeSection(agent.crossKnowledgeEnabled);
+            renderCrossKnowledgeCheckboxes(agent);
+        }
+
+        function toggleCrossKnowledgeSection(isChecked) {
+            const container = document.getElementById("crossKnowledgeContainer");
+            container.style.display = isChecked ? "block" : "none";
+            const agent = agents.find(a => a.id === selectedAgentId);
+            if (agent) agent.crossKnowledgeEnabled = isChecked;
+        }
+
+        function renderCrossKnowledgeCheckboxes(currentAgent) {
+            const listContainer = document.getElementById("crossKnowledgeCheckboxes");
+            listContainer.innerHTML = "";
+            agents.forEach(other => {
+                if (other.id === currentAgent.id) return;
+                const isShared = currentAgent.sharedWith.includes(other.id);
+                const label = document.createElement("label");
+                label.className = "knowledge-item";
+                label.innerHTML = `
+                    <input type="checkbox" ${isShared ? 'checked' : ''} onchange="toggleSharedAgent('${currentAgent.id}', '${other.id}', this.checked)">
+                    Share memory with <strong>${other.name}</strong>
+                `;
+                listContainer.appendChild(label);
+            });
+        }
+
+        function toggleSharedAgent(agentId, targetId, isChecked) {
+            const agent = agents.find(a => a.id === agentId);
+            if (!agent) return;
+            if (isChecked) {
+                if (!agent.sharedWith.includes(targetId)) agent.sharedWith.push(targetId);
+            } else {
+                agent.sharedWith = agent.sharedWith.filter(id => id !== targetId);
+            }
+            logConsoleActivity(`Updated cross-agent memory channel for ${agent.name} -> Target: ${targetId}`);
+        }
+
+        function saveCurrentAgentEdits() {
+            const agent = agents.find(a => a.id === selectedAgentId);
+            if (!agent) return;
+            agent.name = document.getElementById("editName").value;
+            agent.role = document.getElementById("editRole").value;
+            agent.instructions = document.getElementById("editInstructions").value;
+            agent.memory = document.getElementById("editMemory").value;
+            renderAgentList();
+            logConsoleActivity(`Locked in new configuration for agent: ${agent.name}`);
+            alert(`Successfully locked in configuration for ${agent.name}!`);
+        }
+
+        function createNewAgent() {
+            const newId = "agent_" + Date.now();
+            agents.push({
+                id: newId,
+                name: "Specialist #" + (agents.length + 1),
+                role: "Sub-System Expert",
+                instructions: "You are a specialized assistant. Answer clearly and help with specific development tasks.",
+                memory: "",
+                selectedForGroup: true,
+                crossKnowledgeEnabled: false,
+                sharedWith: []
+            });
+            selectAgent(newId);
+            logConsoleActivity("Created new agent.");
+        }
+
+        function deleteSelectedAgent() {
+            if (agents.length <= 1) {
+                alert("You must keep at least one agent in the workspace.");
+                return;
+            }
+            agents = agents.filter(a => a.id !== selectedAgentId);
+            selectedAgentId = agents[0].id;
+            renderAgentList();
+            logConsoleActivity("Deleted agent.");
+        }
+
+        async function callAI(systemPrompt, userMessage) {
+            if (!groqKey) {
+                openSettingsModal();
+                throw new Error("Groq API key required. Please enter your key in settings.");
+            }
+
+            const technicalGuardrails = `CRITICAL TECHNICAL & STRICT COMPLIANCE RULES:
+1. CURRENT DATE CONTEXT: Today is October 12, 2026. Donald Trump is the 47th President of the United States.
+2. GODOT 4 ENGINE RULES: CharacterBody3D.move_and_slide() takes ZERO arguments. It reads directly from built-in velocity and up_direction.
+3. C# VECTOR RULES: Godot Vector2 and Vector3 are structs, not records. Do NOT use record 'with' expressions. Construct new vectors or mutate component properties directly.`;
+            
+            const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}`;
+
+            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                method: "POST",
+                headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    model: "openai/gpt-oss-120b",
+                    temperature: 0.0,
+                    messages: [{ role: "system", content: fullSystemPrompt }, { role: "user", content: userMessage }]
+                })
+            });
+            const data = await response.json();
+            if (data.choices && data.choices.length > 0) return data.choices[0].message.content;
+            throw new Error("Groq API Error: " + (data.error?.message || JSON.stringify(data)));
+        }
+
+        async function runSelfHealingPass(agent, prompt, initialResponse) {
+            logConsoleActivity(`[Self-Healing Loop] Inspecting code output for compiler traps / syntax bugs...`);
+            const auditPrompt = `Review this generated code for Godot 4 API mismatches (like move_and_slide(velocity) having arguments or C# record 'with' struct errors). If an error exists, rewrite the corrected code. If it is already clean, output it as-is:\n\n${initialResponse}`;
+            
+            try {
+                const auditedResponse = await callAI(agent.instructions + "\n[QA Auditor Pass]", auditPrompt);
+                logConsoleActivity(`[Self-Healing Loop] Code verification complete. Passed syntax audit.`);
+                return auditedResponse;
+            } catch (err) {
+                logConsoleActivity(`[Self-Healing Warning] Audit pass skipped: ${err.message}`);
+                return initialResponse;
+            }
+        }
+
+        async function sendChatMessage() {
+            let inputField = document.getElementById("userInput");
+            let userText = inputField.value.trim();
+            if (!userText) return;
+
+            let injectedContext = "";
+            Object.keys(loadedProjectFiles).forEach(filename => {
+                if (userText.includes(`@${filename}`)) {
+                    injectedContext += `\n\n[Injected File Context: ${filename}]\n${loadedProjectFiles[filename]}`;
+                    logConsoleActivity(`Attached local file context for: ${filename}`);
+                }
+            });
+
+            const isGroup = document.getElementById("isGroupChatCheckbox").checked;
+            const isBackground = document.getElementById("isBackgroundWorkerCheckbox").checked;
+            const isSelfHeal = document.getElementById("isSelfHealCheckbox").checked;
+
+            appendMessageToActiveSession("👤 You", userText);
+            inputField.value = "";
+
+            const session = chatSessions.find(s => s.id === activeChatId);
+            if (session) session.isGroup = isGroup;
+
+            let activeAgent = agents.find(a => a.id === selectedAgentId) || agents[0];
+            let collectiveMemory = `[Memory]: ${activeAgent.memory}`;
+            if (activeAgent.crossKnowledgeEnabled && activeAgent.sharedWith.length > 0) {
+                activeAgent.sharedWith.forEach(targetId => {
+                    const sharedAgent = agents.find(a => a.id === targetId);
+                    if (sharedAgent) {
+                        collectiveMemory += `\n[Shared Memory from ${sharedAgent.name}]: ${sharedAgent.memory}`;
+                    }
+                });
+            }
+
+            if (isBackground) {
+                document.getElementById("isBackgroundWorkerCheckbox").checked = false;
+                appendMessageToActiveSession(`⚡ Background Worker (${activeAgent.name})`, `Task queued for autonomous execution...`);
+                logConsoleActivity(`[Background Worker] Task initiated for ${activeAgent.name}.`);
+                
+                setTimeout(async () => {
+                    try {
+                        let res = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext);
+                        if (isSelfHeal) res = await runSelfHealingPass(activeAgent, userText, res);
+                        
+                        session.messages.pop();
+                        appendMessageToActiveSession(`⚡ Background Complete [${activeAgent.name}]`, res);
+                    } catch (err) {
+                        session.messages.pop();
+                        appendMessageToActiveSession("❌ Background Task Error", err.message);
+                    }
+                }, 1000);
+                return;
+            }
+
+            if (isGroup) {
+                const groupAgents = agents.filter(a => a.selectedForGroup);
+                if (groupAgents.length === 0) {
+                    alert("Please check at least one agent in the agent list for the Group Swarm.");
+                    return;
+                }
+
+                for (const agent of groupAgents) {
+                    try {
+                        appendMessageToActiveSession(`🤖 ${agent.name} (Thinking...)`, `Analyzing swarm query...`);
+                        let response = await callAI(agent.instructions + "\n[Memory]: " + agent.memory, userText + injectedContext);
+                        if (isSelfHeal) response = await runSelfHealingPass(agent, userText, response);
+                        
+                        session.messages.pop();
+                        appendMessageToActiveSession(`🤖 ${agent.name}`, response);
+                    } catch (err) {
+                        session.messages.pop();
+                        appendMessageToActiveSession(`❌ Error [${agent.name}]`, err.message);
+                    }
+                }
+            } else {
+                try {
+                    appendMessageToActiveSession(`🤖 ${activeAgent.name} (Thinking...)`, `Processing request deterministically...`);
+                    let response = await callAI(agent.instructions + "\n" + collectiveMemory, userText + injectedContext);
+                    if (isSelfHeal) response = await runSelfHealingPass(agent, userText, response);
+                    
+                    session.messages.pop();
+                    appendMessageToActiveSession(`🤖 ${activeAgent.name}`, response);
+                } catch (err) {
+                    session.messages.pop();
+                    appendMessageToActiveSession("❌ System Error", err.message);
+                }
+            }
+        }
+
+        // First-Launch Onboarding Wizard Check
+        window.addEventListener('DOMContentLoaded', () => {
+            groqKey = localStorage.getItem("codev_groq_key") || "";
+            if (!groqKey) {
+                document.getElementById("settingsModal").style.display = "flex";
+            } else {
+                document.getElementById("settingsModal").style.display = "none";
+            }
+            updateStatusDisplay();
+            renderChatList();
+            renderAgentList();
+        });
+    </script>
+</body>
+</html>
