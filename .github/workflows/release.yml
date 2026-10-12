@@ -1,0 +1,86 @@
+name: Release APK
+
+# A merged pull request lands on main as a push, so this covers both cases.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-36
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: npm ci
+
+      - name: Copy web app into the Android project
+        working-directory: mobile
+        run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "release-${{ github.run_number }}" \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "CoDev Studio release ${{ github.run_number }}" \
+            --notes "Debug APK built from commit ${{ github.sha }}." \
+            --draft
+
+      - name: Upload APK to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          cp "$APK" codev-studio.apk
+          gh release upload "release-${{ github.run_number }}" "$APK" codev-studio.apk \
+            --repo "${{ github.repository }}"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "release-${{ github.run_number }}" \
+            --repo "${{ github.repository }}" \
+            --draft=false \
+            --latest
