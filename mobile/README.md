@@ -18,3 +18,8 @@ Needs Node 22+, JDK 21 and the Android SDK.
     npm run build:debug
 
 The APK lands in `mobile/android/app/build/outputs/apk/debug/app-debug.apk`.
+
+## Public download
+Every successful build on `main` publishes a GitHub Release with the APK attached.
+The newest one is always at:
+https://github.com/phillbennett021423/CoDev_cloud/releases/latest/download/codev-studio.apk
