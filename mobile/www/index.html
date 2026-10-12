@@ -1143,6 +1143,14 @@
             if (session) session.isGroup = isGroup;
 
             let activeAgent = agents.find(a => a.id === selectedAgentId) || agents[0];
+            if (!activeAgent) {
+                appendMessageToActiveSession("❌ System Error", "No agent is configured. Create an agent in the Agent Manager first.");
+                return;
+            }
+            if (activeAgent.id !== selectedAgentId) {
+                logConsoleActivity(`Selected agent not found; falling back to ${activeAgent.name}.`);
+                selectedAgentId = activeAgent.id;
+            }
             let collectiveMemory = `[Memory]: ${activeAgent.memory}`;
             if (activeAgent.crossKnowledgeEnabled && activeAgent.sharedWith.length > 0) {
                 activeAgent.sharedWith.forEach(targetId => {
@@ -1196,8 +1204,8 @@
             } else {
                 try {
                     appendMessageToActiveSession(`🤖 ${activeAgent.name} (Thinking...)`, `Processing request deterministically...`);
-                    let response = await callAI(agent.instructions + "\n" + collectiveMemory, userText + injectedContext);
-                    if (isSelfHeal) response = await runSelfHealingPass(agent, userText, response);
+                    let response = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext);
+                    if (isSelfHeal) response = await runSelfHealingPass(activeAgent, userText, response);
                     
                     session.messages.pop();
                     appendMessageToActiveSession(`🤖 ${activeAgent.name}`, response);
