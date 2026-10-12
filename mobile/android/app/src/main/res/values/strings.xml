@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">CoDev Studio</string>
+    <string name="title_activity_main">CoDev Studio</string>
+    <string name="package_name">com.codev.studio</string>
+    <string name="custom_url_scheme">com.codev.studio</string>
+</resources>
