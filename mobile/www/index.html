@@ -528,7 +528,7 @@
                         <h4>☁️ Cloud Daemon Status</h4>
                         <span class="codev-badge" id="cloudDaemonStatus">Active 24/7</span>
                         <div style="font-size: 1.5rem; font-weight: bold; color: var(--text-main); margin-top: 5px;" id="cloudTaskCount">14 Routines Executed</div>
-                        <p style="font-size: 0.8rem; color: var(--text-muted);">Connected to Groq Cloud infrastructure.</p>
+                        <p style="font-size: 0.8rem; color: var(--text-muted);">Connected to Groq Cloud or OpenRouter, whichever is picked in Settings.</p>
                     </div>
                     <div class="codev-hub-card">
                         <h4>🔗 Workspace Integrations</h4>
@@ -630,8 +630,28 @@
             </div>
 
             <div class="form-group" style="margin-top: 5px;">
-                <label>Paste Your Groq API Key Here</label>
+                <label>AI provider</label>
+                <select id="modalProvider" onchange="toggleProviderFields()" style="width: 100%;">
+                    <option value="groq">Groq (free, fastest)</option>
+                    <option value="openrouter">OpenRouter (free multi-model pool, or any model)</option>
+                </select>
+            </div>
+
+            <div class="form-group" id="groupGroqKey">
+                <label>Paste Your Groq API Key Here <span id="groqKeyOptional" style="color: var(--text-muted);">(optional with OpenRouter: used for voice input)</span></label>
                 <input type="text" id="modalGroqKey" placeholder="gsk_..." style="font-family: monospace;">
+            </div>
+
+            <div id="groupOpenRouter" style="display: none; flex-direction: column; gap: 10px;">
+                <a href="https://openrouter.ai/keys" target="_blank" style="font-size: 0.85rem; color: var(--accent);">🔑 Get an OpenRouter API key</a>
+                <div class="form-group">
+                    <label>OpenRouter API Key</label>
+                    <input type="text" id="modalOpenRouterKey" placeholder="sk-or-..." style="font-family: monospace;">
+                </div>
+                <div class="form-group">
+                    <label>OpenRouter model (openrouter/free picks a free model; any OpenRouter model id works)</label>
+                    <input type="text" id="modalOpenRouterModel" placeholder="openrouter/free" style="font-family: monospace;">
+                </div>
             </div>
 
             <details class="settings-extra" id="searchSettings">
@@ -673,7 +693,6 @@
                 <div id="voiceHint" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 6px;"></div>
             </details>
 
-            <input type="hidden" id="modalProvider" value="groq">
 
             <div class="modal-buttons">
                 <button class="btn-secondary" id="modalCancelBtn" style="display: none;" onclick="closeSettingsModal()">Cancel</button>
@@ -683,8 +702,16 @@
     </div>
 
     <script>
-        let currentBackend = localStorage.getItem("codev_backend") || "groq";
+        // The AI provider: "groq" or "openrouter". Both speak the OpenAI chat API.
+        let currentBackend = localStorage.getItem("codev_backend") === "openrouter" ? "openrouter" : "groq";
         let groqKey = localStorage.getItem("codev_groq_key") || "";
+        let openRouterKey = localStorage.getItem("codev_openrouter_key") || "";
+        const DEFAULT_OPENROUTER_MODEL = "openrouter/free";
+        let openRouterModel = localStorage.getItem("codev_openrouter_model") || DEFAULT_OPENROUTER_MODEL;
+
+        function activeProviderKey() {
+            return currentBackend === "openrouter" ? openRouterKey : groqKey;
+        }
 
         // Real Local Filesystem Handles
         let connectedDirectoryHandle = null;
@@ -1028,8 +1055,9 @@
         }
 
         function updateStatusDisplay() {
-            document.getElementById("activeProviderLabel").innerText = "Provider: Groq Cloud (Temp 0.0)";
-            document.getElementById("statusText").innerText = groqKey ? "Groq Live" : "Awaiting API Key";
+            const openRouter = currentBackend === "openrouter";
+            document.getElementById("activeProviderLabel").innerText = openRouter ? `Provider: OpenRouter · ${openRouterModel} (Temp 0.0)` : "Provider: Groq Cloud (Temp 0.0)";
+            document.getElementById("statusText").innerText = activeProviderKey() ? (openRouter ? "OpenRouter Live" : "Groq Live") : "Awaiting API Key";
         }
 
         const VIEW_NAMES = ["chat", "project", "codev", "cloud", "console"];
@@ -2049,7 +2077,11 @@
                 mediaRecorder.stop();
                 return;
             }
-            if (!groqKey) { openSettingsModal(); return; }
+            if (!groqKey) {
+                alert("Voice input in this app uses Groq Whisper. Add a free Groq API key in Settings (you can keep OpenRouter as the chat provider).");
+                openSettingsModal();
+                return;
+            }
             if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
                 alert("This browser can't record audio. Try Chrome or Edge.");
                 return;
@@ -2603,30 +2635,57 @@
         function openSettingsModal() {
             fillVoicePicker();
             document.getElementById("modalGroqKey").value = groqKey;
+            document.getElementById("modalProvider").value = currentBackend;
+            document.getElementById("modalOpenRouterKey").value = openRouterKey;
+            document.getElementById("modalOpenRouterModel").value = openRouterModel;
+            toggleProviderFields();
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
             document.getElementById("modalLocalTools").checked = localToolsEnabled;
             document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
             document.getElementById("modalMcpUrl").value = mcpServerUrl;
             document.getElementById("modalSearchHelperUrl").value = searchHelperUrl;
-            document.getElementById("modalCancelBtn").style.display = groqKey ? "inline-block" : "none";
+            document.getElementById("modalCancelBtn").style.display = activeProviderKey() ? "inline-block" : "none";
             if (isMobileLayout() && openDrawerName) closeDrawers();
             document.getElementById("settingsModal").style.display = "flex";
         }
 
+        function toggleProviderFields() {
+            const openRouter = document.getElementById("modalProvider").value === "openrouter";
+            document.getElementById("groupOpenRouter").style.display = openRouter ? "flex" : "none";
+            document.getElementById("groqKeyOptional").style.display = openRouter ? "inline" : "none";
+        }
+
         function closeSettingsModal() { 
-            if (!groqKey) {
-                alert("Please enter a Groq API key to launch CoDev Studio Pro.");
+            if (!activeProviderKey()) {
+                alert(`Please enter ${currentBackend === "openrouter" ? "an OpenRouter" : "a Groq"} API key to launch CoDev Studio Pro.`);
                 return;
             }
             document.getElementById("settingsModal").style.display = "none"; 
         }
 
         function saveSettings() {
-            groqKey = document.getElementById("modalGroqKey").value.trim();
-            if (!groqKey.startsWith("gsk_")) {
+            const backend = document.getElementById("modalProvider").value === "openrouter" ? "openrouter" : "groq";
+            const newGroqKey = document.getElementById("modalGroqKey").value.trim();
+            const newOpenRouterKey = document.getElementById("modalOpenRouterKey").value.trim();
+            if (backend === "groq" && !newGroqKey.startsWith("gsk_")) {
                 alert("Please enter a valid Groq API key starting with 'gsk_'.");
                 return;
             }
+            if (backend === "openrouter" && !newOpenRouterKey.startsWith("sk-or-")) {
+                alert("Please enter a valid OpenRouter API key starting with 'sk-or-'.");
+                return;
+            }
+            if (newGroqKey && !newGroqKey.startsWith("gsk_")) {
+                alert("The Groq API key should start with 'gsk_'. Clear it or fix it.");
+                return;
+            }
+            currentBackend = backend;
+            groqKey = newGroqKey;
+            openRouterKey = newOpenRouterKey;
+            openRouterModel = document.getElementById("modalOpenRouterModel").value.trim() || DEFAULT_OPENROUTER_MODEL;
+            localStorage.setItem("codev_backend", currentBackend);
+            localStorage.setItem("codev_openrouter_key", openRouterKey);
+            localStorage.setItem("codev_openrouter_model", openRouterModel);
 
             autoGroundingEnabled = document.getElementById("modalAutoGround").checked;
             searchHelperUrl = document.getElementById("modalSearchHelperUrl").value.trim() || DEFAULT_SEARCH_HELPER_URL;
@@ -2653,7 +2712,7 @@
 
             localStorage.setItem("codev_groq_key", groqKey);
             updateStatusDisplay();
-            logConsoleActivity("Groq API key saved successfully.");
+            logConsoleActivity(`Settings saved. Provider: ${currentBackend === "openrouter" ? `OpenRouter (${openRouterModel})` : "Groq"}.`);
             document.getElementById("settingsModal").style.display = "none";
         }
 
@@ -2813,22 +2872,31 @@
         // Groq's vision model; it accepts up to 3 images per request.
         const VISION_MODEL = "qwen/qwen3.8-27b";
 
+        // Sends one chat request to the provider picked in Settings. The body uses
+        // Groq's model names; with OpenRouter the model is swapped for the OpenRouter
+        // model from Settings, which serves text, tools and images alike.
         async function groqChatMessage(body) {
+            const openRouter = currentBackend === "openrouter";
+            const provider = openRouter
+                ? { name: "OpenRouter", host: "openrouter.ai", url: "https://openrouter.ai/api/v1/chat/completions", key: openRouterKey,
+                    headers: { "HTTP-Referer": "https://github.com/phillbennett021423/CoDev_cloud", "X-Title": "CoDev Studio" } }
+                : { name: "Groq", host: "api.groq.com", url: "https://api.groq.com/openai/v1/chat/completions", key: groqKey, headers: {} };
+            if (openRouter) body = { ...body, model: openRouterModel };
             let response;
             try {
-                response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                response = await fetch(provider.url, {
                     method: "POST",
-                    headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
+                    headers: { "Authorization": `Bearer ${provider.key}`, "Content-Type": "application/json", ...provider.headers },
                     body: JSON.stringify(body)
                 });
             } catch (err) {
-                // fetch only throws like this when the request never reached Groq.
-                throw new Error(`Couldn't reach Groq at api.groq.com (${err.message}). Check that this computer is online, and that a firewall, antivirus, VPN or ad blocker isn't blocking api.groq.com.`);
+                // fetch only throws like this when the request never reached the provider.
+                throw new Error(`Couldn't reach ${provider.name} at ${provider.host} (${err.message}). Check that this computer is online, and that a firewall, antivirus, VPN or ad blocker isn't blocking ${provider.host}.`);
             }
-            const data = await response.json();
+            const data = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } }));
             if (data.choices && data.choices.length > 0) return data.choices[0].message;
             const code = data.error?.code ? ` (${data.error.code})` : "";
-            throw new Error("Groq API Error: " + (data.error?.message || JSON.stringify(data)) + code);
+            throw new Error(`${provider.name} API Error: ` + (data.error?.message || JSON.stringify(data)) + code);
         }
 
         async function groqChat(body) {
@@ -2836,9 +2904,9 @@
         }
 
         async function callAI(systemPrompt, userMessage, options = {}) {
-            if (!groqKey) {
+            if (!activeProviderKey()) {
                 openSettingsModal();
-                throw new Error("Groq API key required. Please enter your key in settings.");
+                throw new Error(`${currentBackend === "openrouter" ? "OpenRouter" : "Groq"} API key required. Please enter your key in settings.`);
             }
 
             const technicalGuardrails = `CRITICAL TECHNICAL & STRICT COMPLIANCE RULES:
@@ -2868,7 +2936,7 @@
                 return groqChat({ model: TEXT_MODEL, temperature: 0.0, messages });
             }
 
-            logConsoleActivity(`[Vision] Sending ${images.length} image(s) to ${VISION_MODEL}.`);
+            logConsoleActivity(`[Vision] Sending ${images.length} image(s) to ${currentBackend === "openrouter" ? openRouterModel : VISION_MODEL}.`);
             return groqChat({
                 model: VISION_MODEL,
                 temperature: 0.0,
@@ -3046,7 +3114,7 @@
         // First-Launch Onboarding Wizard Check
         window.addEventListener('DOMContentLoaded', () => {
             groqKey = localStorage.getItem("codev_groq_key") || "";
-            if (!groqKey) {
+            if (!activeProviderKey()) {
                 document.getElementById("settingsModal").style.display = "flex";
             } else {
                 document.getElementById("settingsModal").style.display = "none";
