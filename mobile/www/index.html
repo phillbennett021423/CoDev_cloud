@@ -170,6 +170,116 @@
         .modal { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; width: 480px; padding: 25px; display: flex; flex-direction: column; gap: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
         .modal h3 { color: var(--text-main); font-size: 1.1rem; }
         .modal-buttons { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; }
+
+        /* Desktop sidebar collapse: each panel hides independently */
+        .workspace.hide-menu .menu-sidebar, .workspace.hide-agents .sidebar { padding: 0; opacity: 0; pointer-events: none; border-right: none; width: 0; overflow: hidden; visibility: hidden; }
+        .workspace.hide-editor .editor-sidebar { padding: 0; opacity: 0; pointer-events: none; border-left: none; width: 0; overflow: hidden; visibility: hidden; }
+
+        /* Touch & performance basics (all sizes) */
+        html, body { height: 100%; }
+        body { height: 100vh; height: 100dvh; }
+        button, .menu-item, .chat-item, .agent-card, .file-item, .nav-tabs span, .mobile-tab, label { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+        .message { content-visibility: auto; contain-intrinsic-size: auto 120px; }
+        .message.no-anim { animation: none; }
+        .file-item.active { border-color: var(--accent); }
+        .modal { max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; }
+        .modal-buttons .btn-secondary { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); padding: 12px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.8rem; }
+        .project-grid { display: grid; grid-template-columns: 260px 1fr; gap: 15px; flex: 1; overflow: hidden; }
+        .project-editor-col { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
+        .project-editor-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .chat-input-row { display: flex; width: 100%; gap: 10px; align-items: center; }
+        .mic-btn { background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 12px 14px; border-radius: 8px; cursor: pointer; }
+        .speak-btn { background: none; border: none; cursor: pointer; font-size: 0.9rem; padding: 4px 6px; border-radius: 4px; }
+
+        /* Mobile-only elements are hidden on desktop */
+        .mobile-only, .mobile-tabbar, .drawer-backdrop, .drawer-close-mobile { display: none; }
+
+        /* ---------- Phone & small tablet layout ---------- */
+        @media (max-width: 900px) {
+            body { padding-bottom: env(safe-area-inset-bottom); }
+            .mobile-only { display: flex; }
+            .hide-on-mobile { display: none; }
+            .compact-badges-bar { flex-wrap: wrap; }
+            .compact-badges-bar .collapse-controls-btn, .chat-controls-header .collapse-controls-btn { min-height: 36px; padding: 6px 10px; display: inline-flex; align-items: center; }
+
+            header { height: 52px; padding: 0 10px; padding-top: env(safe-area-inset-top); gap: 8px; }
+            .header-left { gap: 8px; min-width: 0; }
+            .logo-area { font-size: 1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .nav-tabs, .user-status, .folder-connect-btn { display: none; }
+            .header-right { gap: 8px; }
+            .sidebar-toggle-btn, .settings-btn { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+
+            /* Single column; side panels become drawers */
+            .workspace, .workspace[class] { display: flex; flex-direction: column; grid-template-columns: none; transition: none; }
+            .reopen-tab-left, .reopen-tab-right { display: none !important; }
+
+            .menu-sidebar, .sidebar, .editor-sidebar,
+            .workspace[class] .menu-sidebar, .workspace[class] .sidebar, .workspace[class] .editor-sidebar {
+                position: fixed; top: 0; bottom: 0; z-index: 900;
+                width: min(86vw, 360px); max-width: 360px;
+                padding: 16px; padding-top: calc(16px + env(safe-area-inset-top)); padding-bottom: calc(16px + env(safe-area-inset-bottom));
+                opacity: 1; pointer-events: auto; overflow-y: auto; white-space: normal;
+                visibility: hidden; transition: transform 0.22s ease, visibility 0s linear 0.22s;
+                will-change: transform; overscroll-behavior: contain;
+                box-shadow: 0 0 30px rgba(0,0,0,0.6);
+            }
+            .menu-sidebar, .sidebar, .workspace[class] .menu-sidebar, .workspace[class] .sidebar { left: 0; transform: translateX(-105%); border-right: 1px solid var(--border-color); }
+            .editor-sidebar, .workspace[class] .editor-sidebar { right: 0; transform: translateX(105%); border-left: 1px solid var(--border-color); }
+            .menu-sidebar.drawer-open, .sidebar.drawer-open, .editor-sidebar.drawer-open,
+            .workspace[class] .drawer-open { transform: translateX(0); visibility: visible; transition: transform 0.22s ease, visibility 0s; }
+
+            .drawer-backdrop { display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 850; opacity: 0; visibility: hidden; transition: opacity 0.2s ease, visibility 0s linear 0.2s; }
+            .drawer-backdrop.visible { opacity: 1; visibility: visible; transition: opacity 0.2s ease, visibility 0s; }
+
+            .close-sidebar-btn { min-width: 44px; min-height: 44px; font-size: 1.1rem; }
+            .menu-item { padding: 14px 12px; font-size: 1rem; }
+            .chat-item { padding: 12px; }
+            .chat-delete-btn { min-width: 44px; min-height: 44px; font-size: 1rem; }
+            .agent-card { padding: 14px; }
+            .agent-card-header input[type="checkbox"] { width: 24px; height: 24px; }
+            .agent-instructions-preview { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+            .btn-primary, .btn-save-agent, .btn-danger { min-height: 44px; padding: 10px 14px; font-size: 0.9rem; }
+            .form-group input, .form-group textarea { font-size: 16px; }
+            .knowledge-item { padding: 6px 0; }
+            .knowledge-item input, .checkbox-group input { width: 20px; height: 20px; }
+
+            /* Center pane fills the space above the tab bar */
+            .center-pane { min-height: 0; }
+            .pane-header { padding: 8px 12px; gap: 8px; }
+            #activeProviderLabel { display: none; }
+            .chat-messages { padding: 12px; gap: 12px; }
+            .message { padding: 12px 14px; box-shadow: none; animation: none; }
+            .message .text { font-size: 0.95rem; overflow-wrap: anywhere; }
+            .message pre { font-size: 0.8rem; }
+            .speak-btn { min-width: 44px; min-height: 40px; font-size: 1.1rem; }
+
+            .chat-input-wrapper { padding: 0 8px 8px 8px; }
+            .chat-input-area { padding: 10px; gap: 8px; border-radius: 12px; box-shadow: none; }
+            .chat-controls-body { gap: 10px; flex-direction: column; font-size: 0.9rem; }
+            .checkbox-group { min-height: 36px; }
+            .chat-input-row { flex-wrap: wrap; gap: 8px; }
+            #activeAgentIndicator { width: 100%; min-height: 32px; display: flex; align-items: center; cursor: pointer; }
+            .chat-input-area input#userInput { min-width: 0; flex: 1 1 100%; font-size: 16px; padding: 12px; }
+            .mic-btn { min-width: 48px; min-height: 48px; flex: 0 0 auto; }
+            .chat-input-area button.send-btn { flex: 1; min-height: 48px; padding: 12px; }
+
+            .alt-view-content { padding: 14px; }
+            .alt-view-content > div:first-child { flex-wrap: wrap; gap: 10px; }
+            .project-grid { grid-template-columns: 1fr; grid-template-rows: auto 1fr; overflow: visible; }
+            .file-tree { max-height: 30vh; overflow-y: auto; }
+            .file-item { min-height: 44px; }
+            .file-editor-box { min-height: 50vh; font-size: 14px; }
+            .codev-hub-grid { grid-template-columns: 1fr; gap: 12px; }
+            .codev-hub-card { box-shadow: none; padding: 16px; }
+
+            .drawer-close-mobile { display: inline-flex; }
+
+            /* Bottom tab bar */
+            .mobile-tabbar { display: flex; flex: 0 0 auto; background: var(--bg-panel); border-top: 1px solid var(--border-color); z-index: 800; }
+            .mobile-tab { flex: 1; min-height: 56px; background: none; border: none; color: var(--text-muted); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 0.68rem; cursor: pointer; }
+            .mobile-tab .tab-icon { font-size: 1.2rem; line-height: 1; }
+            .mobile-tab.active { color: var(--accent); }
+        }
     </style>
 </head>
 <body>
@@ -191,7 +301,7 @@
             <div class="user-status">
                 <span class="status-dot"></span> <span id="statusText">Active Browser Storage</span>
             </div>
-            <button class="settings-btn" onclick="openSettingsModal()">⚙️ Settings</button>
+            <button class="settings-btn" onclick="openSettingsModal()" title="Settings">⚙️<span class="hide-on-mobile"> Settings</span></button>
         </div>
     </header>
 
@@ -213,11 +323,20 @@
                 <div class="menu-item active" id="menuAgentFlow" onclick="switchView('chat'); logConsoleActivity('Switched to Agent Flow mode.');">
                     <span class="menu-icon">💻</span> Agent Flow
                 </div>
-                <div class="menu-item" onclick="switchView('codev'); logConsoleActivity('Switched to CoDev Hub.');">
+                <div class="menu-item" onclick="switchView('codev')">
                     <span class="menu-icon">⚡</span> CoDev Hub
                 </div>
-                <div class="menu-item" onclick="switchView('cloud'); logConsoleActivity('Switched to CoDev Cloud.');">
+                <div class="menu-item" onclick="switchView('cloud')">
                     <span class="menu-icon">☁️</span> CoDev Cloud
+                </div>
+                <div class="menu-item" onclick="switchView('project')">
+                    <span class="menu-icon">📁</span> Project Files
+                </div>
+                <div class="menu-item" onclick="switchView('console')">
+                    <span class="menu-icon">📜</span> Console Logs
+                </div>
+                <div class="menu-item mobile-only" onclick="connectLocalFolder()">
+                    <span class="menu-icon">🔗</span> Connect Local Folder
                 </div>
             </div>
 
@@ -231,6 +350,7 @@
                 <h3>Agents</h3>
                 <div style="display: flex; gap: 6px;">
                     <button class="btn-primary" onclick="createNewAgent()" title="New Agent">+ New</button>
+                    <button class="btn-primary mobile-only" style="background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color);" onclick="openDrawer('editor')" title="Configure selected agent">⚙️ Edit</button>
                     <button class="close-sidebar-btn" onclick="toggleAgentSidebar()" title="Collapse Agent Bar">✕</button>
                 </div>
             </div>
@@ -284,10 +404,10 @@
                             <div class="compact-badge" id="badgeReasoning" style="color: var(--codev-blue); display:none;">⚡ Deep Reasoning</div>
                         </div>
 
-                        <div style="display: flex; width: 100%; gap: 10px; align-items: center;">
-                            <span id="activeAgentIndicator" style="font-size: 0.75rem; color: var(--accent); white-space: nowrap;">Active: Architect</span>
-                            <input type="text" id="userInput" placeholder="Ask your agents anything or type @filename to reference local file..." onkeydown="if(event.key==='Enter') sendChatMessage()">
-                            <button id="micBtn" onclick="toggleSpeechRecognition()" title="Voice Input (STT)" style="background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 12px 14px; border-radius: 8px; cursor: pointer;">🎤</button>
+                        <div class="chat-input-row">
+                            <span id="activeAgentIndicator" onclick="openAgentPicker()" title="Choose agent" style="font-size: 0.75rem; color: var(--accent); white-space: nowrap; cursor: pointer;">Active: Architect</span>
+                            <input type="text" id="userInput" enterkeyhint="send" placeholder="Ask your agents anything or type @filename to reference local file..." onkeydown="if(event.key==='Enter' && !event.isComposing) { event.preventDefault(); sendChatMessage(); }">
+                            <button id="micBtn" class="mic-btn" onclick="toggleSpeechRecognition()" title="Voice Input (STT)">🎤</button>
                             <button class="send-btn" onclick="sendChatMessage()">Send Task</button>
                         </div>
                     </div>
@@ -296,16 +416,19 @@
 
             <!-- Project Files View -->
             <div id="view-project" class="alt-view-content">
-                <h3>Local Project Workspace</h3>
-                <p style="font-size: 0.85rem; color: var(--text-muted);">Click "Connect Local Folder" at the top right to load your real project files right here.</p>
-                <div style="display: grid; grid-template-columns: 260px 1fr; gap: 15px; flex: 1; overflow: hidden;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3>Local Project Workspace</h3>
+                    <button class="btn-primary" style="background: var(--success);" onclick="connectLocalFolder()">📁 Connect Folder</button>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-muted);" id="projectSourceHint">Connect a folder (or pick files on your phone) to load your project files right here.</p>
+                <div class="project-grid">
                     <div class="file-tree" id="projectFileList">
                         <div style="font-size: 0.8rem; color: var(--text-muted); padding: 10px;">No compatible code files found in root folder.</div>
                     </div>
-                    <div style="display: flex; flex-direction: column; gap: 10px; flex: 1;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div class="project-editor-col">
+                        <div class="project-editor-actions">
                             <span id="selectedFileName" style="font-size: 0.85rem; font-weight: bold; color: var(--accent);">No file selected</span>
-                            <button class="btn-primary" onclick="saveActiveFileChanges()">Save Changes to Laptop</button>
+                            <button class="btn-primary" onclick="saveActiveFileChanges()">💾 Save Changes</button>
                         </div>
                         <textarea class="file-editor-box" id="fileEditorContent" placeholder="Connect a local folder to view and edit files..."></textarea>
                     </div>
@@ -400,7 +523,7 @@
 
         <!-- Column 4: Right Sidebar (Agent Editor) -->
         <div class="editor-sidebar" id="editorPanel">
-            <h3>Agent Configuration <button class="close-sidebar-btn" onclick="toggleEditorSidebar()" title="Collapse Panel">✕</button></h3>
+            <h3>Agent Configuration <button class="close-sidebar-btn" onclick="toggleEditorSidebar()" title="Close Panel">✕</button></h3>
             <div class="form-group">
                 <label>Agent Name</label>
                 <input type="text" id="editName">
@@ -434,6 +557,17 @@
         </div>
     </div>
 
+    <!-- Phone navigation: backdrop for drawers and bottom tab bar -->
+    <div class="drawer-backdrop" id="drawerBackdrop" onclick="closeDrawers()"></div>
+    <nav class="mobile-tabbar" id="mobileTabbar">
+        <button class="mobile-tab active" data-view="chat" onclick="mobileTab('chat')"><span class="tab-icon">💬</span>Chat</button>
+        <button class="mobile-tab" data-drawer="agents" onclick="mobileTab('agents')"><span class="tab-icon">🤖</span>Agents</button>
+        <button class="mobile-tab" data-view="project" onclick="mobileTab('project')"><span class="tab-icon">📁</span>Files</button>
+        <button class="mobile-tab" data-view="codev" onclick="mobileTab('codev')"><span class="tab-icon">⚡</span>Hub</button>
+        <button class="mobile-tab" data-view="cloud" onclick="mobileTab('cloud')"><span class="tab-icon">☁️</span>Cloud</button>
+        <button class="mobile-tab" data-view="console" onclick="mobileTab('console')"><span class="tab-icon">📜</span>Logs</button>
+    </nav>
+
     <!-- Settings Modal / First-Launch Onboarding Wizard -->
     <div class="modal-overlay" id="settingsModal">
         <div class="modal" style="width: 520px;">
@@ -458,7 +592,8 @@
             <input type="hidden" id="modalProvider" value="groq">
 
             <div class="modal-buttons">
-                <button class="btn-primary" style="width: 100%; padding: 12px;" onclick="saveSettings()">🚀 Launch CoDev Studio Workspace</button>
+                <button class="btn-secondary" id="modalCancelBtn" style="display: none;" onclick="closeSettingsModal()">Cancel</button>
+                <button class="btn-primary" style="flex: 1; padding: 12px;" onclick="saveSettings()">🚀 Launch CoDev Studio Workspace</button>
             </div>
         </div>
     </div>
@@ -476,7 +611,44 @@
         let recognition = null;
         let isRecording = false;
 
+        const PROJECT_FILE_EXTENSIONS = ['.cs', '.gd', '.txt', '.tres', '.json', '.html'];
+
+        function isProjectFileName(name) {
+            return PROJECT_FILE_EXTENSIONS.some(ext => name.endsWith(ext));
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? "").replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+        }
+
+        // Phones and some browsers have no folder picker; let the user pick files instead.
+        function pickProjectFiles() {
+            const picker = document.createElement("input");
+            picker.type = "file";
+            picker.multiple = true;
+            picker.accept = PROJECT_FILE_EXTENSIONS.join(",");
+            picker.onchange = async () => {
+                const files = Array.from(picker.files || []).filter(f => isProjectFileName(f.name));
+                if (files.length === 0) {
+                    alert("No supported files selected (" + PROJECT_FILE_EXTENSIONS.join(", ") + ").");
+                    return;
+                }
+                connectedDirectoryHandle = null;
+                loadedProjectFiles = {};
+                activeSelectedFile = null;
+                for (const file of files) loadedProjectFiles[file.name] = await file.text();
+                document.getElementById("projectSourceHint").innerText = `Loaded ${files.length} file(s). Edits stay in CoDev; Save copies or downloads the file.`;
+                logConsoleActivity(`Loaded ${files.length} project file(s) from the file picker.`);
+                switchView('project');
+            };
+            picker.click();
+        }
+
         async function connectLocalFolder() {
+            if (!window.showDirectoryPicker) {
+                pickProjectFiles();
+                return;
+            }
             try {
                 connectedDirectoryHandle = await window.showDirectoryPicker();
                 logConsoleActivity(`Connected to local folder: ${connectedDirectoryHandle.name}`);
@@ -493,11 +665,12 @@
         async function scanConnectedDirectory() {
             loadedProjectFiles = {};
             for await (const [name, handle] of connectedDirectoryHandle.entries()) {
-                if (handle.kind === 'file' && (name.endsWith('.cs') || name.endsWith('.gd') || name.endsWith('.txt') || name.endsWith('.tres') || name.endsWith('.json') || name.endsWith('.html'))) {
+                if (handle.kind === 'file' && isProjectFileName(name)) {
                     const file = await handle.getFile();
                     loadedProjectFiles[name] = await file.text();
                 }
             }
+            document.getElementById("projectSourceHint").innerText = `Connected to folder: ${connectedDirectoryHandle.name}`;
             renderProjectFiles();
         }
 
@@ -512,8 +685,7 @@
             keys.forEach(filename => {
                 const item = document.createElement("div");
                 item.className = `file-item ${activeSelectedFile === filename ? 'active' : ''}`;
-                item.style.borderColor = activeSelectedFile === filename ? 'var(--accent)' : 'var(--border-color)';
-                item.innerHTML = `<span>📄 ${filename}</span>`;
+                item.innerHTML = `<span>📄 ${escapeHtml(filename)}</span>`;
                 item.onclick = () => selectProjectFile(filename);
                 listContainer.appendChild(item);
             });
@@ -528,12 +700,16 @@
         }
 
         async function saveActiveFileChanges() {
-            if (!connectedDirectoryHandle || !activeSelectedFile) {
-                alert("No folder connected or file selected.");
+            if (!activeSelectedFile) {
+                alert("No file selected. Connect a folder or pick files first.");
                 return;
             }
             const updatedContent = document.getElementById("fileEditorContent").value;
             loadedProjectFiles[activeSelectedFile] = updatedContent;
+            if (!connectedDirectoryHandle) {
+                await exportEditedFile(activeSelectedFile, updatedContent);
+                return;
+            }
             try {
                 const fileHandle = await connectedDirectoryHandle.getFileHandle(activeSelectedFile, { create: true });
                 const writable = await fileHandle.createWritable();
@@ -544,6 +720,28 @@
             } catch (err) {
                 alert("Failed to write to laptop: " + err.message);
             }
+        }
+
+        // Without folder access, hand the edited file back to the user.
+        async function exportEditedFile(filename, content) {
+            const isNativeApp = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+            if (isNativeApp) {
+                try {
+                    await navigator.clipboard.writeText(content);
+                    alert(`Saved ${filename} in CoDev and copied it to your clipboard.`);
+                } catch (err) {
+                    alert(`Saved ${filename} in CoDev. Copying to the clipboard failed: ${err.message}`);
+                }
+            } else {
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(new Blob([content], { type: "text/plain" }));
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+            }
+            logConsoleActivity(`Saved edits to ${filename}.`);
         }
 
         let chatSessions = [
@@ -589,43 +787,106 @@
         let isAgentCollapsed = false;
         let isEditorCollapsed = false;
 
+        const mobileLayoutQuery = window.matchMedia("(max-width: 900px)");
+        function isMobileLayout() { return mobileLayoutQuery.matches; }
+
+        // Each panel collapses on its own; the old single-class approach missed combinations.
         function updateWorkspaceGrid() {
             const ws = document.getElementById("mainWorkspace");
-            const reopenMenu = document.getElementById("reopenMenuBtn");
-            const reopenEditor = document.getElementById("reopenEditorBtn");
+            ws.classList.toggle("hide-menu", isMenuCollapsed);
+            ws.classList.toggle("hide-agents", isAgentCollapsed);
+            ws.classList.toggle("hide-editor", isEditorCollapsed);
+            ws.style.gridTemplateColumns = `${isMenuCollapsed ? 0 : 260}px ${isAgentCollapsed ? 0 : 260}px 1fr ${isEditorCollapsed ? 0 : 320}px`;
+            document.getElementById("reopenMenuBtn").style.display = isMenuCollapsed ? "block" : "none";
+            document.getElementById("reopenEditorBtn").style.display = isEditorCollapsed ? "block" : "none";
+        }
 
-            ws.className = "workspace";
+        // Phone layout: side panels are slide-in drawers, one open at a time.
+        const DRAWER_IDS = { menu: "menuSidebar", agents: "agentSidebar", editor: "editorPanel" };
+        let openDrawerName = null;
+        let drawerHistoryPushed = false;
 
-            if (isMenuCollapsed && isAgentCollapsed && isEditorCollapsed) {
-                ws.classList.add("all-sidebars-collapsed");
-            } else if (isMenuCollapsed && isAgentCollapsed) {
-                ws.classList.add("menu-and-agent-collapsed");
-            } else if (isMenuCollapsed) {
-                ws.classList.add("menu-collapsed");
-            } else if (isAgentCollapsed) {
-                ws.classList.add("agent-collapsed");
-            } else if (isEditorCollapsed) {
-                ws.classList.add("editor-collapsed");
+        function openDrawer(name) {
+            if (!isMobileLayout()) {
+                if (name === "menu") isMenuCollapsed = false;
+                if (name === "agents") isAgentCollapsed = false;
+                if (name === "editor") isEditorCollapsed = false;
+                updateWorkspaceGrid();
+                return;
             }
+            Object.entries(DRAWER_IDS).forEach(([key, id]) => document.getElementById(id).classList.toggle("drawer-open", key === name));
+            document.getElementById("drawerBackdrop").classList.add("visible");
+            openDrawerName = name;
+            updateMobileTabs();
+            // Lets the Android back button close the drawer instead of leaving the app.
+            if (!drawerHistoryPushed) {
+                try { history.pushState({ codevDrawer: true }, ""); drawerHistoryPushed = true; } catch (err) { /* history unavailable */ }
+            }
+        }
 
-            reopenMenu.style.display = isMenuCollapsed ? "block" : "none";
-            reopenEditor.style.display = isEditorCollapsed ? "block" : "none";
+        function closeDrawers(fromHistory) {
+            Object.values(DRAWER_IDS).forEach(id => document.getElementById(id).classList.remove("drawer-open"));
+            document.getElementById("drawerBackdrop").classList.remove("visible");
+            openDrawerName = null;
+            updateMobileTabs();
+            if (drawerHistoryPushed) {
+                drawerHistoryPushed = false;
+                if (!fromHistory) { try { history.back(); } catch (err) { /* ignore */ } }
+            }
+        }
+
+        window.addEventListener("popstate", () => {
+            if (drawerHistoryPushed) {
+                drawerHistoryPushed = false;
+                closeDrawers(true);
+            }
+        });
+
+        function toggleDrawer(name) {
+            if (openDrawerName === name) closeDrawers();
+            else openDrawer(name);
         }
 
         function toggleMenuSidebar() {
+            if (isMobileLayout()) return toggleDrawer("menu");
             isMenuCollapsed = !isMenuCollapsed;
             updateWorkspaceGrid();
         }
 
         function toggleAgentSidebar() {
+            if (isMobileLayout()) return toggleDrawer("agents");
             isAgentCollapsed = !isAgentCollapsed;
             updateWorkspaceGrid();
         }
 
         function toggleEditorSidebar() {
+            if (isMobileLayout()) return toggleDrawer("editor");
             isEditorCollapsed = !isEditorCollapsed;
             updateWorkspaceGrid();
         }
+
+        function openAgentPicker() {
+            openDrawer("agents");
+        }
+
+        let currentViewName = "chat";
+        function updateMobileTabs() {
+            document.querySelectorAll(".mobile-tab").forEach(tab => {
+                const active = openDrawerName ? tab.dataset.drawer === openDrawerName : tab.dataset.view === currentViewName;
+                tab.classList.toggle("active", !!active);
+            });
+        }
+
+        function mobileTab(name) {
+            if (name === "agents") return toggleDrawer("agents");
+            closeDrawers();
+            switchView(name);
+        }
+
+        mobileLayoutQuery.addEventListener("change", () => {
+            closeDrawers();
+            updateWorkspaceGrid();
+        });
 
         function toggleChatControls() {
             const container = document.getElementById("chatControlsContainer");
@@ -654,43 +915,24 @@
             document.getElementById("statusText").innerText = groqKey ? "Groq Live" : "Awaiting API Key";
         }
 
+        const VIEW_NAMES = ["chat", "project", "codev", "cloud", "console"];
+        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", console: "Switched to Console Logs." };
+
         function switchView(viewName) {
-            document.getElementById("tab-chat").classList.remove("active");
-            document.getElementById("tab-project").classList.remove("active");
-            document.getElementById("tab-codev").classList.remove("active");
-            document.getElementById("tab-cloud").classList.remove("active");
-            document.getElementById("tab-console").classList.remove("active");
-
+            if (!VIEW_NAMES.includes(viewName)) return;
+            currentViewName = viewName;
+            // Inactive views are display:none so the browser skips their layout and paint.
+            VIEW_NAMES.forEach(name => {
+                document.getElementById(`tab-${name}`).classList.toggle("active", name === viewName);
+                document.getElementById(`view-${name}`).style.display = name === viewName ? "flex" : "none";
+            });
             const agentFlowMenu = document.getElementById("menuAgentFlow");
-            if (agentFlowMenu) agentFlowMenu.classList.remove("active");
+            if (agentFlowMenu) agentFlowMenu.classList.toggle("active", viewName === "chat");
 
-            document.getElementById("view-chat").style.display = "none";
-            document.getElementById("view-project").style.display = "none";
-            document.getElementById("view-codev").style.display = "none";
-            document.getElementById("view-cloud").style.display = "none";
-            document.getElementById("view-console").style.display = "none";
-
-            if (viewName === 'chat') {
-                document.getElementById("tab-chat").classList.add("active");
-                if (agentFlowMenu) agentFlowMenu.classList.add("active");
-                document.getElementById("view-chat").style.display = "flex";
-            } else if (viewName === 'project') {
-                document.getElementById("tab-project").classList.add("active");
-                document.getElementById("view-project").style.display = "flex";
-                if (connectedDirectoryHandle) renderProjectFiles();
-            } else if (viewName === 'codev') {
-                document.getElementById("tab-codev").classList.add("active");
-                document.getElementById("view-codev").style.display = "flex";
-                logConsoleActivity("Switched to CoDev Hub.");
-            } else if (viewName === 'cloud') {
-                document.getElementById("tab-cloud").classList.add("active");
-                document.getElementById("view-cloud").style.display = "flex";
-                logConsoleActivity("Switched to CoDev Cloud view.");
-            } else if (viewName === 'console') {
-                document.getElementById("tab-console").classList.add("active");
-                document.getElementById("view-console").style.display = "flex";
-                logConsoleActivity("Switched to Console Logs.");
-            }
+            if (viewName === "project" && Object.keys(loadedProjectFiles).length > 0) renderProjectFiles();
+            if (VIEW_LOG_MESSAGES[viewName]) logConsoleActivity(VIEW_LOG_MESSAGES[viewName]);
+            if (isMobileLayout() && openDrawerName) closeDrawers();
+            updateMobileTabs();
         }
 
         function renderChatList() {
@@ -704,8 +946,8 @@
                 infoDiv.className = "chat-item-info";
                 infoDiv.onclick = () => switchChatSession(session.id);
                 infoDiv.innerHTML = `
-                    <div class="chat-item-title">${session.isGroup ? '🌐 ' : '👤 '}${session.title}</div>
-                    <div class="chat-item-meta">${session.timestamp}</div>
+                    <div class="chat-item-title">${session.isGroup ? '🌐 ' : '👤 '}${escapeHtml(session.title)}</div>
+                    <div class="chat-item-meta">${escapeHtml(session.timestamp)}</div>
                 `;
                 item.appendChild(infoDiv);
 
@@ -743,6 +985,7 @@
                 ]
             });
             activeChatId = newId;
+            switchView('chat');
             renderChatList();
             logConsoleActivity("Created new chat session.");
         }
@@ -766,6 +1009,7 @@
             if (session) {
                 document.getElementById("isGroupChatCheckbox").checked = session.isGroup;
             }
+            switchView('chat');
             renderChatList();
         }
 
@@ -780,35 +1024,42 @@
 
         function renderActiveChatFeed() {
             const feed = document.getElementById("chatFeed");
-            feed.innerHTML = "";
             const session = chatSessions.find(s => s.id === activeChatId);
-            if (!session) return;
+            if (!session) { feed.innerHTML = ""; return; }
 
-            session.messages.forEach(msg => {
+            const fragment = document.createDocumentFragment();
+            const lastIndex = session.messages.length - 1;
+            session.messages.forEach((msg, index) => {
                 const div = document.createElement("div");
-                div.className = "message";
-                let formattedText = msg.text.replace(/```([a-z]*)\n([\s\S]*?)```/g, '<pre><code class="$1">$2</code></pre>');
+                div.className = index === lastIndex ? "message" : "message no-anim";
+                // Escape first so code like List<int> or <div> shows as text instead of vanishing.
+                let formattedText = escapeHtml(msg.text).replace(/```([a-z]*)\n([\s\S]*?)```/g, '<pre><code class="$1">$2</code></pre>');
                 
                 let speakButtonHtml = "";
                 if (!msg.sender.includes("You")) {
-                    const safeText = msg.text.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-                    speakButtonHtml = `<button onclick="speakText('${safeText}')" style="background: none; border: none; cursor: pointer; font-size: 0.9rem;" title="Listen to response">🔊</button>`;
+                    // Look the text up by index on click; inlining it broke on newlines and quotes.
+                    speakButtonHtml = `<button class="speak-btn" onclick="speakMessage(${index})" title="Listen to response">🔊</button>`;
                 }
 
                 div.innerHTML = `
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <div class="sender" style="margin-bottom: 0;">${msg.sender}</div>
+                        <div class="sender" style="margin-bottom: 0;">${escapeHtml(msg.sender)}</div>
                         ${speakButtonHtml}
                     </div>
                     <div class="text">${formattedText}</div>
                 `;
-                feed.appendChild(div);
+                fragment.appendChild(div);
             });
+            feed.replaceChildren(fragment);
             feed.scrollTop = feed.scrollHeight;
         }
 
         function appendMessageToActiveSession(sender, text) {
-            const session = chatSessions.find(s => s.id === activeChatId);
+            appendMessageToSession(chatSessions.find(s => s.id === activeChatId), sender, text);
+        }
+
+        // Replies go to the chat they were asked in, even if the user switched chats meanwhile.
+        function appendMessageToSession(session, sender, text) {
             if (!session) return;
             session.messages.push({ sender, text });
             
@@ -819,7 +1070,38 @@
         }
 
         // SPEECH-TO-TEXT & TEXT-TO-SPEECH FUNCTIONS
+        // In the Android app the WebView has no Web Speech API, so the native
+        // Capacitor plugins are used there; browsers use the Web Speech API.
+        const SPEECH_LANG = 'en-US';
+
+        function getNativeSpeechPlugin(name) {
+            const cap = window.Capacitor;
+            if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return null;
+            return (cap.Plugins && cap.Plugins[name]) || null;
+        }
+
+        function setMicButtonRecording(recording) {
+            isRecording = recording;
+            const micBtn = document.getElementById("micBtn");
+            if (!micBtn) return;
+            micBtn.style.borderColor = recording ? "var(--danger)" : "var(--border-color)";
+            micBtn.style.color = recording ? "var(--danger)" : "var(--text-main)";
+        }
+
+        function appendTranscriptToInput(transcript) {
+            transcript = (transcript || "").trim();
+            if (!transcript) return;
+            const inputField = document.getElementById("userInput");
+            inputField.value += (inputField.value ? ' ' : '') + transcript;
+        }
+
         function toggleSpeechRecognition() {
+            const nativeRecognition = getNativeSpeechPlugin("SpeechRecognition");
+            if (nativeRecognition) {
+                toggleNativeSpeechRecognition(nativeRecognition);
+                return;
+            }
+
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
                 alert("Speech Recognition is not supported in this browser. Try Chrome or Edge.");
@@ -830,13 +1112,10 @@
                 recognition = new SpeechRecognition();
                 recognition.continuous = false;
                 recognition.interimResults = true;
-                recognition.lang = 'en-US';
+                recognition.lang = SPEECH_LANG;
 
                 recognition.onstart = () => {
-                    isRecording = true;
-                    const micBtn = document.getElementById("micBtn");
-                    micBtn.style.borderColor = "var(--danger)";
-                    micBtn.style.color = "var(--danger)";
+                    setMicButtonRecording(true);
                     logConsoleActivity("Speech recognition started...");
                 };
 
@@ -847,14 +1126,14 @@
                             finalTranscript += event.results[i][0].transcript;
                         }
                     }
-                    const inputField = document.getElementById("userInput");
-                    if (finalTranscript) {
-                        inputField.value += (inputField.value ? ' ' : '') + finalTranscript;
-                    }
+                    appendTranscriptToInput(finalTranscript);
                 };
 
                 recognition.onerror = (event) => {
                     logConsoleActivity("Speech recognition error: " + event.error);
+                    if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+                        alert("Microphone access was blocked. Allow microphone access for this site and try again.");
+                    }
                     stopSpeechRecognition();
                 };
 
@@ -866,32 +1145,168 @@
             if (isRecording) {
                 recognition.stop();
             } else {
-                recognition.start();
+                try {
+                    recognition.start();
+                } catch (err) {
+                    // start() throws if a previous session is still shutting down.
+                    logConsoleActivity("Speech recognition could not start: " + err.message);
+                    stopSpeechRecognition();
+                }
+            }
+        }
+
+        async function toggleNativeSpeechRecognition(plugin) {
+            if (isRecording) {
+                try { await plugin.stop(); } catch (err) { /* already stopped */ }
+                stopSpeechRecognition();
+                return;
+            }
+
+            try {
+                const { available } = await plugin.available();
+                if (!available) {
+                    alert("Speech recognition isn't available on this device. Make sure the Google app or another speech service is installed.");
+                    return;
+                }
+
+                let permission = await plugin.checkPermissions();
+                if (permission.speechRecognition !== "granted") {
+                    permission = await plugin.requestPermissions();
+                }
+                if (permission.speechRecognition !== "granted") {
+                    alert("Microphone permission is needed for voice input. You can allow it in Android Settings > Apps > CoDev Studio > Permissions.");
+                    return;
+                }
+
+                setMicButtonRecording(true);
+                logConsoleActivity("Speech recognition started...");
+                const result = await plugin.start({ language: SPEECH_LANG, maxResults: 1, partialResults: false, popup: false });
+                appendTranscriptToInput(result && result.matches && result.matches[0]);
+            } catch (err) {
+                logConsoleActivity("Speech recognition error: " + (err.message || err));
+            } finally {
+                stopSpeechRecognition();
             }
         }
 
         function stopSpeechRecognition() {
-            isRecording = false;
-            const micBtn = document.getElementById("micBtn");
-            if (micBtn) {
-                micBtn.style.borderColor = "var(--border-color)";
-                micBtn.style.color = "var(--text-main)";
-            }
+            if (!isRecording) return;
+            setMicButtonRecording(false);
             logConsoleActivity("Speech recognition stopped.");
         }
 
-        function speakText(text) {
-            if (!window.speechSynthesis) {
+        // Splits text into pieces short enough for every engine: Chrome stops
+        // long utterances after ~15 seconds and Android TTS caps input length.
+        function splitTextForSpeech(text, maxLength = 200) {
+            const sentences = text.match(/[^.!?\n]+[.!?]*|\n+/g) || [text];
+            const chunks = [];
+            let current = "";
+            for (let sentence of sentences) {
+                sentence = sentence.trim();
+                if (!sentence) continue;
+                while (sentence.length > maxLength) {
+                    let cut = sentence.lastIndexOf(" ", maxLength);
+                    if (cut <= 0) cut = maxLength;
+                    if (current) { chunks.push(current); current = ""; }
+                    chunks.push(sentence.slice(0, cut).trim());
+                    sentence = sentence.slice(cut).trim();
+                }
+                if (current && current.length + sentence.length + 1 > maxLength) {
+                    chunks.push(current);
+                    current = sentence;
+                } else {
+                    current = current ? current + " " + sentence : sentence;
+                }
+            }
+            if (current) chunks.push(current);
+            return chunks;
+        }
+
+        let isSpeaking = false;
+        let speechRunId = 0;
+
+        function speakMessage(index) {
+            const session = chatSessions.find(s => s.id === activeChatId);
+            const msg = session && session.messages[index];
+            if (msg) speakText(msg.text);
+        }
+
+        function stopSpeaking() {
+            speechRunId++;
+            isSpeaking = false;
+            const nativeTts = getNativeSpeechPlugin("TextToSpeech");
+            if (nativeTts) nativeTts.stop().catch(() => {});
+            if (window.speechSynthesis) window.speechSynthesis.cancel();
+        }
+
+        function pickWebVoice() {
+            const voices = window.speechSynthesis.getVoices();
+            return voices.find(v => v.lang === SPEECH_LANG && v.localService)
+                || voices.find(v => v.lang === SPEECH_LANG)
+                || voices.find(v => v.lang && v.lang.startsWith("en"))
+                || null;
+        }
+
+        function speakWebChunk(chunk) {
+            return new Promise((resolve, reject) => {
+                const utterance = new SpeechSynthesisUtterance(chunk);
+                const voice = pickWebVoice();
+                if (voice) utterance.voice = voice;
+                utterance.lang = SPEECH_LANG;
+                utterance.rate = 1.0;
+                utterance.pitch = 1.0;
+                utterance.onend = () => resolve();
+                utterance.onerror = (event) => event.error === "interrupted" || event.error === "canceled" ? resolve() : reject(new Error(event.error));
+                window.speechSynthesis.speak(utterance);
+            });
+        }
+
+        async function speakText(text) {
+            // Clicking 🔊 while audio is playing stops it.
+            if (isSpeaking) {
+                stopSpeaking();
+                logConsoleActivity("Stopped text-to-speech playback.");
+                return;
+            }
+
+            const nativeTts = getNativeSpeechPlugin("TextToSpeech");
+            if (!nativeTts && !window.speechSynthesis) {
                 alert("Text-to-speech is not supported in this browser.");
                 return;
             }
-            window.speechSynthesis.cancel();
-            const cleanText = text.replace(/```[\s\S]*?```/g, " [Code snippet omitted for audio] ");
-            const utterance = new SpeechSynthesisUtterance(cleanText);
-            utterance.rate = 1.0;
-            utterance.pitch = 1.0;
-            window.speechSynthesis.speak(utterance);
+
+            const cleanText = text
+                .replace(/```[\s\S]*?```/g, " Code snippet omitted for audio. ")
+                .replace(/[*_#`>]/g, "")
+                .trim();
+            if (!cleanText) return;
+
+            stopSpeaking();
+            const runId = speechRunId;
+            isSpeaking = true;
             logConsoleActivity("Playing text-to-speech audio for agent response.");
+
+            try {
+                for (const chunk of splitTextForSpeech(cleanText, nativeTts ? 3000 : 200)) {
+                    if (runId !== speechRunId) return;
+                    if (nativeTts) {
+                        await nativeTts.speak({ text: chunk, lang: SPEECH_LANG, rate: 1.0, pitch: 1.0, volume: 1.0 });
+                    } else {
+                        await speakWebChunk(chunk);
+                    }
+                }
+            } catch (err) {
+                logConsoleActivity("Text-to-speech error: " + (err.message || err));
+                alert("Couldn't play audio: " + (err.message || err));
+            } finally {
+                if (runId === speechRunId) isSpeaking = false;
+            }
+        }
+
+        // Some browsers load voices asynchronously; touching the list early warms it up.
+        if (window.speechSynthesis) {
+            window.speechSynthesis.getVoices();
+            window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
         }
 
         // CODEV HUB & CLOUD ROUTINES
@@ -899,10 +1314,7 @@
         function triggerCloudRoutine() {
             cloudRoutineCount++;
             document.getElementById("cloudTaskCount").innerText = `${cloudRoutineCount} Routines Executed`;
-            const cloudLog = document.getElementById("cloudLogOutput");
-            const time = new Date().toTimeString().split(' ')[0];
-            cloudLog.innerHTML += `<br>[${time}] 🚀 CoDev Cloud initiated background automated cycle. Verified workspace integrity.`;
-            cloudLog.scrollTop = cloudLog.scrollHeight;
+            appendLogLine(document.getElementById("cloudLogOutput"), "🚀 CoDev Cloud initiated background automated cycle. Verified workspace integrity.");
             logConsoleActivity("CoDev Cloud executed autonomous routine.");
             alert("CoDev Cloud routine executed successfully!");
         }
@@ -921,6 +1333,8 @@
 
         function openSettingsModal() {
             document.getElementById("modalGroqKey").value = groqKey;
+            document.getElementById("modalCancelBtn").style.display = groqKey ? "inline-block" : "none";
+            if (isMobileLayout() && openDrawerName) closeDrawers();
             document.getElementById("settingsModal").style.display = "flex";
         }
 
@@ -945,11 +1359,19 @@
             document.getElementById("settingsModal").style.display = "none";
         }
 
+        // `innerHTML +=` re-parsed the whole log on every line, which got slower the longer the app ran.
+        const MAX_LOG_LINES = 300;
+        function appendLogLine(box, text) {
+            if (!box) return;
+            const line = document.createElement("div");
+            line.textContent = `[${new Date().toTimeString().split(' ')[0]}] ${text}`;
+            box.appendChild(line);
+            while (box.childNodes.length > MAX_LOG_LINES) box.removeChild(box.firstChild);
+            if (box.offsetParent !== null) box.scrollTop = box.scrollHeight;
+        }
+
         function logConsoleActivity(text) {
-            const consoleBox = document.getElementById("consoleOutput");
-            const time = new Date().toTimeString().split(' ')[0];
-            consoleBox.innerHTML += `<br>[${time}] ${text}`;
-            consoleBox.scrollTop = consoleBox.scrollHeight;
+            appendLogLine(document.getElementById("consoleOutput"), text);
         }
 
         function renderAgentList() {
@@ -961,23 +1383,29 @@
                 card.style.borderColor = agent.id === selectedAgentId ? 'var(--accent)' : 'var(--border-color)';
                 card.innerHTML = `
                     <div class="agent-card-header">
-                        <div onclick="selectAgent('${agent.id}')" style="cursor: pointer; flex: 1;">
-                            <h4>${agent.name}</h4>
-                            <span class="agent-meta">${agent.role}</span>
+                        <div style="flex: 1; min-width: 0;">
+                            <h4>${escapeHtml(agent.name)}</h4>
+                            <span class="agent-meta">${escapeHtml(agent.role)}</span>
                         </div>
-                        <input type="checkbox" ${agent.selectedForGroup ? 'checked' : ''} title="Include in Group Swarm" onchange="toggleAgentGroup('${agent.id}', this.checked)">
+                        <input type="checkbox" ${agent.selectedForGroup ? 'checked' : ''} title="Include in Group Swarm">
                     </div>
-                    <div class="agent-instructions-preview" onclick="selectAgent('${agent.id}')">${agent.instructions}</div>
+                    <div class="agent-instructions-preview">${escapeHtml(agent.instructions)}</div>
                 `;
+                // The whole card selects the agent; the checkbox only toggles swarm membership.
+                card.onclick = () => selectAgent(agent.id, true);
+                const groupBox = card.querySelector('input[type="checkbox"]');
+                groupBox.onclick = (e) => e.stopPropagation();
+                groupBox.onchange = () => toggleAgentGroup(agent.id, groupBox.checked);
                 list.appendChild(card);
             });
             loadAgentIntoEditor();
             updateActiveAgentIndicator();
         }
 
-        function selectAgent(id) {
+        function selectAgent(id, fromTap) {
             selectedAgentId = id;
             renderAgentList();
+            if (fromTap && isMobileLayout() && openDrawerName === "agents") closeDrawers();
         }
 
         function toggleAgentGroup(id, isChecked) {
@@ -1022,7 +1450,7 @@
                 label.className = "knowledge-item";
                 label.innerHTML = `
                     <input type="checkbox" ${isShared ? 'checked' : ''} onchange="toggleSharedAgent('${currentAgent.id}', '${other.id}', this.checked)">
-                    Share memory with <strong>${other.name}</strong>
+                    Share memory with <strong>${escapeHtml(other.name)}</strong>
                 `;
                 listContainer.appendChild(label);
             });
@@ -1049,6 +1477,7 @@
             renderAgentList();
             logConsoleActivity(`Locked in new configuration for agent: ${agent.name}`);
             alert(`Successfully locked in configuration for ${agent.name}!`);
+            if (isMobileLayout()) closeDrawers();
         }
 
         function createNewAgent() {
@@ -1065,6 +1494,7 @@
             });
             selectAgent(newId);
             logConsoleActivity("Created new agent.");
+            if (isMobileLayout()) openDrawer("editor");
         }
 
         function deleteSelectedAgent() {
@@ -1072,6 +1502,9 @@
                 alert("You must keep at least one agent in the workspace.");
                 return;
             }
+            const doomed = agents.find(a => a.id === selectedAgentId);
+            if (!confirm(`Delete agent "${doomed ? doomed.name : selectedAgentId}"?`)) return;
+            agents.forEach(a => { a.sharedWith = a.sharedWith.filter(id => id !== selectedAgentId); });
             agents = agents.filter(a => a.id !== selectedAgentId);
             selectedAgentId = agents[0].id;
             renderAgentList();
@@ -1163,7 +1596,7 @@
 
             if (isBackground) {
                 document.getElementById("isBackgroundWorkerCheckbox").checked = false;
-                appendMessageToActiveSession(`⚡ Background Worker (${activeAgent.name})`, `Task queued for autonomous execution...`);
+                appendMessageToSession(session, `⚡ Background Worker (${activeAgent.name})`, `Task queued for autonomous execution...`);
                 logConsoleActivity(`[Background Worker] Task initiated for ${activeAgent.name}.`);
                 
                 setTimeout(async () => {
@@ -1172,10 +1605,10 @@
                         if (isSelfHeal) res = await runSelfHealingPass(activeAgent, userText, res);
                         
                         session.messages.pop();
-                        appendMessageToActiveSession(`⚡ Background Complete [${activeAgent.name}]`, res);
+                        appendMessageToSession(session, `⚡ Background Complete [${activeAgent.name}]`, res);
                     } catch (err) {
                         session.messages.pop();
-                        appendMessageToActiveSession("❌ Background Task Error", err.message);
+                        appendMessageToSession(session, "❌ Background Task Error", err.message);
                     }
                 }, 1000);
                 return;
@@ -1190,28 +1623,28 @@
 
                 for (const agent of groupAgents) {
                     try {
-                        appendMessageToActiveSession(`🤖 ${agent.name} (Thinking...)`, `Analyzing swarm query...`);
+                        appendMessageToSession(session, `🤖 ${agent.name} (Thinking...)`, `Analyzing swarm query...`);
                         let response = await callAI(agent.instructions + "\n[Memory]: " + agent.memory, userText + injectedContext);
                         if (isSelfHeal) response = await runSelfHealingPass(agent, userText, response);
                         
                         session.messages.pop();
-                        appendMessageToActiveSession(`🤖 ${agent.name}`, response);
+                        appendMessageToSession(session, `🤖 ${agent.name}`, response);
                     } catch (err) {
                         session.messages.pop();
-                        appendMessageToActiveSession(`❌ Error [${agent.name}]`, err.message);
+                        appendMessageToSession(session, `❌ Error [${agent.name}]`, err.message);
                     }
                 }
             } else {
                 try {
-                    appendMessageToActiveSession(`🤖 ${activeAgent.name} (Thinking...)`, `Processing request deterministically...`);
+                    appendMessageToSession(session, `🤖 ${activeAgent.name} (Thinking...)`, `Processing request deterministically...`);
                     let response = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext);
                     if (isSelfHeal) response = await runSelfHealingPass(activeAgent, userText, response);
                     
                     session.messages.pop();
-                    appendMessageToActiveSession(`🤖 ${activeAgent.name}`, response);
+                    appendMessageToSession(session, `🤖 ${activeAgent.name}`, response);
                 } catch (err) {
                     session.messages.pop();
-                    appendMessageToActiveSession("❌ System Error", err.message);
+                    appendMessageToSession(session, "❌ System Error", err.message);
                 }
             }
         }
@@ -1227,6 +1660,10 @@
             updateStatusDisplay();
             renderChatList();
             renderAgentList();
+            updateWorkspaceGrid();
+            updateMobileTabs();
+            // Phones start with the mode toggles folded away to leave room for the chat.
+            if (isMobileLayout()) toggleChatControls();
         });
     </script>
 </body>
