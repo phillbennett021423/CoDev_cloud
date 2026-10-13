@@ -28,3 +28,5 @@ https://github.com/phillbennett021423/CoDev_cloud/releases/latest/download/app-d
 ## Web grounding
 
 Technical and code questions are checked against live DuckDuckGo results before the agents answer. It's free, with no API key. The Android app searches on the phone itself. In a desktop browser, run the small local helper in [`tools/ddgs-helper`](../tools/ddgs-helper/README.md).
+
+Agents can also call local tools on their own while answering: DuckDuckGo search, listing and reading your loaded project files, and (desktop only, through the helper) commands you approve in `allowed_commands.json`. CoDev asks before every command runs. See [Local tools for agents](../tools/ddgs-helper/README.md#local-tools-for-agents).

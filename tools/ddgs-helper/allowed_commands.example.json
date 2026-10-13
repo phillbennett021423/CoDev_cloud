@@ -1,0 +1,14 @@
+{
+  "tests": {
+    "description": "Run the project's test suite",
+    "argv": ["npm", "test"]
+  },
+  "lint": {
+    "description": "Lint the source folder",
+    "argv": ["npx", "eslint", "src"]
+  },
+  "godot-check": {
+    "description": "Parse-check Godot scripts without opening the editor",
+    "argv": ["godot", "--headless", "--check-only", "--quit"]
+  }
+}
