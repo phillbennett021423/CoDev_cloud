@@ -188,8 +188,23 @@
         .project-editor-col { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
         .project-editor-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
         .chat-input-row { display: flex; width: 100%; gap: 10px; align-items: center; }
+        .chat-input-row #userInput { min-width: 0; flex: 1 1 auto; }
+        .chat-input-row .send-btn { flex: 0 0 auto; white-space: nowrap; }
         .mic-btn { background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 12px 14px; border-radius: 8px; cursor: pointer; }
         .speak-btn { background: none; border: none; cursor: pointer; font-size: 0.9rem; padding: 4px 6px; border-radius: 4px; }
+
+        .tool-btn { background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 12px 14px; border-radius: 8px; cursor: pointer; }
+        .tool-btn.active { border-color: var(--codev-blue); color: var(--codev-blue); background: rgba(59, 130, 246, 0.15); }
+        .attachment-tray { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+        .attachment-tray:empty { display: none; }
+        .attachment-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 4px 4px 8px; font-size: 0.75rem; }
+        .attachment-chip img { width: 28px; height: 28px; object-fit: cover; border-radius: 4px; }
+        .attachment-chip .chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .attachment-chip.processing { opacity: 0.6; }
+        .attachment-chip button { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 4px 6px; }
+        .msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+        .msg-attachments img { width: 72px; height: 72px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border-color); }
+        .msg-attachments .file-pill { font-size: 0.75rem; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 8px; align-self: center; }
 
         /* Mobile-only elements are hidden on desktop */
         .mobile-only, .mobile-tabbar, .drawer-backdrop, .drawer-close-mobile { display: none; }
@@ -260,7 +275,9 @@
             .chat-input-row { flex-wrap: wrap; gap: 8px; }
             #activeAgentIndicator { width: 100%; min-height: 32px; display: flex; align-items: center; cursor: pointer; }
             .chat-input-area input#userInput { min-width: 0; flex: 1 1 100%; font-size: 16px; padding: 12px; }
-            .mic-btn { min-width: 48px; min-height: 48px; flex: 0 0 auto; }
+            .mic-btn, .tool-btn { min-width: 48px; min-height: 48px; flex: 0 0 auto; }
+            .attachment-chip { max-width: 100%; }
+            .attachment-chip button { min-width: 36px; min-height: 36px; }
             .chat-input-area button.send-btn { flex: 1; min-height: 48px; padding: 12px; }
 
             .alt-view-content { padding: 14px; }
@@ -402,12 +419,17 @@
                             <div class="compact-badge" id="badgeBackground" style="color: var(--warning); display:none;">⚡ Background</div>
                             <div class="compact-badge" id="badgeSelfHeal" style="color: var(--success); display:none;">🛡️ Self-Heal</div>
                             <div class="compact-badge" id="badgeReasoning" style="color: var(--codev-blue); display:none;">⚡ Deep Reasoning</div>
+                            <div class="compact-badge" id="badgeWebSearch" style="color: var(--codev-blue); display:none;">🔎 Web Search</div>
                         </div>
 
+                        <div class="attachment-tray" id="attachmentTray"></div>
+                        <input type="file" id="attachmentInput" multiple accept="image/*,application/pdf,.pdf,video/*" style="display: none;" onchange="handleAttachmentPick(this)">
                         <div class="chat-input-row">
                             <span id="activeAgentIndicator" onclick="openAgentPicker()" title="Choose agent" style="font-size: 0.75rem; color: var(--accent); white-space: nowrap; cursor: pointer;">Active: Architect</span>
                             <input type="text" id="userInput" enterkeyhint="send" placeholder="Ask your agents anything or type @filename to reference local file..." onkeydown="if(event.key==='Enter' && !event.isComposing) { event.preventDefault(); sendChatMessage(); }">
                             <button id="micBtn" class="mic-btn" onclick="toggleSpeechRecognition()" title="Voice Input (STT)">🎤</button>
+                            <button id="attachBtn" class="tool-btn" onclick="document.getElementById('attachmentInput').click()" title="Attach images, PDFs or short videos">📎</button>
+                            <button id="webSearchBtn" class="tool-btn" onclick="toggleWebSearch()" title="Live web search: off" aria-pressed="false">🔎</button>
                             <button class="send-btn" onclick="sendChatMessage()">Send Task</button>
                         </div>
                     </div>
@@ -907,6 +929,7 @@
                 document.getElementById("badgeBackground").style.display = isBgChecked ? "flex" : "none";
                 document.getElementById("badgeSelfHeal").style.display = isHealChecked ? "flex" : "none";
                 document.getElementById("badgeReasoning").style.display = isReasonChecked ? "flex" : "none";
+                document.getElementById("badgeWebSearch").style.display = webSearchEnabled ? "flex" : "none";
             }
         }
 
@@ -1046,6 +1069,7 @@
                         <div class="sender" style="margin-bottom: 0;">${escapeHtml(msg.sender)}</div>
                         ${speakButtonHtml}
                     </div>
+                    ${renderMessageAttachments(msg.attachments)}
                     <div class="text">${formattedText}</div>
                 `;
                 fragment.appendChild(div);
@@ -1054,20 +1078,246 @@
             feed.scrollTop = feed.scrollHeight;
         }
 
-        function appendMessageToActiveSession(sender, text) {
-            appendMessageToSession(chatSessions.find(s => s.id === activeChatId), sender, text);
+        function appendMessageToActiveSession(sender, text, attachments) {
+            appendMessageToSession(chatSessions.find(s => s.id === activeChatId), sender, text, attachments);
         }
 
         // Replies go to the chat they were asked in, even if the user switched chats meanwhile.
-        function appendMessageToSession(session, sender, text) {
+        function appendMessageToSession(session, sender, text, attachments) {
             if (!session) return;
-            session.messages.push({ sender, text });
+            session.messages.push(attachments && attachments.length ? { sender, text, attachments } : { sender, text });
             
             if (session.messages.length === 3 && sender.includes("You")) {
                 session.title = text.length > 22 ? text.substring(0, 22) + "..." : text;
             }
             renderChatList();
         }
+
+        // MULTIMEDIA ATTACHMENTS & LIVE WEB SEARCH
+        // Files are converted in the browser when picked: images are downscaled to
+        // base64 JPEG, PDFs become text (or page images when scanned), and videos
+        // are sampled into still frames, because the model takes images, not video.
+        const MAX_IMAGES_PER_MESSAGE = 3;
+        const MAX_IMAGE_EDGE = 1280;
+        const MAX_PDF_CHARS = 40000;
+        const MAX_FILE_BYTES = { image: 20 * 1024 * 1024, pdf: 25 * 1024 * 1024, video: 100 * 1024 * 1024 };
+        let pendingAttachments = [];
+        let attachmentSeq = 0;
+        let webSearchEnabled = false;
+
+        function toggleWebSearch() {
+            webSearchEnabled = !webSearchEnabled;
+            const btn = document.getElementById("webSearchBtn");
+            btn.classList.toggle("active", webSearchEnabled);
+            btn.setAttribute("aria-pressed", String(webSearchEnabled));
+            btn.title = `Live web search: ${webSearchEnabled ? "on" : "off"}`;
+            const badges = document.getElementById("compactBadgesBar");
+            if (badges.style.display === "flex") document.getElementById("badgeWebSearch").style.display = webSearchEnabled ? "flex" : "none";
+            logConsoleActivity(`Live web search ${webSearchEnabled ? "enabled" : "disabled"}.`);
+        }
+
+        function attachmentKind(file) {
+            if (file.type.startsWith("image/")) return "image";
+            if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) return "pdf";
+            if (file.type.startsWith("video/")) return "video";
+            return null;
+        }
+
+        function imageBudgetLeft(exceptId) {
+            const used = pendingAttachments.filter(a => a.id !== exceptId).reduce((n, a) => n + (a.processing ? a.reservedImages : a.images.length), 0);
+            return Math.max(0, MAX_IMAGES_PER_MESSAGE - used);
+        }
+
+        async function handleAttachmentPick(input) {
+            const files = Array.from(input.files || []);
+            input.value = "";
+            for (const file of files) {
+                const kind = attachmentKind(file);
+                if (!kind) { alert(`${file.name}: only images, PDFs and videos can be attached.`); continue; }
+                if (file.size > MAX_FILE_BYTES[kind]) { alert(`${file.name} is too large (limit ${MAX_FILE_BYTES[kind] / 1024 / 1024} MB for ${kind}s).`); continue; }
+                if (kind !== "pdf" && imageBudgetLeft() === 0) { alert(`Up to ${MAX_IMAGES_PER_MESSAGE} images or video frames can go in one message.`); continue; }
+                const att = { id: ++attachmentSeq, name: file.name, kind, images: [], text: "", thumb: "", processing: true, reservedImages: kind === "image" ? 1 : 0 };
+                if (kind === "video") att.reservedImages = imageBudgetLeft();
+                pendingAttachments.push(att);
+                renderAttachmentTray();
+                try {
+                    if (kind === "image") await prepareImage(file, att);
+                    else if (kind === "pdf") await preparePdf(file, att);
+                    else await prepareVideo(file, att);
+                    logConsoleActivity(`Prepared ${kind} ${file.name}.`);
+                } catch (err) {
+                    pendingAttachments = pendingAttachments.filter(a => a !== att);
+                    alert(`Couldn't read ${file.name}: ${err.message || err}`);
+                }
+                att.processing = false;
+                renderAttachmentTray();
+            }
+        }
+
+        function removeAttachment(id) {
+            pendingAttachments = pendingAttachments.filter(a => a.id !== id);
+            renderAttachmentTray();
+        }
+
+        function clearAttachments() {
+            pendingAttachments = [];
+            renderAttachmentTray();
+        }
+
+        const ATTACHMENT_ICONS = { image: "🖼️", pdf: "📄", video: "🎬" };
+
+        function renderAttachmentTray() {
+            const tray = document.getElementById("attachmentTray");
+            tray.replaceChildren(...pendingAttachments.map(a => {
+                const chip = document.createElement("div");
+                chip.className = "attachment-chip" + (a.processing ? " processing" : "");
+                const detail = a.processing ? " (preparing…)" : a.kind === "video" ? ` (${a.images.length} frames)` : a.kind === "pdf" && a.images.length ? ` (${a.images.length} page images)` : "";
+                chip.innerHTML = `${a.thumb ? `<img src="${a.thumb}" alt="">` : `<span>${ATTACHMENT_ICONS[a.kind]}</span>`}<span class="chip-name">${escapeHtml(a.name + detail)}</span>`;
+                const remove = document.createElement("button");
+                remove.textContent = "✕";
+                remove.title = `Remove ${a.name}`;
+                remove.onclick = () => removeAttachment(a.id);
+                chip.appendChild(remove);
+                return chip;
+            }));
+            document.getElementById("attachBtn").classList.toggle("active", pendingAttachments.length > 0);
+        }
+
+        function renderMessageAttachments(attachments) {
+            if (!attachments || !attachments.length) return "";
+            return `<div class="msg-attachments">${attachments.map(a => a.thumb
+                ? `<img src="${a.thumb}" alt="${escapeHtml(a.name)}" title="${escapeHtml(a.name)}" loading="lazy">`
+                : `<span class="file-pill">${ATTACHMENT_ICONS[a.kind] || "📎"} ${escapeHtml(a.name)}</span>`).join("")}</div>`;
+        }
+
+        // Draws any image/video/canvas source scaled to fit maxEdge and returns a JPEG data URL.
+        function sourceToJpeg(source, width, height, maxEdge, quality = 0.85) {
+            const scale = Math.min(1, maxEdge / Math.max(width, height));
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.max(1, Math.round(width * scale));
+            canvas.height = Math.max(1, Math.round(height * scale));
+            const ctx = canvas.getContext("2d");
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+            return canvas.toDataURL("image/jpeg", quality);
+        }
+
+        function loadImageElement(url) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = () => reject(new Error("this image format isn't supported here (try JPG or PNG)"));
+                img.src = url;
+            });
+        }
+
+        async function prepareImage(file, att) {
+            const url = URL.createObjectURL(file);
+            try {
+                const img = await loadImageElement(url);
+                att.images = [sourceToJpeg(img, img.naturalWidth, img.naturalHeight, MAX_IMAGE_EDGE)];
+                att.thumb = sourceToJpeg(img, img.naturalWidth, img.naturalHeight, 160, 0.7);
+            } finally {
+                URL.revokeObjectURL(url);
+            }
+        }
+
+        function waitForEvent(target, name, timeoutMs = 15000) {
+            return new Promise((resolve, reject) => {
+                const timer = setTimeout(() => { cleanup(); reject(new Error(`timed out waiting for video ${name}`)); }, timeoutMs);
+                const onEvent = () => { cleanup(); resolve(); };
+                const onError = () => { cleanup(); reject(new Error("this video format can't be decoded here (try MP4 or WebM)")); };
+                function cleanup() { clearTimeout(timer); target.removeEventListener(name, onEvent); target.removeEventListener("error", onError); }
+                target.addEventListener(name, onEvent);
+                target.addEventListener("error", onError);
+            });
+        }
+
+        async function prepareVideo(file, att) {
+            const frameCount = Math.max(1, Math.min(att.reservedImages, imageBudgetLeft(att.id)));
+            const url = URL.createObjectURL(file);
+            const video = document.createElement("video");
+            video.muted = true;
+            video.playsInline = true;
+            video.preload = "auto";
+            try {
+                video.src = url;
+                await waitForEvent(video, "loadeddata");
+                const duration = isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+                const frames = [];
+                for (let i = 0; i < frameCount; i++) {
+                    // Spread samples across the clip, avoiding the very first and last frame.
+                    const time = duration ? duration * (i + 1) / (frameCount + 1) : 0;
+                    if (Math.abs(video.currentTime - time) > 0.01) {
+                        video.currentTime = time;
+                        await waitForEvent(video, "seeked");
+                    }
+                    frames.push(sourceToJpeg(video, video.videoWidth, video.videoHeight, MAX_IMAGE_EDGE, 0.8));
+                }
+                att.images = frames;
+                att.thumb = sourceToJpeg(video, video.videoWidth, video.videoHeight, 160, 0.7);
+                att.text = `Video clip "${file.name}", ${duration.toFixed(1)}s long. The ${frames.length} attached image(s) are frames sampled evenly through it, in order. Audio is not included.`;
+            } finally {
+                video.removeAttribute("src");
+                video.load();
+                URL.revokeObjectURL(url);
+            }
+        }
+
+        // pdf.js ships with the app (vendor/pdfjs) so PDFs work offline in the APK.
+        let pdfJsPromise = null;
+        function loadPdfJs() {
+            if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+            if (!pdfJsPromise) {
+                pdfJsPromise = new Promise((resolve, reject) => {
+                    const script = document.createElement("script");
+                    script.src = "vendor/pdfjs/pdf.min.js";
+                    script.onload = () => {
+                        window.pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdfjs/pdf.worker.min.js";
+                        resolve(window.pdfjsLib);
+                    };
+                    script.onerror = () => { pdfJsPromise = null; reject(new Error("the PDF reader (vendor/pdfjs) is missing next to index.html")); };
+                    document.head.appendChild(script);
+                });
+            }
+            return pdfJsPromise;
+        }
+
+        async function preparePdf(file, att) {
+            const pdfjsLib = await loadPdfJs();
+            // isEvalSupported:false blocks the font-eval path behind CVE-2024-4367.
+            const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer(), isEvalSupported: false }).promise;
+            let text = "";
+            for (let pageNo = 1; pageNo <= pdf.numPages && text.length < MAX_PDF_CHARS; pageNo++) {
+                const page = await pdf.getPage(pageNo);
+                const content = await page.getTextContent();
+                text += `\n--- Page ${pageNo} ---\n` + content.items.map(item => item.str + (item.hasEOL ? "\n" : " ")).join("");
+            }
+            const truncated = text.length > MAX_PDF_CHARS;
+            if (truncated) text = text.slice(0, MAX_PDF_CHARS);
+
+            // Scanned PDFs have no text layer; send the first pages as images instead.
+            if (text.replace(/--- Page \d+ ---|\s/g, "").length < 10) {
+                const pagesToRender = Math.min(pdf.numPages, imageBudgetLeft(att.id));
+                if (pagesToRender === 0) throw new Error(`it looks scanned (no text), and the ${MAX_IMAGES_PER_MESSAGE}-image limit for this message is already used`);
+                for (let pageNo = 1; pageNo <= pagesToRender; pageNo++) {
+                    const page = await pdf.getPage(pageNo);
+                    const viewport = page.getViewport({ scale: 1 });
+                    const scaled = page.getViewport({ scale: Math.min(2, MAX_IMAGE_EDGE / Math.max(viewport.width, viewport.height)) });
+                    const canvas = document.createElement("canvas");
+                    canvas.width = Math.round(scaled.width);
+                    canvas.height = Math.round(scaled.height);
+                    await page.render({ canvasContext: canvas.getContext("2d"), viewport: scaled }).promise;
+                    att.images.push(canvas.toDataURL("image/jpeg", 0.85));
+                }
+                att.text = `Scanned PDF "${file.name}" (${pdf.numPages} pages). The first ${pagesToRender} page(s) are attached as images.`;
+            } else {
+                att.text = `PDF "${file.name}" (${pdf.numPages} pages)${truncated ? `, truncated to the first ${MAX_PDF_CHARS} characters` : ""}:\n${text}`;
+            }
+            pdf.destroy();
+        }
+
 
         // SPEECH-TO-TEXT & TEXT-TO-SPEECH FUNCTIONS
         // In the Android app the WebView has no Web Speech API, so the native
@@ -1511,7 +1761,27 @@
             logConsoleActivity("Deleted agent.");
         }
 
-        async function callAI(systemPrompt, userMessage) {
+        const TEXT_MODEL = "openai/gpt-oss-120b";
+        // Groq's vision model; it accepts up to 3 images per request.
+        const VISION_MODEL = "qwen/qwen3.8-27b";
+
+        async function groqChat(body) {
+            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                method: "POST",
+                headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+            });
+            const data = await response.json();
+            if (data.choices && data.choices.length > 0) return data.choices[0].message.content || "";
+            throw new Error("Groq API Error: " + (data.error?.message || JSON.stringify(data)));
+        }
+
+        // Groq marks citations like 【2†L6-L10】; they mean nothing to the reader here.
+        function stripSearchCitations(text) {
+            return text.replace(/\s*【[^】]*】/g, "");
+        }
+
+        async function callAI(systemPrompt, userMessage, options = {}) {
             if (!groqKey) {
                 openSettingsModal();
                 throw new Error("Groq API key required. Please enter your key in settings.");
@@ -1523,19 +1793,42 @@
 3. C# VECTOR RULES: Godot Vector2 and Vector3 are structs, not records. Do NOT use record 'with' expressions. Construct new vectors or mutate component properties directly.`;
             
             const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}`;
+            const images = options.images || [];
 
-            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-                method: "POST",
-                headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    model: "openai/gpt-oss-120b",
+            if (images.length === 0) {
+                const body = {
+                    model: TEXT_MODEL,
                     temperature: 0.0,
                     messages: [{ role: "system", content: fullSystemPrompt }, { role: "user", content: userMessage }]
-                })
+                };
+                if (options.webSearch) {
+                    // Groq runs the search server-side; low effort keeps the browsing session short.
+                    body.tools = [{ type: "browser_search" }];
+                    body.tool_choice = "required";
+                    body.reasoning_effort = "low";
+                    logConsoleActivity("[Web Search] Running live web lookup...");
+                }
+                const answer = await groqChat(body);
+                return options.webSearch ? stripSearchCitations(answer) : answer;
+            }
+
+            // The vision model can't browse, so search first and hand it the findings.
+            let searchNotes = "";
+            if (options.webSearch) {
+                searchNotes = "\n\n[Live Web Search Findings]\n" + await callAI("Search the web and summarize the facts relevant to this request, with source names.", userMessage, { webSearch: true });
+            }
+            logConsoleActivity(`[Vision] Sending ${images.length} image(s) to ${VISION_MODEL}.`);
+            return groqChat({
+                model: VISION_MODEL,
+                temperature: 0.0,
+                messages: [
+                    { role: "system", content: fullSystemPrompt },
+                    { role: "user", content: [
+                        { type: "text", text: userMessage + searchNotes },
+                        ...images.map(url => ({ type: "image_url", image_url: { url } }))
+                    ] }
+                ]
             });
-            const data = await response.json();
-            if (data.choices && data.choices.length > 0) return data.choices[0].message.content;
-            throw new Error("Groq API Error: " + (data.error?.message || JSON.stringify(data)));
         }
 
         async function runSelfHealingPass(agent, prompt, initialResponse) {
@@ -1555,7 +1848,13 @@
         async function sendChatMessage() {
             let inputField = document.getElementById("userInput");
             let userText = inputField.value.trim();
-            if (!userText) return;
+            if (pendingAttachments.some(a => a.processing)) {
+                alert("Attachments are still being prepared. Try again in a moment.");
+                return;
+            }
+            const attachments = pendingAttachments.filter(a => !a.error);
+            if (!userText && attachments.length === 0) return;
+            if (!userText) userText = "Describe and analyze the attached file(s).";
 
             let injectedContext = "";
             Object.keys(loadedProjectFiles).forEach(filename => {
@@ -1569,8 +1868,16 @@
             const isBackground = document.getElementById("isBackgroundWorkerCheckbox").checked;
             const isSelfHeal = document.getElementById("isSelfHealCheckbox").checked;
 
-            appendMessageToActiveSession("👤 You", userText);
+            // Attachments are turned into model input once and shared by every agent call below.
+            const aiOptions = { webSearch: webSearchEnabled, images: attachments.flatMap(a => a.images).slice(0, MAX_IMAGES_PER_MESSAGE) };
+            attachments.forEach(a => {
+                if (a.text) injectedContext += `\n\n[Attached ${a.kind.toUpperCase()}: ${a.name}]\n${a.text}`;
+            });
+            if (attachments.length) logConsoleActivity(`Sending ${attachments.length} attachment(s) with ${aiOptions.images.length} image(s).`);
+
+            appendMessageToActiveSession("👤 You", userText, attachments.map(a => ({ name: a.name, kind: a.kind, thumb: a.thumb })));
             inputField.value = "";
+            clearAttachments();
 
             const session = chatSessions.find(s => s.id === activeChatId);
             if (session) session.isGroup = isGroup;
@@ -1601,7 +1908,7 @@
                 
                 setTimeout(async () => {
                     try {
-                        let res = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext);
+                        let res = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext, aiOptions);
                         if (isSelfHeal) res = await runSelfHealingPass(activeAgent, userText, res);
                         
                         session.messages.pop();
@@ -1624,7 +1931,7 @@
                 for (const agent of groupAgents) {
                     try {
                         appendMessageToSession(session, `🤖 ${agent.name} (Thinking...)`, `Analyzing swarm query...`);
-                        let response = await callAI(agent.instructions + "\n[Memory]: " + agent.memory, userText + injectedContext);
+                        let response = await callAI(agent.instructions + "\n[Memory]: " + agent.memory, userText + injectedContext, aiOptions);
                         if (isSelfHeal) response = await runSelfHealingPass(agent, userText, response);
                         
                         session.messages.pop();
@@ -1637,7 +1944,7 @@
             } else {
                 try {
                     appendMessageToSession(session, `🤖 ${activeAgent.name} (Thinking...)`, `Processing request deterministically...`);
-                    let response = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext);
+                    let response = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext, aiOptions);
                     if (isSelfHeal) response = await runSelfHealingPass(activeAgent, userText, response);
                     
                     session.messages.pop();
