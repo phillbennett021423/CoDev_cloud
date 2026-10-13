@@ -2294,11 +2294,17 @@
         const VISION_MODEL = "qwen/qwen3.8-27b";
 
         async function groqChatMessage(body) {
-            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-                method: "POST",
-                headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
-                body: JSON.stringify(body)
-            });
+            let response;
+            try {
+                response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                    method: "POST",
+                    headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
+                    body: JSON.stringify(body)
+                });
+            } catch (err) {
+                // fetch only throws like this when the request never reached Groq.
+                throw new Error(`Couldn't reach Groq at api.groq.com (${err.message}). Check that this computer is online, and that a firewall, antivirus, VPN or ad blocker isn't blocking api.groq.com.`);
+            }
             const data = await response.json();
             if (data.choices && data.choices.length > 0) return data.choices[0].message;
             const code = data.error?.code ? ` (${data.error.code})` : "";
