@@ -206,6 +206,13 @@
         .msg-attachments img { width: 72px; height: 72px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border-color); }
         .msg-attachments .file-pill { font-size: 0.75rem; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 8px; align-self: center; }
 
+        .btn-ghost { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; display: inline-flex; align-items: center; gap: 6px; }
+        .model-viewer { position: relative; flex: 1; min-height: 320px; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; background: #0b0f1a; }
+        .model-viewer canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+        .model-viewer-bar { position: absolute; left: 8px; right: 8px; bottom: 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted); pointer-events: none; }
+        .model-viewer-bar span { background: rgba(5, 7, 11, 0.75); padding: 4px 8px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .model-viewer-bar button { pointer-events: auto; }
+
         /* Mobile-only elements are hidden on desktop */
         .mobile-only, .mobile-tabbar, .drawer-backdrop, .drawer-close-mobile { display: none; }
 
@@ -286,6 +293,8 @@
             .file-tree { max-height: 30vh; overflow-y: auto; }
             .file-item { min-height: 44px; }
             .file-editor-box { min-height: 50vh; font-size: 14px; }
+            .model-viewer { min-height: 55vh; }
+            .btn-ghost { min-height: 44px; }
             .codev-hub-grid { grid-template-columns: 1fr; gap: 12px; }
             .codev-hub-card { box-shadow: none; padding: 16px; }
 
@@ -442,7 +451,7 @@
                     <h3>Local Project Workspace</h3>
                     <button class="btn-primary" style="background: var(--success);" onclick="connectLocalFolder()">📁 Connect Folder</button>
                 </div>
-                <p style="font-size: 0.85rem; color: var(--text-muted);" id="projectSourceHint">Connect a folder (or pick files on your phone) to load your project files right here.</p>
+                <p style="font-size: 0.85rem; color: var(--text-muted);" id="projectSourceHint">Connect a folder (or pick files on your phone) to load your project files right here. 3D models (.glb, .gltf) open in an interactive viewer.</p>
                 <div class="project-grid">
                     <div class="file-tree" id="projectFileList">
                         <div style="font-size: 0.8rem; color: var(--text-muted); padding: 10px;">No compatible code files found in root folder.</div>
@@ -450,9 +459,16 @@
                     <div class="project-editor-col">
                         <div class="project-editor-actions">
                             <span id="selectedFileName" style="font-size: 0.85rem; font-weight: bold; color: var(--accent);">No file selected</span>
-                            <button class="btn-primary" onclick="saveActiveFileChanges()">💾 Save Changes</button>
+                            <button class="btn-primary" id="saveFileBtn" onclick="saveActiveFileChanges()">💾 Save Changes</button>
                         </div>
                         <textarea class="file-editor-box" id="fileEditorContent" placeholder="Connect a local folder to view and edit files..."></textarea>
+                        <div class="model-viewer" id="modelViewer" style="display: none;">
+                            <canvas id="modelCanvas"></canvas>
+                            <div class="model-viewer-bar">
+                                <span id="modelViewerInfo">Drag to orbit · pinch or scroll to zoom</span>
+                                <button class="btn-ghost" onclick="resetModelView()">⟲ Reset view</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -505,7 +521,7 @@
                         <h4>☁️ Cloud Daemon Status</h4>
                         <span class="codev-badge" id="cloudDaemonStatus">Active 24/7</span>
                         <div style="font-size: 1.5rem; font-weight: bold; color: var(--text-main); margin-top: 5px;" id="cloudTaskCount">14 Routines Executed</div>
-                        <p style="font-size: 0.8rem; color: var(--text-muted);">Connected to OpenRouter / Groq Cloud infrastructure.</p>
+                        <p style="font-size: 0.8rem; color: var(--text-muted);">Connected to Groq Cloud infrastructure.</p>
                     </div>
                     <div class="codev-hub-card">
                         <h4>🔗 Workspace Integrations</h4>
@@ -639,6 +655,17 @@
             return PROJECT_FILE_EXTENSIONS.some(ext => name.endsWith(ext));
         }
 
+        // 3D models open in the viewer; .bin and textures are kept so .gltf files can find them.
+        const MODEL_EXTENSIONS = ['.glb', '.gltf'];
+        const MODEL_RESOURCE_EXTENSIONS = ['.bin', '.png', '.jpg', '.jpeg', '.webp'];
+        let loadedModelAssets = {};
+        function isModelFileName(name) {
+            return MODEL_EXTENSIONS.some(ext => name.toLowerCase().endsWith(ext));
+        }
+        function isModelAssetName(name) {
+            return isModelFileName(name) || MODEL_RESOURCE_EXTENSIONS.some(ext => name.toLowerCase().endsWith(ext));
+        }
+
         function escapeHtml(value) {
             return String(value ?? "").replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
         }
@@ -648,17 +675,22 @@
             const picker = document.createElement("input");
             picker.type = "file";
             picker.multiple = true;
-            picker.accept = PROJECT_FILE_EXTENSIONS.join(",");
+            picker.accept = [...PROJECT_FILE_EXTENSIONS, ...MODEL_EXTENSIONS, ...MODEL_RESOURCE_EXTENSIONS].join(",");
             picker.onchange = async () => {
-                const files = Array.from(picker.files || []).filter(f => isProjectFileName(f.name));
+                const picked = Array.from(picker.files || []);
+                const files = picked.filter(f => isProjectFileName(f.name) || isModelFileName(f.name));
                 if (files.length === 0) {
-                    alert("No supported files selected (" + PROJECT_FILE_EXTENSIONS.join(", ") + ").");
+                    alert("No supported files selected (" + [...PROJECT_FILE_EXTENSIONS, ...MODEL_EXTENSIONS].join(", ") + ").");
                     return;
                 }
                 connectedDirectoryHandle = null;
                 loadedProjectFiles = {};
+                loadedModelAssets = {};
                 activeSelectedFile = null;
-                for (const file of files) loadedProjectFiles[file.name] = await file.text();
+                for (const file of picked) {
+                    if (isProjectFileName(file.name)) loadedProjectFiles[file.name] = await file.text();
+                    else if (isModelAssetName(file.name)) loadedModelAssets[file.name] = file;
+                }
                 document.getElementById("projectSourceHint").innerText = `Loaded ${files.length} file(s). Edits stay in CoDev; Save copies or downloads the file.`;
                 logConsoleActivity(`Loaded ${files.length} project file(s) from the file picker.`);
                 switchView('project');
@@ -686,10 +718,16 @@
 
         async function scanConnectedDirectory() {
             loadedProjectFiles = {};
+            loadedModelAssets = {};
+            activeSelectedFile = null;
             for await (const [name, handle] of connectedDirectoryHandle.entries()) {
-                if (handle.kind === 'file' && isProjectFileName(name)) {
+                if (handle.kind !== 'file') continue;
+                if (isProjectFileName(name)) {
                     const file = await handle.getFile();
                     loadedProjectFiles[name] = await file.text();
+                } else if (isModelAssetName(name)) {
+                    // File objects read lazily, so large models cost nothing until opened.
+                    loadedModelAssets[name] = await handle.getFile();
                 }
             }
             document.getElementById("projectSourceHint").innerText = `Connected to folder: ${connectedDirectoryHandle.name}`;
@@ -699,7 +737,7 @@
         function renderProjectFiles() {
             const listContainer = document.getElementById("projectFileList");
             listContainer.innerHTML = "";
-            const keys = Object.keys(loadedProjectFiles);
+            const keys = [...Object.keys(loadedProjectFiles), ...Object.keys(loadedModelAssets).filter(isModelFileName)];
             if (keys.length === 0) {
                 listContainer.innerHTML = `<div style="font-size: 0.8rem; color: var(--text-muted); padding: 10px;">No compatible code files found in root folder.</div>`;
                 return;
@@ -707,7 +745,7 @@
             keys.forEach(filename => {
                 const item = document.createElement("div");
                 item.className = `file-item ${activeSelectedFile === filename ? 'active' : ''}`;
-                item.innerHTML = `<span>📄 ${escapeHtml(filename)}</span>`;
+                item.innerHTML = `<span>${isModelFileName(filename) ? '🧊' : '📄'} ${escapeHtml(filename)}</span>`;
                 item.onclick = () => selectProjectFile(filename);
                 listContainer.appendChild(item);
             });
@@ -718,12 +756,22 @@
             activeSelectedFile = filename;
             renderProjectFiles();
             document.getElementById("selectedFileName").innerText = filename;
+            if (isModelFileName(filename) && loadedModelAssets[filename]) {
+                showModelViewer(filename);
+                return;
+            }
+            modelViewer.loadToken++;
+            setModelViewerMode(false);
             document.getElementById("fileEditorContent").value = loadedProjectFiles[filename] || "";
         }
 
         async function saveActiveFileChanges() {
             if (!activeSelectedFile) {
                 alert("No file selected. Connect a folder or pick files first.");
+                return;
+            }
+            if (isModelFileName(activeSelectedFile)) {
+                alert("3D models are view-only in CoDev.");
                 return;
             }
             const updatedContent = document.getElementById("fileEditorContent").value;
@@ -952,7 +1000,8 @@
             const agentFlowMenu = document.getElementById("menuAgentFlow");
             if (agentFlowMenu) agentFlowMenu.classList.toggle("active", viewName === "chat");
 
-            if (viewName === "project" && Object.keys(loadedProjectFiles).length > 0) renderProjectFiles();
+            if (viewName === "project" && (Object.keys(loadedProjectFiles).length > 0 || Object.keys(loadedModelAssets).length > 0)) renderProjectFiles();
+            if (viewName === "project") resumeModelViewer();
             if (VIEW_LOG_MESSAGES[viewName]) logConsoleActivity(VIEW_LOG_MESSAGES[viewName]);
             if (isMobileLayout() && openDrawerName) closeDrawers();
             updateMobileTabs();
@@ -1092,6 +1141,202 @@
             }
             renderChatList();
         }
+
+        // 3D MODEL VIEWER (Project Files)
+        // three.js ships in vendor/three so the viewer works offline in the APK. It is
+        // imported only when a model is opened, so it costs nothing until then. Pages
+        // opened straight from disk (file://) can't import local modules, so those
+        // fall back to the same version on jsDelivr.
+        const THREE_CDN = "https://cdn.jsdelivr.net/npm/three@0.170.0/";
+        let threeModulesPromise = null;
+
+        function loadThree() {
+            if (!threeModulesPromise) {
+                const local = file => new URL(`vendor/three/${file}`, document.baseURI).href;
+                const importAll = urls => Promise.all(urls.map(url => import(url)));
+                threeModulesPromise = importAll([local("three.module.min.js"), local("GLTFLoader.js"), local("OrbitControls.js"), local("meshopt_decoder.module.js")])
+                    .catch(err => {
+                        logConsoleActivity(`[3D Viewer] Local three.js unavailable (${err.message}); loading it from jsDelivr.`);
+                        return importAll([THREE_CDN + "+esm", THREE_CDN + "examples/jsm/loaders/GLTFLoader.js/+esm", THREE_CDN + "examples/jsm/controls/OrbitControls.js/+esm", THREE_CDN + "examples/jsm/libs/meshopt_decoder.module.js/+esm"]);
+                    })
+                    .then(([THREE, gltf, orbit, meshopt]) => ({ THREE, GLTFLoader: gltf.GLTFLoader, OrbitControls: orbit.OrbitControls, MeshoptDecoder: meshopt.MeshoptDecoder }))
+                    .catch(err => { threeModulesPromise = null; throw err; });
+            }
+            return threeModulesPromise;
+        }
+
+        // One WebGL renderer is reused for every model; phones allow only a few contexts.
+        const modelViewer = { lib: null, renderer: null, scene: null, camera: null, controls: null, root: null, grid: null, mixer: null, clock: null, frame: 0, loadToken: 0, objectUrls: [], fit: null };
+
+        function isModelViewerVisible() {
+            return document.getElementById("modelViewer").offsetParent !== null;
+        }
+
+        function requestModelRender() {
+            if (modelViewer.renderer && !modelViewer.frame) modelViewer.frame = requestAnimationFrame(renderModelFrame);
+        }
+
+        // Renders on demand: only while the camera is moving or an animation plays,
+        // and never while the viewer is hidden.
+        function renderModelFrame() {
+            modelViewer.frame = 0;
+            if (!isModelViewerVisible()) return;
+            const dt = modelViewer.clock.getDelta();
+            let keepGoing = modelViewer.controls.update();
+            if (modelViewer.mixer) { modelViewer.mixer.update(dt); keepGoing = true; }
+            modelViewer.renderer.render(modelViewer.scene, modelViewer.camera);
+            if (keepGoing) requestModelRender();
+        }
+
+        function resumeModelViewer() {
+            if (!modelViewer.renderer) return;
+            modelViewer.clock.getDelta();
+            requestModelRender();
+        }
+
+        function initModelViewer(lib) {
+            if (modelViewer.renderer) return;
+            const { THREE, OrbitControls } = lib;
+            const container = document.getElementById("modelViewer");
+            const canvas = document.getElementById("modelCanvas");
+            const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0b0f1a);
+            scene.add(new THREE.HemisphereLight(0xffffff, 0x334155, 1.6));
+            const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+            sun.position.set(3, 5, 4);
+            scene.add(sun);
+            const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
+            const controls = new OrbitControls(camera, canvas);
+            controls.enableDamping = true;
+            controls.addEventListener("change", requestModelRender);
+            controls.addEventListener("start", () => { modelViewer.userMoved = true; });
+            Object.assign(modelViewer, { lib, renderer, scene, camera, controls, clock: new THREE.Clock() });
+            new ResizeObserver(() => {
+                const { clientWidth: w, clientHeight: h } = container;
+                if (!w || !h) return;
+                renderer.setSize(w, h, false);
+                camera.aspect = w / h;
+                camera.updateProjectionMatrix();
+                // Keep the model framed when the panel changes shape, unless the user has moved the camera.
+                if (!modelViewer.userMoved) resetModelView();
+                requestModelRender();
+            }).observe(container);
+        }
+
+        function disposeModel() {
+            const { root, scene, mixer } = modelViewer;
+            if (mixer) mixer.stopAllAction();
+            modelViewer.mixer = null;
+            if (!root) return;
+            scene.remove(root);
+            root.traverse(obj => {
+                if (obj.geometry) obj.geometry.dispose();
+                const materials = Array.isArray(obj.material) ? obj.material : obj.material ? [obj.material] : [];
+                materials.forEach(mat => {
+                    Object.values(mat).forEach(value => { if (value && value.isTexture) value.dispose(); });
+                    mat.dispose();
+                });
+            });
+            modelViewer.root = null;
+        }
+
+        function resetModelView() {
+            const { fit, camera, controls } = modelViewer;
+            if (!fit) return;
+            // An update without damping applies and clears any leftover spin from the last drag.
+            controls.enableDamping = false;
+            controls.update();
+            controls.enableDamping = true;
+            // Fit the whole model in the narrower of the two fields of view (portrait phones).
+            const vFov = camera.fov * Math.PI / 180;
+            const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+            const distance = 1.1 * fit.radius / Math.sin(Math.min(vFov, hFov) / 2);
+            camera.near = fit.radius / 100;
+            camera.far = fit.radius * 100;
+            camera.position.set(0.6, 0.45, 0.75).normalize().multiplyScalar(distance);
+            camera.updateProjectionMatrix();
+            controls.target.set(0, 0, 0);
+            controls.update();
+            modelViewer.userMoved = false;
+            requestModelRender();
+        }
+
+        function setModelViewerMode(isModel) {
+            document.getElementById("modelViewer").style.display = isModel ? "block" : "none";
+            document.getElementById("fileEditorContent").style.display = isModel ? "none" : "";
+            document.getElementById("saveFileBtn").style.display = isModel ? "none" : "";
+        }
+
+        async function showModelViewer(name) {
+            const token = ++modelViewer.loadToken;
+            const info = document.getElementById("modelViewerInfo");
+            setModelViewerMode(true);
+            info.textContent = `Loading ${name}…`;
+            try {
+                const lib = await loadThree();
+                initModelViewer(lib);
+                const { THREE, GLTFLoader, MeshoptDecoder } = lib;
+
+                // A .gltf points at sibling .bin and texture files by name; serve them from what was loaded.
+                const urlByName = {};
+                const objectUrls = [];
+                Object.entries(loadedModelAssets).forEach(([assetName, file]) => {
+                    if (assetName === name) return;
+                    const url = URL.createObjectURL(file);
+                    urlByName[assetName] = url;
+                    objectUrls.push(url);
+                });
+                const manager = new THREE.LoadingManager();
+                manager.setURLModifier(url => {
+                    if (/^(blob|data):/.test(url)) return url;
+                    const base = decodeURIComponent(url.split("?")[0].split(/[\\/]/).pop());
+                    return urlByName[base] || url;
+                });
+                const loader = new GLTFLoader(manager);
+                loader.setMeshoptDecoder(MeshoptDecoder);
+                const data = await loadedModelAssets[name].arrayBuffer();
+                const gltf = await new Promise((resolve, reject) => loader.parse(data, "", resolve, reject));
+                objectUrls.forEach(url => URL.revokeObjectURL(url));
+                if (token !== modelViewer.loadToken) return;
+
+                disposeModel();
+                const root = gltf.scene;
+                const box = new THREE.Box3().setFromObject(root);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+                root.position.sub(center);
+                modelViewer.scene.add(root);
+                modelViewer.root = root;
+
+                const radius = Math.max(size.length() / 2, 0.001);
+                modelViewer.fit = { radius };
+                if (modelViewer.grid) { modelViewer.scene.remove(modelViewer.grid); modelViewer.grid.dispose(); }
+                modelViewer.grid = new THREE.GridHelper(radius * 4, 20, 0x334155, 0x1e293b);
+                modelViewer.grid.position.y = -size.y / 2;
+                modelViewer.scene.add(modelViewer.grid);
+
+                if (gltf.animations.length) {
+                    modelViewer.mixer = new THREE.AnimationMixer(root);
+                    modelViewer.mixer.clipAction(gltf.animations[0]).play();
+                }
+                let triangles = 0;
+                root.traverse(obj => {
+                    if (obj.isMesh && obj.geometry) triangles += (obj.geometry.index ? obj.geometry.index.count : obj.geometry.attributes.position.count) / 3;
+                });
+                info.textContent = `${name} · ${Math.round(triangles).toLocaleString()} triangles` + (gltf.animations.length ? ` · playing "${gltf.animations[0].name || "animation 1"}"` : "");
+                resetModelView();
+                modelViewer.clock.getDelta();
+                logConsoleActivity(`[3D Viewer] Opened ${name} (${Math.round(triangles)} triangles, ${gltf.animations.length} animation(s)).`);
+            } catch (err) {
+                if (token !== modelViewer.loadToken) return;
+                const message = /draco/i.test(err.message || "") ? "This model uses Draco compression, which the viewer doesn't support yet. Export it without Draco." : (err.message || String(err));
+                info.textContent = `Couldn't open ${name}: ${message}`;
+                logConsoleActivity(`[3D Viewer] Failed to open ${name}: ${message}`);
+            }
+        }
+
 
         // MULTIMEDIA ATTACHMENTS & LIVE WEB SEARCH
         // Files are converted in the browser when picked: images are downscaled to
