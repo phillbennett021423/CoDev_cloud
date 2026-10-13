@@ -44,10 +44,10 @@ COMMAND_TIMEOUT_SECONDS = 60
 
 # Only CoDev itself may call the helper: pages opened from disk send "null",
 # the Android app uses https://localhost, and dev servers use localhost/127.0.0.1.
-ALLOWED_ORIGIN = re.compile(r"^(null|https?://(localhost|127\.0\.0\.1)(:\d+)?|capacitor://localhost)$")
+ALLOWED_ORIGIN = re.compile(r"^(null|https?://(localhost|127\.0\.0\.1)(:\d+)?|capacitor://localhost|app://codev)$")
 # Running commands is stricter: sandboxed pages on any website also send "null",
-# so /run needs CoDev served from localhost (see README).
-RUN_ORIGIN = re.compile(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$")
+# so /run needs CoDev served from localhost or the desktop app (see README).
+RUN_ORIGIN = re.compile(r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|app://codev)$")
 ALLOWED_HOST = re.compile(r"^(localhost|127\.0\.0\.1)(:\d+)?$")
 
 COMMANDS = {}

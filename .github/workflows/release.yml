@@ -1,4 +1,4 @@
-name: Release APK
+name: Release APK and desktop app
 
 # A merged pull request lands on main as a push, so this covers both cases.
 on:
@@ -84,3 +84,36 @@ jobs:
             --repo "${{ github.repository }}" \
             --draft=false \
             --latest
+
+  desktop:
+    # Adds the Windows installer to the release the job above just published.
+    needs: release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build Windows installer
+        working-directory: desktop
+        run: npm run dist
+
+      - name: Upload installer to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release upload "release-${{ github.run_number }}" desktop/dist/CoDev-Studio-Setup.exe \
+            --repo "${{ github.repository }}"

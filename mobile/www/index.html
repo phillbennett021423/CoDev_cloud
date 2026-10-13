@@ -1419,8 +1419,13 @@
             return /anomaly-modal|challenge-form|If this error persists/i.test(html);
         }
 
+        // The Android app's CapacitorHttp, or the same thing from the Windows desktop app.
+        function getNativeHttp() {
+            return getNativeSpeechPlugin("CapacitorHttp") || window.codevDesktop?.http || null;
+        }
+
         async function searchDuckDuckGoNative(query) {
-            const http = getNativeSpeechPlugin("CapacitorHttp");
+            const http = getNativeHttp();
             if (!http) return null;
             const response = await http.get({
                 url: `${DDG_HTML_URL}?q=${encodeURIComponent(query)}&kl=us-en`,

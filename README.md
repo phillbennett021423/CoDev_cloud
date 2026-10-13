@@ -2,7 +2,14 @@
 
 The app is a single page, `mobile/www/index.html`. It talks to Groq directly from the browser, so there's no backend server to run. The Android app is in `mobile/` (see `mobile/README.md`).
 
-## Run it on your computer
+## Windows desktop app
+
+Download and run the installer: https://github.com/phillbennett021423/CoDev_cloud/releases/latest/download/CoDev-Studio-Setup.exe
+It adds CoDev Studio to the Start menu and the desktop. Web search works in it without the Python helper. Windows may warn that the app is from an unknown publisher because it isn't code-signed; choose **More info → Run anyway**.
+
+The app's code is in `desktop/` (Electron). To run it from source: `cd desktop && npm install && npm start`.
+
+## Run it in a browser on your computer
 
 **Windows:** double-click `start-codev.bat`. It opens http://localhost:3000 and, if Python is installed, starts the free search helper too.
 
