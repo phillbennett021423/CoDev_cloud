@@ -213,6 +213,12 @@
         .model-viewer-bar span { background: rgba(5, 7, 11, 0.75); padding: 4px 8px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .model-viewer-bar button { pointer-events: auto; }
 
+        .msg-sources { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; font-size: 0.75rem; color: var(--text-muted); }
+        .msg-sources a { color: var(--accent); text-decoration: none; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 3px 8px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .settings-extra { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; font-size: 0.85rem; }
+        .settings-extra summary { cursor: pointer; font-weight: bold; }
+        .settings-extra .form-group, .settings-extra .checkbox-group { margin-top: 10px; }
+
         /* Mobile-only elements are hidden on desktop */
         .mobile-only, .mobile-tabbar, .drawer-backdrop, .drawer-close-mobile { display: none; }
 
@@ -284,6 +290,7 @@
             .chat-input-area input#userInput { min-width: 0; flex: 1 1 100%; font-size: 16px; padding: 12px; }
             .mic-btn, .tool-btn { min-width: 48px; min-height: 48px; flex: 0 0 auto; }
             .attachment-chip { max-width: 100%; }
+            .msg-sources a { max-width: 100%; padding: 6px 10px; }
             .attachment-chip button { min-width: 36px; min-height: 36px; }
             .chat-input-area button.send-btn { flex: 1; min-height: 48px; padding: 12px; }
 
@@ -438,7 +445,7 @@
                             <input type="text" id="userInput" enterkeyhint="send" placeholder="Ask your agents anything or type @filename to reference local file..." onkeydown="if(event.key==='Enter' && !event.isComposing) { event.preventDefault(); sendChatMessage(); }">
                             <button id="micBtn" class="mic-btn" onclick="toggleSpeechRecognition()" title="Voice Input (STT)">🎤</button>
                             <button id="attachBtn" class="tool-btn" onclick="document.getElementById('attachmentInput').click()" title="Attach images, PDFs or short videos">📎</button>
-                            <button id="webSearchBtn" class="tool-btn" onclick="toggleWebSearch()" title="Live web search: off" aria-pressed="false">🔎</button>
+                            <button id="webSearchBtn" class="tool-btn" onclick="toggleWebSearch()" title="Search the web for every message: off (technical questions are searched automatically)" aria-pressed="false">🔎</button>
                             <button class="send-btn" onclick="sendChatMessage()">Send Task</button>
                         </div>
                     </div>
@@ -626,6 +633,17 @@
                 <label>Paste Your Groq API Key Here</label>
                 <input type="text" id="modalGroqKey" placeholder="gsk_..." style="font-family: monospace;">
             </div>
+
+            <details class="settings-extra" id="searchSettings">
+                <summary>🔎 Web grounding (free DuckDuckGo search)</summary>
+                <label class="checkbox-group">
+                    <input type="checkbox" id="modalAutoGround"> Search the web automatically for technical and code questions
+                </label>
+                <div class="form-group">
+                    <label>Desktop search helper address (the Android app doesn't need it)</label>
+                    <input type="text" id="modalSearchHelperUrl" style="font-family: monospace;">
+                </div>
+            </details>
 
             <input type="hidden" id="modalProvider" value="groq">
 
@@ -1120,6 +1138,7 @@
                     </div>
                     ${renderMessageAttachments(msg.attachments)}
                     <div class="text">${formattedText}</div>
+                    ${renderMessageSources(msg.sources)}
                 `;
                 fragment.appendChild(div);
             });
@@ -1132,9 +1151,12 @@
         }
 
         // Replies go to the chat they were asked in, even if the user switched chats meanwhile.
-        function appendMessageToSession(session, sender, text, attachments) {
+        function appendMessageToSession(session, sender, text, attachments, sources) {
             if (!session) return;
-            session.messages.push(attachments && attachments.length ? { sender, text, attachments } : { sender, text });
+            const message = { sender, text };
+            if (attachments && attachments.length) message.attachments = attachments;
+            if (sources && sources.length) message.sources = sources;
+            session.messages.push(message);
             
             if (session.messages.length === 3 && sender.includes("You")) {
                 session.title = text.length > 22 ? text.substring(0, 22) + "..." : text;
@@ -1338,6 +1360,126 @@
         }
 
 
+        // LOCAL WEB SEARCH (DuckDuckGo, free, no API key)
+        // Uses the same DuckDuckGo HTML endpoint as the `ddgs` Python library.
+        //  - In the Android app, the request goes out natively through Capacitor's
+        //    built-in HTTP plugin, so the browser's cross-site (CORS) block doesn't apply.
+        //  - In a desktop browser, CORS blocks DuckDuckGo, so the app calls the local
+        //    ddgs helper (tools/ddgs-helper) running on this computer instead.
+        const DDG_HTML_URL = "https://html.duckduckgo.com/html/";
+        const DEFAULT_SEARCH_HELPER_URL = "http://127.0.0.1:8787";
+        const SEARCH_RESULT_LIMIT = 5;
+        const SEARCH_TIMEOUT_MS = 8000;
+        const SEARCH_CACHE_MS = 10 * 60 * 1000;
+        let autoGroundingEnabled = (localStorage.getItem("codev_auto_ground") ?? "1") === "1";
+        let searchHelperUrl = localStorage.getItem("codev_search_helper_url") || DEFAULT_SEARCH_HELPER_URL;
+        const searchCache = new Map();
+
+        // Technical or code questions get searched automatically.
+        const TECHNICAL_QUERY_PATTERN = /```|\b(code|coding|script|function|method|class|struct|api|sdk|library|package|module|import|syntax|compile[rd]?|error|exception|bug|debug|crash|stack ?trace|deprecated|version|install|implement(ation)?|refactor|godot|gdscript|unity|unreal|c#|c\+\+|csharp|javascript|typescript|python|rust|java|kotlin|swift|html|css|sql|json|regex|shader|android|capacitor|npm|pip|git)\b|\w+\.\w+\(|\w+\(\)/i;
+        function isTechnicalQuery(text) {
+            return TECHNICAL_QUERY_PATTERN.test(text);
+        }
+
+        // Search engines want a short query, not a pasted file.
+        function buildSearchQuery(userText) {
+            return userText
+                .replace(/```[\s\S]*?```/g, " ")
+                .replace(/@\S+/g, " ")
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 200);
+        }
+
+        // Mirrors ddgs's DuckDuckGo parser: each result body has an h2 title link and a snippet.
+        function parseDuckDuckGoHtml(html) {
+            const doc = new DOMParser().parseFromString(html, "text/html");
+            const results = [];
+            doc.querySelectorAll(".result__body, .result .links_main").forEach(body => {
+                const link = body.querySelector("h2 a, a.result__a");
+                if (!link) return;
+                let href = link.getAttribute("href") || "";
+                // DuckDuckGo sometimes wraps links as //duckduckgo.com/l/?uddg=<real url>.
+                const wrapped = href.match(/[?&]uddg=([^&]+)/);
+                if (wrapped) href = decodeURIComponent(wrapped[1]);
+                if (href.startsWith("//")) href = "https:" + href;
+                if (!/^https?:\/\//.test(href) || href.startsWith("https://duckduckgo.com/y.js")) return;
+                const snippet = body.querySelector(".result__snippet");
+                const title = link.textContent.replace(/\s+/g, " ").trim();
+                const text = (snippet ? snippet.textContent : "").replace(/\s+/g, " ").trim();
+                if (title && !results.some(r => r.href === href)) results.push({ title, href, body: text });
+            });
+            return results;
+        }
+
+        function isDuckDuckGoBlockPage(html) {
+            return /anomaly-modal|challenge-form|If this error persists/i.test(html);
+        }
+
+        async function searchDuckDuckGoNative(query) {
+            const http = getNativeSpeechPlugin("CapacitorHttp");
+            if (!http) return null;
+            const response = await http.get({
+                url: `${DDG_HTML_URL}?q=${encodeURIComponent(query)}&kl=us-en`,
+                headers: { "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36", "Accept-Language": "en-US,en;q=0.9" },
+                responseType: "text",
+                connectTimeout: SEARCH_TIMEOUT_MS,
+                readTimeout: SEARCH_TIMEOUT_MS
+            });
+            const html = typeof response.data === "string" ? response.data : "";
+            if (response.status !== 200 || isDuckDuckGoBlockPage(html)) throw new Error(`DuckDuckGo is limiting requests right now (HTTP ${response.status}). Try again in a minute.`);
+            return parseDuckDuckGoHtml(html);
+        }
+
+        async function searchViaLocalHelper(query) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
+            try {
+                const url = `${searchHelperUrl.replace(/\/+$/, "")}/search?q=${encodeURIComponent(query)}&max=${SEARCH_RESULT_LIMIT}`;
+                const response = await fetch(url, { signal: controller.signal });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || `helper returned HTTP ${response.status}`);
+                return (data.results || []).map(r => ({ title: String(r.title || ""), href: String(r.href || ""), body: String(r.body || "") }));
+            } catch (err) {
+                if (err.name === "AbortError" || err instanceof TypeError) {
+                    throw new Error(`the local search helper isn't running at ${searchHelperUrl}. Start it with: python tools/ddgs-helper/ddgs_helper.py`);
+                }
+                throw err;
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
+        // Returns { results, source } with up to SEARCH_RESULT_LIMIT results, or throws with a readable reason.
+        async function localWebSearch(query) {
+            query = buildSearchQuery(query);
+            if (!query) return { results: [], source: "none" };
+            const cached = searchCache.get(query);
+            if (cached && Date.now() - cached.at < SEARCH_CACHE_MS) return cached.value;
+
+            let value;
+            const nativeResults = await searchDuckDuckGoNative(query);
+            if (nativeResults) value = { results: nativeResults.slice(0, SEARCH_RESULT_LIMIT), source: "DuckDuckGo (on device)" };
+            else value = { results: (await searchViaLocalHelper(query)).slice(0, SEARCH_RESULT_LIMIT), source: "DuckDuckGo via local ddgs helper" };
+
+            searchCache.set(query, { at: Date.now(), value });
+            if (searchCache.size > 30) searchCache.delete(searchCache.keys().next().value);
+            return value;
+        }
+
+        function formatSearchSnippets(search) {
+            const lines = search.results.map((r, i) => `[${i + 1}] ${r.title}\n${r.href}\n${r.body}`);
+            return `\n\n[Web Search Snippets: ${search.source}, fetched ${new Date().toISOString().slice(0, 10)}]\n${lines.join("\n\n")}`;
+        }
+
+        function renderMessageSources(sources) {
+            if (!sources || !sources.length) return "";
+            const links = sources
+                .filter(s => /^https?:\/\//.test(s.href))
+                .map((s, i) => `<a href="${escapeHtml(s.href)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(s.href)}">[${i + 1}] ${escapeHtml(s.title)}</a>`);
+            return `<div class="msg-sources"><span>🔎 Web sources</span>${links.join("")}</div>`;
+        }
+
         // MULTIMEDIA ATTACHMENTS & LIVE WEB SEARCH
         // Files are converted in the browser when picked: images are downscaled to
         // base64 JPEG, PDFs become text (or page images when scanned), and videos
@@ -1355,10 +1497,10 @@
             const btn = document.getElementById("webSearchBtn");
             btn.classList.toggle("active", webSearchEnabled);
             btn.setAttribute("aria-pressed", String(webSearchEnabled));
-            btn.title = `Live web search: ${webSearchEnabled ? "on" : "off"}`;
+            btn.title = `Search the web for every message: ${webSearchEnabled ? "on" : "off"} (technical questions are searched automatically)`;
             const badges = document.getElementById("compactBadgesBar");
             if (badges.style.display === "flex") document.getElementById("badgeWebSearch").style.display = webSearchEnabled ? "flex" : "none";
-            logConsoleActivity(`Live web search ${webSearchEnabled ? "enabled" : "disabled"}.`);
+            logConsoleActivity(`Web search for every message ${webSearchEnabled ? "enabled" : "disabled"}.`);
         }
 
         function attachmentKind(file) {
@@ -1828,6 +1970,8 @@
 
         function openSettingsModal() {
             document.getElementById("modalGroqKey").value = groqKey;
+            document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
+            document.getElementById("modalSearchHelperUrl").value = searchHelperUrl;
             document.getElementById("modalCancelBtn").style.display = groqKey ? "inline-block" : "none";
             if (isMobileLayout() && openDrawerName) closeDrawers();
             document.getElementById("settingsModal").style.display = "flex";
@@ -1847,6 +1991,11 @@
                 alert("Please enter a valid Groq API key starting with 'gsk_'.");
                 return;
             }
+
+            autoGroundingEnabled = document.getElementById("modalAutoGround").checked;
+            searchHelperUrl = document.getElementById("modalSearchHelperUrl").value.trim() || DEFAULT_SEARCH_HELPER_URL;
+            localStorage.setItem("codev_auto_ground", autoGroundingEnabled ? "1" : "0");
+            localStorage.setItem("codev_search_helper_url", searchHelperUrl);
 
             localStorage.setItem("codev_groq_key", groqKey);
             updateStatusDisplay();
@@ -2021,11 +2170,6 @@
             throw new Error("Groq API Error: " + (data.error?.message || JSON.stringify(data)));
         }
 
-        // Groq marks citations like 【2†L6-L10】; they mean nothing to the reader here.
-        function stripSearchCitations(text) {
-            return text.replace(/\s*【[^】]*】/g, "");
-        }
-
         async function callAI(systemPrompt, userMessage, options = {}) {
             if (!groqKey) {
                 openSettingsModal();
@@ -2035,7 +2179,10 @@
             const technicalGuardrails = `CRITICAL TECHNICAL & STRICT COMPLIANCE RULES:
 1. CURRENT DATE CONTEXT: Today is October 12, 2026. Donald Trump is the 47th President of the United States.
 2. GODOT 4 ENGINE RULES: CharacterBody3D.move_and_slide() takes ZERO arguments. It reads directly from built-in velocity and up_direction.
-3. C# VECTOR RULES: Godot Vector2 and Vector3 are structs, not records. Do NOT use record 'with' expressions. Construct new vectors or mutate component properties directly.`;
+3. C# VECTOR RULES: Godot Vector2 and Vector3 are structs, not records. Do NOT use record 'with' expressions. Construct new vectors or mutate component properties directly.
+4. GROUNDING: Blocks marked [Web Search Snippets], [Injected File Context] or [Attached ...] in the user message are your sources of truth. For code syntax, API names, signatures, versions and technical facts, rely on them first; when they conflict with your memory, follow the sources.
+5. NO GUESSING: Never invent functions, classes, parameters, packages, versions, settings or URLs. If the sources and well-established knowledge don't confirm something, say plainly that you could not verify it instead of guessing.
+6. CITATIONS: When a statement relies on a web snippet, cite it inline as [n] using that snippet's number. Never cite a source that was not provided. Workspace files are cited by file name.`;
             
             const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}`;
             const images = options.images || [];
@@ -2046,22 +2193,9 @@
                     temperature: 0.0,
                     messages: [{ role: "system", content: fullSystemPrompt }, { role: "user", content: userMessage }]
                 };
-                if (options.webSearch) {
-                    // Groq runs the search server-side; low effort keeps the browsing session short.
-                    body.tools = [{ type: "browser_search" }];
-                    body.tool_choice = "required";
-                    body.reasoning_effort = "low";
-                    logConsoleActivity("[Web Search] Running live web lookup...");
-                }
-                const answer = await groqChat(body);
-                return options.webSearch ? stripSearchCitations(answer) : answer;
+                return groqChat(body);
             }
 
-            // The vision model can't browse, so search first and hand it the findings.
-            let searchNotes = "";
-            if (options.webSearch) {
-                searchNotes = "\n\n[Live Web Search Findings]\n" + await callAI("Search the web and summarize the facts relevant to this request, with source names.", userMessage, { webSearch: true });
-            }
             logConsoleActivity(`[Vision] Sending ${images.length} image(s) to ${VISION_MODEL}.`);
             return groqChat({
                 model: VISION_MODEL,
@@ -2069,7 +2203,7 @@
                 messages: [
                     { role: "system", content: fullSystemPrompt },
                     { role: "user", content: [
-                        { type: "text", text: userMessage + searchNotes },
+                        { type: "text", text: userMessage },
                         ...images.map(url => ({ type: "image_url", image_url: { url } }))
                     ] }
                 ]
@@ -2114,7 +2248,7 @@
             const isSelfHeal = document.getElementById("isSelfHealCheckbox").checked;
 
             // Attachments are turned into model input once and shared by every agent call below.
-            const aiOptions = { webSearch: webSearchEnabled, images: attachments.flatMap(a => a.images).slice(0, MAX_IMAGES_PER_MESSAGE) };
+            const aiOptions = { images: attachments.flatMap(a => a.images).slice(0, MAX_IMAGES_PER_MESSAGE) };
             attachments.forEach(a => {
                 if (a.text) injectedContext += `\n\n[Attached ${a.kind.toUpperCase()}: ${a.name}]\n${a.text}`;
             });
@@ -2146,6 +2280,29 @@
                 });
             }
 
+            // Ground technical answers in live DuckDuckGo results (or every answer when 🔎 is on).
+            let webSources = [];
+            if (webSearchEnabled || (autoGroundingEnabled && isTechnicalQuery(userText))) {
+                appendMessageToSession(session, "🔎 Web Search", "Searching DuckDuckGo for live sources…");
+                const searchPlaceholder = session.messages[session.messages.length - 1];
+                try {
+                    const search = await localWebSearch(userText);
+                    if (search.results.length) {
+                        webSources = search.results.map(r => ({ title: r.title, href: r.href }));
+                        injectedContext += formatSearchSnippets(search);
+                        logConsoleActivity(`[Web Search] ${search.results.length} result(s) from ${search.source}.`);
+                    } else {
+                        injectedContext += "\n\n[Web Search Snippets: none found. Say so if the answer depends on current facts.]";
+                        logConsoleActivity("[Web Search] No results.");
+                    }
+                } catch (err) {
+                    injectedContext += "\n\n[Web Search Snippets: search unavailable. Say which parts you could not verify.]";
+                    logConsoleActivity(`[Web Search] Skipped: ${err.message}`);
+                }
+                session.messages.splice(session.messages.indexOf(searchPlaceholder), 1);
+                if (session.id === activeChatId) renderActiveChatFeed();
+            }
+
             if (isBackground) {
                 document.getElementById("isBackgroundWorkerCheckbox").checked = false;
                 appendMessageToSession(session, `⚡ Background Worker (${activeAgent.name})`, `Task queued for autonomous execution...`);
@@ -2157,7 +2314,7 @@
                         if (isSelfHeal) res = await runSelfHealingPass(activeAgent, userText, res);
                         
                         session.messages.pop();
-                        appendMessageToSession(session, `⚡ Background Complete [${activeAgent.name}]`, res);
+                        appendMessageToSession(session, `⚡ Background Complete [${activeAgent.name}]`, res, null, webSources);
                     } catch (err) {
                         session.messages.pop();
                         appendMessageToSession(session, "❌ Background Task Error", err.message);
@@ -2180,7 +2337,7 @@
                         if (isSelfHeal) response = await runSelfHealingPass(agent, userText, response);
                         
                         session.messages.pop();
-                        appendMessageToSession(session, `🤖 ${agent.name}`, response);
+                        appendMessageToSession(session, `🤖 ${agent.name}`, response, null, webSources);
                     } catch (err) {
                         session.messages.pop();
                         appendMessageToSession(session, `❌ Error [${agent.name}]`, err.message);
@@ -2193,7 +2350,7 @@
                     if (isSelfHeal) response = await runSelfHealingPass(activeAgent, userText, response);
                     
                     session.messages.pop();
-                    appendMessageToSession(session, `🤖 ${activeAgent.name}`, response);
+                    appendMessageToSession(session, `🤖 ${activeAgent.name}`, response, null, webSources);
                 } catch (err) {
                     session.messages.pop();
                     appendMessageToSession(session, "❌ System Error", err.message);

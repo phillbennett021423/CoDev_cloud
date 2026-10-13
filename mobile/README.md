@@ -24,3 +24,7 @@ Every push to `main`, including merged pull requests, runs `.github/workflows/re
 It builds the APK and publishes a GitHub Release with it attached. The newest one is always at:
 https://github.com/phillbennett021423/CoDev_cloud/releases/latest/download/app-debug.apk
 (The older `codev-studio.apk` name is attached too, so earlier links keep working.)
+
+## Web grounding
+
+Technical and code questions are checked against live DuckDuckGo results before the agents answer. It's free, with no API key. The Android app searches on the phone itself. In a desktop browser, run the small local helper in [`tools/ddgs-helper`](../tools/ddgs-helper/README.md).
