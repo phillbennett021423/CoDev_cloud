@@ -635,12 +635,15 @@
             </div>
 
             <details class="settings-extra" id="searchSettings">
-                <summary>🔎 Web grounding (free DuckDuckGo search)</summary>
+                <summary>🔎 Web grounding & local tools (free)</summary>
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalAutoGround"> Search the web automatically for technical and code questions
                 </label>
+                <label class="checkbox-group">
+                    <input type="checkbox" id="modalLocalTools"> Let agents call local tools on their own (web search, project files, approved commands)
+                </label>
                 <div class="form-group">
-                    <label>Desktop search helper address (the Android app doesn't need it)</label>
+                    <label>Desktop helper address (the Android app doesn't need it)</label>
                     <input type="text" id="modalSearchHelperUrl" style="font-family: monospace;">
                 </div>
             </details>
@@ -1480,6 +1483,133 @@
             return `<div class="msg-sources"><span>🔎 Web sources</span>${links.join("")}</div>`;
         }
 
+        // LOCAL TOOLS THE AGENTS CAN CALL
+        // Described the way MCP describes tools (name, description, inputSchema) and
+        // sent to Groq as function tools. The model decides when to call them; the app
+        // runs them here, on the device, and returns the result. Nothing here is paid.
+        const MAX_TOOL_ROUNDS = 5;
+        const MAX_TOOL_RESULT_CHARS = 12000;
+        let localToolsEnabled = (localStorage.getItem("codev_local_tools") ?? "1") === "1";
+        let helperCommandsCache = { at: 0, commands: [] };
+
+        // Commands the user listed in the desktop helper's allowed_commands.json.
+        async function fetchHelperCommands() {
+            if (getNativeSpeechPlugin("CapacitorHttp")) return [];
+            if (Date.now() - helperCommandsCache.at < 60000) return helperCommandsCache.commands;
+            let commands = [];
+            try {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 1500);
+                const response = await fetch(`${searchHelperUrl.replace(/\/+$/, "")}/commands`, { signal: controller.signal });
+                clearTimeout(timer);
+                if (response.ok) commands = ((await response.json()).commands || []).filter(c => c && typeof c.name === "string");
+            } catch (err) { /* helper not running: no local commands */ }
+            helperCommandsCache = { at: Date.now(), commands };
+            return commands;
+        }
+
+        async function buildLocalTools() {
+            const tools = [
+                {
+                    name: "web_search",
+                    description: "Search the web with DuckDuckGo for live facts. Call this before answering anything about an API, library, engine feature, syntax, version, error message or code you are not completely certain about.",
+                    inputSchema: { type: "object", properties: { query: { type: "string", description: "A short search query, like you would type into a search engine." } }, required: ["query"] },
+                    run: async ({ query }, ctx) => {
+                        if (!String(query || "").trim()) return "web_search needs a query.";
+                        const search = await localWebSearch(String(query));
+                        if (!search.results.length) return "No results.";
+                        const start = ctx.sources.length;
+                        search.results.forEach(r => { if (!ctx.sources.some(s => s.href === r.href)) ctx.sources.push({ title: r.title, href: r.href }); });
+                        return search.results.map(r => {
+                            const n = ctx.sources.findIndex(s => s.href === r.href) + 1 || start + 1;
+                            return `[${n}] ${r.title}\n${r.href}\n${r.body}`;
+                        }).join("\n\n");
+                    }
+                },
+                {
+                    name: "list_workspace_files",
+                    description: "List the files from the user's project folder that are loaded in CoDev.",
+                    inputSchema: { type: "object", properties: {} },
+                    run: async () => {
+                        const names = [...Object.keys(loadedProjectFiles), ...Object.keys(loadedModelAssets).filter(isModelFileName)];
+                        return names.length ? names.join("\n") : "No project files are loaded. The user can connect a folder in Project Files.";
+                    }
+                },
+                {
+                    name: "read_workspace_file",
+                    description: "Read a text file from the user's loaded project folder. Use it to check their actual code instead of assuming.",
+                    inputSchema: { type: "object", properties: { name: { type: "string", description: "File name exactly as list_workspace_files shows it." } }, required: ["name"] },
+                    run: async ({ name }) => {
+                        if (!(name in loadedProjectFiles)) return `No loaded text file named "${name}". Call list_workspace_files to see what is available.`;
+                        const text = loadedProjectFiles[name];
+                        return text.length > MAX_TOOL_RESULT_CHARS ? text.slice(0, MAX_TOOL_RESULT_CHARS) + `\n[truncated: ${text.length} characters total]` : text;
+                    }
+                }
+            ];
+            const commands = await fetchHelperCommands();
+            if (commands.length) {
+                tools.push({
+                    name: "run_local_command",
+                    description: "Run one of the user's pre-approved commands on their computer (for example a build, test or lint script) and get its output. The user confirms each run. Available: " + commands.map(c => `${c.name} (${c.description || c.argv.join(" ")})`).join("; "),
+                    inputSchema: { type: "object", properties: { name: { type: "string", enum: commands.map(c => c.name) } }, required: ["name"] },
+                    run: async ({ name }) => runHelperCommand(commands.find(c => c.name === name))
+                });
+            }
+            return tools;
+        }
+
+        async function runHelperCommand(command) {
+            if (!command) return "Unknown command. Only the listed commands can run.";
+            const shown = (command.argv || []).join(" ");
+            if (!confirm(`An agent wants to run this command on your computer:\n\n${shown}\n(in ${command.cwd || "the helper's project folder"})\n\nAllow it?`)) {
+                logConsoleActivity(`[Tool] You declined: ${command.name}`);
+                return "The user declined to run this command.";
+            }
+            const response = await fetch(`${searchHelperUrl.replace(/\/+$/, "")}/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: command.name }) });
+            const data = await response.json();
+            if (!response.ok) return `Command could not run: ${data.error || response.status}`;
+            logConsoleActivity(`[Tool] ${command.name} exited with code ${data.exit_code}.`);
+            return `Exit code: ${data.exit_code}${data.timed_out ? " (timed out)" : ""}\n--- stdout ---\n${data.stdout || ""}\n--- stderr ---\n${data.stderr || ""}`;
+        }
+
+        function describeToolCall(name, args) {
+            if (name === "web_search") return `🔎 Searching: ${args.query}`;
+            if (name === "read_workspace_file") return `📄 Reading ${args.name}`;
+            if (name === "list_workspace_files") return "📁 Listing project files";
+            if (name === "run_local_command") return `▶️ Running ${args.name}`;
+            return `🛠️ ${name}`;
+        }
+
+        // Runs the model ↔ tool loop until the model answers in plain text.
+        async function runToolLoop(messages, ctx) {
+            const tools = await buildLocalTools();
+            const toolDefs = tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
+            for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+                const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" });
+                const calls = message.tool_calls || [];
+                if (!calls.length) return message.content || "";
+                messages.push({ role: "assistant", content: message.content || "", tool_calls: calls });
+                for (const call of calls) {
+                    const tool = tools.find(t => t.name === call.function?.name);
+                    let args = {};
+                    try { args = JSON.parse(call.function?.arguments || "{}") || {}; } catch (err) { /* bad JSON: run with no args */ }
+                    let result;
+                    if (!tool) {
+                        result = `Unknown tool "${call.function?.name}".`;
+                    } else {
+                        const step = describeToolCall(tool.name, args);
+                        logConsoleActivity(`[Tool] ${step}`);
+                        if (ctx.onStep) ctx.onStep(step);
+                        try { result = await tool.run(args, ctx); } catch (err) { result = `Tool failed: ${err.message}`; }
+                    }
+                    messages.push({ role: "tool", tool_call_id: call.id, name: call.function?.name || "unknown", content: String(result).slice(0, MAX_TOOL_RESULT_CHARS) });
+                }
+            }
+            // Out of rounds: ask for the answer with what was gathered.
+            const final = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "none" });
+            return final.content || "";
+        }
+
         // MULTIMEDIA ATTACHMENTS & LIVE WEB SEARCH
         // Files are converted in the browser when picked: images are downscaled to
         // base64 JPEG, PDFs become text (or page images when scanned), and videos
@@ -1971,6 +2101,7 @@
         function openSettingsModal() {
             document.getElementById("modalGroqKey").value = groqKey;
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
+            document.getElementById("modalLocalTools").checked = localToolsEnabled;
             document.getElementById("modalSearchHelperUrl").value = searchHelperUrl;
             document.getElementById("modalCancelBtn").style.display = groqKey ? "inline-block" : "none";
             if (isMobileLayout() && openDrawerName) closeDrawers();
@@ -1995,6 +2126,9 @@
             autoGroundingEnabled = document.getElementById("modalAutoGround").checked;
             searchHelperUrl = document.getElementById("modalSearchHelperUrl").value.trim() || DEFAULT_SEARCH_HELPER_URL;
             localStorage.setItem("codev_auto_ground", autoGroundingEnabled ? "1" : "0");
+            localToolsEnabled = document.getElementById("modalLocalTools").checked;
+            localStorage.setItem("codev_local_tools", localToolsEnabled ? "1" : "0");
+            helperCommandsCache.at = 0;
             localStorage.setItem("codev_search_helper_url", searchHelperUrl);
 
             localStorage.setItem("codev_groq_key", groqKey);
@@ -2159,15 +2293,20 @@
         // Groq's vision model; it accepts up to 3 images per request.
         const VISION_MODEL = "qwen/qwen3.8-27b";
 
-        async function groqChat(body) {
+        async function groqChatMessage(body) {
             const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
                 method: "POST",
                 headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
                 body: JSON.stringify(body)
             });
             const data = await response.json();
-            if (data.choices && data.choices.length > 0) return data.choices[0].message.content || "";
-            throw new Error("Groq API Error: " + (data.error?.message || JSON.stringify(data)));
+            if (data.choices && data.choices.length > 0) return data.choices[0].message;
+            const code = data.error?.code ? ` (${data.error.code})` : "";
+            throw new Error("Groq API Error: " + (data.error?.message || JSON.stringify(data)) + code);
+        }
+
+        async function groqChat(body) {
+            return (await groqChatMessage(body)).content || "";
         }
 
         async function callAI(systemPrompt, userMessage, options = {}) {
@@ -2182,18 +2321,25 @@
 3. C# VECTOR RULES: Godot Vector2 and Vector3 are structs, not records. Do NOT use record 'with' expressions. Construct new vectors or mutate component properties directly.
 4. GROUNDING: Blocks marked [Web Search Snippets], [Injected File Context] or [Attached ...] in the user message are your sources of truth. For code syntax, API names, signatures, versions and technical facts, rely on them first; when they conflict with your memory, follow the sources.
 5. NO GUESSING: Never invent functions, classes, parameters, packages, versions, settings or URLs. If the sources and well-established knowledge don't confirm something, say plainly that you could not verify it instead of guessing.
-6. CITATIONS: When a statement relies on a web snippet, cite it inline as [n] using that snippet's number. Never cite a source that was not provided. Workspace files are cited by file name.`;
+6. CITATIONS: When a statement relies on a web snippet, cite it inline as [n] using that snippet's number. Never cite a source that was not provided. Workspace files are cited by file name.
+7. TOOLS: When tools are available, use them on your own initiative. Call web_search before answering about any API, library, engine feature, syntax, version or error message you are not certain about, and for any code implementation that is unfamiliar. Call list_workspace_files and read_workspace_file to check the user's real code instead of assuming. Never claim you searched, read, ran or verified something unless a tool result in this conversation shows it.`;
             
             const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}`;
             const images = options.images || [];
 
             if (images.length === 0) {
-                const body = {
-                    model: TEXT_MODEL,
-                    temperature: 0.0,
-                    messages: [{ role: "system", content: fullSystemPrompt }, { role: "user", content: userMessage }]
-                };
-                return groqChat(body);
+                const messages = [{ role: "system", content: fullSystemPrompt }, { role: "user", content: userMessage }];
+                if (options.tools && localToolsEnabled) {
+                    try {
+                        return await runToolLoop(messages, options.tools);
+                    } catch (err) {
+                        // A malformed tool call shouldn't cost the user their answer.
+                        if (!/tool|function/i.test(err.message)) throw err;
+                        logConsoleActivity(`[Tool] Tool loop failed (${err.message}); answering without tools.`);
+                        messages.length = 2;
+                    }
+                }
+                return groqChat({ model: TEXT_MODEL, temperature: 0.0, messages });
             }
 
             logConsoleActivity(`[Vision] Sending ${images.length} image(s) to ${VISION_MODEL}.`);
@@ -2303,18 +2449,29 @@
                 if (session.id === activeChatId) renderActiveChatFeed();
             }
 
+            // Each agent call gets its own tool context; its sources start from the pre-search.
+            const toolContext = (placeholder) => ({
+                sources: webSources.slice(),
+                onStep: step => {
+                    placeholder.text = step;
+                    if (session.id === activeChatId) renderActiveChatFeed();
+                }
+            });
+
             if (isBackground) {
                 document.getElementById("isBackgroundWorkerCheckbox").checked = false;
                 appendMessageToSession(session, `⚡ Background Worker (${activeAgent.name})`, `Task queued for autonomous execution...`);
                 logConsoleActivity(`[Background Worker] Task initiated for ${activeAgent.name}.`);
+                const workerPlaceholder = session.messages[session.messages.length - 1];
                 
                 setTimeout(async () => {
                     try {
-                        let res = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext, aiOptions);
+                        const tools = toolContext(workerPlaceholder);
+                        let res = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext, { ...aiOptions, tools });
                         if (isSelfHeal) res = await runSelfHealingPass(activeAgent, userText, res);
                         
                         session.messages.pop();
-                        appendMessageToSession(session, `⚡ Background Complete [${activeAgent.name}]`, res, null, webSources);
+                        appendMessageToSession(session, `⚡ Background Complete [${activeAgent.name}]`, res, null, tools.sources);
                     } catch (err) {
                         session.messages.pop();
                         appendMessageToSession(session, "❌ Background Task Error", err.message);
@@ -2333,11 +2490,12 @@
                 for (const agent of groupAgents) {
                     try {
                         appendMessageToSession(session, `🤖 ${agent.name} (Thinking...)`, `Analyzing swarm query...`);
-                        let response = await callAI(agent.instructions + "\n[Memory]: " + agent.memory, userText + injectedContext, aiOptions);
+                        const tools = toolContext(session.messages[session.messages.length - 1]);
+                        let response = await callAI(agent.instructions + "\n[Memory]: " + agent.memory, userText + injectedContext, { ...aiOptions, tools });
                         if (isSelfHeal) response = await runSelfHealingPass(agent, userText, response);
                         
                         session.messages.pop();
-                        appendMessageToSession(session, `🤖 ${agent.name}`, response, null, webSources);
+                        appendMessageToSession(session, `🤖 ${agent.name}`, response, null, tools.sources);
                     } catch (err) {
                         session.messages.pop();
                         appendMessageToSession(session, `❌ Error [${agent.name}]`, err.message);
@@ -2346,11 +2504,12 @@
             } else {
                 try {
                     appendMessageToSession(session, `🤖 ${activeAgent.name} (Thinking...)`, `Processing request deterministically...`);
-                    let response = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext, aiOptions);
+                    const tools = toolContext(session.messages[session.messages.length - 1]);
+                    let response = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext, { ...aiOptions, tools });
                     if (isSelfHeal) response = await runSelfHealingPass(activeAgent, userText, response);
                     
                     session.messages.pop();
-                    appendMessageToSession(session, `🤖 ${activeAgent.name}`, response, null, webSources);
+                    appendMessageToSession(session, `🤖 ${activeAgent.name}`, response, null, tools.sources);
                 } catch (err) {
                     session.messages.pop();
                     appendMessageToSession(session, "❌ System Error", err.message);
