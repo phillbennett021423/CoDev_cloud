@@ -784,15 +784,15 @@
             const session = chatSessions.find(s => s.id === activeChatId);
             if (!session) return;
 
-            session.messages.forEach(msg => {
+            session.messages.forEach((msg, index) => {
                 const div = document.createElement("div");
                 div.className = "message";
                 let formattedText = msg.text.replace(/```([a-z]*)\n([\s\S]*?)```/g, '<pre><code class="$1">$2</code></pre>');
                 
                 let speakButtonHtml = "";
                 if (!msg.sender.includes("You")) {
-                    const safeText = msg.text.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-                    speakButtonHtml = `<button onclick="speakText('${safeText}')" style="background: none; border: none; cursor: pointer; font-size: 0.9rem;" title="Listen to response">🔊</button>`;
+                    // Look the text up by index on click; inlining it broke on newlines and quotes.
+                    speakButtonHtml = `<button onclick="speakMessage(${index})" style="background: none; border: none; cursor: pointer; font-size: 0.9rem;" title="Listen to response">🔊</button>`;
                 }
 
                 div.innerHTML = `
@@ -819,7 +819,38 @@
         }
 
         // SPEECH-TO-TEXT & TEXT-TO-SPEECH FUNCTIONS
+        // In the Android app the WebView has no Web Speech API, so the native
+        // Capacitor plugins are used there; browsers use the Web Speech API.
+        const SPEECH_LANG = 'en-US';
+
+        function getNativeSpeechPlugin(name) {
+            const cap = window.Capacitor;
+            if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return null;
+            return (cap.Plugins && cap.Plugins[name]) || null;
+        }
+
+        function setMicButtonRecording(recording) {
+            isRecording = recording;
+            const micBtn = document.getElementById("micBtn");
+            if (!micBtn) return;
+            micBtn.style.borderColor = recording ? "var(--danger)" : "var(--border-color)";
+            micBtn.style.color = recording ? "var(--danger)" : "var(--text-main)";
+        }
+
+        function appendTranscriptToInput(transcript) {
+            transcript = (transcript || "").trim();
+            if (!transcript) return;
+            const inputField = document.getElementById("userInput");
+            inputField.value += (inputField.value ? ' ' : '') + transcript;
+        }
+
         function toggleSpeechRecognition() {
+            const nativeRecognition = getNativeSpeechPlugin("SpeechRecognition");
+            if (nativeRecognition) {
+                toggleNativeSpeechRecognition(nativeRecognition);
+                return;
+            }
+
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
                 alert("Speech Recognition is not supported in this browser. Try Chrome or Edge.");
@@ -830,13 +861,10 @@
                 recognition = new SpeechRecognition();
                 recognition.continuous = false;
                 recognition.interimResults = true;
-                recognition.lang = 'en-US';
+                recognition.lang = SPEECH_LANG;
 
                 recognition.onstart = () => {
-                    isRecording = true;
-                    const micBtn = document.getElementById("micBtn");
-                    micBtn.style.borderColor = "var(--danger)";
-                    micBtn.style.color = "var(--danger)";
+                    setMicButtonRecording(true);
                     logConsoleActivity("Speech recognition started...");
                 };
 
@@ -847,14 +875,14 @@
                             finalTranscript += event.results[i][0].transcript;
                         }
                     }
-                    const inputField = document.getElementById("userInput");
-                    if (finalTranscript) {
-                        inputField.value += (inputField.value ? ' ' : '') + finalTranscript;
-                    }
+                    appendTranscriptToInput(finalTranscript);
                 };
 
                 recognition.onerror = (event) => {
                     logConsoleActivity("Speech recognition error: " + event.error);
+                    if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+                        alert("Microphone access was blocked. Allow microphone access for this site and try again.");
+                    }
                     stopSpeechRecognition();
                 };
 
@@ -866,32 +894,168 @@
             if (isRecording) {
                 recognition.stop();
             } else {
-                recognition.start();
+                try {
+                    recognition.start();
+                } catch (err) {
+                    // start() throws if a previous session is still shutting down.
+                    logConsoleActivity("Speech recognition could not start: " + err.message);
+                    stopSpeechRecognition();
+                }
+            }
+        }
+
+        async function toggleNativeSpeechRecognition(plugin) {
+            if (isRecording) {
+                try { await plugin.stop(); } catch (err) { /* already stopped */ }
+                stopSpeechRecognition();
+                return;
+            }
+
+            try {
+                const { available } = await plugin.available();
+                if (!available) {
+                    alert("Speech recognition isn't available on this device. Make sure the Google app or another speech service is installed.");
+                    return;
+                }
+
+                let permission = await plugin.checkPermissions();
+                if (permission.speechRecognition !== "granted") {
+                    permission = await plugin.requestPermissions();
+                }
+                if (permission.speechRecognition !== "granted") {
+                    alert("Microphone permission is needed for voice input. You can allow it in Android Settings > Apps > CoDev Studio > Permissions.");
+                    return;
+                }
+
+                setMicButtonRecording(true);
+                logConsoleActivity("Speech recognition started...");
+                const result = await plugin.start({ language: SPEECH_LANG, maxResults: 1, partialResults: false, popup: false });
+                appendTranscriptToInput(result && result.matches && result.matches[0]);
+            } catch (err) {
+                logConsoleActivity("Speech recognition error: " + (err.message || err));
+            } finally {
+                stopSpeechRecognition();
             }
         }
 
         function stopSpeechRecognition() {
-            isRecording = false;
-            const micBtn = document.getElementById("micBtn");
-            if (micBtn) {
-                micBtn.style.borderColor = "var(--border-color)";
-                micBtn.style.color = "var(--text-main)";
-            }
+            if (!isRecording) return;
+            setMicButtonRecording(false);
             logConsoleActivity("Speech recognition stopped.");
         }
 
-        function speakText(text) {
-            if (!window.speechSynthesis) {
+        // Splits text into pieces short enough for every engine: Chrome stops
+        // long utterances after ~15 seconds and Android TTS caps input length.
+        function splitTextForSpeech(text, maxLength = 200) {
+            const sentences = text.match(/[^.!?\n]+[.!?]*|\n+/g) || [text];
+            const chunks = [];
+            let current = "";
+            for (let sentence of sentences) {
+                sentence = sentence.trim();
+                if (!sentence) continue;
+                while (sentence.length > maxLength) {
+                    let cut = sentence.lastIndexOf(" ", maxLength);
+                    if (cut <= 0) cut = maxLength;
+                    if (current) { chunks.push(current); current = ""; }
+                    chunks.push(sentence.slice(0, cut).trim());
+                    sentence = sentence.slice(cut).trim();
+                }
+                if (current && current.length + sentence.length + 1 > maxLength) {
+                    chunks.push(current);
+                    current = sentence;
+                } else {
+                    current = current ? current + " " + sentence : sentence;
+                }
+            }
+            if (current) chunks.push(current);
+            return chunks;
+        }
+
+        let isSpeaking = false;
+        let speechRunId = 0;
+
+        function speakMessage(index) {
+            const session = chatSessions.find(s => s.id === activeChatId);
+            const msg = session && session.messages[index];
+            if (msg) speakText(msg.text);
+        }
+
+        function stopSpeaking() {
+            speechRunId++;
+            isSpeaking = false;
+            const nativeTts = getNativeSpeechPlugin("TextToSpeech");
+            if (nativeTts) nativeTts.stop().catch(() => {});
+            if (window.speechSynthesis) window.speechSynthesis.cancel();
+        }
+
+        function pickWebVoice() {
+            const voices = window.speechSynthesis.getVoices();
+            return voices.find(v => v.lang === SPEECH_LANG && v.localService)
+                || voices.find(v => v.lang === SPEECH_LANG)
+                || voices.find(v => v.lang && v.lang.startsWith("en"))
+                || null;
+        }
+
+        function speakWebChunk(chunk) {
+            return new Promise((resolve, reject) => {
+                const utterance = new SpeechSynthesisUtterance(chunk);
+                const voice = pickWebVoice();
+                if (voice) utterance.voice = voice;
+                utterance.lang = SPEECH_LANG;
+                utterance.rate = 1.0;
+                utterance.pitch = 1.0;
+                utterance.onend = () => resolve();
+                utterance.onerror = (event) => event.error === "interrupted" || event.error === "canceled" ? resolve() : reject(new Error(event.error));
+                window.speechSynthesis.speak(utterance);
+            });
+        }
+
+        async function speakText(text) {
+            // Clicking 🔊 while audio is playing stops it.
+            if (isSpeaking) {
+                stopSpeaking();
+                logConsoleActivity("Stopped text-to-speech playback.");
+                return;
+            }
+
+            const nativeTts = getNativeSpeechPlugin("TextToSpeech");
+            if (!nativeTts && !window.speechSynthesis) {
                 alert("Text-to-speech is not supported in this browser.");
                 return;
             }
-            window.speechSynthesis.cancel();
-            const cleanText = text.replace(/```[\s\S]*?```/g, " [Code snippet omitted for audio] ");
-            const utterance = new SpeechSynthesisUtterance(cleanText);
-            utterance.rate = 1.0;
-            utterance.pitch = 1.0;
-            window.speechSynthesis.speak(utterance);
+
+            const cleanText = text
+                .replace(/```[\s\S]*?```/g, " Code snippet omitted for audio. ")
+                .replace(/[*_#`>]/g, "")
+                .trim();
+            if (!cleanText) return;
+
+            stopSpeaking();
+            const runId = speechRunId;
+            isSpeaking = true;
             logConsoleActivity("Playing text-to-speech audio for agent response.");
+
+            try {
+                for (const chunk of splitTextForSpeech(cleanText, nativeTts ? 3000 : 200)) {
+                    if (runId !== speechRunId) return;
+                    if (nativeTts) {
+                        await nativeTts.speak({ text: chunk, lang: SPEECH_LANG, rate: 1.0, pitch: 1.0, volume: 1.0 });
+                    } else {
+                        await speakWebChunk(chunk);
+                    }
+                }
+            } catch (err) {
+                logConsoleActivity("Text-to-speech error: " + (err.message || err));
+                alert("Couldn't play audio: " + (err.message || err));
+            } finally {
+                if (runId === speechRunId) isSpeaking = false;
+            }
+        }
+
+        // Some browsers load voices asynchronously; touching the list early warms it up.
+        if (window.speechSynthesis) {
+            window.speechSynthesis.getVoices();
+            window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
         }
 
         // CODEV HUB & CLOUD ROUTINES
