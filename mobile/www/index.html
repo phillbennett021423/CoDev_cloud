@@ -655,6 +655,24 @@
                 </div>
             </details>
 
+            <details class="settings-extra" id="voiceSettings">
+                <summary>🔊 Voice</summary>
+                <div class="form-group">
+                    <label>Read-aloud voice</label>
+                    <select id="modalVoice" style="width: 100%;"></select>
+                </div>
+                <div class="form-group">
+                    <label>Azure Speech key for the natural Ava (HD) voice (optional, free tier)</label>
+                    <input type="text" id="modalAzureKey" placeholder="Leave empty to use this computer's voices" style="font-family: monospace;">
+                </div>
+                <div class="form-group">
+                    <label>Azure Speech region</label>
+                    <input type="text" id="modalAzureRegion" placeholder="eastus" style="font-family: monospace;">
+                </div>
+                <button class="btn-secondary" type="button" onclick="testVoice()">▶️ Test voice</button>
+                <div id="voiceHint" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 6px;"></div>
+            </details>
+
             <input type="hidden" id="modalProvider" value="groq">
 
             <div class="modal-buttons">
@@ -2015,6 +2033,87 @@
             inputField.value += (inputField.value ? ' ' : '') + transcript;
         }
 
+        // VOICE INPUT WITH GROQ WHISPER
+        // The desktop app (Electron) has a webkitSpeechRecognition that never works,
+        // because it needs Google's servers. There, and in any browser where Web
+        // Speech fails, CoDev records the mic and transcribes it with Groq Whisper
+        // using the same Groq key.
+        const WHISPER_MODEL = "whisper-large-v3-turbo";
+        const MAX_RECORDING_MS = 120000;
+        let useWhisperInput = !!window.codevDesktop || !(window.SpeechRecognition || window.webkitSpeechRecognition);
+        let mediaRecorder = null;
+        let recordingTimer = null;
+
+        async function toggleWhisperRecording() {
+            if (mediaRecorder && mediaRecorder.state === "recording") {
+                mediaRecorder.stop();
+                return;
+            }
+            if (!groqKey) { openSettingsModal(); return; }
+            if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+                alert("This browser can't record audio. Try Chrome or Edge.");
+                return;
+            }
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+            } catch (err) {
+                logConsoleActivity("Microphone error: " + (err.name || err.message));
+                alert(err.name === "NotFoundError"
+                    ? "No microphone was found. Plug one in or check Windows Settings > System > Sound > Input."
+                    : "CoDev couldn't use the microphone. In Windows Settings > Privacy & security > Microphone, turn on microphone access and \"Let desktop apps access your microphone\" (or allow it for this site in the browser).");
+                return;
+            }
+            const type = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"].find(t => MediaRecorder.isTypeSupported(t)) || "";
+            const chunks = [];
+            mediaRecorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+            mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+            mediaRecorder.onstop = async () => {
+                clearTimeout(recordingTimer);
+                stream.getTracks().forEach(t => t.stop());
+                setMicButtonRecording(false);
+                const micBtn = document.getElementById("micBtn");
+                const blob = new Blob(chunks, { type: mediaRecorder.mimeType || "audio/webm" });
+                mediaRecorder = null;
+                if (blob.size < 2000) { logConsoleActivity("Recording was too short to transcribe."); return; }
+                if (micBtn) micBtn.textContent = "⏳";
+                try {
+                    appendTranscriptToInput(await transcribeWithWhisper(blob));
+                    document.getElementById("userInput").focus();
+                } catch (err) {
+                    logConsoleActivity("Transcription error: " + err.message);
+                    alert("Couldn't transcribe the recording: " + err.message);
+                } finally {
+                    if (micBtn) micBtn.textContent = "🎤";
+                }
+            };
+            mediaRecorder.start();
+            setMicButtonRecording(true);
+            logConsoleActivity("Recording... click 🎤 again to stop.");
+            recordingTimer = setTimeout(() => mediaRecorder && mediaRecorder.state === "recording" && mediaRecorder.stop(), MAX_RECORDING_MS);
+        }
+
+        async function transcribeWithWhisper(blob) {
+            const ext = blob.type.includes("ogg") ? "ogg" : blob.type.includes("mp4") ? "m4a" : "webm";
+            const form = new FormData();
+            form.append("file", blob, `recording.${ext}`);
+            form.append("model", WHISPER_MODEL);
+            form.append("language", SPEECH_LANG.slice(0, 2));
+            form.append("response_format", "json");
+            let response;
+            try {
+                response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+                    method: "POST", headers: { "Authorization": `Bearer ${groqKey}` }, body: form
+                });
+            } catch (err) {
+                throw new Error(`couldn't reach Groq (${err.message})`);
+            }
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error?.message || `Groq returned HTTP ${response.status}`);
+            logConsoleActivity("Voice input transcribed with Groq Whisper.");
+            return data.text || "";
+        }
+
         function toggleSpeechRecognition() {
             const nativeRecognition = getNativeSpeechPlugin("SpeechRecognition");
             if (nativeRecognition) {
@@ -2023,8 +2122,8 @@
             }
 
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) {
-                alert("Speech Recognition is not supported in this browser. Try Chrome or Edge.");
+            if (useWhisperInput || !SpeechRecognition) {
+                toggleWhisperRecording();
                 return;
             }
 
@@ -2051,7 +2150,14 @@
 
                 recognition.onerror = (event) => {
                     logConsoleActivity("Speech recognition error: " + event.error);
-                    if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+                    if (event.error === "network" || event.error === "service-not-allowed" || event.error === "language-not-supported") {
+                        // The browser's speech service isn't reachable: record and use Whisper from now on.
+                        useWhisperInput = true;
+                        stopSpeechRecognition();
+                        toggleWhisperRecording();
+                        return;
+                    }
+                    if (event.error === "not-allowed") {
                         alert("Microphone access was blocked. Allow microphone access for this site and try again.");
                     }
                     stopSpeechRecognition();
@@ -2115,10 +2221,42 @@
             logConsoleActivity("Speech recognition stopped.");
         }
 
+        // Turns a markdown answer into plain sentences a voice can read: no code,
+        // URLs, emoji, citation numbers, table pipes or markdown symbols.
+        function cleanTextForSpeech(text) {
+            return String(text || "")
+                .replace(/```[\s\S]*?```/g, "\nCode snippet omitted for audio.\n")
+                .replace(/<[^>]+>/g, " ")
+                .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+                .replace(/\[([^\]]+)\]\((?:https?:|mailto:)[^)]*\)/g, "$1")
+                .replace(/https?:\/\/\S+/g, " ")
+                .replace(/\[\d+(?:\s*[,-]\s*\d+)*\]/g, "")
+                .replace(/`([^`\n]*)`/g, "$1")
+                .replace(/^[ \t]*\|?[ \t]*:?-{2,}:?[ \t]*(\|[ \t]*:?-{2,}:?[ \t]*)*\|?[ \t]*$/gm, "")
+                .replace(/[ \t]*\|[ \t]*/g, ", ")
+                .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+                .replace(/^\s*>\s?/gm, "")
+                .replace(/^\s*(?:[-*+•]|\d+[.)])\s+/gm, "")
+                .replace(/(\*\*|~~|\*)(?=\S)([^*~\n]+?)\1/g, "$2")
+                .replace(/(?<!\w)(__|_)(?=\S)([^_\n]+?)\1(?!\w)/g, "$2")
+                .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{20E3}]/gu, "")
+                .replace(/\s*(?:->|=>|→)\s*/g, " to ")
+                .replace(/[*#~`>|]/g, " ")
+                .split("\n")
+                .map(line => line.replace(/[ \t]+/g, " ").replace(/ +([.,!?:;)])/g, "$1").replace(/[,:]+([.!?])/g, "$1").replace(/^[\s,.:;]+|[\s,]+$/g, ""))
+                .filter(Boolean)
+                // A line break is a pause: end each line like a sentence.
+                .map(line => /[.!?:;]$/.test(line) ? line : line + ".")
+                .join(" ")
+                .trim();
+        }
+
         // Splits text into pieces short enough for every engine: Chrome stops
-        // long utterances after ~15 seconds and Android TTS caps input length.
+        // long utterances from online voices after ~15 seconds and Android TTS
+        // caps input length. Only splits after a sentence ends, never inside
+        // "e.g." or "file.py", so speech doesn't stop mid-sentence.
         function splitTextForSpeech(text, maxLength = 200) {
-            const sentences = text.match(/[^.!?\n]+[.!?]*|\n+/g) || [text];
+            const sentences = text.split(/(?<=[.!?])\s+(?=[A-Z0-9"'(])/);
             const chunks = [];
             let current = "";
             for (let sentence of sentences) {
@@ -2157,6 +2295,7 @@
             const nativeTts = getNativeSpeechPlugin("TextToSpeech");
             if (nativeTts) nativeTts.stop().catch(() => {});
             if (window.speechSynthesis) window.speechSynthesis.cancel();
+            if (currentAudio) currentAudio.pause();
         }
 
         // WEB SPEECH VOICE (browsers and the desktop app; Android uses its native TTS above)
@@ -2168,6 +2307,8 @@
         const NATURAL_VOICE_PATTERN = /\b(natural|neural|wavenet|premium|enhanced)\b/i;
         let lockedWebVoice = null;
         let voicesReadyPromise = null;
+        // "" means automatic (Ava first); otherwise the exact name picked in Settings.
+        let chosenVoiceName = localStorage.getItem("codev_tts_voice") || "";
 
         function rankWebVoice(v) {
             const name = v.name || "";
@@ -2186,6 +2327,8 @@
 
         function chooseWebVoice() {
             const voices = window.speechSynthesis.getVoices();
+            const picked = chosenVoiceName && voices.find(v => v.name === chosenVoiceName);
+            if (picked) return picked;
             let best = null, bestRank = 0;
             for (const v of voices) {
                 const rank = rankWebVoice(v);
@@ -2200,9 +2343,10 @@
             const voices = window.speechSynthesis.getVoices();
             const stillThere = lockedWebVoice && voices.find(v => v.voiceURI === lockedWebVoice.voiceURI && v.name === lockedWebVoice.name);
             const best = chooseWebVoice();
-            const next = !stillThere ? best : (best && rankWebVoice(best) > rankWebVoice(stillThere) ? best : stillThere);
+            const next = !stillThere || (chosenVoiceName && best && best.name === chosenVoiceName) ? best
+                : (best && rankWebVoice(best) > rankWebVoice(stillThere) ? best : stillThere);
             if (next && (!lockedWebVoice || next.name !== lockedWebVoice.name)) {
-                logConsoleActivity(`Text-to-speech voice locked: ${next.name} (${next.lang})${next.name === PREFERRED_VOICE_NAME ? "" : `. ${PREFERRED_VOICE_NAME} isn't installed here, so this is the closest match.`}`);
+                logConsoleActivity(`Text-to-speech voice locked: ${next.name} (${next.lang})${next.name === PREFERRED_VOICE_NAME || next.name === chosenVoiceName ? "" : `. ${PREFERRED_VOICE_NAME} isn't available here, so this is the closest match.`}`);
             }
             lockedWebVoice = next || null;
             return lockedWebVoice;
@@ -2229,6 +2373,74 @@
                 });
             }
             return voicesReadyPromise;
+        }
+
+        // NATURAL AVA THROUGH AZURE SPEECH (optional)
+        // Windows only lets Narrator and Microsoft Edge use its natural voices, so
+        // Chrome and the desktop app get the older robotic ones. With an Azure
+        // Speech key (the free tier covers 500,000 characters a month), CoDev reads
+        // answers with Ava's HD voice instead.
+        const AZURE_VOICES = ["en-US-Ava:DragonHDLatestNeural", "en-US-AvaMultilingualNeural", "en-US-AvaNeural"];
+        let azureSpeechKey = localStorage.getItem("codev_azure_speech_key") || "";
+        let azureSpeechRegion = localStorage.getItem("codev_azure_speech_region") || "eastus";
+        let azureVoiceIndex = 0;
+        let currentAudio = null;
+
+        function escapeXml(text) {
+            return text.replace(/[<>&'"]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c]));
+        }
+
+        async function fetchAzureSpeech(text) {
+            const region = azureSpeechRegion.trim().toLowerCase();
+            if (!/^[a-z0-9]+$/.test(region)) throw new Error("the Azure region should look like eastus");
+            for (; azureVoiceIndex < AZURE_VOICES.length; azureVoiceIndex++) {
+                const ssml = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US"><voice name="${AZURE_VOICES[azureVoiceIndex]}">${escapeXml(text)}</voice></speak>`;
+                let status, audio;
+                if (window.codevDesktop?.azureTts) {
+                    ({ status, audio } = await window.codevDesktop.azureTts({ region, key: azureSpeechKey, ssml }));
+                } else {
+                    const response = await fetch(`https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+                        method: "POST",
+                        headers: { "Ocp-Apim-Subscription-Key": azureSpeechKey, "Content-Type": "application/ssml+xml", "X-Microsoft-OutputFormat": "audio-24khz-96kbitrate-mono-mp3" },
+                        body: ssml
+                    });
+                    status = response.status;
+                    audio = status === 200 ? await response.arrayBuffer() : null;
+                }
+                if (status === 200) return new Blob([audio], { type: "audio/mpeg" });
+                if (status === 401 || status === 403) throw new Error("Azure rejected the Speech key or region");
+                // 400: this voice isn't offered in the region (the HD voice is in a few regions only); try the next Ava.
+                if (status !== 400) throw new Error(`Azure Speech returned HTTP ${status}`);
+            }
+            azureVoiceIndex = 0;
+            throw new Error("no Ava voice is available in that Azure region");
+        }
+
+        function playAudioBlob(blob) {
+            return new Promise((resolve, reject) => {
+                const url = URL.createObjectURL(blob);
+                const audio = new Audio(url);
+                currentAudio = audio;
+                const done = (fn) => () => { URL.revokeObjectURL(url); if (currentAudio === audio) currentAudio = null; fn(); };
+                audio.onended = done(resolve);
+                audio.onpause = done(resolve);
+                audio.onerror = done(() => reject(new Error("couldn't play the audio")));
+                audio.play().catch(err => { URL.revokeObjectURL(url); reject(err); });
+            });
+        }
+
+        async function speakWithAzure(text, runId) {
+            // Fetch the next piece while the current one plays, so there are no gaps.
+            const chunks = splitTextForSpeech(text, 2500);
+            let next = fetchAzureSpeech(chunks[0]);
+            for (let i = 0; i < chunks.length; i++) {
+                const blob = await next;
+                if (runId !== speechRunId) return;
+                next = i + 1 < chunks.length ? fetchAzureSpeech(chunks[i + 1]) : null;
+                if (next) next.catch(() => {});
+                await playAudioBlob(blob);
+                if (runId !== speechRunId) return;
+            }
         }
 
         function speakWebChunk(chunk, voice) {
@@ -2262,10 +2474,7 @@
                 return;
             }
 
-            const cleanText = text
-                .replace(/```[\s\S]*?```/g, " Code snippet omitted for audio. ")
-                .replace(/[*_#`>]/g, "")
-                .trim();
+            const cleanText = cleanTextForSpeech(text);
             if (!cleanText) return;
 
             stopSpeaking();
@@ -2275,8 +2484,26 @@
 
             try {
                 const webVoice = nativeTts ? null : await waitForWebVoices();
+                // A real Ava voice on this computer (Edge has one) wins; otherwise Azure's Ava when a key is set.
+                const hasLocalAva = webVoice && /Microsoft\s+Ava/i.test(webVoice.name);
+                if (!nativeTts && azureSpeechKey && !chosenVoiceName && !hasLocalAva) {
+                    try {
+                        await speakWithAzure(cleanText, runId);
+                        return;
+                    } catch (err) {
+                        if (runId !== speechRunId) return;
+                        logConsoleActivity(`Azure Ava voice failed (${err.message}); using ${webVoice ? webVoice.name : "this computer's voice"}.`);
+                    }
+                }
                 if (!nativeTts && !webVoice) logConsoleActivity("No speech voices were reported by this browser; using its language default.");
-                for (const chunk of splitTextForSpeech(cleanText, nativeTts ? 3000 : 200)) {
+                if (!nativeTts) {
+                    // Chrome on Windows garbles or drops speech queued right after cancel().
+                    await new Promise(r => setTimeout(r, 150));
+                    window.speechSynthesis.resume();
+                }
+                // Installed voices read long text fine; online ones cut off after ~15 seconds.
+                const maxChunk = nativeTts ? 3000 : (webVoice && webVoice.localService ? 1200 : 220);
+                for (const chunk of splitTextForSpeech(cleanText, maxChunk)) {
                     if (runId !== speechRunId) return;
                     if (nativeTts) {
                         await nativeTts.speak({ text: chunk, lang: SPEECH_LANG, rate: 1.0, pitch: 1.0, volume: 1.0 });
@@ -2321,7 +2548,60 @@
             alert("CoDev Prompt Enhancer successfully optimized your input query!");
         }
 
+        function fillVoicePicker() {
+            const select = document.getElementById("modalVoice");
+            const hint = document.getElementById("voiceHint");
+            if (!select) return;
+            if (getNativeSpeechPlugin("TextToSpeech") || !window.speechSynthesis) {
+                select.innerHTML = `<option value="">Phone's text-to-speech voice</option>`;
+                select.disabled = true;
+                hint.textContent = "Change the voice in Android Settings > Accessibility > Text-to-speech.";
+                return;
+            }
+            const voices = window.speechSynthesis.getVoices().slice()
+                .sort((a, b) => rankWebVoice(b) - rankWebVoice(a) || a.name.localeCompare(b.name));
+            const auto = chooseWebVoiceAuto();
+            select.disabled = false;
+            select.innerHTML = `<option value="">Automatic${auto ? ` (${escapeHtml(auto.name)})` : ""}</option>` +
+                voices.map(v => `<option value="${escapeHtml(v.name)}">${escapeHtml(v.name)} (${escapeHtml(v.lang)})${v.localService ? "" : " · online"}</option>`).join("");
+            select.value = voices.some(v => v.name === chosenVoiceName) ? chosenVoiceName : "";
+            const hasAva = voices.some(v => /Microsoft\s+Ava/i.test(v.name));
+            document.getElementById("modalAzureKey").value = azureSpeechKey;
+            document.getElementById("modalAzureRegion").value = azureSpeechRegion;
+            hint.textContent = !voices.length ? "No voices loaded yet. Reopen Settings in a moment."
+                : hasAva ? "Ava is available on this computer and is used automatically."
+                : "Windows doesn't share its natural Ava voice with this app, only robotic ones. Add an Azure Speech key above for Ava (HD), or open CoDev in Microsoft Edge, which includes Ava for free.";
+        }
+
+        function chooseWebVoiceAuto() {
+            const saved = chosenVoiceName;
+            chosenVoiceName = "";
+            try { return chooseWebVoice(); } finally { chosenVoiceName = saved; }
+        }
+
+        function readAzureSettings() {
+            azureSpeechKey = document.getElementById("modalAzureKey").value.trim();
+            azureSpeechRegion = document.getElementById("modalAzureRegion").value.trim().toLowerCase() || "eastus";
+            azureVoiceIndex = 0;
+        }
+
+        function testVoice() {
+            const select = document.getElementById("modalVoice");
+            const saved = chosenVoiceName;
+            readAzureSettings();
+            chosenVoiceName = select && !select.disabled ? select.value : saved;
+            lockedWebVoice = null;
+            if (isSpeaking) stopSpeaking();
+            speakText("Hi, this is the voice CoDev Studio will use to read answers aloud. For example, version 4.2 of the file main.py is ready.")
+                .finally(() => { chosenVoiceName = saved; lockedWebVoice = null; });
+        }
+
+        if (window.speechSynthesis) window.speechSynthesis.addEventListener("voiceschanged", () => {
+            if (document.getElementById("settingsModal")?.style.display === "flex") fillVoicePicker();
+        });
+
         function openSettingsModal() {
+            fillVoicePicker();
             document.getElementById("modalGroqKey").value = groqKey;
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
             document.getElementById("modalLocalTools").checked = localToolsEnabled;
@@ -2353,6 +2633,16 @@
             localStorage.setItem("codev_auto_ground", autoGroundingEnabled ? "1" : "0");
             localToolsEnabled = document.getElementById("modalLocalTools").checked;
             localStorage.setItem("codev_local_tools", localToolsEnabled ? "1" : "0");
+            readAzureSettings();
+            localStorage.setItem("codev_azure_speech_key", azureSpeechKey);
+            localStorage.setItem("codev_azure_speech_region", azureSpeechRegion);
+            const voiceSelect = document.getElementById("modalVoice");
+            if (voiceSelect && !voiceSelect.disabled) {
+                chosenVoiceName = voiceSelect.value;
+                localStorage.setItem("codev_tts_voice", chosenVoiceName);
+                lockedWebVoice = null;
+                if (window.speechSynthesis) lockWebVoice();
+            }
             toolsAutoRun = document.getElementById("modalToolsAutoRun").checked;
             localStorage.setItem("codev_tools_autorun", toolsAutoRun ? "1" : "0");
             mcpServerUrl = document.getElementById("modalMcpUrl").value.trim();

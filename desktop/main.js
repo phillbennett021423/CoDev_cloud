@@ -50,6 +50,24 @@ app.whenReady().then(() => {
         return { status: response.status, data: await response.text(), headers: {} };
     });
 
+    // Azure Speech for the natural Ava voice, from the main process so CORS can't block it.
+    ipcMain.handle('codev:azure-tts', async (_event, { region, key, ssml }) => {
+        if (typeof region !== 'string' || !/^[a-z0-9]+$/.test(region) || typeof key !== 'string' || typeof ssml !== 'string') {
+            throw new Error('Bad Azure Speech request.');
+        }
+        const response = await net.fetch(`https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+            method: 'POST',
+            headers: {
+                'Ocp-Apim-Subscription-Key': key,
+                'Content-Type': 'application/ssml+xml',
+                'X-Microsoft-OutputFormat': 'audio-24khz-96kbitrate-mono-mp3',
+                'User-Agent': 'CoDevStudio'
+            },
+            body: ssml
+        });
+        return { status: response.status, audio: response.status === 200 ? new Uint8Array(await response.arrayBuffer()) : null };
+    });
+
     createWindow();
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
