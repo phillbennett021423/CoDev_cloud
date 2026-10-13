@@ -1,0 +1,57 @@
+// CoDev Studio desktop app: the same page as the Android app (mobile/www),
+// in its own window. The page talks to Groq directly; the main process only
+// does what a page can't, like fetching DuckDuckGo results without CORS.
+const { app, BrowserWindow, ipcMain, net, protocol, shell } = require('electron');
+const path = require('path');
+const { pathToFileURL } = require('url');
+
+const WWW = path.join(__dirname, 'www');
+// Served from app://codev/ so the page has a fixed origin (its saved settings
+// and chats survive restarts) and ES modules like three.js load normally.
+protocol.registerSchemesAsPrivileged([
+    { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } }
+]);
+
+// Only DuckDuckGo's HTML results page, the same one the Android app uses.
+const ALLOWED_HTTP = /^https:\/\/html\.duckduckgo\.com\/html\/\?/;
+
+function createWindow() {
+    const win = new BrowserWindow({
+        width: 1280,
+        height: 860,
+        minWidth: 380,
+        title: 'CoDev Studio',
+        icon: path.join(__dirname, 'build', 'icon.png'),
+        autoHideMenuBar: true,
+        webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true }
+    });
+    // Links (search sources, docs) open in the normal browser, not inside CoDev.
+    win.webContents.setWindowOpenHandler(({ url }) => {
+        if (/^https?:\/\//.test(url)) shell.openExternal(url);
+        return { action: 'deny' };
+    });
+    win.webContents.on('will-navigate', (event, url) => {
+        if (!url.startsWith('app://codev/')) { event.preventDefault(); if (/^https?:\/\//.test(url)) shell.openExternal(url); }
+    });
+    win.loadURL('app://codev/index.html');
+}
+
+app.whenReady().then(() => {
+    protocol.handle('app', request => {
+        const { host, pathname } = new URL(request.url);
+        const file = path.normalize(path.join(WWW, decodeURIComponent(pathname)));
+        if (host !== 'codev' || !file.startsWith(WWW + path.sep)) return new Response('Not found', { status: 404 });
+        return net.fetch(pathToFileURL(file).toString());
+    });
+
+    ipcMain.handle('codev:http-get', async (_event, { url, headers }) => {
+        if (typeof url !== 'string' || !ALLOWED_HTTP.test(url)) throw new Error('This address is not allowed.');
+        const response = await net.fetch(url, { headers: headers || {} });
+        return { status: response.status, data: await response.text(), headers: {} };
+    });
+
+    createWindow();
+    app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+});
+
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
