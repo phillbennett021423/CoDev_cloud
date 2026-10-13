@@ -640,11 +640,18 @@
                     <input type="checkbox" id="modalAutoGround"> Search the web automatically for technical and code questions
                 </label>
                 <label class="checkbox-group">
-                    <input type="checkbox" id="modalLocalTools"> Let agents call local tools on their own (web search, project files, approved commands)
+                    <input type="checkbox" id="modalLocalTools"> Let agents call local tools on their own (web search, project files, MCP tools)
+                </label>
+                <label class="checkbox-group">
+                    <input type="checkbox" id="modalToolsAutoRun"> Run file edits and commands without asking me first
                 </label>
                 <div class="form-group">
                     <label>Desktop helper address (the Android app doesn't need it)</label>
                     <input type="text" id="modalSearchHelperUrl" style="font-family: monospace;">
+                </div>
+                <div class="form-group">
+                    <label>MCP server (the helper's /mcp, or any Streamable HTTP MCP server)</label>
+                    <input type="text" id="modalMcpUrl" style="font-family: monospace;">
                 </div>
             </details>
 
@@ -1492,10 +1499,104 @@
         // Described the way MCP describes tools (name, description, inputSchema) and
         // sent to Groq as function tools. The model decides when to call them; the app
         // runs them here, on the device, and returns the result. Nothing here is paid.
-        const MAX_TOOL_ROUNDS = 5;
+        // Tools from an MCP server (the desktop helper's /mcp by default) are added to
+        // the same list and called over MCP's Streamable HTTP transport.
+        const MAX_TOOL_ROUNDS = 12;
         const MAX_TOOL_RESULT_CHARS = 12000;
+        const MCP_PROTOCOL_VERSION = "2025-06-18";
+        const MCP_TIMEOUT_MS = 2000;
         let localToolsEnabled = (localStorage.getItem("codev_local_tools") ?? "1") === "1";
+        // On: agents edit files and run commands without a confirm dialog.
+        let toolsAutoRun = (localStorage.getItem("codev_tools_autorun") ?? "1") === "1";
+        let mcpServerUrl = localStorage.getItem("codev_mcp_url") ?? `${DEFAULT_SEARCH_HELPER_URL}/mcp`;
         let helperCommandsCache = { at: 0, commands: [] };
+        let mcpCache = { at: 0, url: "", tools: [] };
+        let mcpSession = { url: "", id: null, protocolVersion: MCP_PROTOCOL_VERSION };
+        let mcpRequestId = 0;
+
+        // One JSON-RPC request over Streamable HTTP. Servers may answer with JSON or an SSE stream.
+        async function mcpPost(message, timeoutMs) {
+            const headers = { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" };
+            if (mcpSession.url === mcpServerUrl) {
+                headers["MCP-Protocol-Version"] = mcpSession.protocolVersion;
+                if (mcpSession.id) headers["Mcp-Session-Id"] = mcpSession.id;
+            }
+            const controller = new AbortController();
+            const timer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
+            try {
+                const response = await fetch(mcpServerUrl, { method: "POST", headers, body: JSON.stringify(message), signal: controller.signal });
+                const sessionId = response.headers.get("Mcp-Session-Id");
+                if (sessionId) mcpSession.id = sessionId;
+                if (!("id" in message)) return null;
+                if (!response.ok) throw new Error(`MCP server returned HTTP ${response.status}`);
+                const type = response.headers.get("Content-Type") || "";
+                let replies;
+                if (type.includes("text/event-stream")) {
+                    replies = (await response.text()).split(/\r?\n\r?\n/)
+                        .map(event => event.split(/\r?\n/).filter(l => l.startsWith("data:")).map(l => l.slice(5).trim()).join("\n"))
+                        .filter(Boolean).map(data => { try { return JSON.parse(data); } catch (err) { return null; } });
+                } else {
+                    replies = [].concat(await response.json());
+                }
+                const reply = replies.find(r => r && r.id === message.id);
+                if (!reply) throw new Error("MCP server sent no reply");
+                if (reply.error) throw new Error(reply.error.message || "MCP error");
+                return reply.result;
+            } finally {
+                if (timer) clearTimeout(timer);
+            }
+        }
+
+        function mcpCall(method, params, timeoutMs) {
+            return mcpPost({ jsonrpc: "2.0", id: ++mcpRequestId, method, params: params || {} }, timeoutMs);
+        }
+
+        async function mcpConnect() {
+            mcpSession = { url: "", id: null, protocolVersion: MCP_PROTOCOL_VERSION };
+            const init = await mcpCall("initialize", {
+                protocolVersion: MCP_PROTOCOL_VERSION,
+                capabilities: {},
+                clientInfo: { name: "codev-studio", version: "1.0.0" }
+            }, MCP_TIMEOUT_MS);
+            mcpSession = { url: mcpServerUrl, id: mcpSession.id, protocolVersion: init.protocolVersion || MCP_PROTOCOL_VERSION };
+            await mcpPost({ jsonrpc: "2.0", method: "notifications/initialized" }, MCP_TIMEOUT_MS);
+            logConsoleActivity(`[MCP] Connected to ${init.serverInfo?.name || mcpServerUrl}.`);
+        }
+
+        // Tools the MCP server offers, re-listed at most once a minute.
+        async function fetchMcpTools() {
+            if (!mcpServerUrl) return [];
+            if (mcpCache.url === mcpServerUrl && Date.now() - mcpCache.at < 60000) return mcpCache.tools;
+            let tools = [];
+            try {
+                if (mcpSession.url !== mcpServerUrl) await mcpConnect();
+                let result;
+                try {
+                    result = await mcpCall("tools/list", {}, MCP_TIMEOUT_MS);
+                } catch (err) {
+                    await mcpConnect(); // the server may have dropped our session
+                    result = await mcpCall("tools/list", {}, MCP_TIMEOUT_MS);
+                }
+                tools = (result.tools || []).filter(t => t && typeof t.name === "string");
+            } catch (err) {
+                mcpSession.url = ""; // server not running: try again next time
+            }
+            mcpCache = { at: Date.now(), url: mcpServerUrl, tools };
+            return tools;
+        }
+
+        async function runMcpTool(tool, args) {
+            if (!toolsAutoRun && !tool.annotations?.readOnlyHint) {
+                if (!confirm(`An agent wants to use ${tool.name} on your computer:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`)) {
+                    logConsoleActivity(`[Tool] You declined: ${tool.name}`);
+                    return "The user declined this tool call.";
+                }
+            }
+            const result = await mcpCall("tools/call", { name: tool.name, arguments: args });
+            const text = (result.content || []).map(c => c.type === "text" ? c.text : `[${c.type} content]`).join("\n");
+            if (result.isError) logConsoleActivity(`[Tool] ${tool.name} reported an error.`);
+            return (result.isError ? "Error: " : "") + (text || "(no output)");
+        }
 
         // Commands the user listed in the desktop helper's allowed_commands.json.
         async function fetchHelperCommands() {
@@ -1549,13 +1650,30 @@
                         const text = loadedProjectFiles[name];
                         return text.length > MAX_TOOL_RESULT_CHARS ? text.slice(0, MAX_TOOL_RESULT_CHARS) + `\n[truncated: ${text.length} characters total]` : text;
                     }
+                },
+                {
+                    name: "write_workspace_file",
+                    description: "Create or overwrite a file in the user's loaded project folder with new content. Read it first when changing an existing file, and write the complete file.",
+                    inputSchema: { type: "object", properties: { name: { type: "string", description: "File name as list_workspace_files shows it, or a new file name." }, content: { type: "string", description: "The complete new file content." } }, required: ["name", "content"] },
+                    run: async ({ name, content }) => writeWorkspaceFile(String(name || ""), content)
                 }
             ];
-            const commands = await fetchHelperCommands();
+            const mcpTools = await fetchMcpTools();
+            for (const tool of mcpTools) {
+                if (tools.some(t => t.name === tool.name)) continue;
+                tools.push({
+                    name: tool.name,
+                    description: tool.description || tool.name,
+                    inputSchema: tool.inputSchema && tool.inputSchema.type === "object" ? tool.inputSchema : { type: "object", properties: {} },
+                    run: async (args) => runMcpTool(tool, args)
+                });
+            }
+            // Older helpers without /mcp still offer their approved commands.
+            const commands = mcpTools.length ? [] : await fetchHelperCommands();
             if (commands.length) {
                 tools.push({
                     name: "run_local_command",
-                    description: "Run one of the user's pre-approved commands on their computer (for example a build, test or lint script) and get its output. The user confirms each run. Available: " + commands.map(c => `${c.name} (${c.description || c.argv.join(" ")})`).join("; "),
+                    description: "Run one of the user's pre-approved commands on their computer (for example a build, test or lint script) and get its output. Available: " + commands.map(c => `${c.name} (${c.description || c.argv.join(" ")})`).join("; "),
                     inputSchema: { type: "object", properties: { name: { type: "string", enum: commands.map(c => c.name) } }, required: ["name"] },
                     run: async ({ name }) => runHelperCommand(commands.find(c => c.name === name))
                 });
@@ -1563,10 +1681,35 @@
             return tools;
         }
 
+        async function writeWorkspaceFile(name, content) {
+            if (typeof content !== "string") return "write_workspace_file needs content as a string.";
+            if (!name || /[\\/]/.test(name) || name === "." || name === "..") return "Use a plain file name in the project folder (no sub-folders).";
+            if (!toolsAutoRun && !confirm(`An agent wants to write ${name} (${content.length} characters) in your project folder.\n\nAllow it?`)) {
+                logConsoleActivity(`[Tool] You declined writing ${name}`);
+                return "The user declined this write.";
+            }
+            loadedProjectFiles[name] = content;
+            if (activeSelectedFile === name) document.getElementById("fileEditorContent").value = content;
+            if (!connectedDirectoryHandle) {
+                logConsoleActivity(`[Tool] Updated ${name} in CoDev (no folder connected, so it isn't saved to disk).`);
+                return `Updated ${name} in CoDev's workspace. No folder is connected, so it wasn't saved to disk.`;
+            }
+            const fileHandle = await connectedDirectoryHandle.getFileHandle(name, { create: true });
+            if (fileHandle.requestPermission && (await fileHandle.requestPermission({ mode: "readwrite" })) !== "granted") {
+                return "The browser didn't allow writing to the connected folder.";
+            }
+            const writable = await fileHandle.createWritable();
+            await writable.write(content);
+            await writable.close();
+            renderProjectFiles();
+            logConsoleActivity(`[Tool] Saved ${name} to ${connectedDirectoryHandle.name}.`);
+            return `Saved ${name} (${content.length} characters) to the connected folder.`;
+        }
+
         async function runHelperCommand(command) {
             if (!command) return "Unknown command. Only the listed commands can run.";
             const shown = (command.argv || []).join(" ");
-            if (!confirm(`An agent wants to run this command on your computer:\n\n${shown}\n(in ${command.cwd || "the helper's project folder"})\n\nAllow it?`)) {
+            if (!toolsAutoRun && !confirm(`An agent wants to run this command on your computer:\n\n${shown}\n(in ${command.cwd || "the helper's project folder"})\n\nAllow it?`)) {
                 logConsoleActivity(`[Tool] You declined: ${command.name}`);
                 return "The user declined to run this command.";
             }
@@ -1581,7 +1724,12 @@
             if (name === "web_search") return `🔎 Searching: ${args.query}`;
             if (name === "read_workspace_file") return `📄 Reading ${args.name}`;
             if (name === "list_workspace_files") return "📁 Listing project files";
-            if (name === "run_local_command") return `▶️ Running ${args.name}`;
+            if (name === "run_local_command" || name === "run_approved_command") return `▶️ Running ${args.name}`;
+            if (name === "write_workspace_file") return `✏️ Writing ${args.name}`;
+            if (name === "list_files") return `📁 Listing ${args.path || "project"} files`;
+            if (name === "read_file") return `📄 Reading ${args.path}`;
+            if (name === "write_file" || name === "edit_file") return `✏️ Editing ${args.path}`;
+            if (name === "run_command") return `▶️ Running: ${String(args.command || "").slice(0, 80)}`;
             return `🛠️ ${name}`;
         }
 
@@ -2011,20 +2159,87 @@
             if (window.speechSynthesis) window.speechSynthesis.cancel();
         }
 
-        function pickWebVoice() {
-            const voices = window.speechSynthesis.getVoices();
-            return voices.find(v => v.lang === SPEECH_LANG && v.localService)
-                || voices.find(v => v.lang === SPEECH_LANG)
-                || voices.find(v => v.lang && v.lang.startsWith("en"))
-                || null;
+        // WEB SPEECH VOICE (browsers and the desktop app; Android uses its native TTS above)
+        // The browser's default voice is never used: CoDev picks a voice from
+        // speechSynthesis.getVoices() and locks it in. Microsoft Ava (Natural HD) on
+        // Windows comes first, then any other natural/neural voice, then a plain one.
+        const PREFERRED_VOICE_NAME = "Microsoft Ava (Natural HD)";
+        const VOICE_LOAD_TIMEOUT_MS = 3000;
+        const NATURAL_VOICE_PATTERN = /\b(natural|neural|wavenet|premium|enhanced)\b/i;
+        let lockedWebVoice = null;
+        let voicesReadyPromise = null;
+
+        function rankWebVoice(v) {
+            const name = v.name || "";
+            const english = (v.lang || "").toLowerCase().startsWith("en");
+            const usEnglish = (v.lang || "").toLowerCase().replace("_", "-") === SPEECH_LANG.toLowerCase();
+            if (name === PREFERRED_VOICE_NAME) return 100;
+            // Same voice under the other names Windows and Edge give it.
+            if (/\bMicrosoft\s+Ava\b/i.test(name) && /natural/i.test(name) && /\bHD\b/.test(name)) return 95;
+            if (/\bMicrosoft\s+Ava\b/i.test(name) && /natural/i.test(name)) return 90;
+            if (/\bMicrosoft\s+Ava/i.test(name)) return 85;
+            if (NATURAL_VOICE_PATTERN.test(name)) return (usEnglish ? 70 : english ? 60 : 20) + (v.localService ? 2 : 0);
+            if (usEnglish) return v.localService ? 40 : 35;
+            if (english) return 30;
+            return 0;
         }
 
-        function speakWebChunk(chunk) {
+        function chooseWebVoice() {
+            const voices = window.speechSynthesis.getVoices();
+            let best = null, bestRank = 0;
+            for (const v of voices) {
+                const rank = rankWebVoice(v);
+                if (rank > bestRank) { best = v; bestRank = rank; }
+            }
+            return best;
+        }
+
+        // Re-picks when voices change; keeps the locked voice unless a better one appeared or it went away.
+        function lockWebVoice() {
+            if (!window.speechSynthesis) return null;
+            const voices = window.speechSynthesis.getVoices();
+            const stillThere = lockedWebVoice && voices.find(v => v.voiceURI === lockedWebVoice.voiceURI && v.name === lockedWebVoice.name);
+            const best = chooseWebVoice();
+            const next = !stillThere ? best : (best && rankWebVoice(best) > rankWebVoice(stillThere) ? best : stillThere);
+            if (next && (!lockedWebVoice || next.name !== lockedWebVoice.name)) {
+                logConsoleActivity(`Text-to-speech voice locked: ${next.name} (${next.lang})${next.name === PREFERRED_VOICE_NAME ? "" : `. ${PREFERRED_VOICE_NAME} isn't installed here, so this is the closest match.`}`);
+            }
+            lockedWebVoice = next || null;
+            return lockedWebVoice;
+        }
+
+        // Chrome and Edge fill the voice list asynchronously and announce it with voiceschanged.
+        function waitForWebVoices() {
+            if (window.speechSynthesis.getVoices().length) return Promise.resolve(lockWebVoice());
+            if (!voicesReadyPromise) {
+                voicesReadyPromise = new Promise(resolve => {
+                    let poll = null;
+                    const finish = () => {
+                        clearInterval(poll);
+                        clearTimeout(timer);
+                        window.speechSynthesis.removeEventListener("voiceschanged", onChange);
+                        voicesReadyPromise = null;
+                        resolve(lockWebVoice());
+                    };
+                    const onChange = () => { if (window.speechSynthesis.getVoices().length) finish(); };
+                    window.speechSynthesis.addEventListener("voiceschanged", onChange);
+                    // Some engines never fire the event, so poll too, and give up after a few seconds.
+                    poll = setInterval(onChange, 250);
+                    const timer = setTimeout(finish, VOICE_LOAD_TIMEOUT_MS);
+                });
+            }
+            return voicesReadyPromise;
+        }
+
+        function speakWebChunk(chunk, voice) {
             return new Promise((resolve, reject) => {
                 const utterance = new SpeechSynthesisUtterance(chunk);
-                const voice = pickWebVoice();
-                if (voice) utterance.voice = voice;
-                utterance.lang = SPEECH_LANG;
+                if (voice) {
+                    utterance.voice = voice;
+                    utterance.lang = voice.lang || SPEECH_LANG;
+                } else {
+                    utterance.lang = SPEECH_LANG;
+                }
                 utterance.rate = 1.0;
                 utterance.pitch = 1.0;
                 utterance.onend = () => resolve();
@@ -2059,12 +2274,14 @@
             logConsoleActivity("Playing text-to-speech audio for agent response.");
 
             try {
+                const webVoice = nativeTts ? null : await waitForWebVoices();
+                if (!nativeTts && !webVoice) logConsoleActivity("No speech voices were reported by this browser; using its language default.");
                 for (const chunk of splitTextForSpeech(cleanText, nativeTts ? 3000 : 200)) {
                     if (runId !== speechRunId) return;
                     if (nativeTts) {
                         await nativeTts.speak({ text: chunk, lang: SPEECH_LANG, rate: 1.0, pitch: 1.0, volume: 1.0 });
                     } else {
-                        await speakWebChunk(chunk);
+                        await speakWebChunk(chunk, webVoice);
                     }
                 }
             } catch (err) {
@@ -2075,10 +2292,11 @@
             }
         }
 
-        // Some browsers load voices asynchronously; touching the list early warms it up.
-        if (window.speechSynthesis) {
-            window.speechSynthesis.getVoices();
-            window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+        // Lock the voice as soon as the list arrives, and again whenever it changes
+        // (Windows can add voices like Ava after the page loads).
+        if (window.speechSynthesis && !getNativeSpeechPlugin("TextToSpeech")) {
+            window.speechSynthesis.addEventListener("voiceschanged", () => lockWebVoice());
+            if (window.speechSynthesis.getVoices().length) lockWebVoice();
         }
 
         // CODEV HUB & CLOUD ROUTINES
@@ -2107,6 +2325,8 @@
             document.getElementById("modalGroqKey").value = groqKey;
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
             document.getElementById("modalLocalTools").checked = localToolsEnabled;
+            document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
+            document.getElementById("modalMcpUrl").value = mcpServerUrl;
             document.getElementById("modalSearchHelperUrl").value = searchHelperUrl;
             document.getElementById("modalCancelBtn").style.display = groqKey ? "inline-block" : "none";
             if (isMobileLayout() && openDrawerName) closeDrawers();
@@ -2133,6 +2353,11 @@
             localStorage.setItem("codev_auto_ground", autoGroundingEnabled ? "1" : "0");
             localToolsEnabled = document.getElementById("modalLocalTools").checked;
             localStorage.setItem("codev_local_tools", localToolsEnabled ? "1" : "0");
+            toolsAutoRun = document.getElementById("modalToolsAutoRun").checked;
+            localStorage.setItem("codev_tools_autorun", toolsAutoRun ? "1" : "0");
+            mcpServerUrl = document.getElementById("modalMcpUrl").value.trim();
+            localStorage.setItem("codev_mcp_url", mcpServerUrl);
+            mcpCache.at = 0;
             helperCommandsCache.at = 0;
             localStorage.setItem("codev_search_helper_url", searchHelperUrl);
 
@@ -2333,7 +2558,7 @@
 4. GROUNDING: Blocks marked [Web Search Snippets], [Injected File Context] or [Attached ...] in the user message are your sources of truth. For code syntax, API names, signatures, versions and technical facts, rely on them first; when they conflict with your memory, follow the sources.
 5. NO GUESSING: Never invent functions, classes, parameters, packages, versions, settings or URLs. If the sources and well-established knowledge don't confirm something, say plainly that you could not verify it instead of guessing.
 6. CITATIONS: When a statement relies on a web snippet, cite it inline as [n] using that snippet's number. Never cite a source that was not provided. Workspace files are cited by file name.
-7. TOOLS: When tools are available, use them on your own initiative. Call web_search before answering about any API, library, engine feature, syntax, version or error message you are not certain about, and for any code implementation that is unfamiliar. Call list_workspace_files and read_workspace_file to check the user's real code instead of assuming. Never claim you searched, read, ran or verified something unless a tool result in this conversation shows it.`;
+7. TOOLS: When tools are available, use them on your own initiative. Call web_search before answering about any API, library, engine feature, syntax, version or error message you are not certain about, and for any code implementation that is unfamiliar. Call list_workspace_files and read_workspace_file (or list_files and read_file) to check the user's real code instead of assuming. When the user asks you to change, create, run or test code and file or command tools (write_workspace_file, write_file, edit_file, run_command, run_approved_command) are available, do it with those tools directly instead of only showing code, then verify by reading the file back or running it. Never claim you searched, read, ran or verified something unless a tool result in this conversation shows it.`;
             
             const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}`;
             const images = options.images || [];
