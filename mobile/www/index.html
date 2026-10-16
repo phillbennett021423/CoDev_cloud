@@ -2689,22 +2689,44 @@
             document.getElementById("settingsModal").style.display = "none"; 
         }
 
+        // Pasted keys often carry spaces, line breaks, quotes or a "Bearer " prefix.
+        function cleanApiKey(value) {
+            return String(value || "")
+                .replace(/[\s\u200B-\u200D\uFEFF]+/g, "")
+                .replace(/^["'`]+|["'`]+$/g, "")
+                .replace(/^Bearer/i, "");
+        }
+
         function saveSettings() {
-            const backend = document.getElementById("modalProvider").value === "openrouter" ? "openrouter" : "groq";
-            const newGroqKey = document.getElementById("modalGroqKey").value.trim();
-            const newOpenRouterKey = document.getElementById("modalOpenRouterKey").value.trim();
+            let backend = document.getElementById("modalProvider").value === "openrouter" ? "openrouter" : "groq";
+            let newGroqKey = cleanApiKey(document.getElementById("modalGroqKey").value);
+            let newOpenRouterKey = cleanApiKey(document.getElementById("modalOpenRouterKey").value);
+            // A key pasted into the other provider's box goes where it belongs.
+            if (/^sk-or-/i.test(newGroqKey)) {
+                if (!newOpenRouterKey) newOpenRouterKey = newGroqKey;
+                newGroqKey = "";
+                if (backend === "groq") backend = "openrouter";
+            }
+            if (/^gsk_/.test(newOpenRouterKey)) {
+                if (!newGroqKey) newGroqKey = newOpenRouterKey;
+                newOpenRouterKey = "";
+            }
+            if (backend === "openrouter" && !newOpenRouterKey && newGroqKey) backend = "groq";
+            document.getElementById("modalProvider").value = backend;
+            toggleProviderFields();
+            document.getElementById("modalGroqKey").value = newGroqKey;
+            document.getElementById("modalOpenRouterKey").value = newOpenRouterKey;
+
             if (backend === "groq" && !newGroqKey.startsWith("gsk_")) {
                 showSettingsError("Please enter a valid Groq API key starting with 'gsk_'.", "modalGroqKey");
                 return;
             }
-            if (backend === "openrouter" && !newOpenRouterKey.startsWith("sk-or-")) {
-                showSettingsError("Please enter a valid OpenRouter API key starting with 'sk-or-'.", "modalOpenRouterKey");
+            if (backend === "openrouter" && newOpenRouterKey.length < 10) {
+                showSettingsError("Please paste your OpenRouter API key (it usually starts with 'sk-or-').", "modalOpenRouterKey");
                 return;
             }
-            if (newGroqKey && !newGroqKey.startsWith("gsk_")) {
-                showSettingsError("The Groq API key should start with 'gsk_'. Clear it or fix it.", "modalGroqKey");
-                return;
-            }
+            // The Groq key is optional with OpenRouter; a malformed one is just not used.
+            if (backend === "openrouter" && newGroqKey && !newGroqKey.startsWith("gsk_")) newGroqKey = "";
             showSettingsError("");
             currentBackend = backend;
             groqKey = newGroqKey;
