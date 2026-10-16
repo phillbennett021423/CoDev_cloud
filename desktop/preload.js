@@ -9,5 +9,9 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     },
     azureTts: ({ region, key, ssml }) => ipcRenderer.invoke('codev:azure-tts', { region, key, ssml }),
     // Gives keyboard focus back to the page after a native alert or confirm.
-    refocus: () => ipcRenderer.send('codev:refocus')
+    refocus: () => ipcRenderer.send('codev:refocus'),
+    // Built-in MCP tools for the chosen project folder.
+    mcp: message => ipcRenderer.invoke('codev:mcp', message),
+    mcpFolder: () => ipcRenderer.invoke('codev:mcp-folder'),
+    pickMcpFolder: () => ipcRenderer.invoke('codev:mcp-pick-folder')
 });

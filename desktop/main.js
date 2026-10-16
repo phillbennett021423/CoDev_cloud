@@ -1,8 +1,10 @@
 // CoDev Studio desktop app: the same page as the Android app (mobile/www),
 // in its own window. The page talks to Groq directly; the main process only
 // does what a page can't, like fetching DuckDuckGo results without CORS.
-const { app, BrowserWindow, ipcMain, net, protocol, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } = require('electron');
+const fs = require('fs');
 const path = require('path');
+const { createMcpTools } = require('./mcp-tools');
 const { pathToFileURL } = require('url');
 
 const WWW = path.join(__dirname, 'www');
@@ -48,6 +50,26 @@ app.whenReady().then(() => {
         if (typeof url !== 'string' || !ALLOWED_HTTP.test(url)) throw new Error('This address is not allowed.');
         const response = await net.fetch(url, { headers: headers || {} });
         return { status: response.status, data: await response.text(), headers: {} };
+    });
+
+    // Built-in MCP tools: agents work in the project folder chosen in Settings.
+    const settingsFile = path.join(app.getPath('userData'), 'codev-desktop.json');
+    let desktopSettings = {};
+    try { desktopSettings = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); } catch { desktopSettings = {}; }
+    const getProjectDir = () => (desktopSettings.projectDir && fs.existsSync(desktopSettings.projectDir) ? desktopSettings.projectDir : '');
+    const handleMcp = createMcpTools(getProjectDir);
+    ipcMain.handle('codev:mcp', (_event, message) => handleMcp(message));
+    ipcMain.handle('codev:mcp-folder', () => getProjectDir());
+    ipcMain.handle('codev:mcp-pick-folder', async event => {
+        const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+            title: 'Choose the project folder agents can work in',
+            properties: ['openDirectory']
+        });
+        if (!result.canceled && result.filePaths[0]) {
+            desktopSettings.projectDir = result.filePaths[0];
+            fs.writeFileSync(settingsFile, JSON.stringify(desktopSettings, null, 2));
+        }
+        return getProjectDir();
     });
 
     // Electron on Windows leaves text boxes dead after alert()/confirm() until the

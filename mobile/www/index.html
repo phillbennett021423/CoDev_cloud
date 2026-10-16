@@ -665,6 +665,14 @@
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalToolsAutoRun"> Run file edits and commands without asking me first
                 </label>
+                <div class="form-group" id="desktopMcpGroup" style="display: none;">
+                    <label>Project folder agents can edit and run code in (built-in MCP tools)</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <button class="btn-secondary" type="button" onclick="pickDesktopMcpFolder()">📁 Choose folder</button>
+                        <span id="desktopMcpFolder" style="font-family: monospace; font-size: 0.8rem; overflow-wrap: anywhere;"></span>
+                    </div>
+                </div>
+                <div id="mcpStatus" style="font-size: 0.8rem; color: var(--text-muted);"></div>
                 <div class="form-group">
                     <label>Desktop helper address (the Android app doesn't need it)</label>
                     <input type="text" id="modalSearchHelperUrl" style="font-family: monospace;">
@@ -1623,6 +1631,50 @@
             logConsoleActivity(`[MCP] Connected to ${init.serverInfo?.name || mcpServerUrl}.`);
         }
 
+        // The Windows app has MCP tools built in for the project folder chosen in Settings.
+        let desktopMcpCache = { at: 0, tools: [] };
+        async function fetchDesktopMcpTools() {
+            if (!window.codevDesktop?.mcp) return [];
+            if (Date.now() - desktopMcpCache.at < 60000) return desktopMcpCache.tools;
+            let tools = [];
+            try {
+                const reply = await window.codevDesktop.mcp({ jsonrpc: "2.0", id: ++mcpRequestId, method: "tools/list", params: {} });
+                tools = (reply.result?.tools || []).map(t => ({ ...t, transport: "desktop" }));
+            } catch (err) {
+                logConsoleActivity(`[MCP] Built-in tools unavailable: ${err.message}`);
+            }
+            desktopMcpCache = { at: Date.now(), tools };
+            return tools;
+        }
+
+        async function pickDesktopMcpFolder() {
+            if (!window.codevDesktop?.pickMcpFolder) return;
+            const folder = await window.codevDesktop.pickMcpFolder();
+            desktopMcpCache.at = 0;
+            document.getElementById("desktopMcpFolder").textContent = folder || "No folder chosen";
+            if (folder) logConsoleActivity(`[MCP] Agents can now work in ${folder}.`);
+            refreshMcpStatus();
+        }
+
+        async function refreshMcpStatus() {
+            const box = document.getElementById("mcpStatus");
+            if (!box) return;
+            box.textContent = "Checking MCP tools...";
+            desktopMcpCache.at = 0;
+            mcpCache.at = 0;
+            const tools = await fetchAllMcpTools();
+            box.textContent = tools.length
+                ? `✅ MCP tools connected: ${tools.map(t => t.name).join(", ")}`
+                : (window.codevDesktop?.mcp ? "⚠️ No MCP tools yet. Choose a project folder above." : "⚠️ No MCP tools connected. Start the helper with --autonomous (see tools/ddgs-helper).");
+        }
+
+        // Built-in desktop tools first, then any HTTP MCP server's tools with other names.
+        async function fetchAllMcpTools() {
+            const tools = await fetchDesktopMcpTools();
+            for (const t of await fetchMcpTools()) if (!tools.some(x => x.name === t.name)) tools.push(t);
+            return tools;
+        }
+
         // Tools the MCP server offers, re-listed at most once a minute.
         async function fetchMcpTools() {
             if (!mcpServerUrl) return [];
@@ -1652,7 +1704,14 @@
                     return "The user declined this tool call.";
                 }
             }
-            const result = await mcpCall("tools/call", { name: tool.name, arguments: args });
+            let result;
+            if (tool.transport === "desktop") {
+                const reply = await window.codevDesktop.mcp({ jsonrpc: "2.0", id: ++mcpRequestId, method: "tools/call", params: { name: tool.name, arguments: args } });
+                if (reply.error) throw new Error(reply.error.message);
+                result = reply.result;
+            } else {
+                result = await mcpCall("tools/call", { name: tool.name, arguments: args });
+            }
             const text = (result.content || []).map(c => c.type === "text" ? c.text : `[${c.type} content]`).join("\n");
             if (result.isError) logConsoleActivity(`[Tool] ${tool.name} reported an error.`);
             return (result.isError ? "Error: " : "") + (text || "(no output)");
@@ -1718,7 +1777,7 @@
                     run: async ({ name, content }) => writeWorkspaceFile(String(name || ""), content)
                 }
             ];
-            const mcpTools = await fetchMcpTools();
+            const mcpTools = await fetchAllMcpTools();
             for (const tool of mcpTools) {
                 if (tools.some(t => t.name === tool.name)) continue;
                 tools.push({
@@ -1797,6 +1856,13 @@
         async function runToolLoop(messages, ctx) {
             const tools = await buildLocalTools();
             const toolDefs = tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
+            // Tell the model what "MCP" means here, so a request like "use MCP to..." lands on these tools.
+            const mcpNames = (await fetchAllMcpTools()).map(t => t.name);
+            if (messages[0]?.role === "system") {
+                messages[0] = { ...messages[0], content: messages[0].content + (mcpNames.length
+                    ? `\n\n[MCP] The user's MCP tools are connected and work on their computer: ${mcpNames.join(", ")}. When the user mentions MCP, they mean these tools. Use them to read, create and edit files and to run code, instead of only showing code.`
+                    : `\n\n[MCP] No MCP tools are connected right now. If the user asks for MCP, file edits or running code on their computer, tell them to choose a project folder under Settings > Web grounding & local tools in the Windows app (or start the helper with --autonomous), then ask again.`) };
+            }
             for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
                 const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" });
                 const calls = message.tool_calls || [];
@@ -2657,6 +2723,15 @@
             document.getElementById("modalLocalTools").checked = localToolsEnabled;
             document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
             document.getElementById("modalMcpUrl").value = mcpServerUrl;
+            if (window.codevDesktop?.mcpFolder) {
+                document.getElementById("desktopMcpGroup").style.display = "flex";
+                window.codevDesktop.mcpFolder().then(folder => {
+                    document.getElementById("desktopMcpFolder").textContent = folder || "No folder chosen";
+                    // Point people at the folder picker until one is chosen.
+                    if (!folder) document.getElementById("searchSettings").open = true;
+                });
+            }
+            refreshMcpStatus();
             document.getElementById("modalSearchHelperUrl").value = searchHelperUrl;
             document.getElementById("modalCancelBtn").style.display = activeProviderKey() ? "inline-block" : "none";
             if (isMobileLayout() && openDrawerName) closeDrawers();
