@@ -7,5 +7,7 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     http: {
         get: ({ url, headers }) => ipcRenderer.invoke('codev:http-get', { url, headers })
     },
-    azureTts: ({ region, key, ssml }) => ipcRenderer.invoke('codev:azure-tts', { region, key, ssml })
+    azureTts: ({ region, key, ssml }) => ipcRenderer.invoke('codev:azure-tts', { region, key, ssml }),
+    // Gives keyboard focus back to the page after a native alert or confirm.
+    refocus: () => ipcRenderer.send('codev:refocus')
 });

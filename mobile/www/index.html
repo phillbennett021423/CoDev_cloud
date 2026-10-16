@@ -694,6 +694,8 @@
             </details>
 
 
+            <div id="settingsError" role="alert" style="display: none; color: var(--danger); font-size: 0.85rem;"></div>
+
             <div class="modal-buttons">
                 <button class="btn-secondary" id="modalCancelBtn" style="display: none;" onclick="closeSettingsModal()">Cancel</button>
                 <button class="btn-primary" style="flex: 1; padding: 12px;" onclick="saveSettings()">🚀 Launch CoDev Studio Workspace</button>
@@ -702,6 +704,17 @@
     </div>
 
     <script>
+        // Windows desktop app (Electron): after a native alert/confirm the page's
+        // text boxes stop taking clicks and typing until the window is refocused.
+        if (window.codevDesktop?.refocus) {
+            for (const name of ["alert", "confirm", "prompt"]) {
+                const original = window[name].bind(window);
+                window[name] = (...args) => {
+                    try { return original(...args); } finally { window.codevDesktop.refocus(); }
+                };
+            }
+        }
+
         // The AI provider: "groq" or "openrouter". Both speak the OpenAI chat API.
         let currentBackend = localStorage.getItem("codev_backend") === "openrouter" ? "openrouter" : "groq";
         let groqKey = localStorage.getItem("codev_groq_key") || "";
@@ -2653,13 +2666,26 @@
             const openRouter = document.getElementById("modalProvider").value === "openrouter";
             document.getElementById("groupOpenRouter").style.display = openRouter ? "flex" : "none";
             document.getElementById("groqKeyOptional").style.display = openRouter ? "inline" : "none";
+            showSettingsError("");
+            if (openRouter && !document.getElementById("modalOpenRouterKey").value) document.getElementById("modalOpenRouterKey").focus();
+        }
+
+        // Settings problems show inside the dialog, not in a native alert: in the
+        // Windows app an alert leaves text boxes unable to take clicks or typing.
+        function showSettingsError(message, fieldId) {
+            const box = document.getElementById("settingsError");
+            box.textContent = message;
+            box.style.display = message ? "block" : "none";
+            const field = fieldId && document.getElementById(fieldId);
+            if (field) { field.focus(); field.select?.(); }
         }
 
         function closeSettingsModal() { 
             if (!activeProviderKey()) {
-                alert(`Please enter ${currentBackend === "openrouter" ? "an OpenRouter" : "a Groq"} API key to launch CoDev Studio Pro.`);
+                showSettingsError(`Please enter ${currentBackend === "openrouter" ? "an OpenRouter" : "a Groq"} API key to launch CoDev Studio Pro.`, currentBackend === "openrouter" ? "modalOpenRouterKey" : "modalGroqKey");
                 return;
             }
+            showSettingsError("");
             document.getElementById("settingsModal").style.display = "none"; 
         }
 
@@ -2668,17 +2694,18 @@
             const newGroqKey = document.getElementById("modalGroqKey").value.trim();
             const newOpenRouterKey = document.getElementById("modalOpenRouterKey").value.trim();
             if (backend === "groq" && !newGroqKey.startsWith("gsk_")) {
-                alert("Please enter a valid Groq API key starting with 'gsk_'.");
+                showSettingsError("Please enter a valid Groq API key starting with 'gsk_'.", "modalGroqKey");
                 return;
             }
             if (backend === "openrouter" && !newOpenRouterKey.startsWith("sk-or-")) {
-                alert("Please enter a valid OpenRouter API key starting with 'sk-or-'.");
+                showSettingsError("Please enter a valid OpenRouter API key starting with 'sk-or-'.", "modalOpenRouterKey");
                 return;
             }
             if (newGroqKey && !newGroqKey.startsWith("gsk_")) {
-                alert("The Groq API key should start with 'gsk_'. Clear it or fix it.");
+                showSettingsError("The Groq API key should start with 'gsk_'. Clear it or fix it.", "modalGroqKey");
                 return;
             }
+            showSettingsError("");
             currentBackend = backend;
             groqKey = newGroqKey;
             openRouterKey = newOpenRouterKey;

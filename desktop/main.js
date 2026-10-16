@@ -50,6 +50,16 @@ app.whenReady().then(() => {
         return { status: response.status, data: await response.text(), headers: {} };
     });
 
+    // Electron on Windows leaves text boxes dead after alert()/confirm() until the
+    // window loses and regains focus, so the page asks for exactly that.
+    ipcMain.on('codev:refocus', event => {
+        const win = BrowserWindow.fromWebContents(event.sender);
+        if (!win) return;
+        win.blur();
+        win.focus();
+        event.sender.focus();
+    });
+
     // Azure Speech for the natural Ava voice, from the main process so CORS can't block it.
     ipcMain.handle('codev:azure-tts', async (_event, { region, key, ssml }) => {
         if (typeof region !== 'string' || !/^[a-z0-9]+$/.test(region) || typeof key !== 'string' || typeof ssml !== 'string') {
