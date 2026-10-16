@@ -698,7 +698,7 @@
 
             <div class="modal-buttons">
                 <button class="btn-secondary" id="modalCancelBtn" style="display: none;" onclick="closeSettingsModal()">Cancel</button>
-                <button class="btn-primary" style="flex: 1; padding: 12px;" onclick="saveSettings()">🚀 Launch CoDev Studio Workspace</button>
+                <button class="btn-primary" id="modalLaunchBtn" style="flex: 1; padding: 12px;" onclick="saveSettings()">🚀 Launch CoDev Studio Workspace</button>
             </div>
         </div>
     </div>
@@ -2697,7 +2697,29 @@
                 .replace(/^Bearer/i, "");
         }
 
-        function saveSettings() {
+        // Asks OpenRouter whether the key is real before saving it. Returns an error
+        // message, or "" when the key works or OpenRouter couldn't be reached.
+        async function checkOpenRouterKey(key) {
+            if (/\.\.\.|…|\*{3,}/.test(key)) {
+                return "That looks like the shortened key from OpenRouter's key list, which won't work. Create a new key at openrouter.ai/keys and copy it from the pop-up right away.";
+            }
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 8000);
+            try {
+                const response = await fetch("https://openrouter.ai/api/v1/key", { headers: { "Authorization": `Bearer ${key}` }, signal: controller.signal });
+                if (response.status === 401 || response.status === 403) {
+                    return "OpenRouter says this key isn't valid (401). It may be shortened, deleted or disabled. Create a new key at openrouter.ai/keys, copy it from the pop-up right away, and paste it here.";
+                }
+                return "";
+            } catch (err) {
+                logConsoleActivity(`Couldn't check the OpenRouter key (${err.message}); saving it anyway.`);
+                return "";
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
+        async function saveSettings() {
             let backend = document.getElementById("modalProvider").value === "openrouter" ? "openrouter" : "groq";
             let newGroqKey = cleanApiKey(document.getElementById("modalGroqKey").value);
             let newOpenRouterKey = cleanApiKey(document.getElementById("modalOpenRouterKey").value);
@@ -2727,6 +2749,17 @@
             }
             // The Groq key is optional with OpenRouter; a malformed one is just not used.
             if (backend === "openrouter" && newGroqKey && !newGroqKey.startsWith("gsk_")) newGroqKey = "";
+            if (backend === "openrouter" && newOpenRouterKey !== openRouterKey) {
+                const launchBtn = document.getElementById("modalLaunchBtn");
+                launchBtn.disabled = true;
+                showSettingsError("");
+                const problem = await checkOpenRouterKey(newOpenRouterKey);
+                launchBtn.disabled = false;
+                if (problem) {
+                    showSettingsError(problem, "modalOpenRouterKey");
+                    return;
+                }
+            }
             showSettingsError("");
             currentBackend = backend;
             groqKey = newGroqKey;
@@ -2945,6 +2978,9 @@
             const data = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } }));
             if (data.choices && data.choices.length > 0) return data.choices[0].message;
             const code = data.error?.code ? ` (${data.error.code})` : "";
+            if (response.status === 401) {
+                throw new Error(`${provider.name} rejected the API key (401: ${data.error?.message || "unauthorized"}). Open Settings and paste a new key from ${openRouter ? "openrouter.ai/keys" : "console.groq.com/keys"}.`);
+            }
             throw new Error(`${provider.name} API Error: ` + (data.error?.message || JSON.stringify(data)) + code);
         }
 
