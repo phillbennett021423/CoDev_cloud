@@ -5,7 +5,8 @@
   "description": "CoDev Studio packaged as an Android app with Capacitor",
   "scripts": {
     "sync": "cap sync android",
-    "build:debug": "cap sync android && cd android && ./gradlew assembleDebug"
+    "build:debug": "cap sync android && cd android && ./gradlew assembleDebug",
+    "build:mcp-sdk": "node scripts/build-mcp-sdk.mjs"
   },
   "dependencies": {
     "@capacitor-community/speech-recognition": "^7.0.1",
@@ -14,6 +15,8 @@
     "@capacitor/core": "^8.5.3"
   },
   "devDependencies": {
-    "@capacitor/cli": "^8.5.3"
+    "@capacitor/cli": "^8.5.3",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "esbuild": "0.25.12"
   }
 }

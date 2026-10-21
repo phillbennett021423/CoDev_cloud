@@ -13,6 +13,8 @@ where python >nul 2>nul && (
     start "CoDev helper" python tools\ddgs-helper\ddgs_helper.py --project "%~1" --autonomous
   )
 ) || echo Python not found: web search on desktop will be off. Get Python from https://python.org to turn it on.
+REM The MCP SDK lets CoDev use MCP servers on this computer (Settings > MCP servers).
+if not exist node_modules\@modelcontextprotocol\sdk call npm install --no-audit --no-fund
 REM Edge includes the natural Microsoft Ava voice for read-aloud; other browsers only get robotic ones.
 start "" msedge http://localhost:3000 2>nul || start "" http://localhost:3000
 node server.js

@@ -13,5 +13,7 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     // Built-in MCP tools for the chosen project folder.
     mcp: message => ipcRenderer.invoke('codev:mcp', message),
     mcpFolder: () => ipcRenderer.invoke('codev:mcp-folder'),
-    pickMcpFolder: () => ipcRenderer.invoke('codev:mcp-pick-folder')
+    pickMcpFolder: () => ipcRenderer.invoke('codev:mcp-pick-folder'),
+    // External MCP servers (stdio and remote), run by the main process's MCP hub.
+    mcpHub: req => ipcRenderer.invoke('codev:mcp-hub', req)
 });
