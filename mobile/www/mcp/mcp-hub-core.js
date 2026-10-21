@@ -25,7 +25,9 @@
     "use strict";
 
     const CLIENT_INFO = { name: "codev-studio", title: "CoDev Studio", version: "1.0.0" };
-    const CONNECT_TIMEOUT_MS = { stdio: 90000, http: 15000 }; // npx may download the server on first start
+    // npx/uvx install a server on its first start, which can take minutes on a slow
+// line; stopping them mid-install leaves a broken package in their cache.
+const CONNECT_TIMEOUT_MS = { stdio: 5 * 60 * 1000, http: 15000 };
     const TOOL_TIMEOUT_MS = 10 * 60 * 1000;
     const LIST_TIMEOUT_MS = 20000;
     const RETRY_AFTER_MS = 30000; // a server that failed isn't retried on every message
@@ -207,7 +209,8 @@
                 s.connecting = connect(s).catch(err => {
                     s.status = "error";
                     s.failedAt = Date.now();
-                    const tail = s.stderr.length ? ` (stderr: ${s.stderr.slice(-3).join(" | ")})` : "";
+                    // The useful line (e.g. "Cannot find module") is often above a stack trace.
+                    const tail = s.stderr.length ? ` (stderr: ${s.stderr.slice(-10).join(" | ").slice(-800)})` : "";
                     s.error = `${err && err.message ? err.message : err}${tail}`;
                     say(`[MCP] ${s.name} unavailable: ${s.error}`);
                     throw new HubError(s.error);
