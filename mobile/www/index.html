@@ -29,6 +29,10 @@
         .sidebar-toggle-btn { background: none; border: none; color: var(--text-main); font-size: 1.2rem; cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: background 0.2s; }
         .sidebar-toggle-btn:hover { background: rgba(255,255,255,0.05); }
         .logo-area { display: flex; align-items: center; gap: 10px; font-weight: bold; font-size: 1.1rem; color: var(--accent); }
+        /* Studio brand mark: shows BRAND.logoSrc when set, otherwise a plain monogram tile (see BRAND in the script). */
+        .brand-mark { display: inline-flex; align-items: center; justify-content: center; width: 1.25em; height: 1.25em; flex-shrink: 0; border-radius: 22%; overflow: hidden; vertical-align: middle; background: var(--accent); color: #fff; font-size: 0.8em; font-weight: 800; letter-spacing: -0.04em; line-height: 1; }
+        .brand-mark img { width: 100%; height: 100%; object-fit: contain; display: block; }
+        .brand-mark:has(img) { background: none; }
         
         .nav-tabs { display: flex; gap: 8px; font-size: 0.8rem; color: var(--text-muted); }
         .nav-tabs span { cursor: pointer; padding: 6px 10px; border-radius: 4px; transition: background 0.2s, color 0.2s; user-select: none; }
@@ -432,7 +436,7 @@
     <header>
         <div class="header-left">
             <button class="sidebar-toggle-btn" onclick="toggleMenuSidebar()" title="Toggle Menu">☰</button>
-            <div class="logo-area">💻 CoDev Studio Pro</div>
+            <div class="logo-area"><span class="brand-mark"></span><span class="brand-name">CoDev Studio Pro</span></div>
         </div>
         <div class="nav-tabs">
             <span id="tab-chat" class="active" onclick="switchView('chat')">Chat & Swarm</span>
@@ -508,7 +512,7 @@
             <div id="view-chat" class="center-pane" style="display: flex; flex: 1; flex-direction: column; overflow: hidden;">
                 <div class="pane-header">
                     <div style="display: flex; align-items: center; gap: 10px;">
-                        <button class="sidebar-toggle-btn" onclick="toggleAgentSidebar()" title="Toggle Agents Bar">🤖</button>
+                        <button class="sidebar-toggle-btn" onclick="toggleAgentSidebar()" title="Toggle Agents Bar"><span class="brand-mark"></span></button>
                         <span id="activeWorkspaceTitle">Active Chat Session</span>
                     </div>
                     <span style="font-size: 0.75rem; color: var(--text-muted);" id="activeProviderLabel">Provider: Loading...</span>
@@ -717,8 +721,8 @@
     <!-- Phone navigation: backdrop for drawers and bottom tab bar -->
     <div class="drawer-backdrop" id="drawerBackdrop" onclick="closeDrawers()"></div>
     <nav class="mobile-tabbar" id="mobileTabbar">
-        <button class="mobile-tab active" data-view="chat" onclick="mobileTab('chat')"><span class="tab-icon">💬</span>Chat</button>
-        <button class="mobile-tab" data-drawer="agents" onclick="mobileTab('agents')"><span class="tab-icon">🤖</span>Agents</button>
+        <button class="mobile-tab active" data-view="chat" onclick="mobileTab('chat')"><span class="tab-icon"><span class="brand-mark"></span></span>Chat</button>
+        <button class="mobile-tab" data-drawer="agents" onclick="mobileTab('agents')"><span class="tab-icon"><span class="brand-mark"></span></span>Agents</button>
         <button class="mobile-tab" data-view="project" onclick="mobileTab('project')"><span class="tab-icon">📁</span>Files</button>
         <button class="mobile-tab" data-view="codev" onclick="mobileTab('codev')"><span class="tab-icon">⚡</span>Hub</button>
         <button class="mobile-tab" data-view="cloud" onclick="mobileTab('cloud')"><span class="tab-icon">☁️</span>Cloud</button>
@@ -1080,7 +1084,7 @@
                 timestamp: "06:40 AM",
                 isGroup: false,
                 messages: [
-                    { sender: "⚙️ System Co-Pilot", text: "Welcome to CoDev Studio Pro. Click '📁 Connect Local Folder' at the top right to link your real project files." }
+                    { sender: "System Co-Pilot", text: "Welcome to CoDev Studio Pro. Click '📁 Connect Local Folder' at the top right to link your real project files." }
                 ]
             }
         ];
@@ -1267,6 +1271,26 @@
             updateMobileTabs();
         }
 
+        // Studio branding. This is the one place to set the logo: point logoSrc at an image
+        // (e.g. "brand/logo.svg" next to index.html, or a data: URL) and it replaces the
+        // monogram in the header, tabs, chat list and every agent message header.
+        const BRAND = { name: "CoDev Studio Pro", monogram: "VF", logoSrc: null };
+
+        function brandMarkHtml() {
+            const inner = BRAND.logoSrc ? `<img src="${escapeHtml(BRAND.logoSrc)}" alt="">` : escapeHtml(BRAND.monogram);
+            return `<span class="brand-mark" aria-hidden="true">${inner}</span>`;
+        }
+
+        function applyBrand() {
+            document.querySelectorAll(".brand-mark").forEach(el => { el.outerHTML = brandMarkHtml(); });
+            document.querySelectorAll(".brand-name").forEach(el => { el.textContent = BRAND.name; });
+        }
+
+        // Chats saved before the rebrand still carry the old bot/system emoji in their senders.
+        function stripBotIcon(sender) {
+            return sender.replace(/^(?:🤖|⚙️|💻)\s*/u, "");
+        }
+
         function renderChatList() {
             const container = document.getElementById("chatListContainer");
             container.innerHTML = "";
@@ -1278,8 +1302,8 @@
                 infoDiv.className = "chat-item-info";
                 infoDiv.onclick = () => switchChatSession(session.id);
                 infoDiv.innerHTML = `
-                    <div class="chat-item-title">${session.isGroup ? '🌐 ' : '👤 '}${escapeHtml(session.title)}</div>
-                    <div class="chat-item-meta">${escapeHtml(session.timestamp)}</div>
+                    <div class="chat-item-title">${brandMarkHtml()} ${escapeHtml(session.title)}</div>
+                    <div class="chat-item-meta">${session.isGroup ? 'Group · ' : ''}${escapeHtml(session.timestamp)}</div>
                 `;
                 item.appendChild(infoDiv);
 
@@ -1313,7 +1337,7 @@
                 timestamp: timeStr,
                 isGroup: isGroup,
                 messages: [
-                    { sender: "⚙️ System Co-Pilot", text: isGroup ? "Group Swarm Chat initialized." : "New chat initialized." }
+                    { sender: "System Co-Pilot", text: isGroup ? "Group Swarm Chat initialized." : "New chat initialized." }
                 ]
             });
             activeChatId = newId;
@@ -1375,7 +1399,7 @@
 
                 div.innerHTML = `
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <div class="sender" style="margin-bottom: 0;">${escapeHtml(msg.sender)}</div>
+                        <div class="sender" style="margin-bottom: 0;">${msg.sender.includes("You") ? "" : brandMarkHtml()}${escapeHtml(stripBotIcon(msg.sender))}</div>
                         ${speakButtonHtml}
                     </div>
                     ${renderMessageAttachments(msg.attachments)}
@@ -3909,14 +3933,14 @@
 
                 for (const agent of groupAgents) {
                     try {
-                        appendMessageToSession(session, `🤖 ${agent.name} (Thinking...)`, `Analyzing swarm query...`);
+                        appendMessageToSession(session, `${agent.name} (Thinking...)`, `Analyzing swarm query...`);
                         setAgentState(agent.id, "thinking");
                         const tools = toolContext(session.messages[session.messages.length - 1], agent);
                         let response = await callAI(agent.instructions + "\n[Memory]: " + agent.memory, userText + injectedContext, { ...aiOptions, tools });
                         if (isSelfHeal) response = await runSelfHealingPass(agent, userText, response);
                         
                         session.messages.pop();
-                        appendMessageToSession(session, `🤖 ${agent.name}`, response, null, tools.sources);
+                        appendMessageToSession(session, `${agent.name}`, response, null, tools.sources);
                         setAgentState(agent.id, "success");
                     } catch (err) {
                         setAgentState(agent.id, "idle");
@@ -3926,14 +3950,14 @@
                 }
             } else {
                 try {
-                    appendMessageToSession(session, `🤖 ${activeAgent.name} (Thinking...)`, `Processing request deterministically...`);
+                    appendMessageToSession(session, `${activeAgent.name} (Thinking...)`, `Processing request deterministically...`);
                     setAgentState(activeAgent.id, "thinking");
                     const tools = toolContext(session.messages[session.messages.length - 1], activeAgent);
                     let response = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext, { ...aiOptions, tools });
                     if (isSelfHeal) response = await runSelfHealingPass(activeAgent, userText, response);
                     
                     session.messages.pop();
-                    appendMessageToSession(session, `🤖 ${activeAgent.name}`, response, null, tools.sources);
+                    appendMessageToSession(session, `${activeAgent.name}`, response, null, tools.sources);
                     setAgentState(activeAgent.id, "success");
                 } catch (err) {
                     setAgentState(activeAgent.id, "idle");
@@ -3947,6 +3971,7 @@
         // and Settings opens only from the ⚙️ button.
         window.addEventListener('DOMContentLoaded', async () => {
             document.getElementById("settingsModal").style.display = "none";
+            applyBrand();
             await checkServerAnthropic();
             if (!pickProviderWithKey()) logConsoleActivity("No API key saved yet. Add a Groq, OpenRouter or Anthropic key under ⚙️ Settings to chat with the agents.");
             updateStatusDisplay();
