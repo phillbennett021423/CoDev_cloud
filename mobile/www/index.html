@@ -859,6 +859,13 @@
         const DEFAULT_OPENROUTER_MODEL = "openrouter/free";
         let openRouterModel = localStorage.getItem("codev_openrouter_model") || DEFAULT_OPENROUTER_MODEL;
         let anthropicKey = String(localStorage.getItem("codev_anthropic_key") || "").replace(/[\s\u200B-\u200D\uFEFF"'`]+/g, "");
+        // Keys saved under the older code_dev_* names are moved to the provider they belong to.
+        for (const name of ["code_dev_anthropic_key", "code_dev_api_key"]) {
+            const legacy = String(localStorage.getItem(name) || "").replace(/[\s\u200B-\u200D\uFEFF"'`]+/g, "");
+            if (/^sk-ant-/.test(legacy) && !anthropicKey) localStorage.setItem("codev_anthropic_key", anthropicKey = legacy);
+            else if (/^gsk_/.test(legacy) && !groqKey) localStorage.setItem("codev_groq_key", groqKey = legacy);
+            else if (/^sk-or-/i.test(legacy) && !openRouterKey) localStorage.setItem("codev_openrouter_key", openRouterKey = legacy);
+        }
         const ANTHROPIC_MODEL = "claude-haiku-5-5";
         // True when server.js (npm start) has ANTHROPIC_API_KEY and relays requests,
         // so the page itself needs no Anthropic key. Set by checkServerAnthropic().
@@ -867,6 +874,19 @@
         function activeProviderKey() {
             if (currentBackend === "anthropic") return anthropicKey || (anthropicViaServer ? "server" : "");
             return currentBackend === "openrouter" ? openRouterKey : groqKey;
+        }
+
+        // When the saved provider has no key but another one does, switch to that one
+        // so setup is skipped. Returns false when no provider has a key at all.
+        function pickProviderWithKey() {
+            if (activeProviderKey()) return true;
+            const keys = { groq: groqKey, openrouter: openRouterKey, anthropic: anthropicKey || (anthropicViaServer ? "server" : "") };
+            const backend = BACKENDS.find(b => keys[b]);
+            if (!backend) return false;
+            currentBackend = backend;
+            localStorage.setItem("codev_backend", backend);
+            logConsoleActivity(`Using ${BACKEND_NAMES[backend]}, the provider with a saved API key.`);
+            return true;
         }
 
         // Asks server.js whether it holds an Anthropic key. Only the local server
@@ -3904,7 +3924,7 @@
         // First-Launch Onboarding Wizard Check
         window.addEventListener('DOMContentLoaded', async () => {
             await checkServerAnthropic();
-            if (!activeProviderKey()) {
+            if (!pickProviderWithKey()) {
                 document.getElementById("settingsModal").style.display = "flex";
             } else {
                 document.getElementById("settingsModal").style.display = "none";
