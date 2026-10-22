@@ -813,6 +813,26 @@
                 </div>
             </details>
 
+            <details class="settings-extra" id="browserSettings" style="display: none;">
+                <summary>🌐 Agents' web browser & saved logins</summary>
+                <div id="browserVaultStatus" style="font-size: 0.8rem; color: var(--text-muted); white-space: pre-line; overflow-wrap: anywhere;"></div>
+                <div id="browserVaultList" style="display: flex; flex-direction: column; gap: 6px;"></div>
+                <div class="form-group">
+                    <label>Add a saved login. Agents can only use it on its own site, and CoDev asks you every time. It is encrypted on this computer; agents never see the password.</label>
+                    <input type="text" id="browserCredLabel" placeholder="Name, like GitHub work account" autocomplete="off">
+                    <input type="text" id="browserCredUrl" placeholder="Sign-in page, like https://github.com/login" autocomplete="off" style="font-family: monospace;">
+                    <input type="text" id="browserCredUser" placeholder="User name or email" autocomplete="off">
+                    <input type="password" id="browserCredPassword" placeholder="Password" autocomplete="new-password">
+                    <details>
+                        <summary style="font-size: 0.8rem;">Field selectors (only if CoDev can't find the boxes)</summary>
+                        <input type="text" id="browserCredUserSelector" placeholder="User name box, like #login_field" autocomplete="off" style="font-family: monospace;">
+                        <input type="text" id="browserCredPasswordSelector" placeholder="Password box, like #password" autocomplete="off" style="font-family: monospace;">
+                        <input type="text" id="browserCredSubmitSelector" placeholder="Sign-in button, like input[type=submit]" autocomplete="off" style="font-family: monospace;">
+                    </details>
+                    <button class="btn-secondary" type="button" onclick="saveBrowserCredential()">🔐 Save login</button>
+                </div>
+            </details>
+
             <details class="settings-extra" id="voiceSettings">
                 <summary>🔊 Voice</summary>
                 <div class="form-group">
@@ -2001,26 +2021,143 @@
             box.textContent = lines.length ? lines.join("\n") : "No MCP servers set up yet. Add one below.";
         }
 
-        // Built-in desktop tools first, then the configured servers' tools.
-        async function fetchAllMcpTools() {
-            return [...await fetchDesktopMcpTools(), ...await fetchHubMcpTools()];
+        // AGENTS' HEADLESS BROWSER: each agent gets its own Chromium profile, run by the
+        // Windows app (desktop/browser, over IPC) or by server.js (POST /agent-tools,
+        // after npm run setup). Android and the web have no browser tools: a phone or a
+        // browser tab can't start Chromium.
+        // Saved logins and sessions are kept encrypted by the app or server, never here.
+        // Using one always asks the user, even with "Run ... without asking" on: the
+        // tool replies with a prompt CoDev wrote from the saved login, and only this
+        // page's codev/approve, which agents can't call, carries it out.
+        let browserMcpCache = { at: 0, tools: [] };
+        function hasAgentBrowser() {
+            return !!window.codevDesktop?.browserMcp || (location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname));
         }
 
-        async function runMcpTool(tool, args) {
+        async function postJson(url, body) {
+            const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+            const reply = await response.json().catch(() => ({ error: `CoDev's server returned HTTP ${response.status}` }));
+            if (!response.ok) throw new Error(reply.error?.message || reply.error || `HTTP ${response.status}`);
+            return reply;
+        }
+
+        async function browserRpc(method, params) {
+            if (window.codevDesktop?.browserMcp) {
+                const reply = await window.codevDesktop.browserMcp({ jsonrpc: "2.0", id: ++mcpRequestId, method, params });
+                if (reply.error) throw new Error(reply.error.message);
+                return reply.result;
+            }
+            if (method === "codev/approve") return postJson("/browser/approve", params);
+            if (method === "codev/vault") {
+                const reply = await postJson("/browser/vault", params);
+                if (reply.error) throw new Error(reply.error);
+                return reply.result;
+            }
+            const reply = await postJson("/agent-tools", { jsonrpc: "2.0", id: ++mcpRequestId, method, params });
+            if (reply.error) throw new Error(reply.error.message);
+            return reply.result;
+        }
+
+        async function fetchBrowserMcpTools() {
+            if (!hasAgentBrowser()) return [];
+            if (Date.now() - browserMcpCache.at < 60000) return browserMcpCache.tools;
+            let tools = [];
+            try {
+                const result = await browserRpc("tools/list", {});
+                // server.js's /agent-tools also has other services' tools; these are the browser's.
+                tools = (result.tools || []).filter(t => t.name.startsWith("browser_")).map(t => ({ ...t, transport: "browser" }));
+            } catch (err) { /* an older server.js without /agent-tools */ }
+            browserMcpCache = { at: Date.now(), tools };
+            return tools;
+        }
+
+        async function refreshBrowserVault() {
+            const section = document.getElementById("browserSettings");
+            if (!hasAgentBrowser()) return;
+            let vault;
+            try { vault = await browserRpc("codev/vault", { op: "list" }); } catch (err) { return; }
+            section.style.display = "";
+            const protection = { safeStorage: "Windows' data protection (DPAPI)", dpapi: "Windows' data protection (DPAPI)",
+                passphrase: "your CODEV_VAULT_KEY passphrase", keyfile: "a key file only your user can read" }[vault.protector] || vault.protector;
+            document.getElementById("browserVaultStatus").textContent = `${vault.browser.available ? "✅" : "⚠️"} ${vault.browser.detail}\n` +
+                `${vault.open.length ? `Open now: ${vault.open.map(o => `${o.agentId} (${o.url || "blank"})`).join(", ")}\n` : ""}Saved logins are encrypted with ${protection}.`;
+            const list = document.getElementById("browserVaultList");
+            list.innerHTML = "";
+            const row = (label, onDelete) => {
+                const line = document.createElement("div");
+                line.style.cssText = "display: flex; gap: 8px; align-items: center; font-size: 0.85rem;";
+                const name = document.createElement("span");
+                name.style.cssText = "flex: 1; overflow-wrap: anywhere;";
+                name.textContent = label;
+                const remove = document.createElement("button");
+                remove.className = "btn-secondary";
+                remove.type = "button";
+                remove.textContent = "🗑️";
+                remove.title = "Delete";
+                remove.onclick = onDelete;
+                line.append(name, remove);
+                list.appendChild(line);
+            };
+            vault.credentials.forEach(c => row(`🔐 ${c.label}: ${c.username} on ${c.origin}`, () => deleteBrowserVaultItem("removeCredential", c.id, c.label)));
+            vault.sessions.forEach(v => row(`🍪 ${v.name}: session for ${v.origins.join(", ")} (${v.savedAt.slice(0, 10)})`, () => deleteBrowserVaultItem("removeSession", v.id, v.name)));
+        }
+
+        async function saveBrowserCredential() {
+            const field = id => document.getElementById(id);
+            const credential = {
+                label: field("browserCredLabel").value.trim(), loginUrl: field("browserCredUrl").value.trim(),
+                username: field("browserCredUser").value.trim(), password: field("browserCredPassword").value,
+                usernameSelector: field("browserCredUserSelector").value.trim(), passwordSelector: field("browserCredPasswordSelector").value.trim(),
+                submitSelector: field("browserCredSubmitSelector").value.trim()
+            };
+            try {
+                const saved = await browserRpc("codev/vault", { op: "addCredential", credential });
+                ["browserCredLabel", "browserCredUrl", "browserCredUser", "browserCredPassword", "browserCredUserSelector", "browserCredPasswordSelector", "browserCredSubmitSelector"]
+                    .forEach(id => { field(id).value = ""; });
+                logConsoleActivity(`[Browser] Saved login "${saved.label}" for ${saved.origin}.`);
+            } catch (err) {
+                alert(`Couldn't save the login: ${err.message}`);
+            }
+            refreshBrowserVault();
+        }
+
+        async function deleteBrowserVaultItem(op, id, label) {
+            if (!confirm(`Delete "${label}"?`)) return;
+            try { await browserRpc("codev/vault", { op, id }); } catch (err) { alert(err.message); }
+            refreshBrowserVault();
+        }
+
+        // Built-in desktop tools first, then the browser's, then the configured servers' tools.
+        async function fetchAllMcpTools() {
+            return [...await fetchDesktopMcpTools(), ...await fetchBrowserMcpTools(), ...await fetchHubMcpTools()];
+        }
+
+        async function runMcpTool(tool, args, ctx) {
             const shownName = tool.qualifiedName || tool.name;
-            if (!toolsAutoRun && !tool.annotations?.readOnlyHint) {
+            // Tools that need approval every time ask below, whatever this setting says.
+            if (!toolsAutoRun && !tool.annotations?.readOnlyHint && !tool._meta?.["codev/requiresUserApproval"]) {
                 if (!confirm(`An agent wants to use ${shownName}${tool.server ? ` (MCP server "${tool.server}")` : " on your computer"}:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`)) {
                     logConsoleActivity(`[Tool] You declined: ${shownName}`);
                     return "The user declined this tool call.";
                 }
             }
-            return callMcpTool(tool, args);
+            return callMcpTool(tool, args, ctx);
         }
 
-        async function callMcpTool(tool, args) {
+        async function callMcpTool(tool, args, ctx) {
             const shownName = tool.qualifiedName || tool.name;
             let result;
-            if (tool.transport === "desktop") {
+            if (tool.transport === "browser") {
+                result = await browserRpc("tools/call", { name: tool.name, arguments: args,
+                    _meta: { "codev/agentId": ctx?.agentId || "default", "codev/agentName": ctx?.agentName || "An agent" } });
+                const approval = result._meta?.["codev/approvalRequired"];
+                if (approval) {
+                    const approved = confirm(`🔐 ${approval.prompt}\n\nAllow it?`);
+                    logConsoleActivity(`[Browser] You ${approved ? "allowed" : "declined"}: ${approval.tool}`);
+                    result = await browserRpc("codev/approve", { id: approval.id, approved });
+                    if (approved && /session|login/.test(approval.tool)) refreshBrowserVault();
+                }
+            } else if (tool.transport === "desktop") {
                 const reply = await window.codevDesktop.mcp({ jsonrpc: "2.0", id: ++mcpRequestId, method: "tools/call", params: { name: tool.name, arguments: args } });
                 if (reply.error) throw new Error(reply.error.message);
                 result = reply.result;
@@ -2125,7 +2262,7 @@
                     name,
                     description: (tool.server ? `[MCP server "${tool.server}"] ` : "") + (tool.description || tool.title || tool.name),
                     inputSchema: tool.inputSchema && tool.inputSchema.type === "object" ? tool.inputSchema : { type: "object", properties: {} },
-                    run: async (args) => runMcpTool(tool, args)
+                    run: async (args, ctx) => runMcpTool(tool, args, ctx)
                 });
             }
             const resources = await fetchMcpResources();
@@ -2214,6 +2351,17 @@
             if (name === "read_file") return `📄 Reading ${args.path}`;
             if (name === "write_file" || name === "edit_file") return `✏️ Editing ${args.path}`;
             if (name === "run_command") return `▶️ Running: ${String(args.command || "").slice(0, 80)}`;
+            if (name === "browser_navigate") return `🌐 Opening ${args.url}`;
+            if (name === "browser_click") return `🖱️ Clicking ${args.selector}`;
+            if (name === "browser_fill") return `⌨️ Typing into ${args.selector}`;
+            if (name === "browser_press_key") return `⌨️ Pressing ${args.key}`;
+            if (name === "browser_get_text") return "📖 Reading the page";
+            if (name === "browser_wait_for") return "⏳ Waiting for the page";
+            if (name === "browser_screenshot") return "📸 Taking a screenshot";
+            if (name === "browser_close") return "🌐 Closing the browser";
+            if (name === "browser_list_credentials") return "🔐 Checking saved logins";
+            if (name === "browser_login") return "🔐 Signing in (asks you first)";
+            if (name === "browser_save_session" || name === "browser_load_session") return "🍪 Saved session (asks you first)";
             return `🛠️ ${fullName}`;
         }
 
@@ -3120,6 +3268,7 @@
                 });
             }
             refreshMcpStatus();
+            refreshBrowserVault();
             document.getElementById("modalSearchHelperUrl").value = searchHelperUrl;
             document.getElementById("modalCancelBtn").style.display = "inline-block";
             if (isMobileLayout() && openDrawerName) closeDrawers();
@@ -4076,6 +4225,8 @@
         // from thinking to active.
         function createToolContext(session, placeholder, agent, webSources) {
             return {
+                agentId: agent.id,
+                agentName: agent.name,
                 sources: webSources.slice(),
                 changes: [],
                 commands: [],

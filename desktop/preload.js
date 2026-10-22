@@ -19,5 +19,7 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     // Sandboxed agent tools (JSON-RPC, like mcp) and the review routes server.js
     // serves under /agent/: ({ method, path, body }) -> { status, body }.
     sandboxMcp: message => ipcRenderer.invoke('codev:sandbox-mcp', message),
-    agentRequest: req => ipcRenderer.invoke('codev:agent-request', req)
+    agentRequest: req => ipcRenderer.invoke('codev:agent-request', req),
+    // Agents' headless browsers and the saved web logins (JSON-RPC, like mcp).
+    browserMcp: message => ipcRenderer.invoke('codev:browser-mcp', message)
 });
