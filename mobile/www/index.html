@@ -246,6 +246,22 @@
 
         .msg-sources { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; font-size: 0.75rem; color: var(--text-muted); }
         .msg-sources a { color: var(--accent); text-decoration: none; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 3px 8px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* Q tasks (Manus) */
+        .q-task-list { display: flex; flex-direction: column; gap: 12px; }
+        .q-task { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 8px; font-size: 0.85rem; }
+        .q-task-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+        .q-task-title { font-weight: bold; color: var(--text-main); overflow-wrap: anywhere; }
+        .q-task-title a { color: var(--accent); text-decoration: none; }
+        .q-status { padding: 3px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: bold; white-space: nowrap; background: rgba(59, 130, 246, 0.15); color: var(--codev-blue); }
+        .q-status.stopped { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+        .q-status.waiting { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+        .q-status.error { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+        .q-meta, .q-prompt { color: var(--text-muted); font-size: 0.78rem; overflow-wrap: anywhere; }
+        .q-reply { background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto; }
+        .q-wait { border: 1px solid var(--warning); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+        .q-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .q-row input[type=text] { flex: 1; min-width: 160px; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px; color: var(--text-main); font-size: 0.85rem; }
+        .q-files a { color: var(--accent); margin-right: 10px; }
         .settings-extra { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; font-size: 0.85rem; }
         .settings-extra summary { cursor: pointer; font-weight: bold; }
         .settings-extra .form-group, .settings-extra .checkbox-group { margin-top: 10px; }
@@ -358,6 +374,7 @@
             <span id="tab-project" onclick="switchView('project')">📁 Project Files</span>
             <span id="tab-codev" onclick="switchView('codev')" style="color: var(--codev-blue); font-weight: bold;">⚡ CoDev Hub</span>
             <span id="tab-cloud" onclick="switchView('cloud')" style="color: var(--codev-purple); font-weight: bold;">☁️ CoDev Cloud</span>
+            <span id="tab-qtasks" onclick="switchView('qtasks')" style="color: var(--codev-purple); font-weight: bold;">🤖 Q Tasks</span>
             <span id="tab-console" onclick="switchView('console')">Console Logs</span>
         </div>
         <div class="header-right">
@@ -392,6 +409,9 @@
                 </div>
                 <div class="menu-item" onclick="switchView('cloud')">
                     <span class="menu-icon">☁️</span> CoDev Cloud
+                </div>
+                <div class="menu-item" onclick="switchView('qtasks')">
+                    <span class="menu-icon">🤖</span> Q Tasks (Manus)
                 </div>
                 <div class="menu-item" onclick="switchView('project')">
                     <span class="menu-icon">📁</span> Project Files
@@ -450,6 +470,9 @@
                                 <label class="checkbox-group" style="color: var(--warning);">
                                     <input type="checkbox" id="isBackgroundWorkerCheckbox"> ⚡ Autonomous Background Task
                                 </label>
+                                <label class="checkbox-group" style="color: var(--codev-purple);" title="Send the message to Q (Manus) as an autonomous task instead of to the chat agents. Starting a message with /q does the same.">
+                                    <input type="checkbox" id="isQTaskCheckbox"> 🤖 Q Task (Manus)
+                                </label>
                                 <label class="checkbox-group" style="color: var(--success);">
                                     <input type="checkbox" id="isSelfHealCheckbox" checked> 🛡️ Self-Healing Code Loop
                                 </label>
@@ -464,6 +487,7 @@
                             <span class="collapse-controls-btn" onclick="toggleChatControls()">▼ Expand</span>
                             <div class="compact-badge" id="badgeGroup" style="display:none;">🌐 Group</div>
                             <div class="compact-badge" id="badgeBackground" style="color: var(--warning); display:none;">⚡ Background</div>
+                            <div class="compact-badge" id="badgeQTask" style="color: var(--codev-purple); display:none;">🤖 Q Task</div>
                             <div class="compact-badge" id="badgeSelfHeal" style="color: var(--success); display:none;">🛡️ Self-Heal</div>
                             <div class="compact-badge" id="badgeReasoning" style="color: var(--codev-blue); display:none;">⚡ Deep Reasoning</div>
                             <div class="compact-badge" id="badgeWebSearch" style="color: var(--codev-blue); display:none;">🔎 Web Search</div>
@@ -588,6 +612,37 @@
                 </div>
             </div>
 
+            <!-- Q Tasks (Manus): autonomous browser, file and research tasks -->
+            <div id="view-qtasks" class="alt-view-content">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3>🤖 Q Tasks (Manus)</h3>
+                    <button class="btn-ghost" onclick="openQSettings()">⚙️ Q settings</button>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-muted);">Q hands long tasks to a Manus agent running on its own cloud computer: browsing and filling in websites, research across many pages, and creating or reorganizing files. Tasks keep running when CoDev is closed; CoDev checks on them while it's open and posts results back to the chat they came from. Each task uses Manus credits.</p>
+                <div id="qKeyHint" style="font-size: 0.8rem; color: var(--warning);"></div>
+                <div class="codev-hub-card">
+                    <div class="form-group">
+                        <label for="qPrompt">What should Q do? Mention loaded project files with @filename to hand them to Q.</label>
+                        <textarea id="qPrompt" style="font-family: inherit; font-size: 0.85rem;" placeholder="e.g. Find the five best-rated Godot 4 character controller tutorials from this year and give me a table with links and a one-line summary of each."></textarea>
+                    </div>
+                    <div class="q-row">
+                        <button class="btn-ghost" type="button" onclick="fillQTemplate('research')">🌐 Web research</button>
+                        <button class="btn-ghost" type="button" onclick="fillQTemplate('browser')">🖥️ Browser task</button>
+                        <button class="btn-ghost" type="button" onclick="fillQTemplate('files')">🗂️ File work</button>
+                    </div>
+                    <div class="q-row">
+                        <select id="qProfile" aria-label="Q agent" style="background: var(--bg-dark); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+                            <option value="standard">Standard agent</option>
+                            <option value="lite">Lite (fewer credits)</option>
+                            <option value="max">Max (hardest tasks)</option>
+                        </select>
+                        <label class="checkbox-group"><input type="checkbox" id="qInteractive"> Let Q ask me questions</label>
+                        <button class="btn-primary" id="qStartBtn" style="background: var(--codev-purple); color: white;" onclick="startQTaskFromView()">🚀 Start Q task</button>
+                    </div>
+                </div>
+                <div class="q-task-list" id="qTaskList"></div>
+            </div>
+
             <div id="view-console" class="alt-view-content">
                 <h3>Runtime & API Telemetry Logs</h3>
                 <div class="console-output" id="consoleOutput">
@@ -641,6 +696,7 @@
         <button class="mobile-tab" data-view="project" onclick="mobileTab('project')"><span class="tab-icon">📁</span>Files</button>
         <button class="mobile-tab" data-view="codev" onclick="mobileTab('codev')"><span class="tab-icon">⚡</span>Hub</button>
         <button class="mobile-tab" data-view="cloud" onclick="mobileTab('cloud')"><span class="tab-icon">☁️</span>Cloud</button>
+        <button class="mobile-tab" data-view="qtasks" onclick="mobileTab('qtasks')"><span class="tab-icon">🤖</span>Q</button>
         <button class="mobile-tab" data-view="console" onclick="mobileTab('console')"><span class="tab-icon">📜</span>Logs</button>
     </nav>
 
@@ -684,6 +740,26 @@
                     <input type="text" id="modalOpenRouterModel" placeholder="openrouter/free" style="font-family: monospace;">
                 </div>
             </div>
+
+            <details class="settings-extra" id="qSettings">
+                <summary>🤖 Q tasks (Manus)</summary>
+                <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 8px; line-height: 1.5;">
+                    Q runs autonomous browser, research and file tasks on <a href="https://manus.im" target="_blank" style="color: var(--accent);">Manus</a>, next to your Groq or OpenRouter chat agents. Create an API key in your Manus account (see <a href="https://open.manus.ai/docs/v2/authentication" target="_blank" style="color: var(--accent);">Manus API docs</a>).
+                    On a computer, the safest place for it is <code>MANUS_API_KEY</code> in the <code>.env</code> file next to server.js, or in your environment: then leave the box below empty.
+                </div>
+                <div class="form-group">
+                    <label>Manus API key <span id="qKeySourceNote" style="color: var(--success);"></span></label>
+                    <input type="password" id="modalManusKey" autocomplete="off" spellcheck="false" placeholder="Leave empty when MANUS_API_KEY is set on this computer" style="font-family: monospace;">
+                </div>
+                <div class="form-group">
+                    <label>Default Q agent</label>
+                    <select id="modalManusProfile" style="width: 100%;">
+                        <option value="standard">Standard</option>
+                        <option value="lite">Lite (fewer credits)</option>
+                        <option value="max">Max (hardest tasks, more credits)</option>
+                    </select>
+                </div>
+            </details>
 
             <details class="settings-extra" id="searchSettings">
                 <summary>🔎 Web grounding & local tools (free)</summary>
@@ -746,6 +822,7 @@
         </div>
     </div>
 
+    <script src="manus/manus-client.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
         // text boxes stop taking clicks and typing until the window is refocused.
@@ -1105,6 +1182,7 @@
 
                 document.getElementById("badgeGroup").style.display = isGroupChecked ? "flex" : "none";
                 document.getElementById("badgeBackground").style.display = isBgChecked ? "flex" : "none";
+                document.getElementById("badgeQTask").style.display = document.getElementById("isQTaskCheckbox").checked ? "flex" : "none";
                 document.getElementById("badgeSelfHeal").style.display = isHealChecked ? "flex" : "none";
                 document.getElementById("badgeReasoning").style.display = isReasonChecked ? "flex" : "none";
                 document.getElementById("badgeWebSearch").style.display = webSearchEnabled ? "flex" : "none";
@@ -1117,8 +1195,8 @@
             document.getElementById("statusText").innerText = activeProviderKey() ? (openRouter ? "OpenRouter Live" : "Groq Live") : "Awaiting API Key";
         }
 
-        const VIEW_NAMES = ["chat", "project", "codev", "cloud", "console"];
-        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", console: "Switched to Console Logs." };
+        const VIEW_NAMES = ["chat", "project", "codev", "cloud", "qtasks", "console"];
+        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", qtasks: "Switched to Q Tasks.", console: "Switched to Console Logs." };
 
         function switchView(viewName) {
             if (!VIEW_NAMES.includes(viewName)) return;
@@ -1133,6 +1211,7 @@
 
             if (viewName === "project" && (Object.keys(loadedProjectFiles).length > 0 || Object.keys(loadedModelAssets).length > 0)) renderProjectFiles();
             if (viewName === "project") resumeModelViewer();
+            if (viewName === "qtasks") { renderQTasks(); refreshQKeyHint(); }
             if (VIEW_LOG_MESSAGES[viewName]) logConsoleActivity(VIEW_LOG_MESSAGES[viewName]);
             if (isMobileLayout() && openDrawerName) closeDrawers();
             updateMobileTabs();
@@ -1251,7 +1330,7 @@
                     </div>
                     ${renderMessageAttachments(msg.attachments)}
                     <div class="text">${formattedText}</div>
-                    ${renderMessageSources(msg.sources)}
+                    ${renderMessageSources(msg.sources, msg.sourcesLabel)}
                 `;
                 fragment.appendChild(div);
             });
@@ -1590,12 +1669,12 @@
             return `\n\n[Web Search Snippets: ${search.source}, fetched ${new Date().toISOString().slice(0, 10)}]\n${lines.join("\n\n")}`;
         }
 
-        function renderMessageSources(sources) {
+        function renderMessageSources(sources, label) {
             if (!sources || !sources.length) return "";
             const links = sources
                 .filter(s => /^https?:\/\//.test(s.href))
                 .map((s, i) => `<a href="${escapeHtml(s.href)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(s.href)}">[${i + 1}] ${escapeHtml(s.title)}</a>`);
-            return `<div class="msg-sources"><span>🔎 Web sources</span>${links.join("")}</div>`;
+            return `<div class="msg-sources"><span>${escapeHtml(label || "🔎 Web sources")}</span>${links.join("")}</div>`;
         }
 
         // LOCAL TOOLS THE AGENTS CAN CALL
@@ -1910,6 +1989,7 @@
                     run: async ({ name, content }) => writeWorkspaceFile(String(name || ""), content)
                 }
             ];
+            if (window.CodevManus && await qKeyAvailable()) tools.push(...qAgentTools());
             const mcpTools = await fetchAllMcpTools();
             for (const tool of mcpTools) {
                 const name = tool.qualifiedName || tool.name;
@@ -1996,6 +2076,8 @@
             if (name === "mcp_list_resources") return "📚 Listing MCP resources";
             if (name === "mcp_read_resource") return `📄 Reading ${args.uri}`;
             if (name === "web_search") return `🔎 Searching: ${args.query}`;
+            if (name === "start_q_task") return "🤖 Starting a Q task on Manus";
+            if (name === "check_q_task") return "🤖 Checking a Q task";
             if (name === "read_workspace_file") return `📄 Reading ${args.name}`;
             if (name === "list_workspace_files") return "📁 Listing project files";
             if (name === "run_local_command" || name === "run_approved_command") return `▶️ Running ${args.name}`;
@@ -2797,6 +2879,478 @@
             if (window.speechSynthesis.getVoices().length) lockWebVoice();
         }
 
+        // Q TASKS (Manus)
+        // Q is an autonomous Manus agent on Manus's own cloud computer. CoDev starts a
+        // task, polls its events and shows what it reports; manus/manus-client.js has
+        // the API details. Where the calls go depends on the platform:
+        //  - Windows app: the main process (MANUS_API_KEY, or the key from Settings).
+        //  - A browser on the computer running server.js: POST /manus, same keys.
+        //  - Android app: straight to api.manus.ai through the native HTTP client.
+        //  - Any other browser: straight to api.manus.ai, if Manus allows the page's origin.
+        const Q_TASKS_STORAGE = "codev_q_tasks";
+        const MAX_Q_TASKS = 40;
+        const Q_TEMPLATES = {
+            research: "Research [topic] across several reliable, current sources. Give me a short summary, a comparison table, and links to every source you used.",
+            browser: "Open [website], [what to do there, e.g. find the pricing page and collect every plan's name, price and limits], and report back what you found with screenshots.",
+            files: "Using the attached files, [what to do, e.g. reorganize this code into modules, write a README and a changelog], and give me the finished files to download."
+        };
+        let manusKey = CodevManus.cleanKey(localStorage.getItem("codev_manus_key") || "");
+        let manusProfile = CodevManus.AGENT_PROFILES.includes(localStorage.getItem("codev_manus_profile")) ? localStorage.getItem("codev_manus_profile") : "standard";
+        let qTasks = loadQTasks();
+        const qWatchers = new Map();
+        let qTransportPromise = null;
+
+        function loadQTasks() {
+            try {
+                const list = JSON.parse(localStorage.getItem(Q_TASKS_STORAGE) || "[]");
+                return Array.isArray(list) ? list.filter(t => t && typeof t.id === "string").slice(0, MAX_Q_TASKS) : [];
+            } catch (err) { return []; }
+        }
+
+        function saveQTasks() {
+            try { localStorage.setItem(Q_TASKS_STORAGE, JSON.stringify(qTasks.slice(0, MAX_Q_TASKS))); } catch (err) { /* storage full: tasks still show this session */ }
+        }
+
+        function saveQSettings() {
+            manusKey = CodevManus.cleanKey(document.getElementById("modalManusKey").value);
+            const profile = document.getElementById("modalManusProfile").value;
+            manusProfile = CodevManus.AGENT_PROFILES.includes(profile) ? profile : "standard";
+            localStorage.setItem("codev_manus_key", manusKey);
+            localStorage.setItem("codev_manus_profile", manusProfile);
+            document.getElementById("qProfile").value = manusProfile;
+            refreshQKeyHint();
+        }
+
+        function openQSettings() {
+            openSettingsModal();
+            document.getElementById("qSettings").open = true;
+            document.getElementById("modalManusKey").focus();
+        }
+
+        async function openQTransport() {
+            if (window.codevDesktop?.manus) {
+                const send = req => window.codevDesktop.manus(req);
+                const status = await send({ op: "status" }).catch(() => ({}));
+                return { where: "the Windows app", send, keySource: status.result?.keySource || "none" };
+            }
+            if (location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
+                const send = async req => {
+                    const response = await fetch("/manus", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) });
+                    return response.json().catch(() => ({ error: `CoDev's server returned HTTP ${response.status}` }));
+                };
+                try {
+                    const status = await send({ op: "status" });
+                    if (!status.error) return { where: "server.js", send, keySource: status.result?.keySource || "none" };
+                } catch (err) { /* an older server.js without /manus */ }
+            }
+            const http = getNativeSpeechPlugin("CapacitorHttp");
+            const transport = http ? async ({ method, url, headers, body }) => {
+                const reply = await http.request({ url, method, headers, data: body === undefined ? undefined : JSON.parse(body), responseType: "text", connectTimeout: 30000, readTimeout: 30000 });
+                return { status: reply.status, text: typeof reply.data === "string" ? reply.data : JSON.stringify(reply.data ?? {}) };
+            } : undefined;
+            const send = async req => {
+                try {
+                    return { result: await CodevManus.callManus({ op: req.op, params: req.params, apiKey: req.apiKey, transport }) };
+                } catch (err) {
+                    return { error: err.message, code: err.code, status: err.status };
+                }
+            };
+            return { where: http ? "the Android app" : "this browser", send, keySource: "none", direct: !http };
+        }
+
+        function qTransport() {
+            if (!qTransportPromise) qTransportPromise = openQTransport().catch(err => { qTransportPromise = null; throw err; });
+            return qTransportPromise;
+        }
+
+        // One Manus API operation (see CodevManus.OPS). The key from Settings goes
+        // along; the Windows app and server.js use MANUS_API_KEY instead when it's set.
+        async function qCall(op, params) {
+            const transport = await qTransport();
+            const reply = await transport.send({ op, params, apiKey: manusKey });
+            if (reply.error) {
+                let message = reply.error;
+                if (transport.direct && reply.code === "unreachable") {
+                    message += " In a plain browser tab Manus may also refuse the request (CORS). Q tasks work in the Windows app, the Android app, or a browser opened with start-codev.bat.";
+                }
+                const err = new Error(message);
+                err.code = reply.code;
+                err.status = reply.status;
+                throw err;
+            }
+            return reply.result;
+        }
+
+        async function qKeyAvailable() {
+            if (manusKey) return true;
+            try { return (await qTransport()).keySource === "computer"; } catch (err) { return false; }
+        }
+
+        async function refreshQKeyHint() {
+            let transport = null;
+            try { transport = await qTransport(); } catch (err) { /* shown as no key */ }
+            const fromComputer = transport?.keySource === "computer";
+            const note = document.getElementById("qKeySourceNote");
+            if (note) note.textContent = fromComputer ? `(MANUS_API_KEY found by ${transport.where}; used instead of this box)` : "";
+            const hint = document.getElementById("qKeyHint");
+            if (hint) {
+                hint.innerHTML = "";
+                if (!fromComputer && !manusKey) {
+                    hint.append("Q needs a Manus API key. ");
+                    const link = document.createElement("a");
+                    link.href = "#";
+                    link.textContent = "Add it in Settings";
+                    link.style.color = "var(--accent)";
+                    link.onclick = event => { event.preventDefault(); openQSettings(); };
+                    hint.append(link, " (or set MANUS_API_KEY on this computer).");
+                }
+            }
+        }
+
+        function fillQTemplate(name) {
+            const box = document.getElementById("qPrompt");
+            box.value = Q_TEMPLATES[name] || "";
+            box.focus();
+        }
+
+        function textToDataUri(text, mime) {
+            const bytes = new TextEncoder().encode(text);
+            let binary = "";
+            for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+            return `data:${mime || "text/plain"};base64,${btoa(binary)}`;
+        }
+
+        // Loaded project files the prompt mentions as @filename, ready to hand to Q.
+        function qFilesFromPrompt(prompt) {
+            return Object.keys(loadedProjectFiles)
+                .filter(name => prompt.includes(`@${name}`))
+                .map(name => ({ filename: name, dataUri: textToDataUri(loadedProjectFiles[name]) }));
+        }
+
+        async function startQTask({ prompt, files, profile, interactive, chatId }) {
+            if (!(await qKeyAvailable())) throw new Error("Q needs a Manus API key. Add it under Settings > Q tasks (Manus), or set MANUS_API_KEY on this computer.");
+            const params = CodevManus.buildCreateParams({ prompt, files, agentProfile: profile || manusProfile, interactive });
+            const reply = await qCall("create", params);
+            const task = {
+                id: reply.task_id,
+                title: reply.task_title && reply.task_title !== "generating title..." ? reply.task_title : String(prompt).slice(0, 60),
+                url: reply.task_url || "",
+                prompt: String(prompt).slice(0, 600),
+                files: (files || []).map(f => f.filename),
+                profile: profile || manusProfile,
+                status: "running", statusText: "Starting…", replies: [], attachments: [], waiting: null, error: "",
+                createdAt: Date.now(), updatedAt: Date.now(), chatId: chatId || null
+            };
+            qTasks.unshift(task);
+            saveQTasks();
+            renderQTasks();
+            logConsoleActivity(`[Q] Started "${task.title}" on Manus (${task.profile}).`);
+            watchQTask(task);
+            return task;
+        }
+
+        function watchQTask(task) {
+            const existing = qWatchers.get(task.id);
+            if (existing?.running) return existing.poke(task.sentAt);
+            const watcher = CodevManus.watchTask({
+                call: qCall,
+                taskId: task.id,
+                notBefore: task.sentAt || 0,
+                onUpdate: (summary, events, detail) => {
+                    task.status = summary.status;
+                    task.statusText = summary.statusText;
+                    task.waiting = summary.waiting;
+                    task.error = summary.error;
+                    task.replies = summary.replies.slice(-6);
+                    task.attachments = summary.attachments.slice(0, 30);
+                    task.structured = summary.structured;
+                    task.lastEventAt = Math.max(task.lastEventAt || 0, summary.lastEventAt);
+                    task.pollError = "";
+                    task.updatedAt = Date.now();
+                    if (detail) {
+                        if (detail.title) task.title = detail.title;
+                        if (detail.task_url) task.url = detail.task_url;
+                        if (typeof detail.credit_usage === "number") task.credits = detail.credit_usage;
+                        task.backgroundJobs = !!detail.has_running_background_jobs;
+                    }
+                    announceQTask(task);
+                    saveQTasks();
+                    renderQTasks();
+                },
+                onError: err => {
+                    task.pollError = err.message;
+                    logConsoleActivity(`[Q] ${task.title}: ${err.message}`);
+                    saveQTasks();
+                    renderQTasks();
+                }
+            });
+            qWatchers.set(task.id, watcher);
+        }
+
+        // Tells the chat the task came from when it finishes, fails or needs the user.
+        function announceQTask(task) {
+            const finished = task.status === "stopped" && !task.backgroundJobs;
+            const waitId = task.waiting ? (task.waiting.waiting_for_event_id || "waiting") : "";
+            let sender = "", text = "";
+            if (finished && task.announced !== "done") {
+                task.announced = "done";
+                const result = [...task.replies].reverse().find(r => r.kind === "result") || task.replies[task.replies.length - 1];
+                sender = "🤖 Q Task Complete";
+                text = `${task.title}\n\n${result ? result.content : "Q finished. Open the task in Manus to see what it did."}`;
+                playCompletionChime();
+            } else if (task.status === "error" && task.announced !== "error") {
+                task.announced = "error";
+                sender = "❌ Q Task Error";
+                text = `${task.title}: ${task.error}`;
+            } else if (waitId && task.announced !== `wait:${waitId}`) {
+                task.announced = `wait:${waitId}`;
+                sender = "⏸️ Q Task Needs You";
+                text = `${task.title}: ${task.waiting.waiting_description || "Q is waiting for your answer or approval."}\nAnswer it in Q Tasks.`;
+            } else {
+                return;
+            }
+            logConsoleActivity(`[Q] ${sender.replace(/^\S+\s/, "")}: ${task.title}`);
+            const session = chatSessions.find(s => s.id === task.chatId);
+            if (!session) return;
+            const links = [{ title: "Open in Manus", href: task.url }, ...task.attachments.map(a => ({ title: a.name, href: a.url }))];
+            appendMessageToSession(session, sender, text, null, links);
+            const message = session.messages[session.messages.length - 1];
+            if (message) message.sourcesLabel = "🤖 Q task";
+            if (session.id === activeChatId) renderActiveChatFeed();
+        }
+
+        // Tasks that were still going when CoDev closed pick up where they left off.
+        function resumeQTasks() {
+            if (!window.CodevManus) return;
+            const open = qTasks.filter(t => t.status === "running" || t.status === "waiting" || (t.status === "stopped" && t.backgroundJobs));
+            if (!open.length) return;
+            qKeyAvailable().then(ok => {
+                if (!ok) return;
+                open.forEach(watchQTask);
+                logConsoleActivity(`[Q] Checking on ${open.length} Q task(s) from before.`);
+            });
+        }
+
+        async function startQTaskFromView() {
+            const box = document.getElementById("qPrompt");
+            const prompt = box.value.trim();
+            if (!prompt) { box.focus(); return; }
+            const button = document.getElementById("qStartBtn");
+            button.disabled = true;
+            button.textContent = "Starting…";
+            try {
+                await startQTask({ prompt, files: qFilesFromPrompt(prompt), profile: document.getElementById("qProfile").value, interactive: document.getElementById("qInteractive").checked, chatId: activeChatId });
+                box.value = "";
+            } catch (err) {
+                alert(`Q task didn't start: ${err.message}`);
+            } finally {
+                button.disabled = false;
+                button.textContent = "🚀 Start Q task";
+            }
+        }
+
+        // From the chat: the 🤖 Q Task mode, or a message starting with /q.
+        async function sendChatToQ(session, prompt, attachments) {
+            if (!session) return;
+            const files = qFilesFromPrompt(prompt);
+            attachments.forEach(a => {
+                if (a.text) files.push({ filename: `${a.name}.txt`, dataUri: textToDataUri(a.text) });
+                a.images.forEach((uri, i) => files.push({ filename: a.images.length > 1 ? `${a.name}-${i + 1}.jpg` : `${a.name}.jpg`, dataUri: uri }));
+            });
+            appendMessageToSession(session, "🤖 Q (Manus)", "Handing this to Q…");
+            const placeholder = session.messages[session.messages.length - 1];
+            renderActiveChatFeed();
+            try {
+                const task = await startQTask({ prompt, files, profile: manusProfile, interactive: false, chatId: session.id });
+                placeholder.text = `Started "${task.title}". Q is working on it in the background; I'll post the result here when it's done. Follow along in Q Tasks.`;
+                placeholder.sources = [{ title: "Open in Manus", href: task.url }];
+                placeholder.sourcesLabel = "🤖 Q task";
+            } catch (err) {
+                placeholder.sender = "❌ Q Task Error";
+                placeholder.text = err.message;
+            }
+            if (session.id === activeChatId) renderActiveChatFeed();
+        }
+
+        function findQTask(id) { return qTasks.find(t => t.id === id); }
+
+        async function qTaskAction(id, action, value) {
+            const task = findQTask(id);
+            if (!task) return;
+            try {
+                if (action === "stop") {
+                    await qCall("stop", { task_id: id });
+                    logConsoleActivity(`[Q] Asked Manus to stop "${task.title}".`);
+                } else if (action === "send") {
+                    const text = String(value || "").trim();
+                    if (!text) return;
+                    await qCall("send", { task_id: id, message: CodevManus.buildMessage(text, qFilesFromPrompt(text)) });
+                    task.sentAt = (task.lastEventAt || 0) + 1;
+                    task.status = "running";
+                    task.waiting = null;
+                    task.announced = "";
+                } else if (action === "confirm") {
+                    await qCall("confirm", { task_id: id, event_id: task.waiting?.waiting_for_event_id, input: value });
+                    task.sentAt = (task.lastEventAt || 0) + 1;
+                    task.status = "running";
+                    task.waiting = null;
+                } else if (action === "browsers") {
+                    const reply = await qCall("browsers", {});
+                    task.browsers = (reply.data || []).map(b => ({ id: b.client_id, name: b.client_name || b.ua || b.client_id }));
+                    if (!task.browsers.length) alert("No browser is connected to Manus. Install the Manus browser extension and sign in, then try again, or let Q use its own browser.");
+                    renderQTasks();
+                    return;
+                } else if (action === "remove") {
+                    qWatchers.get(id)?.stop();
+                    qWatchers.delete(id);
+                    qTasks = qTasks.filter(t => t.id !== id);
+                    saveQTasks();
+                    renderQTasks();
+                    return;
+                } else if (action === "to-chat") {
+                    const result = task.replies[task.replies.length - 1];
+                    const session = chatSessions.find(s => s.id === activeChatId);
+                    appendMessageToSession(session, "🤖 Q Task Result", `${task.title}\n\n${result ? result.content : task.statusText || "No reply yet."}`, null, [{ title: "Open in Manus", href: task.url }, ...task.attachments.map(a => ({ title: a.name, href: a.url }))]);
+                    if (session) session.messages[session.messages.length - 1].sourcesLabel = "🤖 Q task";
+                    renderActiveChatFeed();
+                    switchView("chat");
+                    return;
+                }
+                saveQTasks();
+                renderQTasks();
+                watchQTask(task);
+            } catch (err) {
+                alert(`Q: ${err.message}`);
+            }
+        }
+
+        const Q_STATUS_LABELS = { running: "Running", waiting: "Needs you", stopped: "Done", error: "Failed", deleted: "Deleted" };
+
+        function renderQWaiting(task) {
+            const w = task.waiting;
+            if (!w) return "";
+            const type = w.waiting_for_event_type || "";
+            const lastReply = task.replies[task.replies.length - 1];
+            const options = lastReply?.question?.options || [];
+            const id = escapeHtml(task.id);
+            let controls = "";
+            if (type === "needConnectMyBrowser") {
+                const browsers = (task.browsers || []).map(b => `<button class="btn-ghost" data-q-action="browser" data-q-id="${id}" data-q-value="${escapeHtml(b.id)}">🖥️ ${escapeHtml(b.name)}</button>`).join("");
+                controls = `<div class="q-row">${browsers || `<button class="btn-ghost" data-q-action="browsers" data-q-id="${id}">🖥️ Use my browser…</button>`}<button class="btn-ghost" data-q-action="browser-skip" data-q-id="${id}">Let Q use its own browser</button></div>`;
+            } else if (w.confirm_input_schema?.properties?.accept) {
+                controls = `<div class="q-row"><button class="btn-primary" data-q-action="accept" data-q-id="${id}">✅ Approve</button><button class="btn-ghost" data-q-action="decline" data-q-id="${id}">✋ Decline</button></div>`;
+            } else if (type && type !== "messageAskUser" && type !== "cascadeAskUser" && !options.length) {
+                controls = `<div class="q-row"><button class="btn-ghost" data-q-action="quick" data-q-id="${id}" data-q-value="Continue and use your best judgment.">Continue with best judgment</button></div>`;
+            }
+            const optionButtons = options.map(o => `<button class="btn-ghost" data-q-action="quick" data-q-id="${id}" data-q-value="${escapeHtml(o)}">${escapeHtml(o)}</button>`).join("");
+            return `<div class="q-wait">
+                <div>⏸️ ${escapeHtml(w.waiting_description || lastReply?.content?.slice(0, 400) || "Q is waiting for you.")}</div>
+                ${optionButtons ? `<div class="q-row">${optionButtons}</div>` : ""}
+                ${controls}
+                <div class="q-row"><input type="text" data-q-input="${id}" placeholder="Answer Q…"><button class="btn-primary" data-q-action="send" data-q-id="${id}">Send</button></div>
+            </div>`;
+        }
+
+        function renderQTasks() {
+            const list = document.getElementById("qTaskList");
+            if (!list) return;
+            if (!qTasks.length) {
+                list.innerHTML = `<div style="font-size: 0.85rem; color: var(--text-muted);">No Q tasks yet. Describe one above, or tick 🤖 Q Task (Manus) in the chat's execution modes.</div>`;
+                return;
+            }
+            // Keep what the user is typing into an answer box across re-renders.
+            const typed = {};
+            list.querySelectorAll("input[data-q-input]").forEach(input => { if (input.value) typed[input.dataset.qInput] = input.value; });
+            list.innerHTML = qTasks.map(task => {
+                const id = escapeHtml(task.id);
+                const status = task.status || "running";
+                const live = status === "running" || status === "waiting";
+                const reply = task.replies[task.replies.length - 1];
+                const files = task.attachments.filter(a => /^https?:\/\//.test(a.url)).map(a => `<a href="${escapeHtml(a.url)}" target="_blank" rel="noopener noreferrer">📎 ${escapeHtml(a.name)}</a>`).join("");
+                const meta = [task.profile, new Date(task.createdAt).toLocaleString(), typeof task.credits === "number" ? `${task.credits} credits` : "", task.files?.length ? `files: ${task.files.join(", ")}` : ""].filter(Boolean).map(escapeHtml).join(" · ");
+                return `<div class="q-task">
+                    <div class="q-task-head">
+                        <div class="q-task-title">${task.url ? `<a href="${escapeHtml(task.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(task.title)}</a>` : escapeHtml(task.title)}</div>
+                        <span class="q-status ${escapeHtml(status)}">${escapeHtml(Q_STATUS_LABELS[status] || status)}${status === "stopped" && task.backgroundJobs ? " (background jobs running)" : ""}</span>
+                    </div>
+                    <div class="q-meta">${meta}</div>
+                    <div class="q-prompt">${escapeHtml(task.prompt)}</div>
+                    ${task.statusText && live ? `<div class="q-meta">⏳ ${escapeHtml(task.statusText)}</div>` : ""}
+                    ${reply ? `<div class="q-reply">${escapeHtml(reply.content.slice(0, 8000))}</div>` : ""}
+                    ${files ? `<div class="q-files">${files}</div>` : ""}
+                    ${task.error ? `<div style="color: var(--danger);">${escapeHtml(task.error)}</div>` : ""}
+                    ${task.pollError ? `<div style="color: var(--warning); font-size: 0.78rem;">Couldn't check on it: ${escapeHtml(task.pollError)}</div>` : ""}
+                    ${status === "waiting" ? renderQWaiting(task) : ""}
+                    ${status === "stopped" || status === "error" ? `<div class="q-row"><input type="text" data-q-input="${id}" placeholder="Ask Q for a follow-up on this task…"><button class="btn-ghost" data-q-action="send" data-q-id="${id}">Send follow-up</button></div>` : ""}
+                    <div class="q-row">
+                        ${live ? `<button class="btn-ghost" data-q-action="stop" data-q-id="${id}">⏹ Stop</button>` : ""}
+                        ${!live && task.pollError ? `<button class="btn-ghost" data-q-action="refresh" data-q-id="${id}">⟳ Check again</button>` : ""}
+                        ${reply ? `<button class="btn-ghost" data-q-action="to-chat" data-q-id="${id}">💬 Send result to chat</button>` : ""}
+                        <button class="btn-ghost" data-q-action="remove" data-q-id="${id}">🗑 Remove from list</button>
+                    </div>
+                </div>`;
+            }).join("");
+            list.querySelectorAll("input[data-q-input]").forEach(input => {
+                if (typed[input.dataset.qInput]) input.value = typed[input.dataset.qInput];
+                input.addEventListener("keydown", event => {
+                    if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); qTaskAction(input.dataset.qInput, "send", input.value); }
+                });
+            });
+        }
+
+        document.addEventListener("click", event => {
+            const button = event.target.closest?.("[data-q-action]");
+            if (!button) return;
+            const id = button.dataset.qId;
+            const value = button.dataset.qValue;
+            const action = button.dataset.qAction;
+            if (action === "send") {
+                const input = document.querySelector(`input[data-q-input="${CSS.escape(id)}"]`);
+                return qTaskAction(id, "send", input ? input.value : "");
+            }
+            if (action === "quick") return qTaskAction(id, "send", value);
+            if (action === "accept") return qTaskAction(id, "confirm", { accept: true });
+            if (action === "decline") return qTaskAction(id, "confirm", { accept: false });
+            if (action === "browser") return qTaskAction(id, "confirm", { action: "select", client_id: value });
+            if (action === "browser-skip") return qTaskAction(id, "confirm", { action: "skip" });
+            if (action === "refresh") { const task = findQTask(id); if (task) { task.pollError = ""; watchQTask(task); } return; }
+            if (action === "stop" && !confirm("Stop this Q task? Manus keeps what it has done so far.")) return;
+            qTaskAction(id, action, value);
+        });
+
+        // Agents can hand work to Q too (see buildLocalTools). Starting one spends
+        // Manus credits, so it always asks first.
+        function qAgentTools() {
+            return [
+                {
+                    name: "start_q_task",
+                    description: "Hand a long, autonomous job to Q (a Manus agent with its own cloud computer and browser): multi-site web research, operating websites, or creating and reorganizing files. It runs in the background and can take minutes to hours; its result is posted to this chat when done. Use it only when the user asks for Q/Manus or for work you can't do with your other tools.",
+                    inputSchema: { type: "object", properties: {
+                        prompt: { type: "string", description: "Complete instructions for Q, including what to deliver. Mention loaded project files as @filename to attach them." },
+                        agent: { type: "string", enum: CodevManus.AGENT_PROFILES, description: "standard (default), lite for simple jobs, max for the hardest ones." }
+                    }, required: ["prompt"] },
+                    run: async ({ prompt, agent }) => {
+                        const text = String(prompt || "").trim();
+                        if (!text) return "start_q_task needs a prompt.";
+                        if (!confirm(`An agent wants to start a Q task on Manus (uses Manus credits):\n\n${text.slice(0, 600)}\n\nStart it?`)) return "The user declined to start this Q task.";
+                        const task = await startQTask({ prompt: text, files: qFilesFromPrompt(text), profile: agent, chatId: activeChatId });
+                        return `Started Q task ${task.id} ("${task.title}"): ${task.url}. It runs in the background; CoDev posts the result in this chat when it's done. Tell the user that, and don't wait for it.`;
+                    }
+                },
+                {
+                    name: "check_q_task",
+                    description: "Check on a Q task this chat started: its status and Q's latest reply.",
+                    inputSchema: { type: "object", properties: { task_id: { type: "string" } }, required: ["task_id"] },
+                    run: async ({ task_id }) => {
+                        const task = findQTask(String(task_id || ""));
+                        if (!task) return `No Q task ${task_id} in CoDev. Known: ${qTasks.slice(0, 10).map(t => `${t.id} (${t.title})`).join(", ") || "none"}.`;
+                        const reply = task.replies[task.replies.length - 1];
+                        return `Status: ${Q_STATUS_LABELS[task.status] || task.status}. ${task.statusText || ""}\nLatest reply: ${reply ? reply.content.slice(0, 4000) : "none yet"}\nFiles: ${task.attachments.map(a => `${a.name} ${a.url}`).join("; ") || "none"}\nLink: ${task.url}`;
+                    }
+                }
+            ];
+        }
+
         // CODEV HUB & CLOUD ROUTINES
         let cloudRoutineCount = 14;
         function triggerCloudRoutine() {
@@ -2883,6 +3437,9 @@
             document.getElementById("modalChime").checked = chimeEnabled;
             document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
             document.getElementById("modalMcpServers").value = mcpServersConfig;
+            document.getElementById("modalManusKey").value = manusKey;
+            document.getElementById("modalManusProfile").value = manusProfile;
+            refreshQKeyHint();
             if (window.codevDesktop?.mcpFolder) {
                 document.getElementById("desktopMcpGroup").style.display = "flex";
                 window.codevDesktop.mcpFolder().then(folder => {
@@ -3040,6 +3597,7 @@
             }
             helperCommandsCache.at = 0;
             localStorage.setItem("codev_search_helper_url", searchHelperUrl);
+            saveQSettings();
 
             localStorage.setItem("codev_groq_key", groqKey);
             updateStatusDisplay();
@@ -3463,6 +4021,12 @@
             const session = chatSessions.find(s => s.id === activeChatId);
             if (session) session.isGroup = isGroup;
 
+            // 🤖 Q Task mode (or /q ...): the message goes to Q on Manus instead of the chat agents.
+            const qCheckbox = document.getElementById("isQTaskCheckbox");
+            if (qCheckbox.checked || /^\/q\s/i.test(userText)) {
+                return sendChatToQ(session, userText.replace(/^\/q\s+/i, ""), attachments);
+            }
+
             let activeAgent = agents.find(a => a.id === selectedAgentId) || agents[0];
             if (!activeAgent) {
                 appendMessageToActiveSession("❌ System Error", "No agent is configured. Create an agent in the Agent Manager first.");
@@ -3596,6 +4160,7 @@
             renderAgentList();
             updateWorkspaceGrid();
             updateMobileTabs();
+            resumeQTasks();
             // Phones start with the mode toggles folded away to leave room for the chat.
             if (isMobileLayout()) toggleChatControls();
         });

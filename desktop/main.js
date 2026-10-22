@@ -7,6 +7,8 @@ const path = require('path');
 const { createMcpTools } = require('./mcp-tools');
 const { createNodeMcpHub } = require('./mcp-hub');
 const { pathToFileURL } = require('url');
+// Copied into www/ by `npm run copy-www`, like the rest of the page.
+const { createProxyHandler: createManusProxy } = require('./www/manus/manus-client');
 
 const WWW = path.join(__dirname, 'www');
 // Served from app://codev/ so the page has a fixed origin (its saved settings
@@ -71,6 +73,17 @@ app.whenReady().then(() => {
         }
     });
     ipcMain.handle('codev:mcp-hub', (_event, req) => mcpHub.handle(req));
+
+    // Q tasks on Manus, from the main process: MANUS_API_KEY from the environment
+    // wins, otherwise the key from the page's Settings. No CORS involved.
+    const manusProxy = createManusProxy({
+        getKey: () => String(process.env.MANUS_API_KEY || ''),
+        transport: async ({ method, url, headers, body }) => {
+            const response = await net.fetch(url, { method, headers, body });
+            return { status: response.status, text: await response.text() };
+        }
+    });
+    ipcMain.handle('codev:manus', (_event, req) => manusProxy(req));
     // Stop the server processes the hub started.
     app.on('before-quit', () => { mcpHub.close(); });
     ipcMain.handle('codev:mcp-pick-folder', async event => {

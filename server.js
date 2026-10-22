@@ -6,10 +6,13 @@
 // the servers are kept in mcp-servers.json.
 // The Anthropic API key comes only from ANTHROPIC_API_KEY (environment or .env),
 // never from this file; see .env.example.
+// POST /manus runs Q tasks on Manus with the key from MANUS_API_KEY, so the key
+// stays on this computer (mobile/www/manus/manus-client.js has the details).
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { loadEnvFile, readAnthropicKey } = require('./env');
+const { loadEnvFile, readAnthropicKey, readManusKey } = require('./env');
+const { createProxyHandler: createManusProxy } = require('./mobile/www/manus/manus-client');
 
 try { loadEnvFile(); } catch (err) {
     console.error(err.message);
@@ -34,20 +37,42 @@ const TYPES = {
 const MCP_CONFIG_FILE = path.join(__dirname, 'mcp-servers.json');
 const OWN_ORIGINS = [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`];
 let mcpHub = null;
+const manusProxy = createManusProxy({ getKey: readManusKey });
 
 function sendJson(res, status, payload) {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(payload));
 }
 
+// This endpoint starts programs (and /manus spends the user's Manus credits),
+// so only CoDev's own page may call it: other websites (Origin) and DNS-rebinding
+// tricks (Host) are turned away, and the JSON content type means a browser
+// preflights, which is never allowed here.
+function isOwnPageRequest(req) {
+    return req.method === 'POST' && OWN_ORIGINS.includes(req.headers.origin) && OWN_ORIGINS.includes(`http://${req.headers.host}`)
+        && String(req.headers['content-type'] || '').startsWith('application/json');
+}
+
+function readJsonBody(req, onMessage, res) {
+    let body = '';
+    req.on('data', chunk => {
+        body += chunk;
+        if (body.length > 5 * 1024 * 1024) req.destroy();
+    });
+    req.on('end', async () => {
+        let message;
+        try { message = JSON.parse(body); } catch { return sendJson(res, 400, { error: 'Bad JSON' }); }
+        sendJson(res, 200, await onMessage(message));
+    });
+}
+
+function handleManus(req, res) {
+    if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    readJsonBody(req, message => manusProxy(message), res);
+}
+
 function handleMcpHub(req, res) {
-    // This endpoint starts programs, so only CoDev's own page may call it: other
-    // websites (Origin) and DNS-rebinding tricks (Host) are turned away, and the
-    // JSON content type means a browser preflights, which is never allowed here.
-    if (req.method !== 'POST' || !OWN_ORIGINS.includes(req.headers.origin) || !OWN_ORIGINS.includes(`http://${req.headers.host}`)
-        || !String(req.headers['content-type'] || '').startsWith('application/json')) {
-        return sendJson(res, 403, { error: 'Forbidden' });
-    }
+    if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
     if (!mcpHub) {
         try {
             const { createNodeMcpHub } = require('./desktop/mcp-hub');
@@ -60,20 +85,12 @@ function handleMcpHub(req, res) {
             return sendJson(res, 501, { error: 'MCP servers need the MCP SDK: run "npm install" in the CoDev folder, then restart.' });
         }
     }
-    let body = '';
-    req.on('data', chunk => {
-        body += chunk;
-        if (body.length > 5 * 1024 * 1024) req.destroy();
-    });
-    req.on('end', async () => {
-        let message;
-        try { message = JSON.parse(body); } catch { return sendJson(res, 400, { error: 'Bad JSON' }); }
-        sendJson(res, 200, await mcpHub.handle(message));
-    });
+    readJsonBody(req, message => mcpHub.handle(message), res);
 }
 
 const server = http.createServer((req, res) => {
     if (req.url === '/mcp-hub') return handleMcpHub(req, res);
+    if (req.url === '/manus') return handleManus(req, res);
     let urlPath;
     try { urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname); } catch { urlPath = '/'; }
     const filePath = path.join(ROOT, urlPath === '/' ? 'index.html' : urlPath);
@@ -102,6 +119,7 @@ server.on('error', err => {
 server.listen(PORT, '127.0.0.1', () => {
     console.log(`CoDev Studio is running at http://localhost:${PORT} (Ctrl+C to stop)`);
     if (anthropic.key) console.log('Anthropic API key loaded from ANTHROPIC_API_KEY.');
+    if (readManusKey()) console.log('Manus API key loaded from MANUS_API_KEY (Q tasks).');
 });
 
 // Ctrl+C also stops the MCP servers the hub started.
