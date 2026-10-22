@@ -691,6 +691,9 @@
                     <input type="checkbox" id="modalAutoGround"> Search the web automatically for technical and code questions
                 </label>
                 <label class="checkbox-group">
+                    <input type="checkbox" id="modalChime"> Play a chime when an agent finishes a response or task
+                </label>
+                <label class="checkbox-group">
                     <input type="checkbox" id="modalLocalTools"> Let agents call local tools on their own (web search, project files, MCP tools)
                 </label>
                 <label class="checkbox-group">
@@ -2877,6 +2880,7 @@
             toggleProviderFields();
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
             document.getElementById("modalLocalTools").checked = localToolsEnabled;
+            document.getElementById("modalChime").checked = chimeEnabled;
             document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
             document.getElementById("modalMcpServers").value = mcpServersConfig;
             if (window.codevDesktop?.mcpFolder) {
@@ -3014,6 +3018,8 @@
             autoGroundingEnabled = document.getElementById("modalAutoGround").checked;
             searchHelperUrl = document.getElementById("modalSearchHelperUrl").value.trim() || DEFAULT_SEARCH_HELPER_URL;
             localStorage.setItem("codev_auto_ground", autoGroundingEnabled ? "1" : "0");
+            chimeEnabled = document.getElementById("modalChime").checked;
+            localStorage.setItem("codev_chime", chimeEnabled ? "1" : "0");
             localToolsEnabled = document.getElementById("modalLocalTools").checked;
             localStorage.setItem("codev_local_tools", localToolsEnabled ? "1" : "0");
             readAzureSettings();
@@ -3054,6 +3060,74 @@
 
         function logConsoleActivity(text) {
             appendLogLine(document.getElementById("consoleOutput"), text);
+        }
+
+        // Completion chime: a short two-note bell synthesized with Web Audio, so there is no file to load.
+        // Browsers and Android/desktop WebViews start audio suspended until the user interacts, so the
+        // context is created and resumed on the first tap or key press and again when the app returns
+        // to the foreground. A chime that fires before any interaction is skipped rather than queued.
+        let chimeEnabled = (localStorage.getItem("codev_chime") ?? "1") === "1";
+        let chimeContext = null;
+        let lastChimeAt = 0;
+
+        function getChimeContext() {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) return null;
+            if (!chimeContext || chimeContext.state === "closed") chimeContext = new Ctx();
+            return chimeContext;
+        }
+
+        function unlockChimeAudio() {
+            const ctx = getChimeContext();
+            if (!ctx) return;
+            if (ctx.state !== "running") ctx.resume().catch(() => {});
+            // A silent one-sample buffer played inside the gesture fully unlocks iOS-style WebViews.
+            const src = ctx.createBufferSource();
+            src.buffer = ctx.createBuffer(1, 1, 22050);
+            src.connect(ctx.destination);
+            src.start(0);
+        }
+        ["pointerdown", "touchend", "keydown"].forEach(type => document.addEventListener(type, unlockChimeAudio, { capture: true, passive: true }));
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden && chimeContext && chimeContext.state !== "running") chimeContext.resume().catch(() => {});
+        });
+
+        function scheduleChime(ctx) {
+            const t0 = ctx.currentTime + 0.01;
+            const master = ctx.createGain();
+            master.gain.value = 0.35;
+            master.connect(ctx.destination);
+            // Two quick strikes (A6 then E7), each a sine with a quieter octave overtone for a glassy "ding".
+            [{ freq: 1760, at: 0, len: 0.55 }, { freq: 2637, at: 0.085, len: 0.75 }].forEach(note => {
+                [{ mult: 1, level: 1 }, { mult: 2, level: 0.25 }].forEach(partial => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    const start = t0 + note.at;
+                    osc.type = "sine";
+                    osc.frequency.value = note.freq * partial.mult;
+                    gain.gain.setValueAtTime(0.0001, start);
+                    gain.gain.exponentialRampToValueAtTime(partial.level, start + 0.005);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, start + note.len * (partial.mult === 1 ? 1 : 0.5));
+                    osc.connect(gain).connect(master);
+                    osc.start(start);
+                    osc.stop(start + note.len + 0.05);
+                });
+            });
+        }
+
+        function playCompletionChime() {
+            if (!chimeEnabled) return;
+            const now = Date.now();
+            if (now - lastChimeAt < 250) return; // swarm agents finishing together ring once
+            lastChimeAt = now;
+            try {
+                const ctx = getChimeContext();
+                if (!ctx) return;
+                if (ctx.state === "running") scheduleChime(ctx);
+                else ctx.resume().then(() => { if (ctx.state === "running") scheduleChime(ctx); }).catch(() => {});
+            } catch (err) {
+                logConsoleActivity(`[Chime] Skipped: ${err.message}`);
+            }
         }
 
         // Geometric micro-avatars. Each agent gets a shape from its id; its face follows the
@@ -3105,7 +3179,11 @@
                 svg.setAttribute("data-state", state);
                 if (agent) svg.setAttribute("aria-label", `${agent.name} is ${state}`);
             }
-            if (state === "success") agentStateTimers[agentId] = setTimeout(() => setAgentState(agentId, "idle"), 2500);
+            // Every finished agent run passes through "success", so the chime hangs off it.
+            if (state === "success") {
+                playCompletionChime();
+                agentStateTimers[agentId] = setTimeout(() => setAgentState(agentId, "idle"), 2500);
+            }
         }
 
         function renderAgentList() {
