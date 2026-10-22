@@ -99,34 +99,77 @@
         .agent-meta { font-size: 0.75rem; color: var(--accent); }
         .agent-instructions-preview { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-        /* Geometric agent micro-avatars: one SVG per card, driven by data-state (idle | thinking | active | success). */
+        /* Geometric agent micro-avatars: one SVG per card, driven by data-state (idle | thinking | active | success).
+           The float group bobs, the shape group squashes from its base, and the face rides along inside both. */
         .agent-identity { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-        .agent-avatar { width: 36px; height: 36px; flex-shrink: 0; overflow: visible; --avatar-color: var(--accent); color: var(--avatar-color); }
+        .agent-avatar { width: 38px; height: 42px; flex-shrink: 0; overflow: visible; --avatar-color: var(--shape-color, #9fd8ff); --avatar-glow: var(--shape-glow, #d6f0ff); --avatar-ink: #3b3355; }
         .agent-avatar * { transform-box: fill-box; transform-origin: center; }
-        .agent-avatar .avatar-body { fill: var(--avatar-color); fill-opacity: 0.22; stroke: var(--avatar-color); stroke-width: 2; stroke-linejoin: round; transition: fill 0.3s, stroke 0.3s; }
-        .agent-avatar .avatar-eye { fill: var(--text-main); }
-        .agent-avatar .avatar-mouth { fill: none; stroke: var(--text-main); stroke-width: 2; stroke-linecap: round; }
-        .agent-avatar .avatar-smile { stroke-dasharray: 16; stroke-dashoffset: 16; opacity: 0; }
-        .agent-avatar[data-state="idle"] .avatar-shape { animation: avatarBreathe 3.2s ease-in-out infinite; }
-        .agent-avatar[data-state="thinking"] .avatar-shape { animation: avatarWobble 1.6s ease-in-out infinite; }
-        .agent-avatar[data-state="thinking"] .avatar-body { animation: avatarPulseFill 1.6s ease-in-out infinite; }
-        .agent-avatar[data-state="thinking"] .avatar-eye { animation: avatarBlink 1.1s ease-in-out infinite; }
-        .agent-avatar[data-state="thinking"] .avatar-eye + .avatar-eye { animation-delay: 0.05s; }
-        .agent-avatar[data-state="active"] .avatar-shape { animation: avatarPulse 0.9s ease-in-out infinite; }
-        .agent-avatar[data-state="active"] .avatar-body { filter: drop-shadow(0 0 4px var(--avatar-color)); }
-        .agent-avatar[data-state="success"] { --avatar-color: var(--success); }
-        .agent-avatar[data-state="success"] .avatar-shape { animation: avatarPop 0.5s cubic-bezier(.34,1.56,.64,1) both; }
+        .agent-avatar .avatar-shape { transform-origin: 50% 100%; }
+        .agent-avatar .avatar-body { fill: var(--avatar-color); stroke: var(--avatar-color); stroke-width: 5; stroke-linejoin: round; transition: fill 0.4s, stroke 0.4s, filter 0.4s; }
+        .agent-avatar .avatar-sheen { fill: #fff; opacity: 0.45; }
+        .agent-avatar .avatar-shadow { fill: #000; opacity: 0.25; }
+        .agent-avatar .avatar-eye-ball { fill: var(--avatar-ink); transition: fill 0.3s; }
+        .agent-avatar .avatar-eye-shine { fill: #fff; }
+        .agent-avatar .avatar-cheek { fill: #ff8fab; opacity: 0.55; }
+        .agent-avatar .avatar-mouth { fill: none; stroke: var(--avatar-ink); stroke-width: 1.7; stroke-linecap: round; }
+        .agent-avatar .avatar-smile { stroke-dasharray: 12; stroke-dashoffset: 12; opacity: 0; }
+        .agent-avatar .avatar-sparkle { fill: #fff6b8; opacity: 0; }
+        .agent-avatar .avatar-node { fill: var(--avatar-glow); opacity: 0; filter: drop-shadow(0 0 1.5px var(--avatar-color)); }
+
+        /* idle: slow float, breathing body with a soft brightness shift, lazy blink every few seconds */
+        .agent-avatar[data-state="idle"] .avatar-float { animation: avatarFloat 3s ease-in-out infinite; }
+        .agent-avatar[data-state="idle"] .avatar-shape { animation: avatarBreathe 3s ease-in-out infinite; }
+        .agent-avatar:is([data-state="idle"], [data-state="thinking"]) .avatar-body { animation: avatarBreatheShift 3s ease-in-out infinite; }
+        .agent-avatar[data-state="idle"] .avatar-shadow { animation: avatarShadow 3s ease-in-out infinite; }
+        .agent-avatar[data-state="idle"] .avatar-eye { animation: avatarIdleBlink 4.5s ease-in-out infinite; }
+        /* thinking: quicker float, gentle sway, eyes light up and blink */
+        .agent-avatar[data-state="thinking"] .avatar-float { animation: avatarFloat 1.6s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-shadow { animation: avatarShadow 1.6s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-shape { animation: avatarSway 2.4s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-eye-ball { fill: #fff; }
+        .agent-avatar[data-state="thinking"] .avatar-eye { animation: avatarGlowBlink 1.2s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-eye + .avatar-eye { animation-delay: 0.06s; }
+        /* thinking and active: three nodes above the head pulse in sequence */
+        .agent-avatar[data-state="thinking"] .avatar-node { animation: avatarNodePulse 1.2s ease-in-out infinite; }
+        .agent-avatar[data-state="active"] .avatar-node { animation: avatarNodePulse 0.7s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-node:nth-of-type(2) { animation-delay: 0.2s; }
+        .agent-avatar[data-state="thinking"] .avatar-node:nth-of-type(3) { animation-delay: 0.4s; }
+        .agent-avatar[data-state="active"] .avatar-node:nth-of-type(2) { animation-delay: 0.12s; }
+        .agent-avatar[data-state="active"] .avatar-node:nth-of-type(3) { animation-delay: 0.24s; }
+        /* active: bouncy hop with squash and stretch, soft glow, smile */
+        .agent-avatar[data-state="active"] .avatar-float { animation: avatarHop 0.7s cubic-bezier(.3,.7,.4,1) infinite; }
+        .agent-avatar[data-state="active"] .avatar-shadow { animation: avatarShadow 0.7s cubic-bezier(.3,.7,.4,1) infinite; }
+        .agent-avatar[data-state="active"] .avatar-shape { animation: avatarSquash 0.7s cubic-bezier(.3,.7,.4,1) infinite; }
+        .agent-avatar[data-state="active"] .avatar-body { filter: drop-shadow(0 0 3px var(--avatar-glow)); }
+        /* success: turns mint, does a happy jump, sparkles twinkle */
+        .agent-avatar[data-state="success"] { --avatar-color: #b8f2c6; --avatar-glow: #e3ffe9; }
+        .agent-avatar[data-state="success"] .avatar-float { animation: avatarJoy 0.8s cubic-bezier(.34,1.56,.64,1) both, avatarFloat 3s 0.8s ease-in-out infinite; }
+        .agent-avatar[data-state="success"] .avatar-body { filter: drop-shadow(0 0 4px var(--avatar-glow)); }
+        .agent-avatar[data-state="success"] .avatar-sparkle { animation: avatarTwinkle 1.2s ease-in-out infinite; }
+        .agent-avatar[data-state="success"] .avatar-sparkle + .avatar-sparkle { animation-delay: 0.4s; }
         .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-neutral { opacity: 0; }
-        .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-smile { animation: avatarSmileDraw 0.4s ease-out forwards; }
-        @keyframes avatarBreathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
-        @keyframes avatarWobble { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-6deg); } 75% { transform: rotate(6deg); } }
-        @keyframes avatarPulseFill { 0%, 100% { fill-opacity: 0.22; } 50% { fill-opacity: 0.5; } }
-        @keyframes avatarBlink { 0%, 40%, 60%, 100% { transform: scaleY(1); } 50% { transform: scaleY(0.1); } }
-        @keyframes avatarPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
-        @keyframes avatarPop { 0% { transform: scale(0.8); } 100% { transform: scale(1); } }
-        @keyframes avatarSmileDraw { from { stroke-dashoffset: 16; opacity: 1; } to { stroke-dashoffset: 0; opacity: 1; } }
+        .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-smile { animation: avatarSmileDraw 0.35s ease-out forwards; }
+        .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-cheek { opacity: 0.8; }
+
+        @keyframes avatarFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2.5px); } }
+        @keyframes avatarBreathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.03, 0.97); } }
+        @keyframes avatarBreatheShift { 0%, 100% { filter: brightness(1) saturate(1); } 50% { filter: brightness(1.08) saturate(1.15); } }
+        @keyframes avatarNodePulse { 0%, 100% { opacity: 0.25; transform: scale(0.6); } 50% { opacity: 1; transform: scale(1.15); } }
+        @keyframes avatarShadow { 0%, 100% { transform: scaleX(1); opacity: 0.25; } 50% { transform: scaleX(0.75); opacity: 0.15; } }
+        @keyframes avatarIdleBlink { 0%, 90%, 100% { transform: scaleY(1); } 94% { transform: scaleY(0.1); } }
+        @keyframes avatarGlowBlink {
+            0%, 35%, 65%, 100% { transform: scaleY(1); filter: drop-shadow(0 0 1.5px var(--avatar-glow)) drop-shadow(0 0 3px var(--avatar-color)); }
+            50% { transform: scaleY(0.1); filter: drop-shadow(0 0 0 transparent); }
+        }
+        @keyframes avatarSway { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(5deg); } }
+        @keyframes avatarHop { 0%, 100% { transform: translateY(0); } 45% { transform: translateY(-4px); } }
+        @keyframes avatarSquash { 0%, 100% { transform: scale(1.1, 0.9); } 20% { transform: scale(0.94, 1.06); } 45% { transform: scale(1, 1); } 85% { transform: scale(1.04, 0.96); } }
+        @keyframes avatarJoy { 0% { transform: translateY(0) scale(0.85); } 40% { transform: translateY(-6px) scale(1.08); } 70% { transform: translateY(0) scale(0.96); } 100% { transform: translateY(0) scale(1); } }
+        @keyframes avatarTwinkle { 0%, 100% { opacity: 0; transform: scale(0.3) rotate(0deg); } 50% { opacity: 1; transform: scale(1) rotate(45deg); } }
+        @keyframes avatarSmileDraw { from { stroke-dashoffset: 12; opacity: 1; } to { stroke-dashoffset: 0; opacity: 1; } }
         @media (prefers-reduced-motion: reduce) {
-            .agent-avatar .avatar-shape, .agent-avatar .avatar-body, .agent-avatar .avatar-eye { animation: none !important; }
+            .agent-avatar .avatar-float, .agent-avatar .avatar-shape, .agent-avatar .avatar-shadow, .agent-avatar .avatar-eye, .agent-avatar .avatar-sparkle, .agent-avatar .avatar-body, .agent-avatar .avatar-node { animation: none !important; }
+            .agent-avatar:is([data-state="thinking"], [data-state="active"]) .avatar-node { opacity: 0.8; }
             .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-smile { animation: none; stroke-dashoffset: 0; opacity: 1; }
         }
 
@@ -3132,11 +3175,12 @@
 
         // Geometric micro-avatars. Each agent gets a shape from its id; its face follows the
         // agent's live state (idle, thinking, active, success), which is not saved.
+        // Bodies are drawn with a thick stroke in the fill color so every corner comes out rounded.
         const AVATAR_SHAPES = {
-            circle:   { color: "var(--accent)",       faceY: 0, body: '<circle class="avatar-body" cx="20" cy="20" r="17"/>' },
-            triangle: { color: "var(--warning)",      faceY: 6, body: '<polygon class="avatar-body" points="20,3 37,35 3,35"/>' },
-            square:   { color: "var(--codev-purple)", faceY: 0, body: '<rect class="avatar-body" x="4" y="4" width="32" height="32" rx="6"/>' },
-            hexagon:  { color: "var(--codev-blue)",   faceY: 0, body: '<polygon class="avatar-body" points="20,3 35,11.5 35,28.5 20,37 5,28.5 5,11.5"/>' }
+            circle:   { color: "#9fd8ff", glow: "#d6f0ff", faceY: 0, sheen: [13, 11], body: '<circle class="avatar-body" cx="20" cy="20" r="15"/>' },
+            triangle: { color: "#ffc6a8", glow: "#ffe6d6", faceY: 5, sheen: [17.5, 15], body: '<polygon class="avatar-body" points="20,7 34,33 6,33"/>' },
+            square:   { color: "#cdbcff", glow: "#ebe3ff", faceY: 0, sheen: [12, 11], body: '<rect class="avatar-body" x="6" y="6" width="28" height="28" rx="10"/>' },
+            hexagon:  { color: "#ffb8d6", glow: "#ffe0ee", faceY: 0, sheen: [13, 12], body: '<polygon class="avatar-body" points="20,5 33,12.5 33,27.5 20,35 7,27.5 7,12.5"/>' }
         };
         const AVATAR_STATES = ["idle", "thinking", "active", "success"];
         const agentStates = {};
@@ -3154,15 +3198,26 @@
             const shape = AVATAR_SHAPES[agentAvatarShape(agent)];
             const state = agentStates[agent.id] || "idle";
             return `
-                <svg class="agent-avatar" viewBox="0 0 40 40" data-agent-id="${escapeHtml(agent.id)}" data-state="${state}" style="--avatar-color: ${shape.color};" aria-label="${escapeHtml(agent.name)} is ${state}" role="img">
-                    <g class="avatar-shape">
-                        ${shape.body}
-                        <g transform="translate(0 ${shape.faceY})">
-                            <ellipse class="avatar-eye" cx="14.5" cy="17" rx="2.4" ry="2.8"/>
-                            <ellipse class="avatar-eye" cx="25.5" cy="17" rx="2.4" ry="2.8"/>
-                            <path class="avatar-mouth avatar-neutral" d="M16 25 H24"/>
-                            <path class="avatar-mouth avatar-smile" d="M14.5 23.5 Q20 29.5 25.5 23.5"/>
+                <svg class="agent-avatar" viewBox="0 0 40 44" data-agent-id="${escapeHtml(agent.id)}" data-state="${state}" style="--shape-color: ${shape.color}; --shape-glow: ${shape.glow};" aria-label="${escapeHtml(agent.name)} is ${state}" role="img">
+                    <ellipse class="avatar-shadow" cx="20" cy="41.5" rx="11" ry="1.8"/>
+                    <g class="avatar-float">
+                        <g class="avatar-shape">
+                            ${shape.body}
+                            <ellipse class="avatar-sheen" cx="${shape.sheen[0]}" cy="${shape.sheen[1]}" rx="3" ry="1.7" transform="rotate(-30 ${shape.sheen[0]} ${shape.sheen[1]})"/>
+                            <g transform="translate(0 ${shape.faceY})">
+                                <g class="avatar-eye"><ellipse class="avatar-eye-ball" cx="15" cy="18" rx="2.6" ry="3.1"/><circle class="avatar-eye-shine" cx="15.9" cy="16.9" r="0.9"/></g>
+                                <g class="avatar-eye"><ellipse class="avatar-eye-ball" cx="25" cy="18" rx="2.6" ry="3.1"/><circle class="avatar-eye-shine" cx="25.9" cy="16.9" r="0.9"/></g>
+                                <ellipse class="avatar-cheek" cx="11.5" cy="23" rx="2.6" ry="1.5"/>
+                                <ellipse class="avatar-cheek" cx="28.5" cy="23" rx="2.6" ry="1.5"/>
+                                <path class="avatar-mouth avatar-neutral" d="M18 23.5 Q20 25.3 22 23.5"/>
+                                <path class="avatar-mouth avatar-smile" d="M16.5 23 Q20 28 23.5 23"/>
+                            </g>
                         </g>
+                        <circle class="avatar-node" cx="14" cy="1.5" r="1.3"/>
+                        <circle class="avatar-node" cx="20" cy="0" r="1.3"/>
+                        <circle class="avatar-node" cx="26" cy="1.5" r="1.3"/>
+                        <path class="avatar-sparkle" d="M35 4 L36 7 L39 8 L36 9 L35 12 L34 9 L31 8 L34 7 Z"/>
+                        <path class="avatar-sparkle" d="M5 2 L5.7 4.3 L8 5 L5.7 5.7 L5 8 L4.3 5.7 L2 5 L4.3 4.3 Z"/>
                     </g>
                 </svg>`;
         }
