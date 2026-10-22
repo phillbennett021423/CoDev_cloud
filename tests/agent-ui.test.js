@@ -127,6 +127,15 @@ test('with the sandbox off, the page keeps its direct tools', async t => {
     assert.ok(!calls[0].system.includes('[Sandbox]'));
     assert.equal(backend.log.length, 0, 'no sandbox tool calls');
     assert.equal(backend.sandboxes.size, 0, 'no sandbox created');
+    // The page's own folder tools never take in or write files that can hold keys.
+    const secret = await page.evaluate(async () => ({
+        paths: ['.env', 'config/production.env', '.github/ci.yml', 'certs/server.key', 'secrets.json', 'credentials.yaml'].map(normalizeWorkspacePath),
+        loaded: ['.env.js', 'secrets.json', 'app.js'].map(isProjectFileName),
+        write: await writeWorkspaceFile('.env', 'KEY=x')
+    }));
+    assert.deepEqual(secret.paths, ['', '', '', '', '', '']);
+    assert.deepEqual(secret.loaded, [false, false, true]);
+    assert.match(secret.write, /Use a file path/);
 });
 
 test('in sandbox mode, MCP servers that write or run on this computer are kept out of the review bypass', async t => {
