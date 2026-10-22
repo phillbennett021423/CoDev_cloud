@@ -15,5 +15,7 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     mcpFolder: () => ipcRenderer.invoke('codev:mcp-folder'),
     pickMcpFolder: () => ipcRenderer.invoke('codev:mcp-pick-folder'),
     // External MCP servers (stdio and remote), run by the main process's MCP hub.
-    mcpHub: req => ipcRenderer.invoke('codev:mcp-hub', req)
+    mcpHub: req => ipcRenderer.invoke('codev:mcp-hub', req),
+    // Q tasks on Manus, called from the main process.
+    manus: req => ipcRenderer.invoke('codev:manus', req)
 });

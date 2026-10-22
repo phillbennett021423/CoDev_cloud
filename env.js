@@ -39,4 +39,10 @@ function readAnthropicKey() {
     return { key };
 }
 
-module.exports = { loadEnvFile, readAnthropicKey };
+// The Manus API key for Q tasks, from MANUS_API_KEY. It's optional: without it
+// the page can still use a key entered in Settings. Never logged.
+function readManusKey() {
+    return String(process.env.MANUS_API_KEY || '').replace(/[\s"'`]+/g, '');
+}
+
+module.exports = { loadEnvFile, readAnthropicKey, readManusKey };

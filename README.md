@@ -26,6 +26,19 @@ The app's code is in `desktop/` (Electron). To run it from source: `cd desktop &
 
 If the key is missing, the server starts with a note saying so; if it's set but doesn't look like an Anthropic key, the server stops and tells you.
 
+## Q tasks (Manus)
+
+Q hands long, autonomous jobs to a [Manus](https://manus.im) agent that runs on its own cloud computer: browsing and operating websites, research across many pages, and creating or reorganizing files. CoDev uses the Manus API v2 (`https://api.manus.ai/v2/`, [docs](https://open.manus.ai/docs/v2/introduction)) to start a task, poll its events, answer its questions or approvals, and show the result and any files it made. Tasks keep running when CoDev is closed; CoDev picks them up again when it opens. Each task uses Manus credits.
+
+Start one from the **🤖 Q Tasks** tab, by ticking **🤖 Q Task (Manus)** in the chat's execution modes (or starting a message with `/q `), or let an agent call the `start_q_task` tool (it always asks you first). Mention loaded project files as `@filename` to hand them to Q.
+
+The API key:
+
+- On a computer, put `MANUS_API_KEY=...` in the `.env` file next to `server.js` (see `.env.example`) or set it in your environment. `server.js` (`POST /manus`) and the Windows app send it to Manus themselves, so the page never sees it.
+- On Android, or if you don't set the variable, add the key under **Settings → Q tasks (Manus)**. The Android app calls api.manus.ai through its native HTTP client.
+
+The connector is `mobile/www/manus/manus-client.js`, shared by the page, `server.js` and the Windows app. It only passes on the task operations CoDev uses (create, detail, list messages, send message, stop, confirm action, list online browsers).
+
 ## "System Error: Failed to fetch"
 
 This means the request never reached Groq (api.groq.com). Check that the computer is online, and that a firewall, antivirus web shield, VPN, proxy or ad blocker isn't blocking api.groq.com. A wrong API key shows a different error from Groq itself.
