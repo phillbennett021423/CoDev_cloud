@@ -5,7 +5,8 @@
 //  edit_file, delete_file, run_command, sandbox_diff, submit_changes) that work
 //  in a staging copy of the project. run_command runs inside the agent's own
 //  Docker container, which sees only that copy. Nothing an agent does reaches
-//  the real project.
+//  the real project. A project too big to copy is staged file by file as agents
+//  change it (see staging.js); run_command is off for those.
 //
 //  The user reviews the staged changes as a git diff with syntax-check results
 //  and approves files one by one. Only that review step (`review` below, never
@@ -36,9 +37,9 @@ class ToolError extends Error {}
 
 // getProjectDir() -> the real project folder (or ''). stagingRoot: where scratch
 // copies go (default: the OS temp folder).
-function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOptions } = {}) {
+function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOptions, stagingLimits } = {}) {
     const containers = createContainerManager(containerOptions);
-    const staging = createStaging({ getProjectDir, root: stagingRoot });
+    const staging = createStaging({ getProjectDir, root: stagingRoot, limits: stagingLimits });
     const sandboxes = new Map(); // id -> { id, agents, task, createdAt }; one staging copy each
     const changesets = new Map(); // id -> change set (pending, approved or rejected)
     const submissions = new Map(); // sandbox id -> agent's summary from submit_changes
@@ -63,24 +64,37 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
         return staging.get(ctx.workspace);
     }
 
-    function filePath(ws, rel) {
-        try { return staging.containedPath(ws.work, rel); } catch (err) { throw new ToolError(err.message); }
+    // Paths for reading and for changing rel; StagingErrors become tool errors.
+    function readPath(ws, rel) {
+        try { return staging.readPath(ws, rel); } catch (err) { throw new ToolError(err.message); }
+    }
+
+    function writePath(ws, rel) {
+        try { return staging.prepareWrite(ws, rel); } catch (err) { throw new ToolError(err.message); }
+    }
+
+    function listTree(ws, rel, limit) {
+        try { return staging.listTree(ws, rel, limit); } catch (err) { throw new ToolError(err.message); }
+    }
+
+    // Why commands can't run on this project (too big to copy into a container), or null.
+    function largeProjectReason() {
+        const size = staging.projectSize();
+        return size && size.large ? `The project is too big to copy into a container (${size.reason}), so commands can't run in the sandbox. File edits are still staged for review.` : null;
     }
 
     // TOOLS (what agents can do; all of it inside the staging copy)
 
     function listFiles({ path: rel } = {}, ctx) {
         const ws = workspaceFor(ctx);
-        const start = filePath(ws, rel);
-        if (!fs.existsSync(start) || !fs.statSync(start).isDirectory()) throw new ToolError(`'${rel}' is not a folder`);
-        const found = staging.walk(start, { limit: MAX_LISTED_FILES }).map(p => path.posix.join(path.relative(ws.work, start).split(path.sep).join('/'), p));
+        const found = listTree(ws, rel, MAX_LISTED_FILES);
         if (!found.length) return 'The folder is empty.';
         return found.join('\n') + (found.length >= MAX_LISTED_FILES ? `\n[stopped at ${MAX_LISTED_FILES} files]` : '');
     }
 
     function readFile({ path: rel } = {}, ctx) {
         const ws = workspaceFor(ctx);
-        const full = filePath(ws, rel);
+        const full = readPath(ws, rel);
         if (!fs.existsSync(full) || !fs.statSync(full).isFile()) throw new ToolError(`No file at '${rel}'. Call list_files to see what exists.`);
         const text = fs.readFileSync(full, 'utf8');
         return text.length > MAX_READ_CHARS ? text.slice(0, MAX_READ_CHARS) + `\n[truncated at ${MAX_READ_CHARS} characters]` : text;
@@ -89,15 +103,15 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
     function searchFiles({ query, path: rel } = {}, ctx) {
         if (typeof query !== 'string' || !query.trim()) throw new ToolError("search_files needs a 'query' string");
         const ws = workspaceFor(ctx);
-        const start = filePath(ws, rel);
         const needle = query.toLowerCase();
         const hits = [];
-        for (const file of staging.walk(start, { limit: 5000 })) {
-            const full = path.join(start, file);
-            if (fs.statSync(full).size > MAX_SEARCHED_FILE_BYTES) continue;
+        for (const shown of listTree(ws, rel, 5000)) {
+            const full = readPath(ws, shown);
+            let stat;
+            try { stat = fs.statSync(full); } catch { continue; }
+            if (!stat.isFile() || stat.size > MAX_SEARCHED_FILE_BYTES) continue;
             const text = fs.readFileSync(full, 'utf8');
             if (text.includes('\u0000')) continue;
-            const shown = path.relative(ws.work, full).split(path.sep).join('/');
             const lines = text.split('\n');
             for (let i = 0; i < lines.length; i++) {
                 if (!lines[i].toLowerCase().includes(needle)) continue;
@@ -111,7 +125,7 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
     function writeFile({ path: rel, content } = {}, ctx) {
         if (typeof content !== 'string') throw new ToolError("write_file needs 'content' as a string");
         const ws = workspaceFor(ctx);
-        const full = filePath(ws, rel);
+        const full = writePath(ws, rel);
         if (fs.existsSync(full) && fs.lstatSync(full).isSymbolicLink()) fs.unlinkSync(full);
         fs.mkdirSync(path.dirname(full), { recursive: true });
         fs.writeFileSync(full, content, 'utf8');
@@ -123,7 +137,7 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
             throw new ToolError("edit_file needs non-empty 'old_text' and a 'new_text' string");
         }
         const ws = workspaceFor(ctx);
-        const full = filePath(ws, rel);
+        const full = writePath(ws, rel);
         if (!fs.existsSync(full) || !fs.statSync(full).isFile()) throw new ToolError(`No file at '${rel}'`);
         const text = fs.readFileSync(full, 'utf8');
         const count = text.split(oldText).length - 1;
@@ -134,7 +148,7 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
 
     function deleteFile({ path: rel } = {}, ctx) {
         const ws = workspaceFor(ctx);
-        const full = filePath(ws, rel);
+        const full = writePath(ws, rel);
         if (!fs.existsSync(full) || !fs.lstatSync(full).isFile()) throw new ToolError(`No file at '${rel}'`);
         fs.unlinkSync(full);
         return `Deleted ${rel} in the sandbox (staged for the user's review).`;
@@ -143,6 +157,7 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
     async function runCommand({ command, cwd, timeout_seconds: timeoutSeconds } = {}, ctx) {
         if (typeof command !== 'string' || !command.trim()) throw new ToolError("run_command needs a 'command' string");
         const ws = workspaceFor(ctx);
+        if (ws.lazy) throw new ToolError(`Nothing was run: ${largeProjectReason() || 'the project is too big to copy into a container.'}`);
         const docker = await containers.detect();
         if (!docker.available) throw new ToolError(`Nothing was run: ${docker.reason}`);
         let result;
@@ -220,7 +235,8 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
     async function listTools() {
         if (!enabled || !getProjectDir()) return [];
         const docker = await containers.detect();
-        return TOOLS.filter(t => !t.needsDocker || docker.available).map(({ run, needsDocker, ...t }) => t);
+        const canRun = docker.available && !largeProjectReason();
+        return TOOLS.filter(t => !t.needsDocker || canRun).map(({ run, needsDocker, ...t }) => t);
     }
 
     // MCP CallToolResult for one tool call. ctx = { agentId, workspace }.
@@ -373,6 +389,8 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
             workspace: getProjectDir() || null,
             docker: docker.available ? { available: true, version: docker.version } : { available: false, error: docker.reason },
             container: containers.getConfig(),
+            // Set when the project is too big to copy: files are staged as agents change them, and commands don't run.
+            largeProject: largeProjectReason(),
             sandboxes: [...sandboxes.values()].map(describeSandbox),
             containers: containers.list()
         };
@@ -409,8 +427,8 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
                     const docker = await containers.detect();
                     // Start the container now so the first command isn't slow; without Docker the
                     // sandbox still stages file edits.
-                    let containerError = docker.available ? null : docker.reason;
-                    if (docker.available) {
+                    let containerError = staging.get(box.id).lazy ? largeProjectReason() : docker.available ? null : docker.reason;
+                    if (!containerError) {
                         try { await containers.acquire(agentId, box.id, staging.get(box.id).work); } catch (err) { containerError = err.message; }
                     }
                     return reply(201, { ...describeSandbox(box), agentId, container: containerError ? { running: false, error: containerError } : { running: true } });
@@ -431,6 +449,7 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
                 }
                 if (action === 'exec' && m === 'POST') {
                     if (typeof body.command !== 'string' || !body.command.trim()) return fail(400, 'exec needs a command');
+                    if (staging.get(box.id).lazy) return fail(503, largeProjectReason() || 'The project is too big to copy into a container.');
                     const docker = await containers.detect();
                     if (!docker.available) return fail(503, docker.reason);
                     const timeoutSeconds = body.timeoutMs ? Math.ceil(Number(body.timeoutMs) / 1000) : undefined;
@@ -518,6 +537,7 @@ function createService(config = {}, { log } = {}) {
         status: async () => {
             const s = await sandbox.status();
             const detail = !s.workspace ? 'No project folder is set, so agents have no sandbox.'
+                : s.largeProject ? `File edits are staged for review as agents make them. ${s.largeProject}`
                 : s.docker.available ? `Docker ${s.docker.version}: agents' commands run in their own containers.`
                     : `File edits are staged for review, but commands can't run: ${s.docker.error}`;
             return { available: Boolean(s.workspace), detail, ...s };
