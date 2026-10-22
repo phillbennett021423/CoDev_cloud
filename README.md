@@ -34,6 +34,26 @@ Every message is treated as a task on your project. You don't type file paths or
 | Desktop Chrome/Edge via `npm start` | 📁 Connect Local Folder (sub-folders included) | saved to disk | only with the helper |
 | Android app | files picked in Project Files | kept in CoDev; Save copies them | no |
 
+## Sandbox and change review
+
+When CoDev runs from `npm start` (or the Windows app) with a project folder, the chat's **🧪 Sandbox & Review Changes** mode is available and on by default. Each agent then works on a staging copy of the project, in its own Docker container when Docker is running, and nothing reaches your files until you approve it:
+
+- After a task, a review screen lists every changed file with its diff and syntax check. Files that fail the check can't be approved; untick any file you don't want.
+- **Approve & save** writes the ticked files, **Reject all** throws the changes away, and **Keep for later** leaves them waiting under **📝 Review changes** in the header.
+- Without Docker, agents still edit the staging copy, but can't run code. On Android and on the web the mode is greyed out and agents edit as before.
+
+The page code is `mobile/www/agent-ui/` (`agent-client.js` talks to the `/agent/*` routes and `/agent-tools`, `diff-review.js` is the review screen).
+
+## Testing the agent setup
+
+`npm run test:agents` runs the agent tests:
+
+- `tests/agent-client.test.js`: the diff parser, review model and API client (no setup needed).
+- `tests/agent-ui.test.js`: the page's sandbox mode and review screen in headless Chromium, against a stand-in server (needs Playwright and Chromium, Chrome or Edge).
+- `tests/agent-integration.test.js`: starts the real `server.js` with a throwaway project, sends a sample coding prompt through the page, checks the diff gate (bad files blocked, nothing written before approval, nothing written on reject), runs commands in an ephemeral Docker container and checks it's removed afterwards, then runs a headless browser task against the page the agent saved.
+
+Each test that needs Docker, Chromium or a server feature that isn't there is skipped with the reason, so the suite also passes on a computer without them. On Windows, start Docker Desktop and run `npm run setup` first to test everything. The model is scripted in these tests, so no API key is needed.
+
 ## Anthropic API key
 
 `server.js` reads the key only from the `ANTHROPIC_API_KEY` environment variable at startup; never paste it into the code. Either:

@@ -4,7 +4,8 @@
   "description": "Serves CoDev Studio locally at http://localhost:3000",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test:agents": "node --test \"tests/*.test.js\""
   },
   "dependencies": {
     "express": "^4.18.2",

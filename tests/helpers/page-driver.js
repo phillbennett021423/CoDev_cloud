@@ -16,14 +16,20 @@ function loadPlaywright() {
 // Starts Chromium, or explains why it can't (so the caller can skip).
 async function launchBrowser() {
     const playwright = loadPlaywright();
-    if (!playwright) return { skip: 'Playwright is not installed (npm install, then npx playwright install chromium)' };
-    const options = { headless: true };
-    if (process.env.CODEV_BROWSER_PATH) options.executablePath = process.env.CODEV_BROWSER_PATH;
-    try {
-        return { browser: await playwright.chromium.launch(options) };
-    } catch (err) {
-        return { skip: `Chromium could not start: ${err.message.split('\n')[0]}` };
+    if (!playwright) return { skip: 'Playwright is not installed: run npm install (npm run setup also gets Chromium)' };
+    // CODEV_BROWSER_PATH first (as the browser service does), then Playwright's own
+    // Chromium, then the Chrome or Edge already installed on this computer.
+    const attempts = process.env.CODEV_BROWSER_PATH ? [{ executablePath: process.env.CODEV_BROWSER_PATH }] : [];
+    attempts.push({}, { channel: 'chrome' }, { channel: 'msedge' });
+    let firstError = null;
+    for (const extra of attempts) {
+        try {
+            return { browser: await playwright.chromium.launch({ headless: true, ...extra }) };
+        } catch (err) {
+            firstError = firstError || err;
+        }
     }
+    return { skip: `Chromium could not start: ${firstError.message.split('\n')[0]}` };
 }
 
 // steps: the assistant messages the stand-in model returns, in order, as
