@@ -410,6 +410,34 @@
             .mobile-tab .tab-icon { font-size: 1.2rem; line-height: 1; }
             .mobile-tab.active { color: var(--accent); }
         }
+        /* Live view of an agent's browser, with its console, network and DOM changes beside it. */
+        .live-panel { position: fixed; top: 70px; right: 12px; width: min(1180px, calc(100vw - 24px)); height: min(760px, calc(100dvh - 82px)); background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.6); display: none; flex-direction: column; z-index: 900; overflow: hidden; }
+        .live-panel.open { display: flex; }
+        .live-bar { display: flex; gap: 6px; align-items: center; padding: 8px; border-bottom: 1px solid var(--border-color); flex-wrap: wrap; }
+        .live-bar select, .live-bar input { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 5px 8px; font-size: 0.8rem; }
+        .live-bar input { flex: 1; min-width: 160px; font-family: monospace; }
+        .live-bar button { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 5px 9px; cursor: pointer; font-size: 0.8rem; }
+        .live-bar button.live-control-on { background: var(--warning); color: #111; border-color: var(--warning); font-weight: bold; }
+        .live-body { flex: 1; display: flex; min-height: 0; }
+        .live-screen { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; background: #000; position: relative; outline: none; }
+        .live-screen:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+        .live-screen img { max-width: 100%; max-height: 100%; user-select: none; -webkit-user-drag: none; cursor: crosshair; }
+        .live-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.9rem; text-align: center; padding: 20px; pointer-events: none; }
+        .live-banner { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); background: var(--warning); color: #111; font-size: 0.75rem; font-weight: bold; padding: 4px 10px; border-radius: 12px; pointer-events: none; }
+        .live-side { width: 340px; display: flex; flex-direction: column; border-left: 1px solid var(--border-color); min-height: 0; }
+        .live-tabs { display: flex; border-bottom: 1px solid var(--border-color); }
+        .live-tabs button { flex: 1; background: none; border: none; color: var(--text-muted); padding: 7px 4px; cursor: pointer; font-size: 0.8rem; }
+        .live-tabs button.active { color: var(--text-main); box-shadow: inset 0 -2px 0 var(--accent); }
+        .live-log { flex: 1; overflow-y: auto; font-family: monospace; font-size: 0.72rem; padding: 4px 6px; }
+        .live-log div { padding: 2px 0; border-bottom: 1px solid rgba(55,65,81,0.5); overflow-wrap: anywhere; color: var(--text-main); }
+        .live-log .warn { color: var(--warning); }
+        .live-log .error { color: var(--danger); }
+        .live-log .muted { color: var(--text-muted); }
+        @media (max-width: 900px) {
+            .live-panel { top: 0; right: 0; width: 100vw; height: 100dvh; border-radius: 0; }
+            .live-body { flex-direction: column; }
+            .live-side { width: auto; height: 38%; border-left: none; border-top: 1px solid var(--border-color); }
+        }
     </style>
 </head>
 <body>
@@ -446,9 +474,38 @@
             <div class="user-status">
                 <span class="status-dot"></span> <span id="statusText">Active Browser Storage</span>
             </div>
+            <button class="settings-btn" id="liveViewBtn" onclick="toggleLiveView()" title="Watch the agents' browsers live and take over" style="display: none;">🖥️<span class="hide-on-mobile"> Live view</span></button>
             <button class="settings-btn" onclick="openSettingsModal()" title="Settings">⚙️<span class="hide-on-mobile"> Settings</span></button>
         </div>
     </header>
+
+    <div class="live-panel" id="livePanel" role="dialog" aria-label="Live view of an agent's browser">
+        <div class="live-bar">
+            <select id="liveAgent" onchange="watchLiveAgent(this.value)" title="Which agent's browser"></select>
+            <button type="button" onclick="liveControl({ op: 'back' })" title="Back">◀</button>
+            <button type="button" onclick="liveControl({ op: 'forward' })" title="Forward">▶</button>
+            <button type="button" onclick="liveControl({ op: 'reload' })" title="Reload">⟳</button>
+            <input type="text" id="liveUrl" placeholder="Address" autocomplete="off" onkeydown="if (event.key === 'Enter') liveControl({ op: 'navigate', url: this.value })">
+            <button type="button" id="liveTakeoverBtn" onclick="toggleLiveTakeover()" title="Pause the agent and use its browser yourself">✋ Take over</button>
+            <button type="button" onclick="toggleLiveView(false)" title="Close">✕</button>
+        </div>
+        <div class="live-body">
+            <div class="live-screen" id="liveScreen" tabindex="0">
+                <img id="liveFrame" alt="The agent's browser" style="display: none;">
+                <div class="live-note" id="liveNote">No agent has a browser open yet. It appears here as soon as one opens a page.</div>
+                <div class="live-banner" id="liveBanner" style="display: none;">You have control. The agent waits until you hand it back.</div>
+            </div>
+            <div class="live-side">
+                <div class="live-tabs">
+                    <button type="button" class="active" data-tab="console" onclick="showLiveTab('console')">Console</button>
+                    <button type="button" data-tab="network" onclick="showLiveTab('network')">Network</button>
+                    <button type="button" data-tab="dom" onclick="showLiveTab('dom')">DOM</button>
+                    <button type="button" onclick="clearLiveLog()" title="Clear">🧹</button>
+                </div>
+                <div class="live-log" id="liveLog"></div>
+            </div>
+        </div>
+    </div>
 
     <div class="workspace" id="mainWorkspace">
         <!-- Floating Reopen Buttons for Collapsed Sidebars -->
@@ -2125,6 +2182,209 @@
             if (!confirm(`Delete "${label}"?`)) return;
             try { await browserRpc("codev/vault", { op, id }); } catch (err) { alert(err.message); }
             refreshBrowserVault();
+        }
+
+        // LIVE VIEW: the agent's browser as a stream of frames (Chromium's screencast),
+        // with the user's mouse and keyboard sent back. Any input takes over from the
+        // agent, whose browser tools wait until "Hand back". The Windows app streams over
+        // IPC; server.js over server-sent events from /browser/live.
+        const LIVE_MAX_ROWS = 300;
+        const live = { agentId: "", stop: null, frame: null, userControl: false, tab: "console", rows: { console: [], network: [], dom: [] }, lastMove: 0, sessions: [] };
+
+        function toggleLiveView(force) {
+            const panel = document.getElementById("livePanel");
+            const open = force ?? !panel.classList.contains("open");
+            panel.classList.toggle("open", open);
+            if (!open) { if (live.stop) live.stop(); live.stop = null; return; }
+            watchLiveAgent(live.agentId);
+        }
+
+        // One stream at a time: the chosen agent's, or only the session list.
+        function openLiveStream(agentId, onUpdate) {
+            if (window.codevDesktop?.browserLive) {
+                const off = window.codevDesktop.onBrowserLive(onUpdate);
+                window.codevDesktop.browserLive({ op: "watch", agentId });
+                return () => { off(); window.codevDesktop.browserLive({ op: "unwatch" }); };
+            }
+            const source = new EventSource(`/browser/live${agentId ? `?agent=${encodeURIComponent(agentId)}` : ""}`);
+            source.onmessage = message => { try { onUpdate(JSON.parse(message.data)); } catch (err) { /* partial event */ } };
+            return () => source.close();
+        }
+
+        function watchLiveAgent(agentId) {
+            if (live.stop) live.stop();
+            live.agentId = agentId || "";
+            live.rows = { console: [], network: [], dom: [] };
+            live.frame = null;
+            live.userControl = false;
+            renderLiveLog();
+            renderLiveFrame();
+            live.stop = openLiveStream(live.agentId, onLiveUpdate);
+        }
+
+        function onLiveUpdate(update) {
+            if (update.type === "sessions") {
+                live.sessions = update.sessions;
+                const select = document.getElementById("liveAgent");
+                const known = live.sessions.map(s => s.agentId);
+                const options = [...new Set([...known, live.agentId].filter(Boolean))];
+                select.innerHTML = "";
+                if (!options.length) select.appendChild(new Option("No browsers open", ""));
+                options.forEach(id => {
+                    const agent = agents.find(a => a.id === id);
+                    select.appendChild(new Option(`${agent ? agent.name : id}${known.includes(id) ? "" : " (closed)"}`, id));
+                });
+                select.value = live.agentId;
+                // Start on the first open browser; follow it when it's the only one.
+                if (!live.agentId && known.length) watchLiveAgent(known[0]);
+                return;
+            }
+            if (update.agentId && update.agentId !== live.agentId) return;
+            if (update.type === "frame") {
+                live.frame = update;
+                if (document.activeElement !== document.getElementById("liveUrl")) document.getElementById("liveUrl").value = update.url;
+                return renderLiveFrame();
+            }
+            if (update.type === "state") {
+                live.userControl = update.userControl;
+                return renderLiveFrame();
+            }
+            if (update.type === "closed") {
+                live.frame = null;
+                live.userControl = false;
+                return renderLiveFrame();
+            }
+            const time = new Date(update.at).toLocaleTimeString();
+            if (update.type === "console") addLiveRow("console", `${time} ${update.level}: ${update.text}`, update.level === "error" ? "error" : update.level === "warning" ? "warn" : "");
+            else if (update.type === "nav") { addLiveRow("console", `${time} → ${update.url}`, "muted"); addLiveRow("network", `${time} → navigated to ${update.url}`, "muted"); }
+            else if (update.type === "network") {
+                if (update.phase === "request") return; // the response or failure line says more
+                const text = update.phase === "failed" ? `${time} ✕ ${update.method} ${update.url} (${update.error})` : `${time} ${update.status} ${update.method} ${update.url}`;
+                addLiveRow("network", text, update.phase === "failed" || update.status >= 400 ? "error" : "");
+            } else if (update.type === "dom") {
+                addLiveRow("dom", `${time} +${update.added} −${update.removed} attrs ${update.attributes} text ${update.text}${update.samples.length ? "\n  " + update.samples.join("\n  ") : ""}`, "");
+            }
+        }
+
+        function addLiveRow(tab, text, cls) {
+            const rows = live.rows[tab];
+            rows.push({ text, cls });
+            if (rows.length > LIVE_MAX_ROWS) rows.shift();
+            if (live.tab !== tab) return;
+            const log = document.getElementById("liveLog");
+            const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+            log.querySelector(".live-empty")?.remove();
+            const row = document.createElement("div");
+            row.textContent = text;
+            if (cls) row.className = cls;
+            row.style.whiteSpace = "pre-wrap";
+            log.appendChild(row);
+            while (log.childElementCount > LIVE_MAX_ROWS) log.firstElementChild.remove();
+            if (atBottom) log.scrollTop = log.scrollHeight;
+        }
+
+        function renderLiveLog() {
+            const log = document.getElementById("liveLog");
+            log.innerHTML = "";
+            const rows = live.rows[live.tab];
+            if (!rows.length) {
+                const empty = document.createElement("div");
+                empty.className = "muted live-empty";
+                empty.textContent = { console: "Console messages and page errors show here.", network: "Requests the page makes show here (no headers or bodies).", dom: "Changes to the page's elements show here, twice a second." }[live.tab];
+                log.appendChild(empty);
+            }
+            rows.forEach(r => {
+                const row = document.createElement("div");
+                row.textContent = r.text;
+                row.style.whiteSpace = "pre-wrap";
+                if (r.cls) row.className = r.cls;
+                log.appendChild(row);
+            });
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function showLiveTab(tab) {
+            live.tab = tab;
+            document.querySelectorAll(".live-tabs button[data-tab]").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+            renderLiveLog();
+        }
+
+        function clearLiveLog() {
+            live.rows[live.tab] = [];
+            renderLiveLog();
+        }
+
+        function renderLiveFrame() {
+            const img = document.getElementById("liveFrame");
+            const note = document.getElementById("liveNote");
+            if (live.frame) {
+                img.src = `data:image/jpeg;base64,${live.frame.data}`;
+                img.style.display = "";
+                note.style.display = "none";
+            } else {
+                img.style.display = "none";
+                note.style.display = "";
+                note.textContent = live.agentId ? "Waiting for this agent's browser to show something…" : "No agent has a browser open yet. It appears here as soon as one opens a page.";
+            }
+            document.getElementById("liveBanner").style.display = live.userControl ? "" : "none";
+            const btn = document.getElementById("liveTakeoverBtn");
+            btn.textContent = live.userControl ? "↩️ Hand back" : "✋ Take over";
+            btn.classList.toggle("live-control-on", live.userControl);
+        }
+
+        async function liveControl(control) {
+            if (!live.agentId) return;
+            let reply;
+            try {
+                reply = window.codevDesktop?.browserLive
+                    ? await window.codevDesktop.browserLive({ op: "control", agentId: live.agentId, control })
+                    : await postJson("/browser/live/control", { agentId: live.agentId, control });
+            } catch (err) { reply = { error: err.message }; }
+            if (reply?.error && control.op !== "move") logConsoleActivity(`[Live] ${reply.error}`);
+        }
+
+        function toggleLiveTakeover() {
+            liveControl({ op: live.userControl ? "release" : "takeover" });
+        }
+
+        // Screen position on the picture → the page's own CSS pixels.
+        function livePoint(event) {
+            const img = document.getElementById("liveFrame");
+            const box = img.getBoundingClientRect();
+            if (!live.frame || !box.width) return null;
+            return { x: Math.round((event.clientX - box.left) / box.width * live.frame.width), y: Math.round((event.clientY - box.top) / box.height * live.frame.height) };
+        }
+
+        function setupLiveInput() {
+            const screen = document.getElementById("liveScreen");
+            const img = document.getElementById("liveFrame");
+            const buttons = ["left", "middle", "right"];
+            img.addEventListener("mousedown", e => { e.preventDefault(); screen.focus(); const p = livePoint(e); if (p) liveControl({ op: "down", button: buttons[e.button] || "left", ...p }); });
+            img.addEventListener("mouseup", e => { const p = livePoint(e); if (p) liveControl({ op: "up", button: buttons[e.button] || "left", ...p }); });
+            img.addEventListener("contextmenu", e => e.preventDefault());
+            img.addEventListener("mousemove", e => {
+                // Only while driving, and at most ~25 times a second.
+                if (!live.userControl || Date.now() - live.lastMove < 40) return;
+                live.lastMove = Date.now();
+                const p = livePoint(e);
+                if (p) liveControl({ op: "move", ...p });
+            });
+            img.addEventListener("wheel", e => { e.preventDefault(); const p = livePoint(e); if (p) liveControl({ op: "wheel", deltaX: e.deltaX, deltaY: e.deltaY, ...p }); }, { passive: false });
+            screen.addEventListener("keydown", e => {
+                if (!live.frame) return;
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") return; // the paste event sends the text
+                e.preventDefault();
+                liveControl({ op: "keydown", key: e.key });
+            });
+            screen.addEventListener("keyup", e => {
+                if (!live.frame || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v")) return;
+                e.preventDefault();
+                liveControl({ op: "keyup", key: e.key });
+            });
+            screen.addEventListener("paste", e => {
+                const text = e.clipboardData?.getData("text");
+                if (text) { e.preventDefault(); liveControl({ op: "text", text }); }
+            });
         }
 
         // Built-in desktop tools first, then the browser's, then the configured servers' tools.
@@ -4417,6 +4677,9 @@
             renderAgentList();
             updateWorkspaceGrid();
             updateMobileTabs();
+            // The live view is there wherever agents have a browser (Windows app, npm start).
+            setupLiveInput();
+            fetchBrowserMcpTools().then(tools => { if (tools.length) document.getElementById("liveViewBtn").style.display = ""; });
             // Phones start with the mode toggles folded away to leave room for the chat.
             if (isMobileLayout()) toggleChatControls();
         });

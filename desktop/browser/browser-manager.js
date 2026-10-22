@@ -5,6 +5,7 @@
 // The browser comes from playwright-core. It uses, in order: CODEV_BROWSER_PATH,
 // Playwright's own Chromium (npx playwright install chromium), then the Edge or
 // Chrome already installed on this computer.
+const { EventEmitter } = require('events');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -46,6 +47,9 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
 
     const blocked = blockedOrigins.map(origin => new URL(origin)).map(u => ({ port: u.port || (u.protocol === 'https:' ? '443' : '80'), loopback: isLoopback(u.hostname), host: u.hostname }));
     const sessions = new Map();
+    // 'open' (session), 'page' (session, when the agent's working page changes) and
+    // 'close' (agentId), for the live view.
+    const events = new EventEmitter();
     let launchChoice = null;
     let sweepTimer = null;
 
@@ -131,19 +135,27 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
             throw err;
         }
         await context.route(url => isBlocked(url), route => route.abort('blockedbyclient'));
-        const session = { agentId, dir, context, page: context.pages()[0] || await context.newPage(), lastUsed: Date.now(), startedAt: Date.now() };
+        // userControl: the user took over in the live view, so the agent's tools wait.
+        const session = { agentId, dir, context, page: context.pages()[0] || await context.newPage(), lastUsed: Date.now(), startedAt: Date.now(), userControl: false };
         // A link that opens a new tab becomes the page the agent is working on.
         context.on('page', page => {
             session.page = page;
-            page.on('close', () => { if (session.page === page) session.page = context.pages().slice(-1)[0] || null; });
+            events.emit('page', session);
+            page.on('close', () => {
+                if (session.page !== page) return;
+                session.page = context.pages().slice(-1)[0] || null;
+                if (session.page) events.emit('page', session);
+            });
         });
         // The browser can also exit by itself (crash, or the user ends it).
         context.on('close', () => {
             if (sessions.get(agentId) !== session) return;
             sessions.delete(agentId);
             removeDir(dir);
+            events.emit('close', agentId);
         });
         sessions.set(agentId, session);
+        events.emit('open', session);
         if (!sweepTimer) {
             sweepTimer = setInterval(sweepIdle, 60 * 1000);
             sweepTimer.unref();
@@ -159,7 +171,10 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
             if (!opening.has(agentId)) opening.set(agentId, open(agentId).finally(() => opening.delete(agentId)));
             session = await opening.get(agentId);
         }
-        if (!session.page || session.page.isClosed()) session.page = await session.context.newPage();
+        if (!session.page || session.page.isClosed()) {
+            session.page = await session.context.newPage();
+            events.emit('page', session);
+        }
         session.lastUsed = Date.now();
         return session;
     }
@@ -170,6 +185,7 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
         sessions.delete(agentId);
         try { await session.context.close(); } catch { /* already gone */ }
         removeDir(session.dir);
+        events.emit('close', agentId);
         return true;
     }
 
@@ -180,10 +196,13 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
 
     function list() {
         return [...sessions.values()].map(s => ({ agentId: s.agentId, url: s.page && !s.page.isClosed() ? s.page.url() : null,
-            startedAt: new Date(s.startedAt).toISOString(), idleSeconds: Math.round((Date.now() - s.lastUsed) / 1000) }));
+            startedAt: new Date(s.startedAt).toISOString(), idleSeconds: Math.round((Date.now() - s.lastUsed) / 1000), userControl: s.userControl }));
     }
 
-    return { get, has: agentId => sessions.has(agentId), close, closeAll, list, status, isBlocked };
+    // An open session, without starting one or counting as the agent's use.
+    const peek = agentId => sessions.get(agentId) || null;
+
+    return { get, peek, has: agentId => sessions.has(agentId), close, closeAll, list, status, isBlocked, events };
 }
 
 module.exports = { createBrowserManager, BrowserUnavailableError };

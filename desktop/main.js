@@ -67,6 +67,24 @@ app.whenReady().then(() => {
     // on Windows) in this app's user data folder; the page asks the user before any is used.
     const browserTools = createBrowserService({ dataDir: app.getPath('userData'), safeStorage, getProjectDir });
     ipcMain.handle('codev:browser-mcp', (_event, message) => browserTools.handle(message));
+    // Live view: frames and inspector events go to the window that asked for them.
+    const liveWatches = new Map(); // webContents id -> unsubscribe
+    ipcMain.handle('codev:browser-live', async (event, req = {}) => {
+        const sender = event.sender;
+        if (req.op === 'watch') {
+            if (liveWatches.has(sender.id)) liveWatches.get(sender.id)();
+            const stop = browserTools.live.subscribe(String(req.agentId || ''), update => { if (!sender.isDestroyed()) sender.send('codev:browser-live-event', update); });
+            liveWatches.set(sender.id, stop);
+            sender.once('destroyed', () => { stop(); liveWatches.delete(sender.id); });
+            return { ok: true };
+        }
+        if (req.op === 'unwatch') {
+            if (liveWatches.has(sender.id)) liveWatches.get(sender.id)();
+            liveWatches.delete(sender.id);
+            return { ok: true };
+        }
+        try { return await browserTools.live.control(req.agentId, req.control || {}); } catch (err) { return { error: err.message }; }
+    });
 
     // External MCP servers from Settings (stdio processes and remote URLs), through the official SDK.
     const mcpHub = createNodeMcpHub({
