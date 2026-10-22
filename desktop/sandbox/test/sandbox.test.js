@@ -238,8 +238,8 @@ test('a project too big to copy is staged file by file as agents change it', asy
         assert.strictEqual((await call('read_file', { path: 'README.md' })).isError, true);
         assert.match((await call('read_file', { path: '../secret' })).content[0].text, /outside the workspace/);
         for (const p of ['.codev/x.txt', 'sub/.codev/sandboxes/y.txt']) {
-            assert.match((await call('read_file', { path: p })).content[0].text, /hidden file or folder/);
-            assert.match((await call('write_file', { path: p, content: 'x' })).content[0].text, /hidden file or folder/);
+            assert.match((await call('read_file', { path: p })).content[0].text, /hidden or secret file/);
+            assert.match((await call('write_file', { path: p, content: 'x' })).content[0].text, /hidden or secret file/);
         }
 
         const set = (await sandbox.handleRequest('GET', '/agent/changes')).body[0];
@@ -281,21 +281,23 @@ test('a project over the size limit is staged on demand too', async () => {
 
 test('hidden files like .env are never copied, listed, searched, read or written', async () => {
     const { project, sandbox, call, cleanup } = setup({ 'app.js': 'const key = process.env.KEY;\n', '.env': 'KEY=sk-ant-not-a-real-key\n',
-        '.github/workflows/ci.yml': 'on: push # key\n', 'sub/.secrets/token.txt': 'key\n' });
+        '.github/workflows/ci.yml': 'on: push # key\n', 'sub/.secrets/token.txt': 'key\n', 'config/production.env': 'KEY=x\n',
+        'certs/server.key': 'key\n', 'certs/cert.pem': 'key\n', 'secrets.json': '{"key": 1}\n', 'credentials.yaml': 'key: 1\n' });
     try {
         assert.deepStrictEqual((await call('list_files', {})).content[0].text.split('\n'), ['app.js']);
         assert.deepStrictEqual(sandbox.staging.walk(sandbox.staging.get('ws1').work), ['app.js'], 'nothing hidden is copied');
         assert.match((await call('search_files', { query: 'key' })).content[0].text, /^app\.js:1:[^\n]*$/);
-        for (const p of ['.env', '.github/workflows/ci.yml', 'sub/.secrets/token.txt', './.env', 'sub/../.env']) {
+        for (const p of ['.env', '.github/workflows/ci.yml', 'sub/.secrets/token.txt', './.env', 'sub/../.env', 'config/production.env',
+            'certs/server.key', 'certs/cert.pem', 'secrets.json', 'credentials.yaml']) {
             const read = await call('read_file', { path: p });
             assert.strictEqual(read.isError, true, p);
-            assert.match(read.content[0].text, /hidden file or folder/, p);
+            assert.match(read.content[0].text, /hidden or secret file/, p);
             assert.doesNotMatch(read.content[0].text, /sk-ant/);
-            assert.match((await call('write_file', { path: p, content: 'x' })).content[0].text, /hidden file or folder/, p);
-            assert.match((await call('delete_file', { path: p })).content[0].text, /hidden file or folder/, p);
+            assert.match((await call('write_file', { path: p, content: 'x' })).content[0].text, /hidden or secret file/, p);
+            assert.match((await call('delete_file', { path: p })).content[0].text, /hidden or secret file/, p);
         }
-        assert.match((await call('list_files', { path: '.github' })).content[0].text, /hidden file or folder/);
-        assert.match((await call('edit_file', { path: '.env', old_text: 'KEY', new_text: 'K' })).content[0].text, /hidden file or folder/);
+        assert.match((await call('list_files', { path: '.github' })).content[0].text, /hidden or secret file/);
+        assert.match((await call('edit_file', { path: '.env', old_text: 'KEY', new_text: 'K' })).content[0].text, /hidden or secret file/);
         assert.strictEqual((await sandbox.handleRequest('GET', '/agent/changes')).body.length, 0);
         assert.strictEqual(fs.readFileSync(path.join(project, '.env'), 'utf8'), 'KEY=sk-ant-not-a-real-key\n');
     } finally {
