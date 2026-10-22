@@ -15,5 +15,9 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     mcpFolder: () => ipcRenderer.invoke('codev:mcp-folder'),
     pickMcpFolder: () => ipcRenderer.invoke('codev:mcp-pick-folder'),
     // External MCP servers (stdio and remote), run by the main process's MCP hub.
-    mcpHub: req => ipcRenderer.invoke('codev:mcp-hub', req)
+    mcpHub: req => ipcRenderer.invoke('codev:mcp-hub', req),
+    // Sandboxed agent tools (JSON-RPC, like mcp) and the review routes server.js
+    // serves under /agent/: ({ method, path, body }) -> { status, body }.
+    sandboxMcp: message => ipcRenderer.invoke('codev:sandbox-mcp', message),
+    agentRequest: req => ipcRenderer.invoke('codev:agent-request', req)
 });

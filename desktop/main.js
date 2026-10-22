@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { createMcpTools } = require('./mcp-tools');
 const { createNodeMcpHub } = require('./mcp-hub');
+const { createSandbox } = require('./sandbox');
 const { pathToFileURL } = require('url');
 
 const WWW = path.join(__dirname, 'www');
@@ -61,6 +62,19 @@ app.whenReady().then(() => {
     const handleMcp = createMcpTools(getProjectDir);
     ipcMain.handle('codev:mcp', (_event, message) => handleMcp(message));
     ipcMain.handle('codev:mcp-folder', () => getProjectDir());
+
+    // Sandboxed agents: tools that work in a staging copy of the project, commands in
+    // per-agent Docker containers, and the review gate (the only path that writes
+    // agents' changes to the project folder, after the user approves the diff).
+    const sandbox = createSandbox({ getProjectDir, log: line => console.log(line) });
+    ipcMain.handle('codev:sandbox-mcp', (_event, message) => sandbox.handleMcp(message));
+    ipcMain.handle('codev:agent-request', async (_event, req) => {
+        const { method, path: urlPath, body } = req || {};
+        const url = new URL(String(urlPath || '/'), 'app://codev');
+        const reply = await sandbox.handleRequest(method, url.pathname, Object.fromEntries(url.searchParams), body);
+        return reply || { status: 404, body: { error: 'Not found' } };
+    });
+    app.on('before-quit', () => { sandbox.closeSync(); });
 
     // External MCP servers from Settings (stdio processes and remote URLs), through the official SDK.
     const mcpHub = createNodeMcpHub({
