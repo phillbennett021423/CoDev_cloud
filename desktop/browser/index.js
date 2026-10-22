@@ -1,12 +1,14 @@
 // The agents' headless browser, put together: one browser per agent
 // (browser-manager.js), the encrypted vault of saved logins and sessions
-// (credential-vault.js) and the tools agents call (browser-tools.js).
+// (credential-vault.js), the tools agents call (browser-tools.js) and the
+// user's live view of those browsers (live-view.js).
 // The Windows app uses it over IPC; server.js through agents/browser.
 const os = require('os');
 const path = require('path');
 const { createBrowserManager } = require('./browser-manager');
 const { createCredentialVault } = require('./credential-vault');
 const { createBrowserTools } = require('./browser-tools');
+const { createLiveView } = require('./live-view');
 
 // CoDev's own pages and the search/commands helper: an agent's browser must
 // never be able to reach them (they start programs and spend API keys).
@@ -21,7 +23,10 @@ function createBrowserService({ dataDir, profileRoot = path.join(os.tmpdir(), 'c
     getProjectDir, blockedOrigins = defaultBlockedOrigins(), log = console.log } = {}) {
     const manager = createBrowserManager({ profileRoot, blockedOrigins, log });
     const vault = createCredentialVault({ dir: dataDir, safeStorage, passphrase, log });
-    return createBrowserTools({ manager, vault, getProjectDir, screenshotDir: path.join(dataDir, 'browser-screenshots'), log });
+    const live = createLiveView({ manager, isBlockedUrl: url => manager.isBlocked(url), log });
+    const tools = createBrowserTools({ manager, vault, getProjectDir, screenshotDir: path.join(dataDir, 'browser-screenshots'),
+        isUserControlled: live.isUserControlled, log });
+    return { ...tools, live };
 }
 
 module.exports = { createBrowserService, defaultBlockedOrigins };

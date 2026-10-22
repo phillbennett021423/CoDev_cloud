@@ -21,5 +21,12 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     sandboxMcp: message => ipcRenderer.invoke('codev:sandbox-mcp', message),
     agentRequest: req => ipcRenderer.invoke('codev:agent-request', req),
     // Agents' headless browsers and the saved web logins (JSON-RPC, like mcp).
-    browserMcp: message => ipcRenderer.invoke('codev:browser-mcp', message)
+    browserMcp: message => ipcRenderer.invoke('codev:browser-mcp', message),
+    // Live view of those browsers: watch/unwatch/control, and the stream of frames and events.
+    browserLive: req => ipcRenderer.invoke('codev:browser-live', req),
+    onBrowserLive: callback => {
+        const listener = (_event, update) => callback(update);
+        ipcRenderer.on('codev:browser-live-event', listener);
+        return () => ipcRenderer.removeListener('codev:browser-live-event', listener);
+    }
 });

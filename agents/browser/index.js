@@ -37,6 +37,26 @@ function createService(config = {}, { log = console.log } = {}) {
             'POST /browser/vault': async (req, res, body) => {
                 const reply = await browser.vaultRequest(body || {});
                 sendJson(res, reply.error ? 400 : 200, reply);
+            },
+            // Live view as server-sent events: ?agent=<id> streams that browser, no agent just the list.
+            'GET /browser/live': (req, res) => {
+                const agentId = new URL(req.url, 'http://localhost').searchParams.get('agent') || '';
+                res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+                res.write('retry: 2000\n\n');
+                // A slow tab skips frames instead of piling them up; other events always go.
+                let backedUp = false;
+                res.on('drain', () => { backedUp = false; });
+                const stop = browser.live.subscribe(agentId, update => {
+                    if (update.type === 'frame' && backedUp) return;
+                    if (!res.write(`data: ${JSON.stringify(update)}\n\n`)) backedUp = true;
+                });
+                const heartbeat = setInterval(() => res.write(': ping\n\n'), 15000);
+                req.on('close', () => { clearInterval(heartbeat); stop(); });
+            },
+            'POST /browser/live/control': async (req, res, body) => {
+                try { sendJson(res, 200, await browser.live.control(body && body.agentId, (body && body.control) || {})); } catch (err) {
+                    sendJson(res, 400, { error: err.message });
+                }
             }
         },
         status: () => browser.status(),

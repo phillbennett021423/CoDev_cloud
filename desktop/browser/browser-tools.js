@@ -46,7 +46,8 @@ function sameSite(domain, host) {
     return h === d || h.endsWith(`.${d}`) || d.endsWith(`.${h}`);
 }
 
-function createBrowserTools({ manager, vault, getProjectDir = () => '', screenshotDir, log = console.log }) {
+// isUserControlled(agentId): true while the user drives that browser in the live view.
+function createBrowserTools({ manager, vault, getProjectDir = () => '', screenshotDir, isUserControlled = () => false, log = console.log }) {
     const pending = new Map();
 
     function checkUrl(raw) {
@@ -346,9 +347,14 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
         return failure(`${err && err.name || 'Error'}: ${firstLines(err && err.message)}`);
     }
 
+    function userHasControl() {
+        return failure('The user has taken over your browser in the live view. Wait for them to hand it back, then try again, or ask them what they want.');
+    }
+
     async function callTool(name, args = {}, ctx = context()) {
         const tool = TOOLS.find(t => t.name === name);
         if (!tool) return failure(`Unknown tool: ${name}`);
+        if (name !== 'browser_list_credentials' && isUserControlled(ctx.agentId)) return userHasControl();
         try {
             if (!tool.prepare) return await tool.run(args || {}, ctx);
             const { prompt, run } = await tool.prepare(args || {}, ctx);
@@ -367,6 +373,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
         const entry = pending.get(String(id || ''));
         pending.delete(String(id || ''));
         if (!entry || entry.expires < Date.now()) return failure('That approval request expired. Call the tool again.');
+        if (approved && isUserControlled(entry.agentId)) return userHasControl();
         if (!approved) {
             log(`[Browser] The user declined ${entry.tool} for ${entry.agentId}.`);
             return text('The user declined this. Do not try to get around it; ask the user what to do instead.');
