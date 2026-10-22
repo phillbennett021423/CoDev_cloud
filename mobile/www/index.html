@@ -3554,7 +3554,8 @@
 6. CITATIONS: When a statement relies on a web snippet, cite it inline as [n] using that snippet's number. Never cite a source that was not provided. Workspace files are cited by file name.
 7. TOOLS: When tools are available, use them on your own initiative. Call web_search before answering about any API, library, engine feature, syntax, version or error message you are not certain about, and for any code implementation that is unfamiliar. Call list_workspace_files and read_workspace_file (or list_files and read_file) to check the user's real code instead of assuming. When the user asks you to change, create, run or test code and file or command tools (write_workspace_file, write_file, edit_file, run_command, run_approved_command) are available, do it with those tools directly instead of only showing code, then verify by reading the file back or running it. Never claim you searched, read, ran or verified something unless a tool result in this conversation shows it.`;
             
-            const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}\n\n${RESPONSE_LENGTHS[responseLength].hint}`;
+            const responseStyle = `RESPONSE STYLE: Write like an automation runner. Lead with the result, then break the work into short numbered execution steps, mark each step with its outcome (Done, Skipped or Blocked), and put code in fenced blocks tagged with the language and file name. Skip greetings, filler, apologies and restating the request. Scale the number of steps and the detail to the response length below.`;
+            const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}\n\n${responseStyle}\n${RESPONSE_LENGTHS[responseLength].hint}`;
             const images = options.images || [];
 
             if (images.length === 0) {
