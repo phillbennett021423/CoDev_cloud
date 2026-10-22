@@ -214,7 +214,10 @@ function createStaging({ getProjectDir, root, limits = {} } = {}) {
     // no agent has touched yet.
     function readPath(ws, rel) {
         const work = containedPath(ws.work, rel);
-        if (!ws.lazy || ws.touched.has(toRel(ws.work, work))) return work;
+        const key = toRel(ws.work, work);
+        if (!ws.lazy || ws.touched.has(key)) return work;
+        // CoDev's own data (other sandboxes' copies) isn't part of the project.
+        if (key.split('/').includes('.codev')) throw new StagingError(`'${rel}' is CoDev's own data, not part of the project`);
         return containedPath(ws.projectDir, rel);
     }
 
@@ -225,6 +228,7 @@ function createStaging({ getProjectDir, root, limits = {} } = {}) {
         const key = toRel(ws.work, work);
         if (!ws.lazy || ws.touched.has(key)) return work;
         if (!key) throw new StagingError(`'${rel}' is the project folder, not a file`);
+        if (key.split('/').includes('.codev')) throw new StagingError(`'${rel}' is CoDev's own data, not part of the project`);
         const realFile = containedPath(ws.projectDir, rel);
         let stat = null;
         try { stat = fs.lstatSync(realFile); } catch { /* a new file */ }
