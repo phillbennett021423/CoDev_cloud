@@ -141,6 +141,18 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
         try { await cdp.send('Page.startScreencast', SCREENCAST); } catch (err) { log(`[Live] ${err.message}`); }
     }
 
+    // The screencast only sends a frame when the page repaints, so a viewer who opens
+    // a page that has already loaded gets the current picture this way.
+    async function sendSnapshot(agentId) {
+        const cast = casts.get(agentId);
+        if (!cast || cast.page.isClosed()) return;
+        try {
+            const { cssLayoutViewport: viewport } = await cast.cdp.send('Page.getLayoutMetrics');
+            const { data } = await cast.cdp.send('Page.captureScreenshot', { format: 'jpeg', quality: SCREENCAST.quality });
+            send(agentId, { type: 'frame', data, width: viewport.clientWidth, height: viewport.clientHeight, url: cast.page.isClosed() ? '' : cast.page.url() });
+        } catch { /* page closed or navigating; the screencast sends the next frame */ }
+    }
+
     manager.events.on('open', session => {
         wireSession(session);
         startCast(session.agentId);
@@ -168,7 +180,7 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
         const session = manager.peek(agentId);
         listener({ type: 'state', agentId, open: !!session, userControl: !!(session && session.userControl) });
         for (const event of backlogs.get(agentId) || []) listener({ ...event, backlog: true });
-        startCast(agentId);
+        startCast(agentId).then(() => sendSnapshot(agentId));
         return () => {
             set.delete(listener);
             if (!set.size) { watchers.delete(agentId); stopCast(agentId); }

@@ -309,10 +309,41 @@ test('a headless browser verification task checks the saved page', async t => {
         const image = (shot.content || []).find(c => c.type === 'image');
         assert.ok(image, `screenshot content: ${JSON.stringify(shot.content).slice(0, 200)}`);
         assert.equal(Buffer.from(image.data, 'base64').subarray(1, 4).toString(), 'PNG');
+        // A live viewer who opens the page after it has finished loading and gone still
+        // (nothing focused, so no blinking caret repaints it) still sees it.
+        assert.equal((await tool('browser_navigate', { url }, agent)).isError, false);
+        await new Promise(r => setTimeout(r, 1500));
+        const frame = await firstLiveFrame(ctx.server.url, agent);
+        assert.equal(frame.url, url);
+        assert.ok(frame.width > 0 && frame.data.length > 100, 'the live view sent a picture');
     } finally {
         await tool('browser_close', {}, agent).catch(() => {});
     }
 });
+
+// The first frame /browser/live sends for an agent, as CoDev's page would receive it.
+async function firstLiveFrame(base, agentId, timeout = 10000) {
+    const res = await fetch(`${base}/browser/live?agent=${encodeURIComponent(agentId)}`, { signal: AbortSignal.timeout(timeout) });
+    assert.equal(res.status, 200);
+    const decoder = new TextDecoder();
+    let buffered = '';
+    try {
+        for await (const chunk of res.body) {
+            buffered += decoder.decode(chunk, { stream: true });
+            let end;
+            while ((end = buffered.indexOf('\n\n')) >= 0) {
+                const event = buffered.slice(0, end);
+                buffered = buffered.slice(end + 2);
+                if (!event.startsWith('data: ')) continue;
+                const update = JSON.parse(event.slice(6));
+                if (update.type === 'frame') return update;
+            }
+        }
+    } finally {
+        res.body.cancel().catch(() => {});
+    }
+    throw new Error('the live view stream ended without a frame');
+}
 
 const GREETER_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><title>Greeter</title></head>
