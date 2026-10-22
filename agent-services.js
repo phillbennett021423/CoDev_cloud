@@ -8,7 +8,7 @@
 //     callTool(name, args, ctx) -> MCP CallToolResult,
 //     handleRequest?(method, pathname, query, body) -> { status, body } | null,
 //     routes?: { 'POST /path': async (req, res, body) => reply },
-//     status() -> { available, detail }, close() }
+//     status() -> { available, detail } (or a promise of it), close() }
 // handleRequest gets the page's REST calls under /agent/ (null = not mine);
 // routes are exact paths. Both are for the page only, never for agents.
 // with ctx = { agentId, agentName, workspace, meta } from the call's _meta
@@ -128,10 +128,11 @@ function createRouter(services, skipped, log) {
         return null;
     }
 
-    function status() {
+    // status() may be async (the sandbox re-checks Docker each time).
+    async function status() {
         const report = {};
         for (const service of services) {
-            try { report[service.name] = service.status ? service.status() : { available: true, detail: '' }; } catch (err) {
+            try { report[service.name] = service.status ? await service.status() : { available: true, detail: '' }; } catch (err) {
                 report[service.name] = { available: false, detail: err.message };
             }
         }

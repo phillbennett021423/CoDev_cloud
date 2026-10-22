@@ -138,7 +138,7 @@ async function handleServiceRoute(req, res, url) {
 // What is on, for the page and for anyone debugging: never key values.
 async function agentStatus() {
     const router = await agentServices;
-    const services = router ? router.status() : {};
+    const services = router ? await router.status() : {};
     const browser = services.browser || { available: false, detail: 'not installed' };
     return {
         docker: { available: config.docker.available, version: config.docker.version, ...(config.docker.available ? {} : { error: config.docker.detail }) },
@@ -240,10 +240,10 @@ server.listen(PORT, '127.0.0.1', () => {
     OWN_ORIGINS = [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
     console.log(`CoDev Studio is running at http://localhost:${port} (Ctrl+C to stop)`);
     describeConfig(config).forEach(line => console.log(`  ${line}`));
-    agentServices.then(router => {
+    agentServices.then(async router => {
         if (!router) return;
         console.log(`  ${config.docker.detail}`);
-        for (const [name, state] of Object.entries(router.status())) console.log(`  Agent ${name}: ${state.available ? 'on' : 'off'}${state.detail ? ` - ${state.detail}` : ''}`);
+        for (const [name, state] of Object.entries(await router.status())) console.log(`  Agent ${name}: ${state.available ? 'on' : 'off'}${state.detail ? ` - ${state.detail}` : ''}`);
     });
 });
 
