@@ -25,6 +25,8 @@
 //   files: [{ path, status, additions, deletions, diff, checks: [{name, ok, skipped?, message}] }] }
 //
 // The same file runs in the page and in Node (tests), like mcp/mcp-hub-core.js.
+// It lives in agent-ui/, not agent/, because server.js sends every /agent/ path to
+// the agent services.
 (function (root, factory) {
     if (typeof module === "object" && module.exports) module.exports = factory();
     else root.CodevAgentClient = factory();

@@ -846,8 +846,8 @@
         </div>
     </div>
 
-    <script src="agent/agent-client.js"></script>
-    <script src="agent/diff-review.js"></script>
+    <script src="agent-ui/agent-client.js"></script>
+    <script src="agent-ui/diff-review.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
         // text boxes stop taking clicks and typing until the window is refocused.
@@ -4090,10 +4090,10 @@
         // AGENT SANDBOX & DIFF REVIEW
         // With 🧪 Sandbox on, each agent in a task works in its own Docker container on
         // a staging copy of the project (desktop/sandbox, reached through server.js or
-        // the Windows app; see agent/agent-client.js). Agents in one task share that
+        // the Windows app; see agent-ui/agent-client.js). Agents in one task share that
         // copy, so a Group Swarm and the Self-Healing pass build on each other's edits.
         // Nothing reaches the real project until the user approves the diff in the
-        // review screen (agent/diff-review.js), and files whose syntax check failed
+        // review screen (agent-ui/diff-review.js), and files whose syntax check failed
         // can't be approved. Without Docker the staging and review still work; only
         // run_command is missing. Android and the web have no sandbox.
         const agentInfra = { client: null, status: null, error: "" };
