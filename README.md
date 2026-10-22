@@ -60,6 +60,18 @@ Every message is treated as a task on your project. You don't type file paths or
 | Desktop Chrome/Edge via `npm start` | 📁 Connect Local Folder (sub-folders included) | saved to disk | only with the helper |
 | Android app | files picked in Project Files | kept in CoDev; Save copies them | no |
 
+## Agent sandboxes and change review
+
+On a computer (the Windows app, or `server.js`), agents can work in a sandbox instead of on the project folder itself. The code is in `desktop/sandbox/`.
+
+- **Staging copy.** Each sandbox is a copy of the project (without `.git`, `node_modules`, `build`, `dist` and the like) in a temporary folder. Agents' `write_file`, `edit_file` and `delete_file` change only that copy.
+- **A container per agent.** `run_command` runs inside the agent's own Docker container, which sees only the staging copy, mounted at `/workspace`. Containers have no network (unless allowed), no Linux capabilities, a read-only system, 2 GB of memory, 2 CPUs and at most 256 processes. They're removed when the review is done, after 15 idle minutes, and when CoDev closes. The default image is `node:22-bookworm-slim`; set `CODEV_SANDBOX_IMAGE` (for example `python:3.12-slim`) or `CODEV_SANDBOX_NETWORK=bridge` to change that.
+- **Review before anything reaches the disk.** CoDev shows the changes as a git diff, file by file, with a syntax check for each: JSON is parsed, JavaScript goes through `node --check`, the inline scripts of HTML pages too, and Python through `ast.parse`. Nothing is executed for the check. You approve or reject files; a file whose check failed can't be approved. A file is also held back if it changed in the sandbox after you reviewed it, or if you changed it on disk since the agent started.
+
+Without Docker, the staging copy and the review still work, but agents can't run commands in the sandbox; the status says whether Docker is missing or just not running. The Android app and the web version have no sandbox, since a phone or a browser tab can't run Docker.
+
+Tests: `node --test desktop/sandbox/test/sandbox.test.js` (the container tests run when Docker is running).
+
 ## Anthropic API key
 
 `server.js` reads the key only from the `ANTHROPIC_API_KEY` environment variable at startup; never paste it into the code. Either:
