@@ -99,35 +99,101 @@
         .agent-meta { font-size: 0.75rem; color: var(--accent); }
         .agent-instructions-preview { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-        /* Geometric agent micro-avatars: one SVG per card, driven by data-state (idle | thinking | active | success). */
+        /* Geometric agent micro-avatars in a shared friendly-robot style: a glossy beveled pastel frame around a
+           glowing inner panel with the face on it. Driven by data-state (idle | thinking | active | success).
+           The float group bobs, the shape group squashes from its base, and the face rides along inside both. */
         .agent-identity { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-        .agent-avatar { width: 36px; height: 36px; flex-shrink: 0; overflow: visible; --avatar-color: var(--accent); color: var(--avatar-color); }
+        .agent-avatar { width: 40px; height: 44px; flex-shrink: 0; overflow: visible; --avatar-color: var(--shape-color, #cdbcff); --avatar-glow: var(--shape-glow, #f1ebff); --avatar-ink: #3b3355; }
         .agent-avatar * { transform-box: fill-box; transform-origin: center; }
-        .agent-avatar .avatar-body { fill: var(--avatar-color); fill-opacity: 0.22; stroke: var(--avatar-color); stroke-width: 2; stroke-linejoin: round; transition: fill 0.3s, stroke 0.3s; }
-        .agent-avatar .avatar-eye { fill: var(--text-main); }
-        .agent-avatar .avatar-mouth { fill: none; stroke: var(--text-main); stroke-width: 2; stroke-linecap: round; }
-        .agent-avatar .avatar-smile { stroke-dasharray: 16; stroke-dashoffset: 16; opacity: 0; }
-        .agent-avatar[data-state="idle"] .avatar-shape { animation: avatarBreathe 3.2s ease-in-out infinite; }
-        .agent-avatar[data-state="thinking"] .avatar-shape { animation: avatarWobble 1.6s ease-in-out infinite; }
-        .agent-avatar[data-state="thinking"] .avatar-body { animation: avatarPulseFill 1.6s ease-in-out infinite; }
-        .agent-avatar[data-state="thinking"] .avatar-eye { animation: avatarBlink 1.1s ease-in-out infinite; }
-        .agent-avatar[data-state="thinking"] .avatar-eye + .avatar-eye { animation-delay: 0.05s; }
-        .agent-avatar[data-state="active"] .avatar-shape { animation: avatarPulse 0.9s ease-in-out infinite; }
-        .agent-avatar[data-state="active"] .avatar-body { filter: drop-shadow(0 0 4px var(--avatar-color)); }
-        .agent-avatar[data-state="success"] { --avatar-color: var(--success); }
-        .agent-avatar[data-state="success"] .avatar-shape { animation: avatarPop 0.5s cubic-bezier(.34,1.56,.64,1) both; }
-        .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-neutral { opacity: 0; }
-        .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-smile { animation: avatarSmileDraw 0.4s ease-out forwards; }
-        @keyframes avatarBreathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
-        @keyframes avatarWobble { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-6deg); } 75% { transform: rotate(6deg); } }
-        @keyframes avatarPulseFill { 0%, 100% { fill-opacity: 0.22; } 50% { fill-opacity: 0.5; } }
-        @keyframes avatarBlink { 0%, 40%, 60%, 100% { transform: scaleY(1); } 50% { transform: scaleY(0.1); } }
-        @keyframes avatarPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
-        @keyframes avatarPop { 0% { transform: scale(0.8); } 100% { transform: scale(1); } }
-        @keyframes avatarSmileDraw { from { stroke-dashoffset: 16; opacity: 1; } to { stroke-dashoffset: 0; opacity: 1; } }
+        .agent-avatar .avatar-shape { transform-origin: 50% 100%; }
+        /* These carry SVG transform attributes written around user-space points, so they keep the SVG default origin. */
+        .agent-avatar :is(.avatar-face, .avatar-gloss) { transform-box: view-box; transform-origin: 0 0; }
+        .agent-avatar .avatar-frame { fill: var(--avatar-color); stroke: var(--avatar-color); stroke-width: 3; stroke-linejoin: round; transition: fill 0.4s, stroke 0.4s, filter 0.4s; }
+        .agent-avatar .avatar-bevel { fill: url(#codevAvatarBevel); stroke: url(#codevAvatarBevel); stroke-width: 3; stroke-linejoin: round; }
+        .agent-avatar .avatar-panel { fill: var(--avatar-glow); stroke: #fff; stroke-opacity: 0.7; stroke-width: 0.8; stroke-linejoin: round; filter: drop-shadow(0 0 1.6px var(--avatar-glow)); transition: fill 0.4s; }
+        .agent-avatar .avatar-panel-sheen { fill: url(#codevAvatarPanelSheen); }
+        .agent-avatar .avatar-gloss { fill: #fff; opacity: 0.75; }
+        .agent-avatar .avatar-shadow { fill: #000; opacity: 0.25; }
+        .agent-avatar .avatar-sclera { fill: #fff; }
+        .agent-avatar .avatar-iris { fill: #4656b0; }
+        .agent-avatar .avatar-pupil { fill: #1f2356; }
+        .agent-avatar .avatar-eye-shine { fill: #fff; }
+        /* Eyes follow the pointer or touch: --look-x/--look-y are set per avatar by trackAvatarGaze(). */
+        .agent-avatar .avatar-look { transform: translate(var(--look-x, 0px), var(--look-y, 0px)); transition: transform 0.25s ease-out; }
+        .agent-avatar .avatar-brow { transition: transform 0.3s ease-out; }
+        .agent-avatar[data-state="success"] .avatar-brow { transform: translateY(-0.9px); }
+        .agent-avatar .avatar-line { fill: none; stroke: var(--avatar-ink); stroke-width: 1.3; stroke-linecap: round; }
+        .agent-avatar .avatar-brow { fill: none; stroke: #7d6aa6; stroke-width: 1.1; stroke-linecap: round; }
+        .agent-avatar .avatar-cheek { fill: #ff8fab; opacity: 0.5; }
+        .agent-avatar .avatar-mouth-inside { fill: #5a2a4a; }
+        .agent-avatar .avatar-teeth { fill: #fff; }
+        .agent-avatar .avatar-tongue { fill: #ff7f9e; }
+        .agent-avatar .avatar-sparkle { fill: #fff6b8; opacity: 0; }
+        .agent-avatar .avatar-node { fill: var(--avatar-glow); opacity: 0; filter: drop-shadow(0 0 1.5px var(--avatar-color)); }
+        .agent-avatar :is(.avatar-eye-l, .avatar-eye-r, .avatar-wink, .avatar-happy, .avatar-mouth-closed, .avatar-mouth-open) { transition: opacity 0.2s; }
+
+        /* Which face parts show in each state: idle winks, thinking and active look with both eyes,
+           success closes both into happy arcs; active and success open the smile. */
+        .agent-avatar .avatar-eye-r, .agent-avatar .avatar-happy, .agent-avatar .avatar-mouth-open { opacity: 0; }
+        .agent-avatar:is([data-state="thinking"], [data-state="active"]) .avatar-eye-r { opacity: 1; }
+        .agent-avatar:is([data-state="thinking"], [data-state="active"]) .avatar-wink { opacity: 0; }
+        .agent-avatar[data-state="success"] :is(.avatar-eye-l, .avatar-wink) { opacity: 0; }
+        .agent-avatar[data-state="success"] .avatar-happy { opacity: 1; }
+        .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-mouth-closed { opacity: 0; }
+        .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-mouth-open { opacity: 1; animation: avatarMouthPop 0.35s cubic-bezier(.34,1.56,.64,1) both; }
+        .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-cheek { opacity: 0.75; }
+
+        /* idle: slow float, breathing frame with a soft brightness shift, the open eye blinks now and then */
+        .agent-avatar[data-state="idle"] .avatar-float { animation: avatarFloat 3s ease-in-out infinite; }
+        .agent-avatar[data-state="idle"] .avatar-shadow { animation: avatarShadow 3s ease-in-out infinite; }
+        .agent-avatar[data-state="idle"] .avatar-shape { animation: avatarBreathe 3s ease-in-out infinite; }
+        .agent-avatar:is([data-state="idle"], [data-state="thinking"]) .avatar-frame { animation: avatarBreatheShift 3s ease-in-out infinite; }
+        .agent-avatar[data-state="idle"] .avatar-eye-l { animation: avatarIdleBlink 4.5s ease-in-out infinite; }
+        /* thinking: quicker float, gentle sway, glowing blinking eyes, brows bob, nodes pulse */
+        .agent-avatar[data-state="thinking"] .avatar-float { animation: avatarFloat 1.6s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-shadow { animation: avatarShadow 1.6s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-shape { animation: avatarSway 2.4s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] :is(.avatar-eye-l, .avatar-eye-r) { animation: avatarGlowBlink 1.2s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-eye-r { animation-delay: 0.06s; }
+        .agent-avatar[data-state="thinking"] .avatar-brow { animation: avatarBrowBob 1.2s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-node { animation: avatarNodePulse 1.2s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-node:nth-of-type(2) { animation-delay: 0.2s; }
+        .agent-avatar[data-state="thinking"] .avatar-node:nth-of-type(3) { animation-delay: 0.4s; }
+        /* active: bouncy hop with squash and stretch, soft glow, nodes pulse faster */
+        .agent-avatar[data-state="active"] .avatar-float { animation: avatarHop 0.7s cubic-bezier(.3,.7,.4,1) infinite; }
+        .agent-avatar[data-state="active"] .avatar-shadow { animation: avatarShadow 0.7s cubic-bezier(.3,.7,.4,1) infinite; }
+        .agent-avatar[data-state="active"] .avatar-shape { animation: avatarSquash 0.7s cubic-bezier(.3,.7,.4,1) infinite; }
+        .agent-avatar[data-state="active"] .avatar-frame { filter: drop-shadow(0 0 3px var(--avatar-glow)); }
+        .agent-avatar[data-state="active"] .avatar-node { animation: avatarNodePulse 0.7s ease-in-out infinite; }
+        .agent-avatar[data-state="active"] .avatar-node:nth-of-type(2) { animation-delay: 0.12s; }
+        .agent-avatar[data-state="active"] .avatar-node:nth-of-type(3) { animation-delay: 0.24s; }
+        /* success: turns mint, does a happy jump, sparkles twinkle */
+        .agent-avatar[data-state="success"] { --avatar-color: #a9eebd; --avatar-glow: #e6fff0; }
+        .agent-avatar[data-state="success"] .avatar-float { animation: avatarJoy 0.8s cubic-bezier(.34,1.56,.64,1) both, avatarFloat 3s 0.8s ease-in-out infinite; }
+        .agent-avatar[data-state="success"] .avatar-frame { filter: drop-shadow(0 0 4px var(--avatar-glow)); }
+        .agent-avatar[data-state="success"] .avatar-sparkle { animation: avatarTwinkle 1.2s ease-in-out infinite; }
+        .agent-avatar[data-state="success"] .avatar-sparkle + .avatar-sparkle { animation-delay: 0.4s; }
+
+        @keyframes avatarFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2.5px); } }
+        @keyframes avatarShadow { 0%, 100% { transform: scaleX(1); opacity: 0.25; } 50% { transform: scaleX(0.75); opacity: 0.15; } }
+        @keyframes avatarBreathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.03, 0.97); } }
+        @keyframes avatarBreatheShift { 0%, 100% { filter: brightness(1) saturate(1); } 50% { filter: brightness(1.07) saturate(1.15); } }
+        @keyframes avatarIdleBlink { 0%, 90%, 100% { transform: scaleY(1); } 94% { transform: scaleY(0.1); } }
+        @keyframes avatarGlowBlink {
+            0%, 35%, 65%, 100% { transform: scaleY(1); filter: drop-shadow(0 0 1.2px #fff) drop-shadow(0 0 2.5px var(--avatar-color)); }
+            50% { transform: scaleY(0.1); filter: drop-shadow(0 0 0 transparent); }
+        }
+        @keyframes avatarBrowBob { 0%, 100% { transform: translateY(-0.4px); } 50% { transform: translateY(-1.2px); } }
+        @keyframes avatarNodePulse { 0%, 100% { opacity: 0.25; transform: scale(0.6); } 50% { opacity: 1; transform: scale(1.15); } }
+        @keyframes avatarSway { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(5deg); } }
+        @keyframes avatarHop { 0%, 100% { transform: translateY(0); } 45% { transform: translateY(-4px); } }
+        @keyframes avatarSquash { 0%, 100% { transform: scale(1.1, 0.9); } 20% { transform: scale(0.94, 1.06); } 45% { transform: scale(1, 1); } 85% { transform: scale(1.04, 0.96); } }
+        @keyframes avatarJoy { 0% { transform: translateY(0) scale(0.85); } 40% { transform: translateY(-6px) scale(1.08); } 70% { transform: translateY(0) scale(0.96); } 100% { transform: translateY(0) scale(1); } }
+        @keyframes avatarTwinkle { 0%, 100% { opacity: 0; transform: scale(0.3) rotate(0deg); } 50% { opacity: 1; transform: scale(1) rotate(45deg); } }
+        @keyframes avatarMouthPop { from { transform: scale(0.4); } to { transform: scale(1); } }
         @media (prefers-reduced-motion: reduce) {
-            .agent-avatar .avatar-shape, .agent-avatar .avatar-body, .agent-avatar .avatar-eye { animation: none !important; }
-            .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-smile { animation: none; stroke-dashoffset: 0; opacity: 1; }
+            .agent-avatar * { animation: none !important; }
+            .agent-avatar:is([data-state="thinking"], [data-state="active"]) .avatar-node { opacity: 0.8; }
         }
 
         /* Center Content Views */
@@ -347,6 +413,21 @@
     </style>
 </head>
 <body>
+    <!-- Shared gradients for the agent avatars. Not display:none, which would stop url(#...) from resolving. -->
+    <svg width="0" height="0" style="position: absolute;" aria-hidden="true" focusable="false">
+        <defs>
+            <linearGradient id="codevAvatarBevel" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#fff" stop-opacity="0.6"/>
+                <stop offset="0.45" stop-color="#fff" stop-opacity="0"/>
+                <stop offset="1" stop-color="#2a1f4a" stop-opacity="0.22"/>
+            </linearGradient>
+            <radialGradient id="codevAvatarPanelSheen" cx="0.4" cy="0.3" r="0.75">
+                <stop offset="0" stop-color="#fff" stop-opacity="0.7"/>
+                <stop offset="0.6" stop-color="#fff" stop-opacity="0.1"/>
+                <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+            </radialGradient>
+        </defs>
+    </svg>
 
     <header>
         <div class="header-left">
@@ -3190,12 +3271,49 @@
 
         // Geometric micro-avatars. Each agent gets a shape from its id; its face follows the
         // agent's live state (idle, thinking, active, success), which is not saved.
+        // Every shape is a frame around an inset panel, both centered on (20, 21) and 29 units across,
+        // so the four read as one family. The face is drawn once and placed on the panel by faceTransform.
         const AVATAR_SHAPES = {
-            circle:   { color: "var(--accent)",       faceY: 0, body: '<circle class="avatar-body" cx="20" cy="20" r="17"/>' },
-            triangle: { color: "var(--warning)",      faceY: 6, body: '<polygon class="avatar-body" points="20,3 37,35 3,35"/>' },
-            square:   { color: "var(--codev-purple)", faceY: 0, body: '<rect class="avatar-body" x="4" y="4" width="32" height="32" rx="6"/>' },
-            hexagon:  { color: "var(--codev-blue)",   faceY: 0, body: '<polygon class="avatar-body" points="20,3 35,11.5 35,28.5 20,37 5,28.5 5,11.5"/>' }
+            circle: {
+                color: "#9fd8ff", glow: "#e3f4ff", gloss: [12.5, 12],
+                frame: ["circle", 'cx="20" cy="21" r="14.5"'],
+                panel: ["circle", 'cx="20" cy="21" r="10.5"'],
+                faceTransform: ""
+            },
+            triangle: {
+                color: "#ffc6a8", glow: "#fff0e6", gloss: [17.2, 11.5],
+                frame: ["polygon", 'points="20,6 35,34 5,34"'],
+                panel: ["polygon", 'points="20,13 30.5,31 9.5,31"'],
+                faceTransform: "translate(20 25.4) scale(0.68) translate(-20 -21)"
+            },
+            square: {
+                color: "#e3b8f5", glow: "#fbefff", gloss: [9.5, 10.5],
+                frame: ["rect", 'x="5.5" y="6.5" width="29" height="29" rx="8"'],
+                panel: ["rect", 'x="9.5" y="10.5" width="21" height="21" rx="5"'],
+                faceTransform: ""
+            },
+            hexagon: {
+                color: "#bfc4ff", glow: "#eef0ff", gloss: [12.5, 12.5],
+                frame: ["polygon", 'points="20,6.5 32.6,13.75 32.6,28.25 20,35.5 7.4,28.25 7.4,13.75"'],
+                panel: ["polygon", 'points="20,10.5 29.1,15.75 29.1,26.25 20,31.5 10.9,26.25 10.9,15.75"'],
+                faceTransform: ""
+            }
         };
+        const AVATAR_FACE = `
+            <path class="avatar-brow" d="M13.3 15.8 Q15.5 14.4 17.7 15.5"/>
+            <path class="avatar-brow" d="M22.3 15.5 Q24.5 14.4 26.7 15.8"/>
+            <g class="avatar-eye-l"><ellipse class="avatar-sclera" cx="15.5" cy="19.6" rx="2.9" ry="3.2"/><g class="avatar-look"><ellipse class="avatar-iris" cx="15.7" cy="19.9" rx="2.2" ry="2.5"/><circle class="avatar-pupil" cx="15.8" cy="20.1" r="1.1"/><circle class="avatar-eye-shine" cx="16.6" cy="18.8" r="0.85"/></g></g>
+            <g class="avatar-eye-r"><ellipse class="avatar-sclera" cx="24.5" cy="19.6" rx="2.9" ry="3.2"/><g class="avatar-look"><ellipse class="avatar-iris" cx="24.3" cy="19.9" rx="2.2" ry="2.5"/><circle class="avatar-pupil" cx="24.2" cy="20.1" r="1.1"/><circle class="avatar-eye-shine" cx="25.1" cy="18.8" r="0.85"/></g></g>
+            <path class="avatar-line avatar-wink" d="M22.4 20.6 Q24.5 17.8 26.6 20.6"/>
+            <g class="avatar-happy"><path class="avatar-line" d="M13.4 20.6 Q15.5 17.8 17.6 20.6"/><path class="avatar-line" d="M22.4 20.6 Q24.5 17.8 26.6 20.6"/></g>
+            <ellipse class="avatar-cheek" cx="12.4" cy="23.6" rx="2.2" ry="1.3"/>
+            <ellipse class="avatar-cheek" cx="27.6" cy="23.6" rx="2.2" ry="1.3"/>
+            <path class="avatar-line avatar-mouth-closed" d="M16.8 24.2 Q20 27.2 23.2 24.2"/>
+            <g class="avatar-mouth-open">
+                <path class="avatar-mouth-inside" d="M16.4 23.8 Q20 23.2 23.6 23.8 Q23.2 28.8 20 28.8 Q16.8 28.8 16.4 23.8 Z"/>
+                <path class="avatar-teeth" d="M17.1 24 Q20 23.5 22.9 24 L22.7 25 Q20 25.5 17.3 25 Z"/>
+                <ellipse class="avatar-tongue" cx="20" cy="27.6" rx="1.9" ry="1"/>
+            </g>`;
         const AVATAR_STATES = ["idle", "thinking", "active", "success"];
         const agentStates = {};
         const agentStateTimers = {};
@@ -3211,16 +3329,26 @@
         function renderAgentAvatar(agent) {
             const shape = AVATAR_SHAPES[agentAvatarShape(agent)];
             const state = agentStates[agent.id] || "idle";
+            const [frameTag, frameAttrs] = shape.frame;
+            const [panelTag, panelAttrs] = shape.panel;
+            const [gx, gy] = shape.gloss;
             return `
-                <svg class="agent-avatar" viewBox="0 0 40 40" data-agent-id="${escapeHtml(agent.id)}" data-state="${state}" style="--avatar-color: ${shape.color};" aria-label="${escapeHtml(agent.name)} is ${state}" role="img">
-                    <g class="avatar-shape">
-                        ${shape.body}
-                        <g transform="translate(0 ${shape.faceY})">
-                            <ellipse class="avatar-eye" cx="14.5" cy="17" rx="2.4" ry="2.8"/>
-                            <ellipse class="avatar-eye" cx="25.5" cy="17" rx="2.4" ry="2.8"/>
-                            <path class="avatar-mouth avatar-neutral" d="M16 25 H24"/>
-                            <path class="avatar-mouth avatar-smile" d="M14.5 23.5 Q20 29.5 25.5 23.5"/>
+                <svg class="agent-avatar" viewBox="0 0 40 44" data-agent-id="${escapeHtml(agent.id)}" data-state="${state}" style="--shape-color: ${shape.color}; --shape-glow: ${shape.glow};" aria-label="${escapeHtml(agent.name)} is ${state}" role="img">
+                    <ellipse class="avatar-shadow" cx="20" cy="41.5" rx="11" ry="1.8"/>
+                    <g class="avatar-float">
+                        <g class="avatar-shape">
+                            <${frameTag} class="avatar-frame" ${frameAttrs}/>
+                            <${frameTag} class="avatar-bevel" ${frameAttrs}/>
+                            <${panelTag} class="avatar-panel" ${panelAttrs}/>
+                            <${panelTag} class="avatar-panel-sheen" ${panelAttrs}/>
+                            <ellipse class="avatar-gloss" cx="${gx}" cy="${gy}" rx="2" ry="1.1" transform="rotate(-35 ${gx} ${gy})"/>
+                            <g class="avatar-face" transform="${shape.faceTransform}">${AVATAR_FACE}</g>
                         </g>
+                        <circle class="avatar-node" cx="14" cy="1.5" r="1.3"/>
+                        <circle class="avatar-node" cx="20" cy="0" r="1.3"/>
+                        <circle class="avatar-node" cx="26" cy="1.5" r="1.3"/>
+                        <path class="avatar-sparkle" d="M35 4 L36 7 L39 8 L36 9 L35 12 L34 9 L31 8 L34 7 Z"/>
+                        <path class="avatar-sparkle" d="M5 2 L5.7 4.3 L8 5 L5.7 5.7 L5 8 L4.3 5.7 L2 5 L4.3 4.3 Z"/>
                     </g>
                 </svg>`;
         }
@@ -3242,6 +3370,43 @@
                 playCompletionChime();
                 agentStateTimers[agentId] = setTimeout(() => setAgentState(agentId, "idle"), 2500);
             }
+        }
+
+        // Gaze tracking: each avatar's pupils lean toward the last pointer or touch position, up to
+        // about one unit, and drift back to center after a few quiet seconds. Updates run once per frame.
+        const AVATAR_LOOK_MAX = 0.9;
+        let avatarGazePoint = null;
+        let avatarGazeFrame = 0;
+        let avatarGazeResetTimer = null;
+
+        function applyAvatarGaze() {
+            avatarGazeFrame = 0;
+            document.querySelectorAll(".agent-avatar").forEach(svg => {
+                let x = 0, y = 0;
+                const box = svg.getBoundingClientRect();
+                if (avatarGazePoint && box.width) {
+                    const dx = avatarGazePoint.x - (box.left + box.width / 2);
+                    const dy = avatarGazePoint.y - (box.top + box.height / 2);
+                    const dist = Math.hypot(dx, dy) || 1;
+                    const reach = Math.min(1, dist / 120);
+                    x = (dx / dist) * reach * AVATAR_LOOK_MAX;
+                    y = (dy / dist) * reach * AVATAR_LOOK_MAX;
+                }
+                svg.style.setProperty("--look-x", `${x.toFixed(2)}px`);
+                svg.style.setProperty("--look-y", `${y.toFixed(2)}px`);
+            });
+        }
+
+        function trackAvatarGaze(event) {
+            avatarGazePoint = { x: event.clientX, y: event.clientY };
+            if (!avatarGazeFrame) avatarGazeFrame = requestAnimationFrame(applyAvatarGaze);
+            clearTimeout(avatarGazeResetTimer);
+            avatarGazeResetTimer = setTimeout(() => { avatarGazePoint = null; applyAvatarGaze(); }, 3000);
+        }
+
+        if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+            document.addEventListener("pointermove", trackAvatarGaze, { passive: true });
+            document.addEventListener("pointerdown", trackAvatarGaze, { passive: true });
         }
 
         function renderAgentList() {
