@@ -17,6 +17,23 @@ The app's code is in `desktop/` (Electron). To run it from source: `cd desktop &
 
 `server.js` serves the page on your own computer. It needs Node.js; `npm install` (which `start-codev.bat` runs for you) adds the MCP SDK so the page can use MCP servers on this computer.
 
+## Autonomous developer workspace
+
+Every message is treated as a task on your project. You don't type file paths or paste code:
+
+- **Workspace auto-injection.** Each agent request carries the project's file tree, the file open in the editor, the files agents just changed and the files that best match the task. The amount is capped per provider (about 14k characters on Groq, whose free tier has small per-minute token limits, 30k on OpenRouter, 80k on Anthropic); agents read anything else with their tools.
+- **Autonomous execution.** Agents search the project, edit files and, where a command tool exists, run the code, tests or build themselves. Tools are always on.
+- **Locked developer roles.** Each agent has a role (Agent Configuration → Developer Role): **Architect** plans and implements, **Swarm** builds on the team's changes, **Self-Healing** re-reads changed files, runs what can be run and fixes failures. A role's prompt always applies; an agent's own instructions only add to it. In Group Swarm the agents run Architect → Swarm → Self-Healing, each seeing what the others changed. With 🛡️ Self-Healing on, a solo or background task that changed files gets a verify-and-fix pass afterwards.
+
+**Run file edits and commands without asking me first** (Settings) is on by default, so agents save files and run commands with no confirm dialog. Turn it off to approve each change.
+
+| Where CoDev runs | Project the agents see | Edits | Run code |
+| --- | --- | --- | --- |
+| Windows app | project folder chosen in Settings | saved to disk | yes |
+| Browser via `start-codev.bat C:\path\to\project` | that folder, through the helper | saved to disk | yes |
+| Desktop Chrome/Edge via `npm start` | 📁 Connect Local Folder (sub-folders included) | saved to disk | only with the helper |
+| Android app | files picked in Project Files | kept in CoDev; Save copies them | no |
+
 ## Anthropic API key
 
 `server.js` reads the key only from the `ANTHROPIC_API_KEY` environment variable at startup; never paste it into the code. Either:

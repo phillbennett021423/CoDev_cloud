@@ -48,6 +48,9 @@ COMMAND_TIMEOUT_SECONDS = 60
 MAX_COMMAND_TIMEOUT_SECONDS = 600
 MAX_READ_CHARS = 100000
 MAX_LISTED_FILES = 500
+MAX_SEARCH_MATCHES = 200
+MAX_SEARCHED_FILES = 2000
+MAX_SEARCHED_FILE_BYTES = 1024 * 1024
 MAX_MCP_BODY_BYTES = 2 * 1024 * 1024
 SKIPPED_DIRS = {".git", "node_modules", "__pycache__", ".godot", ".import", "venv", ".venv", "dist", "build"}
 MCP_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -142,6 +145,38 @@ def tool_read_file(args):
     return text if len(text) <= MAX_READ_CHARS else text[:MAX_READ_CHARS] + f"\n[truncated at {MAX_READ_CHARS} characters]"
 
 
+def tool_search_files(args):
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        raise ToolError("search_files needs a 'query' string")
+    needle = query.lower()
+    start = project_path(args.get("path", "."))
+    if not os.path.isdir(start):
+        raise ToolError(f"'{args.get('path')}' is not a folder")
+    root = os.path.realpath(PROJECT_DIR)
+    hits, searched = [], 0
+    for folder, dirs, files in os.walk(start):
+        dirs[:] = sorted(d for d in dirs if d not in SKIPPED_DIRS)
+        for name in sorted(files):
+            full = os.path.join(folder, name)
+            searched += 1
+            if searched > MAX_SEARCHED_FILES:
+                return "\n".join(hits) or f'No matches for "{query}" in the first {MAX_SEARCHED_FILES} files.'
+            if os.path.getsize(full) > MAX_SEARCHED_FILE_BYTES:
+                continue
+            with open(full, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            if "\0" in text:  # binary
+                continue
+            rel = os.path.relpath(full, root).replace(os.sep, "/")
+            for number, line in enumerate(text.split("\n"), 1):
+                if needle in line.lower():
+                    hits.append(f"{rel}:{number}: {line.strip()[:200]}")
+                    if len(hits) >= MAX_SEARCH_MATCHES:
+                        return "\n".join(hits) + f"\n[stopped at {MAX_SEARCH_MATCHES} matches]"
+    return "\n".join(hits) or f'No matches for "{query}".'
+
+
 def tool_write_file(args):
     path = project_path(args.get("path"))
     content = args.get("content")
@@ -215,6 +250,11 @@ def mcp_tools():
         {"name": "read_file", "run": tool_read_file,
          "description": "Read a text file from the user's project folder.",
          "inputSchema": {"type": "object", "properties": {"path": path_prop}, "required": ["path"]},
+         "annotations": {"readOnlyHint": True}},
+        {"name": "search_files", "run": tool_search_files,
+         "description": "Search the text of every file in the user's project folder (case-insensitive) and get matching lines as path:line: text. Use it to find where something is defined or used.",
+         "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "Text to look for."},
+                                                         "path": {**path_prop, "description": "Sub-folder to search; omit for the whole project."}}, "required": ["query"]},
          "annotations": {"readOnlyHint": True}},
     ]
     if COMMANDS:

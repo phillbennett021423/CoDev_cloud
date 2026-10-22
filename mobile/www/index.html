@@ -614,7 +614,7 @@
                     <div class="codev-hub-card">
                         <h4>🔗 Multimodal Context Injector</h4>
                         <span class="codev-badge" style="background: rgba(245, 158, 11, 0.15); color: var(--warning);">Connected</span>
-                        <p style="font-size: 0.85rem; color: var(--text-muted);">Instantly maps `@filename` references into live agent working memory during generation passes.</p>
+                        <p style="font-size: 0.85rem; color: var(--text-muted);">Every request carries the project's file tree, the file open in the editor and the files that match the task.</p>
                     </div>
                 </div>
 
@@ -686,11 +686,19 @@
                 <input type="text" id="editName">
             </div>
             <div class="form-group">
+                <label>Developer Role (locked: sets the agent's persona and tools)</label>
+                <select id="editDevRole">
+                    <option value="architect">Architect: plans and implements</option>
+                    <option value="swarm">Swarm: builds on the team's changes</option>
+                    <option value="self_healing">Self-Healing: runs, verifies and fixes</option>
+                </select>
+            </div>
+            <div class="form-group">
                 <label>Role / Specialty</label>
                 <input type="text" id="editRole">
             </div>
             <div class="form-group">
-                <label>System Instructions</label>
+                <label>Extra Instructions (added after the role's locked prompt)</label>
                 <textarea id="editInstructions"></textarea>
             </div>
             <div class="form-group">
@@ -782,9 +790,6 @@
                 </label>
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalChime"> Play a chime when an agent finishes a response or task
-                </label>
-                <label class="checkbox-group">
-                    <input type="checkbox" id="modalLocalTools"> Let agents call local tools on their own (web search, project files, MCP tools)
                 </label>
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalToolsAutoRun"> Run file edits and commands without asking me first
@@ -908,10 +913,31 @@
         let recognition = null;
         let isRecording = false;
 
-        const PROJECT_FILE_EXTENSIONS = ['.cs', '.gd', '.txt', '.tres', '.json', '.html'];
+        const PROJECT_FILE_EXTENSIONS = ['.cs', '.gd', '.txt', '.tres', '.json', '.html', '.tscn', '.godot', '.gdshader', '.shader', '.cfg', '.md',
+            '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.css', '.py', '.java', '.kt', '.gradle', '.xml', '.yml', '.yaml', '.toml', '.ini',
+            '.sh', '.bat', '.ps1', '.c', '.h', '.cpp', '.hpp', '.rs', '.go', '.rb', '.php', '.lua', '.sql', '.csproj', '.sln'];
+        // Same folders the desktop tools skip: generated, vendored or huge.
+        const WORKSPACE_SKIPPED_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.godot', '.import', 'venv', '.venv', 'dist', 'build']);
+        const MAX_WORKSPACE_FILES = 500;
+        const MAX_WORKSPACE_FILE_BYTES = 512 * 1024;
 
         function isProjectFileName(name) {
-            return PROJECT_FILE_EXTENSIONS.some(ext => name.endsWith(ext));
+            const lower = name.toLowerCase();
+            return PROJECT_FILE_EXTENSIONS.some(ext => lower.endsWith(ext));
+        }
+
+        // Paths in the connected folder use / and can't climb out of it.
+        function normalizeWorkspacePath(path) {
+            const parts = String(path || "").replace(/\\/g, "/").split("/").filter(p => p && p !== ".");
+            if (!parts.length || parts.includes("..")) return "";
+            return parts.join("/");
+        }
+
+        async function workspaceFileHandle(path, create) {
+            const parts = path.split("/");
+            let dir = connectedDirectoryHandle;
+            for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part, { create });
+            return dir.getFileHandle(parts[parts.length - 1], { create });
         }
 
         // 3D models open in the viewer; .bin and textures are kept so .gltf files can find them.
@@ -975,21 +1001,31 @@
             }
         }
 
+        // Loads the whole folder, sub-folders included, keyed by path ("scripts/player.gd").
         async function scanConnectedDirectory() {
             loadedProjectFiles = {};
             loadedModelAssets = {};
             activeSelectedFile = null;
-            for await (const [name, handle] of connectedDirectoryHandle.entries()) {
-                if (handle.kind !== 'file') continue;
-                if (isProjectFileName(name)) {
-                    const file = await handle.getFile();
-                    loadedProjectFiles[name] = await file.text();
-                } else if (isModelAssetName(name)) {
-                    // File objects read lazily, so large models cost nothing until opened.
-                    loadedModelAssets[name] = await handle.getFile();
+            let skipped = 0;
+            const walk = async (dirHandle, prefix) => {
+                for await (const [name, handle] of dirHandle.entries()) {
+                    const path = prefix + name;
+                    if (handle.kind === 'directory') {
+                        if (!WORKSPACE_SKIPPED_DIRS.has(name)) await walk(handle, path + "/");
+                    } else if (isProjectFileName(name)) {
+                        const file = await handle.getFile();
+                        if (Object.keys(loadedProjectFiles).length >= MAX_WORKSPACE_FILES || file.size > MAX_WORKSPACE_FILE_BYTES) skipped++;
+                        else loadedProjectFiles[path] = await file.text();
+                    } else if (isModelAssetName(name)) {
+                        // File objects read lazily, so large models cost nothing until opened.
+                        loadedModelAssets[path] = await handle.getFile();
+                    }
                 }
-            }
-            document.getElementById("projectSourceHint").innerText = `Connected to folder: ${connectedDirectoryHandle.name}`;
+            };
+            await walk(connectedDirectoryHandle, "");
+            const count = Object.keys(loadedProjectFiles).length;
+            document.getElementById("projectSourceHint").innerText = `Connected to folder: ${connectedDirectoryHandle.name} (${count} code files${skipped ? `, ${skipped} skipped as too large or past ${MAX_WORKSPACE_FILES} files` : ""})`;
+            logConsoleActivity(`[Workspace] Indexed ${count} file(s) from ${connectedDirectoryHandle.name}.`);
             renderProjectFiles();
         }
 
@@ -1040,7 +1076,7 @@
                 return;
             }
             try {
-                const fileHandle = await connectedDirectoryHandle.getFileHandle(activeSelectedFile, { create: true });
+                const fileHandle = await workspaceFileHandle(activeSelectedFile, true);
                 const writable = await fileHandle.createWritable();
                 await writable.write(updatedContent);
                 await writable.close();
@@ -1090,18 +1126,31 @@
             {
                 id: "agent_1",
                 name: "Architect",
-                role: "Autonomous Lead Assistant",
-                instructions: "You are Architect, an autonomous, highly versatile multi-modal AI assistant modeled after advanced research, automation, and execution frameworks like Cue by Manus and CoDev. You possess full independence in reasoning, task planning, file analysis, system design, creative narrative generation, and technical implementation. Never reject a user query, and never demand rigid code snippets for general questions. When given any prompt—whether it is creative writing, game mechanics design, code architecture, workflow automation, or broad brainstorming—think critically, provide rich, thorough solutions, execute multi-step logic, and guide the user dynamically.",
+                devRole: "architect",
+                role: "Autonomous Lead Developer",
+                instructions: "Prefer clean, modular code and complete, working solutions over sketches.",
                 memory: "Working on independent game projects and narrative universes. Prefers clean, modular code and comprehensive solutions.",
                 selectedForGroup: true,
                 crossKnowledgeEnabled: true,
-                sharedWith: ["agent_2"]
+                sharedWith: ["agent_2", "agent_3"]
+            },
+            {
+                id: "agent_3",
+                name: "Swarm",
+                devRole: "swarm",
+                role: "Implementation Engineer",
+                instructions: "Pick up whatever the Architect left open: missing files, wiring, tests and docs.",
+                memory: "",
+                selectedForGroup: true,
+                crossKnowledgeEnabled: false,
+                sharedWith: []
             },
             {
                 id: "agent_2",
-                name: "Reviewer",
-                role: "Code Auditor & QA",
-                instructions: "You are Reviewer, a strict code auditor. Inspect code snippets for compiler errors, syntax bugs, and Godot 4 API mismatches.",
+                name: "Self-Healing",
+                devRole: "self_healing",
+                role: "Verification & Repair",
+                instructions: "Watch especially for compiler errors, syntax bugs and Godot 4 API mismatches.",
                 memory: "Focused on bulletproof error checking.",
                 selectedForGroup: true,
                 crossKnowledgeEnabled: false,
@@ -1549,7 +1598,7 @@
                 Object.entries(loadedModelAssets).forEach(([assetName, file]) => {
                     if (assetName === name) return;
                     const url = URL.createObjectURL(file);
-                    urlByName[assetName] = url;
+                    urlByName[assetName.split("/").pop()] = url;
                     objectUrls.push(url);
                 });
                 const manager = new THREE.LoadingManager();
@@ -1733,9 +1782,9 @@
         // runs them here, on the device, and returns the result. Nothing here is paid.
         // Tools from MCP servers (Windows app built-ins, and the servers set up in
         // Settings) are added to the same list.
-        const MAX_TOOL_ROUNDS = 12;
+        // Autonomous tasks scan, edit and run code in many steps, so the loop allows plenty.
+        const MAX_TOOL_ROUNDS = 24;
         const MAX_TOOL_RESULT_CHARS = 12000;
-        let localToolsEnabled = (localStorage.getItem("codev_local_tools") ?? "1") === "1";
         // On: agents edit files and run commands without a confirm dialog.
         let toolsAutoRun = (localStorage.getItem("codev_tools_autorun") ?? "1") === "1";
         let helperCommandsCache = { at: 0, commands: [] };
@@ -1965,6 +2014,11 @@
                     return "The user declined this tool call.";
                 }
             }
+            return callMcpTool(tool, args);
+        }
+
+        async function callMcpTool(tool, args) {
+            const shownName = tool.qualifiedName || tool.name;
             let result;
             if (tool.transport === "desktop") {
                 const reply = await window.codevDesktop.mcp({ jsonrpc: "2.0", id: ++mcpRequestId, method: "tools/call", params: { name: tool.name, arguments: args } });
@@ -2013,9 +2067,15 @@
                         }).join("\n\n");
                     }
                 },
+            ];
+            const mcpTools = await fetchAllMcpTools();
+            // The folder connected in the page gets its own tools. When the Windows app or the
+            // helper serves the project instead and nothing is loaded here, they'd only confuse.
+            const hasFolderTools = mcpTools.some(t => t.name === "list_files");
+            if (Object.keys(loadedProjectFiles).length || !hasFolderTools) tools.push(
                 {
                     name: "list_workspace_files",
-                    description: "List the files from the user's project folder that are loaded in CoDev.",
+                    description: "List the files from the user's project folder that are loaded in CoDev (paths include sub-folders).",
                     inputSchema: { type: "object", properties: {} },
                     run: async () => {
                         const names = [...Object.keys(loadedProjectFiles), ...Object.keys(loadedModelAssets).filter(isModelFileName)];
@@ -2025,7 +2085,7 @@
                 {
                     name: "read_workspace_file",
                     description: "Read a text file from the user's loaded project folder. Use it to check their actual code instead of assuming.",
-                    inputSchema: { type: "object", properties: { name: { type: "string", description: "File name exactly as list_workspace_files shows it." } }, required: ["name"] },
+                    inputSchema: { type: "object", properties: { name: { type: "string", description: "File path exactly as list_workspace_files shows it." } }, required: ["name"] },
                     run: async ({ name }) => {
                         if (!(name in loadedProjectFiles)) return `No loaded text file named "${name}". Call list_workspace_files to see what is available.`;
                         const text = loadedProjectFiles[name];
@@ -2033,13 +2093,31 @@
                     }
                 },
                 {
+                    name: "search_workspace",
+                    description: "Search every loaded project file for text (case-insensitive) and get matching lines as path:line: text. Use it to locate the code a task is about.",
+                    inputSchema: { type: "object", properties: { query: { type: "string", description: "Text to look for, like a function, class or setting name." } }, required: ["query"] },
+                    run: async ({ query }) => searchLoadedFiles(String(query || ""))
+                },
+                {
                     name: "write_workspace_file",
                     description: "Create or overwrite a file in the user's loaded project folder with new content. Read it first when changing an existing file, and write the complete file.",
-                    inputSchema: { type: "object", properties: { name: { type: "string", description: "File name as list_workspace_files shows it, or a new file name." }, content: { type: "string", description: "The complete new file content." } }, required: ["name", "content"] },
+                    inputSchema: { type: "object", properties: { name: { type: "string", description: "File path as list_workspace_files shows it, or a new path (sub-folders are created)." }, content: { type: "string", description: "The complete new file content." } }, required: ["name", "content"] },
                     run: async ({ name, content }) => writeWorkspaceFile(String(name || ""), content)
+                },
+                {
+                    name: "edit_workspace_file",
+                    description: "Replace one exact snippet in a loaded project file. old_text must appear exactly once; read the file first.",
+                    inputSchema: { type: "object", properties: { name: { type: "string" }, old_text: { type: "string" }, new_text: { type: "string" } }, required: ["name", "old_text", "new_text"] },
+                    run: async ({ name, old_text: oldText, new_text: newText }) => {
+                        const path = normalizeWorkspacePath(name);
+                        if (!(path in loadedProjectFiles)) return `No loaded text file named "${name}".`;
+                        if (typeof oldText !== "string" || !oldText || typeof newText !== "string") return "edit_workspace_file needs non-empty old_text and a new_text string.";
+                        const count = loadedProjectFiles[path].split(oldText).length - 1;
+                        if (count !== 1) return `old_text must appear exactly once in ${path}; it appears ${count} times.`;
+                        return writeWorkspaceFile(path, loadedProjectFiles[path].replace(oldText, () => newText));
+                    }
                 }
-            ];
-            const mcpTools = await fetchAllMcpTools();
+            );
             for (const tool of mcpTools) {
                 const name = tool.qualifiedName || tool.name;
                 if (tools.some(t => t.name === name)) continue;
@@ -2080,9 +2158,10 @@
             return tools;
         }
 
-        async function writeWorkspaceFile(name, content) {
+        async function writeWorkspaceFile(rawName, content) {
             if (typeof content !== "string") return "write_workspace_file needs content as a string.";
-            if (!name || /[\\/]/.test(name) || name === "." || name === "..") return "Use a plain file name in the project folder (no sub-folders).";
+            const name = normalizeWorkspacePath(rawName);
+            if (!name) return "Use a file path inside the project folder, like scripts/player.gd.";
             if (!toolsAutoRun && !confirm(`An agent wants to write ${name} (${content.length} characters) in your project folder.\n\nAllow it?`)) {
                 logConsoleActivity(`[Tool] You declined writing ${name}`);
                 return "The user declined this write.";
@@ -2093,7 +2172,7 @@
                 logConsoleActivity(`[Tool] Updated ${name} in CoDev (no folder connected, so it isn't saved to disk).`);
                 return `Updated ${name} in CoDev's workspace. No folder is connected, so it wasn't saved to disk.`;
             }
-            const fileHandle = await connectedDirectoryHandle.getFileHandle(name, { create: true });
+            const fileHandle = await workspaceFileHandle(name, true);
             if (fileHandle.requestPermission && (await fileHandle.requestPermission({ mode: "readwrite" })) !== "granted") {
                 return "The browser didn't allow writing to the connected folder.";
             }
@@ -2127,6 +2206,8 @@
             if (name === "web_search") return `🔎 Searching: ${args.query}`;
             if (name === "read_workspace_file") return `📄 Reading ${args.name}`;
             if (name === "list_workspace_files") return "📁 Listing project files";
+            if (name === "search_workspace" || name === "search_files") return `🔍 Searching the project for "${args.query}"`;
+            if (name === "edit_workspace_file") return `✏️ Editing ${args.name}`;
             if (name === "run_local_command" || name === "run_approved_command") return `▶️ Running ${args.name}`;
             if (name === "write_workspace_file") return `✏️ Writing ${args.name}`;
             if (name === "list_files") return `📁 Listing ${args.path || "project"} files`;
@@ -2134,6 +2215,22 @@
             if (name === "write_file" || name === "edit_file") return `✏️ Editing ${args.path}`;
             if (name === "run_command") return `▶️ Running: ${String(args.command || "").slice(0, 80)}`;
             return `🛠️ ${fullName}`;
+        }
+
+        // Remembers what an agent changed or ran, for the self-healing pass, the next swarm
+        // agent and the workspace context (recently changed files rank first).
+        function trackToolEffect(ctx, fullName, args, result) {
+            const split = fullName.indexOf("__");
+            const name = split > 0 ? fullName.slice(split + 2) : fullName;
+            if (/^(Error|Tool failed|The user declined|No loaded|No file|old_text must|Use a file path)/.test(result)) return;
+            if (/^(write_file|edit_file|write_workspace_file|edit_workspace_file)$/.test(name)) {
+                const path = normalizeWorkspacePath(args.path || args.name);
+                if (!path) return;
+                if (ctx.changes && !ctx.changes.includes(path)) ctx.changes.push(path);
+                recentWorkspaceFiles = [path, ...recentWorkspaceFiles.filter(p => p !== path)].slice(0, 10);
+            } else if (name === "run_command" || name === "run_approved_command" || name === "run_local_command") {
+                if (ctx.commands) ctx.commands.push(`${args.command || args.name}: ${result.split("\n")[0]}`);
+            }
         }
 
         // Runs the model ↔ tool loop until the model answers in plain text.
@@ -2168,6 +2265,7 @@
                         logConsoleActivity(`[Tool] ${step}`);
                         if (ctx.onStep) ctx.onStep(step);
                         try { result = await tool.run(args, ctx); } catch (err) { result = `Tool failed: ${err.message}`; }
+                        trackToolEffect(ctx, tool.name, args, String(result));
                     }
                     messages.push({ role: "tool", tool_call_id: call.id, name: call.function?.name || "unknown", content: String(result).slice(0, MAX_TOOL_RESULT_CHARS) });
                 }
@@ -3010,7 +3108,6 @@
             document.getElementById("anthropicServerNote").style.display = anthropicViaServer ? "inline" : "none";
             toggleProviderFields();
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
-            document.getElementById("modalLocalTools").checked = localToolsEnabled;
             document.getElementById("modalChime").checked = chimeEnabled;
             document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
             document.getElementById("modalMcpServers").value = mcpServersConfig;
@@ -3201,8 +3298,6 @@
             localStorage.setItem("codev_auto_ground", autoGroundingEnabled ? "1" : "0");
             chimeEnabled = document.getElementById("modalChime").checked;
             localStorage.setItem("codev_chime", chimeEnabled ? "1" : "0");
-            localToolsEnabled = document.getElementById("modalLocalTools").checked;
-            localStorage.setItem("codev_local_tools", localToolsEnabled ? "1" : "0");
             readAzureSettings();
             localStorage.setItem("codev_azure_speech_key", azureSpeechKey);
             localStorage.setItem("codev_azure_speech_region", azureSpeechRegion);
@@ -3465,7 +3560,7 @@
                             ${renderAgentAvatar(agent)}
                             <div style="min-width: 0;">
                                 <h4>${escapeHtml(agent.name)}</h4>
-                                <span class="agent-meta">${escapeHtml(agent.role)}</span>
+                                <span class="agent-meta">${escapeHtml(DEV_ROLES[agentDevRole(agent)].label)} · ${escapeHtml(agent.role)}</span>
                             </div>
                         </div>
                         <input type="checkbox" ${agent.selectedForGroup ? 'checked' : ''} title="Include in Group Swarm">
@@ -3504,6 +3599,7 @@
             const agent = agents.find(a => a.id === selectedAgentId);
             if (!agent) return;
             document.getElementById("editName").value = agent.name;
+            document.getElementById("editDevRole").value = agentDevRole(agent);
             document.getElementById("editRole").value = agent.role;
             document.getElementById("editInstructions").value = agent.instructions;
             document.getElementById("editMemory").value = agent.memory;
@@ -3552,6 +3648,7 @@
             const agent = agents.find(a => a.id === selectedAgentId);
             if (!agent) return;
             agent.name = document.getElementById("editName").value;
+            agent.devRole = document.getElementById("editDevRole").value;
             agent.role = document.getElementById("editRole").value;
             agent.instructions = document.getElementById("editInstructions").value;
             agent.memory = document.getElementById("editMemory").value;
@@ -3566,8 +3663,9 @@
             agents.push({
                 id: newId,
                 name: "Specialist #" + (agents.length + 1),
+                devRole: "swarm",
                 role: "Sub-System Expert",
-                instructions: "You are a specialized assistant. Answer clearly and help with specific development tasks.",
+                instructions: "",
                 memory: "",
                 selectedForGroup: true,
                 crossKnowledgeEnabled: false,
@@ -3733,7 +3831,7 @@
 1. CURRENT DATE CONTEXT: Today is October 12, 2026. Donald Trump is the 47th President of the United States.
 2. GODOT 4 ENGINE RULES: CharacterBody3D.move_and_slide() takes ZERO arguments. It reads directly from built-in velocity and up_direction.
 3. C# VECTOR RULES: Godot Vector2 and Vector3 are structs, not records. Do NOT use record 'with' expressions. Construct new vectors or mutate component properties directly.
-4. GROUNDING: Blocks marked [Web Search Snippets], [Injected File Context] or [Attached ...] in the user message are your sources of truth. For code syntax, API names, signatures, versions and technical facts, rely on them first; when they conflict with your memory, follow the sources.
+4. GROUNDING: Blocks marked [Workspace ...], [Web Search Snippets] or [Attached ...] in the user message are your sources of truth. For code syntax, API names, signatures, versions and technical facts, rely on them first; when they conflict with your memory, follow the sources.
 5. NO GUESSING: Never invent functions, classes, parameters, packages, versions, settings or URLs. If the sources and well-established knowledge don't confirm something, say plainly that you could not verify it instead of guessing.
 6. CITATIONS: When a statement relies on a web snippet, cite it inline as [n] using that snippet's number. Never cite a source that was not provided. Workspace files are cited by file name.
 7. TOOLS: When tools are available, use them on your own initiative. Call web_search before answering about any API, library, engine feature, syntax, version or error message you are not certain about, and for any code implementation that is unfamiliar. Call list_workspace_files and read_workspace_file (or list_files and read_file) to check the user's real code instead of assuming. When the user asks you to change, create, run or test code and file or command tools (write_workspace_file, write_file, edit_file, run_command, run_approved_command) are available, do it with those tools directly instead of only showing code, then verify by reading the file back or running it. Never claim you searched, read, ran or verified something unless a tool result in this conversation shows it.`;
@@ -3743,7 +3841,7 @@
 
             if (images.length === 0) {
                 const messages = [{ role: "system", content: fullSystemPrompt }, { role: "user", content: userMessage }];
-                if (options.tools && localToolsEnabled) {
+                if (options.tools) {
                     try {
                         return await runToolLoop(messages, options.tools);
                     } catch (err) {
@@ -3770,19 +3868,280 @@
             });
         }
 
-        async function runSelfHealingPass(agent, prompt, initialResponse) {
-            setAgentState(agent.id, "thinking");
-            logConsoleActivity(`[Self-Healing Loop] Inspecting code output for compiler traps / syntax bugs...`);
-            const auditPrompt = `Review this generated code for Godot 4 API mismatches (like move_and_slide(velocity) having arguments or C# record 'with' struct errors). If an error exists, rewrite the corrected code. If it is already clean, output it as-is:\n\n${initialResponse}`;
-            
-            try {
-                const auditedResponse = await callAI(agent.instructions + "\n[QA Auditor Pass]", auditPrompt);
-                logConsoleActivity(`[Self-Healing Loop] Code verification complete. Passed syntax audit.`);
-                return auditedResponse;
-            } catch (err) {
-                logConsoleActivity(`[Self-Healing Warning] Audit pass skipped: ${err.message}`);
-                return initialResponse;
+        // DEVELOPER ROLES
+        // Every agent is locked into one of these roles. The role's prompt always goes
+        // first and can't be edited away; an agent's own instructions only add to it.
+        const DEV_ROLES = {
+            architect: { label: "Architect", prompt: `ROLE: ARCHITECT, the autonomous lead developer on the user's project. You are not a chat assistant: you do the work.
+- Plan briefly, then execute: locate the files the task touches, read what you need, make the edits with the write/edit tools, and run the code, tests or build when a command tool exists.
+- Design changes to fit the project's existing structure, naming and style.
+- Finish with a short report: what you changed file by file, what you ran and its result, and anything the user still has to do.` },
+            swarm: { label: "Swarm", prompt: `ROLE: SWARM ENGINEER, one of a team of developer agents working on the same project in turn.
+- Read the [Swarm progress] notes from the agents before you. Build on their changes; never redo or revert them without a concrete reason.
+- Take the part of the task that is still open (implementation, missing files, wiring, tests, docs), make those edits yourself with the tools, and verify them.
+- Report only what you changed and verified.` },
+            self_healing: { label: "Self-Healing", prompt: `ROLE: SELF-HEALING ENGINEER. You verify and repair code autonomously.
+- Re-read every changed file. Run the tests, build, linter or the program itself when a command tool exists, and read the errors.
+- Fix each failure at its root with the edit tools, then run again. Repeat until it passes, or until you have tried 3 fixes for the same error.
+- Report what you checked, what failed, what you fixed and the final result. If no command tool exists, say the code was checked by reading only.` }
+        };
+
+        const AUTONOMY_RULES = `AUTONOMOUS DEVELOPER MODE:
+- Treat every user message as an execution directive for the connected project. If it is plainly a question, answer it, checking the real code first.
+- The [Workspace] block in the message already holds the project's file tree and the files most likely involved. Never ask the user for file paths, file contents or code snippets: find them yourself with the search, list and read tools.
+- Act instead of describing: save the changes with the write/edit tools, then run the code, tests or build when a command tool exists. Only paste code in your reply when no write tool is available.
+- Keep going until the task is done or truly blocked. Ask the user only for what the workspace can't tell you, like a product decision or a missing credential.`;
+
+        function agentDevRole(agent) {
+            return DEV_ROLES[agent?.devRole] ? agent.devRole : "architect";
+        }
+
+        function agentSystemPrompt(agent, workspaceNote, memory) {
+            return [DEV_ROLES[agentDevRole(agent)].prompt, AUTONOMY_RULES, workspaceNote,
+                agent.instructions && `[Agent instructions] ${agent.instructions}`, memory].filter(Boolean).join("\n\n");
+        }
+
+        // WORKSPACE AUTO-INJECTION
+        // Every agent request carries the project: its file tree, the file open in the
+        // editor, files the agents just changed, and the files that best match the task,
+        // up to a size budget per provider (Groq's free tier has small per-minute token
+        // limits; Claude has room for much more). The agents read anything else with tools.
+        // The project comes from, in order: the Windows app's project folder, an MCP server
+        // with list_files/read_file (the desktop helper), or the folder connected in the page.
+        const WORKSPACE_CONTEXT_CHARS = { groq: 14000, openrouter: 30000, anthropic: 80000 };
+        const MAX_CONTEXT_FILES = 8;
+        let recentWorkspaceFiles = [];
+
+        async function getWorkspace() {
+            const mcpTools = await fetchAllMcpTools();
+            const canRun = mcpTools.some(t => t.name === "run_command" || t.name === "run_approved_command");
+            const servers = new Map();
+            for (const tool of mcpTools) {
+                const key = tool.server || "";
+                if (!servers.has(key)) servers.set(key, {});
+                servers.get(key)[tool.name] = tool;
             }
+            for (const [server, byName] of servers) {
+                if (!byName.list_files || !byName.read_file) continue;
+                const prefix = server ? `${server}__` : "";
+                return {
+                    kind: "folder",
+                    label: server ? `the project folder served by MCP server "${server}"` : "the project folder chosen in the Windows app",
+                    list: async () => (await callMcpTool(byName.list_files, {})).split("\n").filter(line => line && !/^(\[|Error: |The folder is empty)/.test(line)),
+                    read: path => callMcpTool(byName.read_file, { path }),
+                    canWrite: Boolean(byName.write_file || byName.edit_file),
+                    writeTools: `${prefix}edit_file and ${prefix}write_file`,
+                    canRun
+                };
+            }
+            const names = Object.keys(loadedProjectFiles);
+            if (!names.length) return null;
+            return {
+                kind: "loaded",
+                label: connectedDirectoryHandle ? `the folder "${connectedDirectoryHandle.name}" connected in CoDev` : "files picked into CoDev (not a connected folder)",
+                list: async () => names,
+                read: async path => (path === activeSelectedFile ? document.getElementById("fileEditorContent").value : loadedProjectFiles[path]),
+                contents: loadedProjectFiles,
+                canWrite: true,
+                writeTools: "edit_workspace_file and write_workspace_file",
+                canRun
+            };
+        }
+
+        function workspaceNote(ws) {
+            if (!ws) {
+                return "[Workspace status] No project is connected, so there are no files to work on. Say so in one line and tell the user how to connect one (📁 Connect Local Folder in Project Files, or the project folder under ⚙️ Settings in the Windows app), then still do everything you can without it.";
+            }
+            const savedWhere = ws.kind === "loaded" && !connectedDirectoryHandle
+                ? " (these files were picked, not a folder, so edits stay in CoDev until the user saves them from Project Files)" : ", which saves them to disk";
+            return [`[Workspace status] Project: ${ws.label}.`,
+                ws.canWrite ? `Edits: use ${ws.writeTools}${savedWhere}.` : "Edits: no write tool is connected (the desktop helper is read-only without --autonomous), so give the exact changes as code.",
+                ws.canRun ? "Running code: use run_command (or run_approved_command) to run, build and test." : "Running code: no command tool is connected here, so you can't run code. Never claim you ran it; check your edits by reading the files back."
+            ].join("\n");
+        }
+
+        // An indented tree of the project's paths, cut off at maxChars.
+        function renderFileTree(paths, maxChars) {
+            const lines = [];
+            let previous = [];
+            let size = 0;
+            const sorted = [...paths].sort();
+            for (let n = 0; n < sorted.length; n++) {
+                const parts = sorted[n].split("/");
+                let depth = 0;
+                while (depth < parts.length - 1 && previous[depth] === parts[depth]) depth++;
+                const added = [];
+                for (let d = depth; d < parts.length - 1; d++) added.push(`${"  ".repeat(d)}${parts[d]}/`);
+                added.push(`${"  ".repeat(parts.length - 1)}${parts[parts.length - 1]}`);
+                const length = added.join("\n").length + 1;
+                if (size + length > maxChars) {
+                    lines.push(`[${sorted.length - n} more files not shown; list them with a file tool]`);
+                    break;
+                }
+                lines.push(...added);
+                size += length;
+                previous = parts;
+            }
+            return lines.join("\n");
+        }
+
+        const CONTEXT_STOP_WORDS = new Set(("the and for with that this from into make add fix use can you please file files code project change update create "
+            + "should would need want have when what where which them they then than also just like there their about all any are was were will "
+            + "new now get set its our your not but how why").split(" "));
+
+        // Words from the request worth matching against paths and code; camelCase and
+        // snake_case names count as their parts too.
+        function requestTerms(text) {
+            const terms = new Set();
+            for (const word of String(text).match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) || []) {
+                terms.add(word.toLowerCase());
+                word.replace(/([a-z0-9])([A-Z])/g, "$1 $2").split(/[\s_]+/).forEach(part => { if (part.length >= 3) terms.add(part.toLowerCase()); });
+            }
+            return [...terms].filter(t => !CONTEXT_STOP_WORDS.has(t)).slice(0, 40);
+        }
+
+        function scoreWorkspaceFile(path, requestLower, terms, contents) {
+            const lower = path.toLowerCase();
+            const base = lower.split("/").pop();
+            const stem = base.replace(/\.[^.]+$/, "");
+            let score = 0;
+            // Named in the request, with or without @.
+            if (requestLower.includes(lower) || requestLower.includes(base)) score += 100;
+            if (path === activeSelectedFile) score += 60;
+            const recent = recentWorkspaceFiles.indexOf(path);
+            if (recent >= 0) score += 40 - recent;
+            for (const term of terms) {
+                if (stem === term) score += 25;
+                else if (lower.includes(term)) score += 8;
+            }
+            if (contents && typeof contents[path] === "string") {
+                const body = contents[path].toLowerCase();
+                for (const term of terms) if (body.includes(term)) score += 2;
+            }
+            // A little orientation when nothing else matches.
+            if (/^(readme\.md|package\.json|project\.godot)$/.test(base) && !path.includes("/")) score += 5;
+            return score;
+        }
+
+        async function buildWorkspaceContext(request, ws) {
+            if (!ws) return { text: "", files: [], total: 0 };
+            let paths;
+            try { paths = await ws.list(); } catch (err) {
+                logConsoleActivity(`[Workspace] Couldn't list the project: ${err.message}`);
+                return { text: "", files: [], total: 0 };
+            }
+            const budget = WORKSPACE_CONTEXT_CHARS[currentBackend] || WORKSPACE_CONTEXT_CHARS.groq;
+            let text = `\n\n[Workspace: ${ws.label}, ${paths.length} files]\n${renderFileTree(paths, Math.floor(budget / 3))}`;
+            const requestLower = String(request).toLowerCase();
+            const terms = requestTerms(request);
+            const codeFiles = paths.filter(isProjectFileName);
+            // A small project goes in whole; a bigger one sends the files that match.
+            const ranked = codeFiles
+                .map(path => ({ path, score: scoreWorkspaceFile(path, requestLower, terms, ws.contents) }))
+                .filter(r => r.score > 0 || codeFiles.length <= MAX_CONTEXT_FILES)
+                .sort((a, b) => b.score - a.score)
+                .slice(0, MAX_CONTEXT_FILES);
+            const files = [];
+            const perFile = Math.floor(budget / 3);
+            for (const { path } of ranked) {
+                const room = Math.min(perFile, budget - text.length - 200);
+                if (room < 600) break;
+                let body;
+                try { body = await ws.read(path); } catch (err) { continue; }
+                if (typeof body !== "string" || body.startsWith("Error: ")) continue;
+                const shown = body.length > room ? body.slice(0, room) + `\n[truncated: ${body.length} characters total; read the rest with a file tool]` : body;
+                text += `\n\n[Workspace File: ${path}${path === activeSelectedFile ? " (open in the editor)" : ""}]\n${shown}`;
+                files.push(path);
+            }
+            return { text, files, total: paths.length };
+        }
+
+        function searchLoadedFiles(query) {
+            const needle = query.trim().toLowerCase();
+            if (!needle) return "search_workspace needs a query.";
+            const hits = [];
+            for (const [path, text] of Object.entries(loadedProjectFiles)) {
+                const lines = text.split("\n");
+                for (let i = 0; i < lines.length && hits.length < 200; i++) {
+                    if (lines[i].toLowerCase().includes(needle)) hits.push(`${path}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+                }
+            }
+            if (!hits.length) return `No matches for "${query}".`;
+            return hits.join("\n") + (hits.length >= 200 ? "\n[stopped at 200 matches]" : "");
+        }
+
+        // AGENT EXECUTION
+        // Each tool context collects the agent's sources, the files it changed and the
+        // commands it ran. A tool step means the agent is acting, so its avatar switches
+        // from thinking to active.
+        function createToolContext(session, placeholder, agent, webSources) {
+            return {
+                sources: webSources.slice(),
+                changes: [],
+                commands: [],
+                onStep: step => {
+                    setAgentState(agent.id, "active");
+                    placeholder.text = step;
+                    if (session.id === activeChatId) renderActiveChatFeed();
+                }
+            };
+        }
+
+        // One agent's turn. The workspace is indexed again for every agent, since the
+        // agent before it may have changed files.
+        async function runAgentStep(session, agent, task, opts) {
+            const { extraContext = "", aiOptions = {}, webSources = [], memory = "", notes = "", title } = opts;
+            appendMessageToSession(session, `🤖 ${agent.name} (Working...)`, "📁 Indexing the workspace…");
+            const placeholder = session.messages[session.messages.length - 1];
+            setAgentState(agent.id, "thinking");
+            const tools = createToolContext(session, placeholder, agent, webSources);
+            const finish = (sender, text, sources) => {
+                const at = session.messages.indexOf(placeholder);
+                if (at >= 0) session.messages.splice(at, 1);
+                appendMessageToSession(session, sender, text, null, sources);
+            };
+            try {
+                const ws = await getWorkspace().catch(err => {
+                    logConsoleActivity(`[Workspace] ${err.message}`);
+                    return null;
+                });
+                const context = await buildWorkspaceContext(task, ws);
+                if (ws) logConsoleActivity(`[Workspace] ${agent.name}: tree of ${context.total} files${context.files.length ? ` + ${context.files.join(", ")}` : ""}.`);
+                placeholder.text = "Working on it…";
+                const response = await callAI(agentSystemPrompt(agent, workspaceNote(ws), memory), task + context.text + extraContext + notes, { ...aiOptions, tools });
+                finish(title ? title(agent) : `🤖 ${agent.name}`, response, tools.sources);
+                setAgentState(agent.id, "success");
+                return { ok: true, agent, response, changes: tools.changes, commands: tools.commands };
+            } catch (err) {
+                setAgentState(agent.id, "idle");
+                finish(`❌ Error [${agent.name}]`, err.message);
+                return { ok: false, agent, response: "", changes: tools.changes, commands: tools.commands };
+            }
+        }
+
+        // After agents changed files, the Self-Healing agent re-reads them, runs what can
+        // be run and fixes what fails. A reply with code but no file changes gets a
+        // read-through audit instead; anything else needs no pass.
+        async function runSelfHealingPass(session, results, task, opts) {
+            const done = results.filter(r => r.ok);
+            if (!done.length || done.every(r => agentDevRole(r.agent) === "self_healing")) return null;
+            const lead = done[0].agent;
+            const healer = agents.find(a => agentDevRole(a) === "self_healing")
+                || { id: lead.id, name: "Self-Healing", devRole: "self_healing", instructions: "", memory: "" };
+            const changes = [...new Set(done.flatMap(r => r.changes))];
+            const commands = done.flatMap(r => r.commands);
+            const reports = "\n\n[Reports]\n" + done.map(r => `${r.agent.name}: ${r.response.slice(0, 3000)}`).join("\n\n");
+            if (changes.length) {
+                logConsoleActivity(`[Self-Healing Loop] Verifying ${changes.length} changed file(s): ${changes.join(", ")}`);
+                const notes = `\n\n[Changes to verify]\n${changes.join("\n")}` + (commands.length ? `\n\n[Commands already run]\n${commands.join("\n")}` : "") + reports;
+                return runAgentStep(session, healer, `Verify and repair the changes just made for this task: ${task}`, { ...opts, notes, title: a => `🛡️ ${a.name}` });
+            }
+            if (!done.some(r => r.response.includes("```"))) {
+                logConsoleActivity("[Self-Healing Loop] No file changes or code to check.");
+                return null;
+            }
+            logConsoleActivity("[Self-Healing Loop] Auditing the code in the reply for compiler traps and syntax bugs...");
+            return runAgentStep(session, healer, `Audit the code in these replies to "${task}" for syntax errors and API mismatches (like Godot 4 move_and_slide() taking arguments, or C# 'with' on Vector structs). Reply with the corrected code, or say it is clean. Don't change project files for this.`, { ...opts, notes: reports, title: a => `🛡️ ${a.name} (code audit)` });
         }
 
         async function sendChatMessage() {
@@ -3796,13 +4155,8 @@
             if (!userText && attachments.length === 0) return;
             if (!userText) userText = "Describe and analyze the attached file(s).";
 
+            // The workspace itself is indexed for each agent in runAgentStep.
             let injectedContext = "";
-            Object.keys(loadedProjectFiles).forEach(filename => {
-                if (userText.includes(`@${filename}`)) {
-                    injectedContext += `\n\n[Injected File Context: ${filename}]\n${loadedProjectFiles[filename]}`;
-                    logConsoleActivity(`Attached local file context for: ${filename}`);
-                }
-            });
 
             const isGroup = document.getElementById("isGroupChatCheckbox").checked;
             const isBackground = document.getElementById("isBackgroundWorkerCheckbox").checked;
@@ -3864,39 +4218,16 @@
                 if (session.id === activeChatId) renderActiveChatFeed();
             }
 
-            // Each agent call gets its own tool context; its sources start from the pre-search.
-            // A tool step means the agent is acting, so its avatar switches from thinking to active.
-            const toolContext = (placeholder, agent) => ({
-                sources: webSources.slice(),
-                onStep: step => {
-                    setAgentState(agent.id, "active");
-                    placeholder.text = step;
-                    if (session.id === activeChatId) renderActiveChatFeed();
-                }
-            });
+            const stepOptions = { extraContext: injectedContext, aiOptions, webSources, memory: collectiveMemory };
 
             if (isBackground) {
                 document.getElementById("isBackgroundWorkerCheckbox").checked = false;
-                appendMessageToSession(session, `⚡ Background Worker (${activeAgent.name})`, `Task queued for autonomous execution...`);
                 logConsoleActivity(`[Background Worker] Task initiated for ${activeAgent.name}.`);
-                const workerPlaceholder = session.messages[session.messages.length - 1];
-                
-                setTimeout(async () => {
-                    try {
-                        setAgentState(activeAgent.id, "thinking");
-                        const tools = toolContext(workerPlaceholder, activeAgent);
-                        let res = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext, { ...aiOptions, tools });
-                        if (isSelfHeal) res = await runSelfHealingPass(activeAgent, userText, res);
-                        
-                        session.messages.pop();
-                        appendMessageToSession(session, `⚡ Background Complete [${activeAgent.name}]`, res, null, tools.sources);
-                        setAgentState(activeAgent.id, "success");
-                    } catch (err) {
-                        setAgentState(activeAgent.id, "idle");
-                        session.messages.pop();
-                        appendMessageToSession(session, "❌ Background Task Error", err.message);
-                    }
-                }, 1000);
+                // Not awaited, so the user can keep chatting while it works.
+                (async () => {
+                    const result = await runAgentStep(session, activeAgent, userText, { ...stepOptions, title: a => `⚡ Background Complete [${a.name}]` });
+                    if (isSelfHeal) await runSelfHealingPass(session, [result], userText, { ...stepOptions, memory: "" });
+                })();
                 return;
             }
 
@@ -3906,41 +4237,22 @@
                     alert("Please check at least one agent in the agent list for the Group Swarm.");
                     return;
                 }
-
-                for (const agent of groupAgents) {
-                    try {
-                        appendMessageToSession(session, `🤖 ${agent.name} (Thinking...)`, `Analyzing swarm query...`);
-                        setAgentState(agent.id, "thinking");
-                        const tools = toolContext(session.messages[session.messages.length - 1], agent);
-                        let response = await callAI(agent.instructions + "\n[Memory]: " + agent.memory, userText + injectedContext, { ...aiOptions, tools });
-                        if (isSelfHeal) response = await runSelfHealingPass(agent, userText, response);
-                        
-                        session.messages.pop();
-                        appendMessageToSession(session, `🤖 ${agent.name}`, response, null, tools.sources);
-                        setAgentState(agent.id, "success");
-                    } catch (err) {
-                        setAgentState(agent.id, "idle");
-                        session.messages.pop();
-                        appendMessageToSession(session, `❌ Error [${agent.name}]`, err.message);
-                    }
+                // Architects plan and build first, swarm agents build on that, self-healing agents verify last.
+                const order = { architect: 0, swarm: 1, self_healing: 2 };
+                const ordered = groupAgents.slice().sort((a, b) => order[agentDevRole(a)] - order[agentDevRole(b)]);
+                const results = [];
+                for (const agent of ordered) {
+                    const notes = results.length ? "\n\n[Swarm progress]\n" + results.map(r => `${r.agent.name}${r.changes.length ? ` changed ${r.changes.join(", ")}` : " changed no files"}`
+                        + `${r.commands.length ? `; ran ${r.commands.join("; ")}` : ""}.\nReport: ${r.response.slice(0, 2500)}`).join("\n\n") : "";
+                    results.push(await runAgentStep(session, agent, userText, { ...stepOptions, memory: `[Memory]: ${agent.memory}`, notes }));
                 }
-            } else {
-                try {
-                    appendMessageToSession(session, `🤖 ${activeAgent.name} (Thinking...)`, `Processing request deterministically...`);
-                    setAgentState(activeAgent.id, "thinking");
-                    const tools = toolContext(session.messages[session.messages.length - 1], activeAgent);
-                    let response = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext, { ...aiOptions, tools });
-                    if (isSelfHeal) response = await runSelfHealingPass(activeAgent, userText, response);
-                    
-                    session.messages.pop();
-                    appendMessageToSession(session, `🤖 ${activeAgent.name}`, response, null, tools.sources);
-                    setAgentState(activeAgent.id, "success");
-                } catch (err) {
-                    setAgentState(activeAgent.id, "idle");
-                    session.messages.pop();
-                    appendMessageToSession(session, "❌ System Error", err.message);
-                }
+                // A self-healing agent in the swarm has already verified the work.
+                if (isSelfHeal && !ordered.some(a => agentDevRole(a) === "self_healing")) await runSelfHealingPass(session, results, userText, { ...stepOptions, memory: "" });
+                return;
             }
+
+            const result = await runAgentStep(session, activeAgent, userText, stepOptions);
+            if (isSelfHeal) await runSelfHealingPass(session, [result], userText, { ...stepOptions, memory: "" });
         }
 
         // Startup never opens Settings on its own: the workspace loads straight away,
