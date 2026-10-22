@@ -128,3 +128,29 @@ test('with the sandbox off, the page keeps its direct tools', async t => {
     assert.equal(backend.log.length, 0, 'no sandbox tool calls');
     assert.equal(backend.sandboxes.size, 0, 'no sandbox created');
 });
+
+test('in sandbox mode, MCP servers that write or run on this computer are kept out of the review bypass', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const workspace = makeWorkspace();
+    const helperTool = (name, readOnly) => ({ name, qualifiedName: `helper__${name}`, server: 'helper', description: `helper ${name}`,
+        inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: readOnly } });
+    const backend = createMockBackend({ workspace, hubTools: [helperTool('write_file', false), helperTool('run_command', false), helperTool('lookup', true), helperTool('deploy', false)] });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const { page } = await openPage(launched.browser, url, {
+        mcpServers: { helper: { url: 'http://127.0.0.1:8787/mcp', type: 'http' } },
+        steps: [[{ name: 'helper__lookup' }], [{ name: 'helper__deploy' }], 'Done looking.']
+    });
+    // Turn "run without asking" on to show the sandbox asks anyway; decline the dialog.
+    await page.evaluate(() => { toolsAutoRun = true; });
+    const dialogs = [];
+    page.on('dialog', dialog => { dialogs.push(dialog.message()); dialog.dismiss(); });
+    await sendPrompt(page, 'Look something up');
+    await waitForChat(page, /Done looking\./);
+    const offered = (await page.evaluate(() => window.__modelCalls))[0].tools;
+    assert.ok(offered.includes('helper__lookup') && offered.includes('helper__deploy'), offered.join(', '));
+    assert.ok(!offered.includes('helper__write_file') && !offered.includes('helper__run_command'), 'host write/run tools hidden');
+    assert.deepEqual(backend.hubCalls.map(c => c.name), ['lookup'], 'read-only tool ran; declined tool did not');
+    assert.equal(dialogs.length, 1);
+    assert.match(dialogs[0], /helper__deploy[\s\S]*outside the sandbox/);
+});

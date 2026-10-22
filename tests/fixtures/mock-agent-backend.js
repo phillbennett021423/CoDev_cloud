@@ -2,7 +2,8 @@
 // serves mobile/www and the same /agent/* review routes and /agent-tools MCP
 // endpoint as desktop/sandbox, backed by an in-memory staging copy of a real
 // folder. Approve writes to that folder, so a test can check what reached disk.
-// Syntax checks: .js through vm.Script, .json through JSON.parse.
+// Syntax checks: .js through vm.Script, .json through JSON.parse. hubTools stands
+// in for MCP servers from Settings (POST /mcp-hub), such as the Python helper.
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -53,10 +54,21 @@ function syntaxCheck(rel, text) {
     }
 }
 
-function createMockBackend({ workspace, docker = false } = {}) {
+function createMockBackend({ workspace, docker = false, hubTools = [] } = {}) {
     const sandboxes = new Map(); // id -> { id, agents:Set, files: Map(rel -> text|null), base: Map }
     const changesets = new Map();
     const log = [];
+    const hubCalls = [];
+
+    function handleHub(req) {
+        if (req.op === 'listTools') return { result: hubTools };
+        if (req.op === 'callTool') {
+            hubCalls.push({ server: req.server, name: req.name, arguments: req.arguments });
+            return { result: { content: [{ type: 'text', text: `ran ${req.name}` }] } };
+        }
+        if (req.op === 'status') return { result: [] };
+        return { result: req.op === 'listResources' ? [] : null };
+    }
 
     function boxFor(id) {
         const box = sandboxes.get(id);
@@ -213,6 +225,7 @@ function createMockBackend({ workspace, docker = false } = {}) {
             try { body = raw.trim() ? JSON.parse(raw) : {}; } catch { return send(400, { error: 'Bad JSON' }); }
             if (url.pathname === '/anthropic/status') return send(200, { available: false });
             if (url.pathname === '/agent-tools') return send(200, handleMcp(body));
+            if (url.pathname === '/mcp-hub') return send(200, handleHub(body));
             if (url.pathname.startsWith('/agent/')) {
                 try {
                     const [status, payload] = handleRequest(req.method, url.pathname, Object.fromEntries(url.searchParams), body);
@@ -232,9 +245,10 @@ function createMockBackend({ workspace, docker = false } = {}) {
     });
 
     return {
-        server, log, sandboxes, changesets,
+        server, log, hubCalls, sandboxes, changesets,
         listen: () => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(`http://localhost:${server.address().port}`))),
-        close: () => new Promise(resolve => server.close(() => resolve()))
+        // Pages left open keep connections alive, so those are cut instead of waited for.
+        close: () => new Promise(resolve => { server.close(() => resolve()); server.closeAllConnections(); })
     };
 }
 

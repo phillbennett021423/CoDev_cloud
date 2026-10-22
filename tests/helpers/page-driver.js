@@ -35,18 +35,18 @@ async function launchBrowser() {
 // steps: the assistant messages the stand-in model returns, in order, as
 // [{ name, arguments }] tool-call lists or a final text string. Once the script
 // runs out it answers "Done." so later passes (like Self-Healing) end at once.
-async function openPage(browser, baseUrl, { steps = [], selfHeal = false } = {}) {
+async function openPage(browser, baseUrl, { steps = [], selfHeal = false, mcpServers = {} } = {}) {
     const page = await browser.newPage();
     const errors = [];
     page.on('pageerror', err => errors.push(err.message));
-    await page.addInitScript(() => {
+    await page.addInitScript(mcpServers => {
         localStorage.setItem('codev_groq_key', 'gsk_test_key_for_agent_tests');
         localStorage.setItem('codev_backend', 'groq');
         localStorage.setItem('codev_auto_ground', '0');
         localStorage.setItem('codev_chime', '0');
-        localStorage.setItem('codev_mcp_servers', '{"mcpServers":{}}');
+        localStorage.setItem('codev_mcp_servers', JSON.stringify({ mcpServers }));
         localStorage.setItem('codev_sandbox_mode', '1');
-    });
+    }, mcpServers);
     await page.goto(baseUrl, { waitUntil: 'load' });
     // initAgentInfra has run once the sandbox checkbox is enabled.
     await page.waitForFunction(() => {
