@@ -4341,10 +4341,9 @@
         }
 
         // The tool list in sandbox mode: web search, the sandbox's file and command tools,
-        // and the other MCP tools (the agents' browser, the servers from Settings) through
-        // runMcpTool, which keeps their confirm and approval prompts. The page's folder
-        // tools and the Windows app's built-in folder tools write straight to disk, so
-        // they're left out.
+        // and the other MCP tools (the agents' browser, the servers from Settings). The
+        // page's folder tools, the Windows app's built-in folder tools and other servers'
+        // file and command tools write straight to disk, so they're left out.
         async function buildSandboxTools(base, ctx) {
             const tools = base.slice();
             const schema = tool => tool.inputSchema && tool.inputSchema.type === "object" ? tool.inputSchema : { type: "object", properties: {} };
@@ -4359,15 +4358,32 @@
             }
             for (const tool of await fetchAllMcpTools()) {
                 const name = tool.qualifiedName || tool.name;
-                if (tool.transport === "desktop" || tools.some(t => t.name === name)) continue;
+                // MCP servers that edit or run on this computer (like the Python helper with
+                // --autonomous) would skip the review, so their file and command tools are left out.
+                if (tool.transport === "desktop" || HOST_DISK_TOOLS.has(tool.name) || tools.some(t => t.name === name)) continue;
                 tools.push({
                     name,
                     description: (tool.server ? `[MCP server "${tool.server}"] ` : "") + (tool.description || tool.title || tool.name),
                     inputSchema: schema(tool),
-                    run: async args => runMcpTool(tool, args, ctx)
+                    run: async args => runOutsideSandbox(tool, name, args, ctx)
                 });
             }
             return tools;
+        }
+
+        const HOST_DISK_TOOLS = new Set(["write_file", "edit_file", "delete_file", "move_file", "create_directory", "run_command",
+            "write_workspace_file", "edit_workspace_file"]);
+
+        // Any other tool that changes something isn't covered by the review, so in sandbox
+        // mode it always asks first, even with "Run file edits and commands without asking
+        // me first" on. The browser's tools keep their own approval prompts.
+        async function runOutsideSandbox(tool, name, args, ctx) {
+            if (tool.transport === "browser" || tool.annotations?.readOnlyHint) return runMcpTool(tool, args, ctx);
+            if (!confirm(`An agent wants to use ${name}${tool.server ? ` (MCP server "${tool.server}")` : ""}. It works outside the sandbox, so the change review won't cover it:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`)) {
+                logConsoleActivity(`[Tool] You declined: ${name}`);
+                return "The user declined this tool call.";
+            }
+            return callMcpTool(tool, args);
         }
 
         function sandboxToolNote(tools) {
