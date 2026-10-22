@@ -17,6 +17,15 @@ The app's code is in `desktop/` (Electron). To run it from source: `cd desktop &
 
 `server.js` serves the page on your own computer. It needs Node.js; `npm install` (which `start-codev.bat` runs for you) adds the MCP SDK so the page can use MCP servers on this computer.
 
+## Anthropic API key
+
+`server.js` reads the key only from the `ANTHROPIC_API_KEY` environment variable at startup; never paste it into the code. Either:
+
+- copy `.env.example` to `.env` next to `server.js` and put your key in it (`.env` is gitignored), or
+- set it on Windows with `setx ANTHROPIC_API_KEY "sk-ant-..."` in a Command Prompt, then open a new window before running `start-codev.bat`.
+
+If the key is missing, the server starts with a note saying so; if it's set but doesn't look like an Anthropic key, the server stops and tells you.
+
 ## "System Error: Failed to fetch"
 
 This means the request never reached Groq (api.groq.com). Check that the computer is online, and that a firewall, antivirus web shield, VPN, proxy or ad blocker isn't blocking api.groq.com. A wrong API key shows a different error from Groq itself.
