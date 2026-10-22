@@ -237,6 +237,10 @@ test('a project too big to copy is staged file by file as agents change it', asy
         assert.strictEqual((await call('read_file', { path: 'scenes/main.gd' })).content[0].text, 'extends Node3D\n');
         assert.strictEqual((await call('read_file', { path: 'README.md' })).isError, true);
         assert.match((await call('read_file', { path: '../secret' })).content[0].text, /outside the workspace/);
+        for (const p of ['.codev/x.txt', 'sub/.codev/sandboxes/y.txt']) {
+            assert.match((await call('read_file', { path: p })).content[0].text, /CoDev's own data/);
+            assert.match((await call('write_file', { path: p, content: 'x' })).content[0].text, /CoDev's own data/);
+        }
 
         const set = (await sandbox.handleRequest('GET', '/agent/changes')).body[0];
         assert.deepStrictEqual(set.files.map(f => `${f.status}:${f.path}`), ['deleted:README.md', 'added:scenes/boss.gd', 'modified:scenes/main.gd']);

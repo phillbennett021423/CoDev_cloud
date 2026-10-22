@@ -210,14 +210,19 @@ function createStaging({ getProjectDir, root, limits = {} } = {}) {
     // ON-DEMAND STAGING (large projects). In a fully copied workspace these just
     // resolve paths in the copy.
 
+    // CoDev's own data folder (other sandboxes' copies), at any depth, isn't part
+    // of the project for reading or writing.
+    function refuseCodevData(key, rel) {
+        if (key.split('/').includes('.codev')) throw new StagingError(`'${rel}' is CoDev's own data, not part of the project`);
+    }
+
     // Where to read rel from: the workspace copy, or the real project for a file
     // no agent has touched yet.
     function readPath(ws, rel) {
         const work = containedPath(ws.work, rel);
         const key = toRel(ws.work, work);
+        refuseCodevData(key, rel);
         if (!ws.lazy || ws.touched.has(key)) return work;
-        // CoDev's own data (other sandboxes' copies) isn't part of the project.
-        if (key.split('/')[0] === '.codev') throw new StagingError(`'${rel}' is CoDev's own data, not part of the project`);
         return containedPath(ws.projectDir, rel);
     }
 
@@ -226,6 +231,7 @@ function createStaging({ getProjectDir, root, limits = {} } = {}) {
     function prepareWrite(ws, rel) {
         const work = containedPath(ws.work, rel);
         const key = toRel(ws.work, work);
+        refuseCodevData(key, rel);
         if (!ws.lazy || ws.touched.has(key)) return work;
         if (!key) throw new StagingError(`'${rel}' is the project folder, not a file`);
         const realFile = containedPath(ws.projectDir, rel);
