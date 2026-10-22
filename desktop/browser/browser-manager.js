@@ -85,6 +85,9 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
             viewport: VIEWPORT,
             acceptDownloads: false,
             serviceWorkers: 'block',
+            // CoDev closes the browsers itself on Ctrl+C or quit, then deletes the profiles;
+            // Playwright's own signal handlers would exit before that runs.
+            handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
             args: ['--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-sync']
         };
         const candidates = launchChoice ? [launchChoice] : launchCandidates();
