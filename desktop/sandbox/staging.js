@@ -5,6 +5,10 @@
 // against. Nothing in this file writes to the real project except applyFiles,
 // which the review gate calls after the user approves.
 //
+// Hidden files and folders (.env, .git and anything else whose name starts with
+// a dot) are left out everywhere: they're never copied into a workspace (so a
+// container never sees them), listed, searched, read, written or applied.
+//
 // A project too big to copy (more than MAX_FILES files or MAX_TOTAL_BYTES) is
 // staged on demand instead: the workspace and baseline start empty, a file is
 // copied into both the first time an agent writes, edits or deletes it, and
@@ -46,7 +50,14 @@ function toRel(root, full) {
     return path.relative(root, full).split(path.sep).join('/');
 }
 
-// Project-relative paths of regular files under dir (symlinks and SKIPPED_DIRS left out).
+// Hidden files and folders (names starting with a dot, like .env or .git) can
+// hold keys and settings, so they're never copied, listed, read or written.
+function isHidden(rel) {
+    return String(rel).split('/').some(part => part.startsWith('.') && part !== '.' && part !== '..');
+}
+
+// Project-relative paths of regular files under dir (symlinks, hidden files and
+// folders, and SKIPPED_DIRS left out).
 function walk(dir, { limit = MAX_FILES * 4, onSymlink } = {}) {
     const found = [];
     const visit = current => {
@@ -54,6 +65,7 @@ function walk(dir, { limit = MAX_FILES * 4, onSymlink } = {}) {
         try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { return; }
         for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
             if (found.length >= limit) return;
+            if (entry.name.startsWith('.')) continue;
             const full = path.join(current, entry.name);
             if (entry.isSymbolicLink()) { if (onSymlink) onSymlink(toRel(dir, full)); continue; }
             if (entry.isDirectory()) { if (!SKIPPED_DIRS.has(entry.name)) visit(full); }
@@ -210,14 +222,19 @@ function createStaging({ getProjectDir, root, limits = {} } = {}) {
     // ON-DEMAND STAGING (large projects). In a fully copied workspace these just
     // resolve paths in the copy.
 
+    // Hidden files and folders at any depth (.env, .git, CoDev's own .codev data
+    // with other sandboxes' copies) are off limits for reading and writing.
+    function refuseHidden(key, rel) {
+        if (isHidden(key)) throw new StagingError(`'${rel}' is a hidden file or folder (its name starts with a dot), which agents can't access`);
+    }
+
     // Where to read rel from: the workspace copy, or the real project for a file
     // no agent has touched yet.
     function readPath(ws, rel) {
         const work = containedPath(ws.work, rel);
         const key = toRel(ws.work, work);
+        refuseHidden(key, rel);
         if (!ws.lazy || ws.touched.has(key)) return work;
-        // CoDev's own data (other sandboxes' copies) isn't part of the project.
-        if (key.split('/').includes('.codev')) throw new StagingError(`'${rel}' is CoDev's own data, not part of the project`);
         return containedPath(ws.projectDir, rel);
     }
 
@@ -226,9 +243,9 @@ function createStaging({ getProjectDir, root, limits = {} } = {}) {
     function prepareWrite(ws, rel) {
         const work = containedPath(ws.work, rel);
         const key = toRel(ws.work, work);
+        refuseHidden(key, rel);
         if (!ws.lazy || ws.touched.has(key)) return work;
         if (!key) throw new StagingError(`'${rel}' is the project folder, not a file`);
-        if (key.split('/').includes('.codev')) throw new StagingError(`'${rel}' is CoDev's own data, not part of the project`);
         const realFile = containedPath(ws.projectDir, rel);
         let stat = null;
         try { stat = fs.lstatSync(realFile); } catch { /* a new file */ }
@@ -250,6 +267,7 @@ function createStaging({ getProjectDir, root, limits = {} } = {}) {
     function listTree(ws, rel, limit) {
         const start = containedPath(ws.work, rel);
         const prefix = toRel(ws.work, start);
+        refuseHidden(prefix, rel);
         const join = p => (prefix ? `${prefix}/${p}` : p);
         const isDir = p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
         if (!ws.lazy) {
@@ -315,6 +333,7 @@ function createStaging({ getProjectDir, root, limits = {} } = {}) {
         const results = [];
         for (const { path: rel, hash } of files) {
             try {
+                if (isHidden(String(rel).replace(/\\/g, '/'))) throw new StagingError('it is a hidden file or folder, which the sandbox never writes');
                 const workFile = containedPath(ws.work, rel);
                 const current = readOrNull(workFile);
                 const currentHash = current === null ? 'deleted' : sha(current);
@@ -376,4 +395,4 @@ function createStaging({ getProjectDir, root, limits = {} } = {}) {
     return { open, get, changes, applyFiles, revertFiles, discard, discardAll, list, containedPath, walk, projectSize, readPath, prepareWrite, listTree };
 }
 
-module.exports = { createStaging, StagingError, containedPath, walk, isBinary, SKIPPED_DIRS };
+module.exports = { createStaging, StagingError, containedPath, walk, isBinary, isHidden, SKIPPED_DIRS };
