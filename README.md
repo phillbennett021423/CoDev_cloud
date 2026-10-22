@@ -17,6 +17,32 @@ The app's code is in `desktop/` (Electron). To run it from source: `cd desktop &
 
 `server.js` serves the page on your own computer. It needs Node.js; `npm install` (which `start-codev.bat` runs for you) adds the MCP SDK so the page can use MCP servers on this computer.
 
+## Setup and agent services
+
+`npm run setup` (which `start-codev.bat` runs every time; it skips what's already done) gets a computer ready:
+
+1. checks Node.js and installs the npm packages,
+2. creates `.env` from `.env.example` if there is none and checks the keys in it (it only says whether each is set and well-formed, never the value),
+3. checks that the Docker engine is running, for agent sandboxes,
+4. downloads Chromium for the browser tools (`npx playwright install chromium`, using the Playwright version in `node_modules`),
+5. creates the `.codev` data folder for sandboxes, staged changes and browser profiles (gitignored).
+
+Missing Docker or keys are only warnings: CoDev runs without them, with those features off. Setup fails only for an old Node.js, a failed `npm install`, a malformed key or a bad `PORT`. `npm run check` reports without installing anything; `npm run setup -- --skip-browsers` skips the Chromium download.
+
+Settings are read by `config.js` from the environment or `.env`:
+
+| Variable | What for |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | Anthropic relay (`sk-ant-...`) |
+| `OPENROUTER_API_KEY` | OpenRouter (`sk-or-...`) |
+| `MANUS_API_KEY` | Q tasks |
+| `CODEV_WORKSPACE` | the project folder agents work in; `start-codev.bat C:\path\to\project` sets it too |
+| `CODEV_DATA_DIR` | where `.codev` goes |
+| `CODEV_VAULT_KEY` | passphrase for the browser tools' saved logins |
+| `PORT` | default 3000; `0` picks a free port |
+
+`server.js` loads the agent services through `agent-services.js`: the sandbox containers and diff review (`desktop/sandbox`) and the headless browser (`agents/browser`). A service that isn't installed is skipped. The page reaches their tools at `POST /agent-tools` (MCP JSON-RPC: `initialize`, `tools/list`, `tools/call`), the review gate under `/agent/`, and what's on at `GET /agent/status`. All of these answer CoDev's own page only. Ctrl+C removes the agents' containers and browser profiles.
+
 ## Autonomous developer workspace
 
 Every message is treated as a task on your project. You don't type file paths or paste code:
