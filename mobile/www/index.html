@@ -99,6 +99,37 @@
         .agent-meta { font-size: 0.75rem; color: var(--accent); }
         .agent-instructions-preview { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+        /* Geometric agent micro-avatars: one SVG per card, driven by data-state (idle | thinking | active | success). */
+        .agent-identity { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+        .agent-avatar { width: 36px; height: 36px; flex-shrink: 0; overflow: visible; --avatar-color: var(--accent); color: var(--avatar-color); }
+        .agent-avatar * { transform-box: fill-box; transform-origin: center; }
+        .agent-avatar .avatar-body { fill: var(--avatar-color); fill-opacity: 0.22; stroke: var(--avatar-color); stroke-width: 2; stroke-linejoin: round; transition: fill 0.3s, stroke 0.3s; }
+        .agent-avatar .avatar-eye { fill: var(--text-main); }
+        .agent-avatar .avatar-mouth { fill: none; stroke: var(--text-main); stroke-width: 2; stroke-linecap: round; }
+        .agent-avatar .avatar-smile { stroke-dasharray: 16; stroke-dashoffset: 16; opacity: 0; }
+        .agent-avatar[data-state="idle"] .avatar-shape { animation: avatarBreathe 3.2s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-shape { animation: avatarWobble 1.6s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-body { animation: avatarPulseFill 1.6s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-eye { animation: avatarBlink 1.1s ease-in-out infinite; }
+        .agent-avatar[data-state="thinking"] .avatar-eye + .avatar-eye { animation-delay: 0.05s; }
+        .agent-avatar[data-state="active"] .avatar-shape { animation: avatarPulse 0.9s ease-in-out infinite; }
+        .agent-avatar[data-state="active"] .avatar-body { filter: drop-shadow(0 0 4px var(--avatar-color)); }
+        .agent-avatar[data-state="success"] { --avatar-color: var(--success); }
+        .agent-avatar[data-state="success"] .avatar-shape { animation: avatarPop 0.5s cubic-bezier(.34,1.56,.64,1) both; }
+        .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-neutral { opacity: 0; }
+        .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-smile { animation: avatarSmileDraw 0.4s ease-out forwards; }
+        @keyframes avatarBreathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
+        @keyframes avatarWobble { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-6deg); } 75% { transform: rotate(6deg); } }
+        @keyframes avatarPulseFill { 0%, 100% { fill-opacity: 0.22; } 50% { fill-opacity: 0.5; } }
+        @keyframes avatarBlink { 0%, 40%, 60%, 100% { transform: scaleY(1); } 50% { transform: scaleY(0.1); } }
+        @keyframes avatarPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+        @keyframes avatarPop { 0% { transform: scale(0.8); } 100% { transform: scale(1); } }
+        @keyframes avatarSmileDraw { from { stroke-dashoffset: 16; opacity: 1; } to { stroke-dashoffset: 0; opacity: 1; } }
+        @media (prefers-reduced-motion: reduce) {
+            .agent-avatar .avatar-shape, .agent-avatar .avatar-body, .agent-avatar .avatar-eye { animation: none !important; }
+            .agent-avatar:is([data-state="active"], [data-state="success"]) .avatar-smile { animation: none; stroke-dashoffset: 0; opacity: 1; }
+        }
+
         /* Center Content Views */
         .center-pane { display: flex; flex-direction: column; background: var(--bg-dark); overflow: hidden; flex: 1; }
         .pane-header { padding: 12px 20px; background: var(--bg-panel); border-bottom: 1px solid var(--border-color); font-size: 0.9rem; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
@@ -3025,6 +3056,58 @@
             appendLogLine(document.getElementById("consoleOutput"), text);
         }
 
+        // Geometric micro-avatars. Each agent gets a shape from its id; its face follows the
+        // agent's live state (idle, thinking, active, success), which is not saved.
+        const AVATAR_SHAPES = {
+            circle:   { color: "var(--accent)",       faceY: 0, body: '<circle class="avatar-body" cx="20" cy="20" r="17"/>' },
+            triangle: { color: "var(--warning)",      faceY: 6, body: '<polygon class="avatar-body" points="20,3 37,35 3,35"/>' },
+            square:   { color: "var(--codev-purple)", faceY: 0, body: '<rect class="avatar-body" x="4" y="4" width="32" height="32" rx="6"/>' },
+            hexagon:  { color: "var(--codev-blue)",   faceY: 0, body: '<polygon class="avatar-body" points="20,3 35,11.5 35,28.5 20,37 5,28.5 5,11.5"/>' }
+        };
+        const AVATAR_STATES = ["idle", "thinking", "active", "success"];
+        const agentStates = {};
+        const agentStateTimers = {};
+
+        function agentAvatarShape(agent) {
+            if (AVATAR_SHAPES[agent.avatarShape]) return agent.avatarShape;
+            const names = Object.keys(AVATAR_SHAPES);
+            let hash = 0;
+            for (const ch of agent.id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+            return names[hash % names.length];
+        }
+
+        function renderAgentAvatar(agent) {
+            const shape = AVATAR_SHAPES[agentAvatarShape(agent)];
+            const state = agentStates[agent.id] || "idle";
+            return `
+                <svg class="agent-avatar" viewBox="0 0 40 40" data-agent-id="${escapeHtml(agent.id)}" data-state="${state}" style="--avatar-color: ${shape.color};" aria-label="${escapeHtml(agent.name)} is ${state}" role="img">
+                    <g class="avatar-shape">
+                        ${shape.body}
+                        <g transform="translate(0 ${shape.faceY})">
+                            <ellipse class="avatar-eye" cx="14.5" cy="17" rx="2.4" ry="2.8"/>
+                            <ellipse class="avatar-eye" cx="25.5" cy="17" rx="2.4" ry="2.8"/>
+                            <path class="avatar-mouth avatar-neutral" d="M16 25 H24"/>
+                            <path class="avatar-mouth avatar-smile" d="M14.5 23.5 Q20 29.5 25.5 23.5"/>
+                        </g>
+                    </g>
+                </svg>`;
+        }
+
+        // Updates the avatar in place so a state change never re-renders the card list.
+        // "success" falls back to "idle" on its own after a moment.
+        function setAgentState(agentId, state) {
+            if (!AVATAR_STATES.includes(state)) state = "idle";
+            clearTimeout(agentStateTimers[agentId]);
+            agentStates[agentId] = state;
+            const agent = agents.find(a => a.id === agentId);
+            const svg = document.querySelector(`.agent-avatar[data-agent-id="${CSS.escape(agentId)}"]`);
+            if (svg) {
+                svg.setAttribute("data-state", state);
+                if (agent) svg.setAttribute("aria-label", `${agent.name} is ${state}`);
+            }
+            if (state === "success") agentStateTimers[agentId] = setTimeout(() => setAgentState(agentId, "idle"), 2500);
+        }
+
         function renderAgentList() {
             const list = document.getElementById("agentList");
             list.innerHTML = "";
@@ -3034,9 +3117,12 @@
                 card.style.borderColor = agent.id === selectedAgentId ? 'var(--accent)' : 'var(--border-color)';
                 card.innerHTML = `
                     <div class="agent-card-header">
-                        <div style="flex: 1; min-width: 0;">
-                            <h4>${escapeHtml(agent.name)}</h4>
-                            <span class="agent-meta">${escapeHtml(agent.role)}</span>
+                        <div class="agent-identity">
+                            ${renderAgentAvatar(agent)}
+                            <div style="min-width: 0;">
+                                <h4>${escapeHtml(agent.name)}</h4>
+                                <span class="agent-meta">${escapeHtml(agent.role)}</span>
+                            </div>
                         </div>
                         <input type="checkbox" ${agent.selectedForGroup ? 'checked' : ''} title="Include in Group Swarm">
                     </div>
@@ -3248,6 +3334,7 @@
         }
 
         async function runSelfHealingPass(agent, prompt, initialResponse) {
+            setAgentState(agent.id, "thinking");
             logConsoleActivity(`[Self-Healing Loop] Inspecting code output for compiler traps / syntax bugs...`);
             const auditPrompt = `Review this generated code for Godot 4 API mismatches (like move_and_slide(velocity) having arguments or C# record 'with' struct errors). If an error exists, rewrite the corrected code. If it is already clean, output it as-is:\n\n${initialResponse}`;
             
@@ -3341,9 +3428,11 @@
             }
 
             // Each agent call gets its own tool context; its sources start from the pre-search.
-            const toolContext = (placeholder) => ({
+            // A tool step means the agent is acting, so its avatar switches from thinking to active.
+            const toolContext = (placeholder, agent) => ({
                 sources: webSources.slice(),
                 onStep: step => {
+                    setAgentState(agent.id, "active");
                     placeholder.text = step;
                     if (session.id === activeChatId) renderActiveChatFeed();
                 }
@@ -3357,13 +3446,16 @@
                 
                 setTimeout(async () => {
                     try {
-                        const tools = toolContext(workerPlaceholder);
+                        setAgentState(activeAgent.id, "thinking");
+                        const tools = toolContext(workerPlaceholder, activeAgent);
                         let res = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext, { ...aiOptions, tools });
                         if (isSelfHeal) res = await runSelfHealingPass(activeAgent, userText, res);
                         
                         session.messages.pop();
                         appendMessageToSession(session, `⚡ Background Complete [${activeAgent.name}]`, res, null, tools.sources);
+                        setAgentState(activeAgent.id, "success");
                     } catch (err) {
+                        setAgentState(activeAgent.id, "idle");
                         session.messages.pop();
                         appendMessageToSession(session, "❌ Background Task Error", err.message);
                     }
@@ -3381,13 +3473,16 @@
                 for (const agent of groupAgents) {
                     try {
                         appendMessageToSession(session, `🤖 ${agent.name} (Thinking...)`, `Analyzing swarm query...`);
-                        const tools = toolContext(session.messages[session.messages.length - 1]);
+                        setAgentState(agent.id, "thinking");
+                        const tools = toolContext(session.messages[session.messages.length - 1], agent);
                         let response = await callAI(agent.instructions + "\n[Memory]: " + agent.memory, userText + injectedContext, { ...aiOptions, tools });
                         if (isSelfHeal) response = await runSelfHealingPass(agent, userText, response);
                         
                         session.messages.pop();
                         appendMessageToSession(session, `🤖 ${agent.name}`, response, null, tools.sources);
+                        setAgentState(agent.id, "success");
                     } catch (err) {
+                        setAgentState(agent.id, "idle");
                         session.messages.pop();
                         appendMessageToSession(session, `❌ Error [${agent.name}]`, err.message);
                     }
@@ -3395,13 +3490,16 @@
             } else {
                 try {
                     appendMessageToSession(session, `🤖 ${activeAgent.name} (Thinking...)`, `Processing request deterministically...`);
-                    const tools = toolContext(session.messages[session.messages.length - 1]);
+                    setAgentState(activeAgent.id, "thinking");
+                    const tools = toolContext(session.messages[session.messages.length - 1], activeAgent);
                     let response = await callAI(activeAgent.instructions + "\n" + collectiveMemory, userText + injectedContext, { ...aiOptions, tools });
                     if (isSelfHeal) response = await runSelfHealingPass(activeAgent, userText, response);
                     
                     session.messages.pop();
                     appendMessageToSession(session, `🤖 ${activeAgent.name}`, response, null, tools.sources);
+                    setAgentState(activeAgent.id, "success");
                 } catch (err) {
+                    setAgentState(activeAgent.id, "idle");
                     session.messages.pop();
                     appendMessageToSession(session, "❌ System Error", err.message);
                 }
