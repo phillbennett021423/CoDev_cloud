@@ -5,8 +5,10 @@
 // ones (npx, python, .exe) a browser can't start. It needs `npm install` once;
 // the servers are kept in mcp-servers.json.
 // The Anthropic API key comes only from ANTHROPIC_API_KEY (environment or .env),
-// never from this file; see .env.example.
+// never from this file; see .env.example. With it set, POST /anthropic/v1/messages
+// relays the page's Anthropic requests and adds the key, so the page needs none.
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { loadEnvFile, readAnthropicKey } = require('./env');
@@ -72,8 +74,42 @@ function handleMcpHub(req, res) {
     });
 }
 
+// Only CoDev's own page may spend the key: same Origin/Host/content-type checks
+// as /mcp-hub. The key is added here and never sent to the page.
+function handleAnthropicRelay(req, res) {
+    if (req.method !== 'POST' || !OWN_ORIGINS.includes(req.headers.origin) || !OWN_ORIGINS.includes(`http://${req.headers.host}`)
+        || !String(req.headers['content-type'] || '').startsWith('application/json')) {
+        return sendJson(res, 403, { error: { message: 'Forbidden' } });
+    }
+    if (!anthropic.key) return sendJson(res, 503, { error: { message: anthropic.error } });
+    const chunks = [];
+    let size = 0;
+    req.on('data', chunk => {
+        size += chunk.length;
+        if (size > 32 * 1024 * 1024) return req.destroy();
+        chunks.push(chunk);
+    });
+    req.on('end', () => {
+        const body = Buffer.concat(chunks);
+        const upstream = https.request('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json', 'content-length': body.length,
+                'x-api-key': anthropic.key, 'anthropic-version': req.headers['anthropic-version'] || '2023-06-01'
+            }
+        }, reply => {
+            res.writeHead(reply.statusCode, { 'Content-Type': reply.headers['content-type'] || 'application/json' });
+            reply.pipe(res);
+        });
+        upstream.on('error', err => sendJson(res, 502, { error: { message: `Couldn't reach api.anthropic.com from this computer (${err.message}).` } }));
+        upstream.end(body);
+    });
+}
+
 const server = http.createServer((req, res) => {
     if (req.url === '/mcp-hub') return handleMcpHub(req, res);
+    if (req.url === '/anthropic/status') return sendJson(res, 200, { available: Boolean(anthropic.key) });
+    if (req.url === '/anthropic/v1/messages') return handleAnthropicRelay(req, res);
     let urlPath;
     try { urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname); } catch { urlPath = '/'; }
     const filePath = path.join(ROOT, urlPath === '/' ? 'index.html' : urlPath);

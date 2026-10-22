@@ -26,6 +26,15 @@ The app's code is in `desktop/` (Electron). To run it from source: `cd desktop &
 
 If the key is missing, the server starts with a note saying so; if it's set but doesn't look like an Anthropic key, the server stops and tells you.
 
+## Using Anthropic (Claude) as the AI provider
+
+In Settings, pick **Anthropic** under *AI provider*. The app uses `claude-haiku-5-5`.
+
+- On Android, the Windows app or any browser, paste your Anthropic key (it starts with `sk-ant-`) into the **Anthropic API Key** field. It is stored on that device only and sent straight to api.anthropic.com.
+- When you run `npm start` and `ANTHROPIC_API_KEY` is set, you can leave that field empty: the page sends its requests to `server.js`, which adds the key and passes them on, so the key never reaches the browser.
+
+Voice input still uses Groq Whisper, so add a Groq key too if you want the mic button.
+
 ## "System Error: Failed to fetch"
 
 This means the request never reached Groq (api.groq.com). Check that the computer is online, and that a firewall, antivirus web shield, VPN, proxy or ad blocker isn't blocking api.groq.com. A wrong API key shows a different error from Groq itself.
