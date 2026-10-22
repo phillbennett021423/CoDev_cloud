@@ -9,9 +9,6 @@
     "check": "node scripts/setup.js --check"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "node-cron": "^3.0.3",
-    "node-fetch": "^2.6.7",
     "@modelcontextprotocol/sdk": "1.32.1"
   }
 }
