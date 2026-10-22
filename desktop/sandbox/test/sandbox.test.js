@@ -230,3 +230,24 @@ test('commands run in an isolated container on the staging copy', { skip: !docke
         await cleanup();
     }
 });
+
+test('a pending review survives DELETE of its sandbox', async () => {
+    const { project, sandbox, call, cleanup } = setup({ 'a.txt': 'one\n' });
+    try {
+        await call('write_file', { path: 'a.txt', content: 'two\n' });
+        const set = (await sandbox.handleRequest('POST', '/agent/sandboxes/ws1/stage')).body;
+        const del = await sandbox.handleRequest('DELETE', '/agent/sandboxes/ws1');
+        assert.deepStrictEqual(del.body, { ok: true, keptForReview: true });
+        assert.strictEqual(sandbox.containers.list().length, 0);
+        assert.strictEqual((await sandbox.handleRequest('GET', '/agent/changes')).body[0].id, set.id);
+        const r = await sandbox.handleRequest('POST', `/agent/changes/${set.id}/approve`, {}, {});
+        assert.deepStrictEqual(r.body.written, ['a.txt']);
+        assert.strictEqual(fs.readFileSync(path.join(project, 'a.txt'), 'utf8'), 'two\n');
+        assert.strictEqual((await sandbox.handleRequest('GET', '/agent/sandboxes/ws1')).status, 404);
+        // Nothing pending: DELETE discards straight away.
+        await call('list_files', {}, 'a1', 'ws2');
+        assert.strictEqual((await sandbox.handleRequest('DELETE', '/agent/sandboxes/ws2')).body.keptForReview, false);
+    } finally {
+        await cleanup();
+    }
+});

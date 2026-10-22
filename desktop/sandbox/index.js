@@ -54,6 +54,7 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
             sandboxes.set(id, box);
         }
         box.agents.add(agentId);
+        box.closed = false;
         return box;
     }
 
@@ -302,7 +303,13 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
     // sandbox is replaced, so approving always acts on the latest one.
     async function stage(sandboxId) {
         staging.get(sandboxId);
+        // Same files and contents as the pending review: keep it (and its id).
+        const fingerprint = staging.changes(sandboxId).map(c => `${c.path}\u0000${c.hash}`).join('\n');
+        for (const old of changesets.values()) {
+            if (old.sandboxId === sandboxId && old.status === 'pending' && old.fingerprint === fingerprint) return old;
+        }
         const set = await buildChangeset(sandboxId);
+        Object.defineProperty(set, 'fingerprint', { value: set.files.map(f => `${f.path}\u0000${f.hash}`).join('\n') });
         for (const [id, old] of changesets) if (old.sandboxId === sandboxId && old.status === 'pending') changesets.delete(id);
         if (set.files.length) changesets.set(set.id, set);
         return set;
@@ -373,7 +380,7 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
 
     function describeSandbox(box) {
         return { id: box.id, agents: [...box.agents], task: box.task, createdAt: box.createdAt, image: containers.getConfig().image, scratchpad: WORKDIR,
-            pendingChanges: pendingCount(box.id), submitted: submissions.has(box.id) };
+            pendingChanges: pendingCount(box.id), submitted: submissions.has(box.id), closed: Boolean(box.closed) };
     }
 
     // The user-side HTTP contract (server.js mounts it under /agent/; the Windows
@@ -413,7 +420,15 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
                 const agentId = cleanId(body.agentId || query.agentId || [...box.agents][0]);
                 const ctx = { agentId, workspace: box.id };
                 if (!action && m === 'GET') return reply(200, describeSandbox(box));
-                if (!action && m === 'DELETE') { await finishSandbox(box.id); return reply(200, { ok: true }); }
+                if (!action && m === 'DELETE') {
+                    // Containers always go. Staged changes still awaiting review stay
+                    // approvable until approved or rejected, unless ?discard=1.
+                    await containers.release(box.id);
+                    const keep = pendingCount(box.id) > 0 && !/^(1|true)$/.test(String(query.discard || ''));
+                    if (keep) box.closed = true;
+                    else await finishSandbox(box.id);
+                    return reply(200, { ok: true, keptForReview: keep });
+                }
                 if (action === 'exec' && m === 'POST') {
                     if (typeof body.command !== 'string' || !body.command.trim()) return fail(400, 'exec needs a command');
                     const docker = await containers.detect();
