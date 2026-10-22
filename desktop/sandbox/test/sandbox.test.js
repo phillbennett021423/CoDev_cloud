@@ -130,14 +130,20 @@ test('paths cannot leave the sandbox', async () => {
     }
 });
 
-test('symlinks made in the sandbox are never followed or applied', async () => {
+test('symlinks made in the sandbox are never followed or applied', async t => {
     const outside = tempProject({ 'secret.txt': 'secret\n' });
     const { sandbox, call, cleanup } = setup({ 'a.txt': 'a\n' });
     try {
         await call('list_files', {});
         const work = sandbox.staging.get('ws1').work;
-        fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(work, 'link.txt'));
-        fs.symlinkSync(outside, path.join(work, 'linkdir'));
+        try {
+            fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(work, 'link.txt'));
+            fs.symlinkSync(outside, path.join(work, 'linkdir'), 'dir');
+        } catch (err) {
+            // Windows lets only elevated processes or Developer Mode create symlinks.
+            if (process.platform === 'win32' && err.code === 'EPERM') return t.skip('Windows needs admin rights or Developer Mode to create symlinks');
+            throw err;
+        }
         assert.strictEqual((await call('read_file', { path: 'link.txt' })).isError, true);
         assert.strictEqual((await call('write_file', { path: 'linkdir/x.txt', content: 'x' })).isError, true);
         assert.ok(!fs.existsSync(path.join(outside, 'x.txt')));
