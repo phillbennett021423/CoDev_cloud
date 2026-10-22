@@ -1,11 +1,12 @@
 // CoDev Studio desktop app: the same page as the Android app (mobile/www),
 // in its own window. The page talks to Groq directly; the main process only
 // does what a page can't, like fetching DuckDuckGo results without CORS.
-const { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { createMcpTools } = require('./mcp-tools');
 const { createNodeMcpHub } = require('./mcp-hub');
+const { createBrowserService } = require('./browser');
 const { pathToFileURL } = require('url');
 
 const WWW = path.join(__dirname, 'www');
@@ -62,6 +63,11 @@ app.whenReady().then(() => {
     ipcMain.handle('codev:mcp', (_event, message) => handleMcp(message));
     ipcMain.handle('codev:mcp-folder', () => getProjectDir());
 
+    // Agents' headless browsers. Saved logins are encrypted with safeStorage (DPAPI
+    // on Windows) in this app's user data folder; the page asks the user before any is used.
+    const browserTools = createBrowserService({ dataDir: app.getPath('userData'), safeStorage, getProjectDir });
+    ipcMain.handle('codev:browser-mcp', (_event, message) => browserTools.handle(message));
+
     // External MCP servers from Settings (stdio processes and remote URLs), through the official SDK.
     const mcpHub = createNodeMcpHub({
         readConfig: () => desktopSettings.mcpServers,
@@ -72,7 +78,7 @@ app.whenReady().then(() => {
     });
     ipcMain.handle('codev:mcp-hub', (_event, req) => mcpHub.handle(req));
     // Stop the server processes the hub started.
-    app.on('before-quit', () => { mcpHub.close(); });
+    app.on('before-quit', () => { mcpHub.close(); browserTools.close(); });
     ipcMain.handle('codev:mcp-pick-folder', async event => {
         const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
             title: 'Choose the project folder agents can work in',

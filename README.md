@@ -34,6 +34,16 @@ Every message is treated as a task on your project. You don't type file paths or
 | Desktop Chrome/Edge via `npm start` | 📁 Connect Local Folder (sub-folders included) | saved to disk | only with the helper |
 | Android app | files picked in Project Files | kept in CoDev; Save copies them | no |
 
+## Agents' web browser
+
+On the Windows app and `npm start`, agents get a headless Chromium of their own (Playwright): `browser_navigate`, `browser_click`, `browser_fill`, `browser_press_key`, `browser_get_text` (rendered text, accessibility tree or HTML), `browser_wait_for`, `browser_screenshot` and `browser_close`. Each agent has a separate temporary profile (cache, cookies, storage) that is deleted when its browser closes or after 15 idle minutes. They can test your local dev server (`http://localhost:5173` and so on) but can't open CoDev's own server or helper.
+
+The browser is Playwright's Chromium (`npx playwright install chromium`, which `npm run setup` does), or else the Edge or Chrome already installed. Set `CODEV_BROWSER_PATH` to use a specific one.
+
+**Saved logins.** Add them under **Settings → Agents' web browser & saved logins**. They are encrypted on your computer, never in the repo or the page's storage: with Windows' data protection (DPAPI) in the Windows app's data folder, or for `server.js` in `%APPDATA%\codev-server` (`~/.config/codev-server` elsewhere) with `CODEV_VAULT_KEY` as the passphrase if you set it, otherwise DPAPI on Windows or a key file only your user can read. Agents see only names, sites and user names. `browser_login` types the password into the login's own site itself, `browser_save_session` keeps a signed-in site's cookies, and `browser_load_session` puts them back in a later task. CoDev asks you every time any of these three is used, even with *Run file edits and commands without asking me first* on.
+
+The Android app and the web version have no browser tools: a phone or a browser tab can't start Chromium.
+
 ## Anthropic API key
 
 `server.js` reads the key only from the `ANTHROPIC_API_KEY` environment variable at startup; never paste it into the code. Either:
