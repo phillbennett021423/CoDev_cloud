@@ -4,9 +4,24 @@
 // POST /mcp-hub lets the page use MCP servers on this computer, including stdio
 // ones (npx, python, .exe) a browser can't start. It needs `npm install` once;
 // the servers are kept in mcp-servers.json.
+// The Anthropic API key comes only from ANTHROPIC_API_KEY (environment or .env),
+// never from this file; see .env.example.
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { loadEnvFile, readAnthropicKey } = require('./env');
+
+try { loadEnvFile(); } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+}
+const anthropic = readAnthropicKey();
+if (anthropic.error && process.env.ANTHROPIC_API_KEY) {
+    // A key is set but malformed: stop now rather than fail on the first request.
+    console.error(anthropic.error);
+    process.exit(1);
+}
+if (anthropic.error) console.warn(`Note: ${anthropic.error}`);
 
 const PORT = Number(process.env.PORT) || 3000;
 const ROOT = path.join(__dirname, 'mobile', 'www');
@@ -86,6 +101,7 @@ server.on('error', err => {
 // 127.0.0.1 only: nothing outside this computer can open it.
 server.listen(PORT, '127.0.0.1', () => {
     console.log(`CoDev Studio is running at http://localhost:${PORT} (Ctrl+C to stop)`);
+    if (anthropic.key) console.log('Anthropic API key loaded from ANTHROPIC_API_KEY.');
 });
 
 // Ctrl+C also stops the MCP servers the hub started.
