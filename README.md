@@ -56,7 +56,7 @@ Every message is treated as a task on your project. You don't type file paths or
 | Where CoDev runs | Project the agents see | Edits | Run code |
 | --- | --- | --- | --- |
 | Windows app | project folder chosen in Settings | saved to disk | yes |
-| Browser via `start-codev.bat C:\path\to\project` | that folder, through the helper | saved to disk | yes |
+| Browser via `start-codev.bat C:\path\to\project` | that folder, through the helper (read and search) and the agent sandbox | staged for your diff review; with `CODEV_HELPER_AUTONOMOUS=1` the helper also saves them directly | in the sandbox with Docker; directly with `CODEV_HELPER_AUTONOMOUS=1` |
 | Desktop Chrome/Edge via `npm start` | 📁 Connect Local Folder (sub-folders included) | saved to disk | only with the helper |
 | Android app | files picked in Project Files | kept in CoDev; Save copies them | no |
 
