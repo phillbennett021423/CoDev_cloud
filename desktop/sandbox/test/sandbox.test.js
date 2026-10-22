@@ -206,6 +206,75 @@ test('without Docker, run_command is withheld and exec says why', async () => {
     }
 });
 
+test('a project too big to copy is staged file by file as agents change it', async () => {
+    const files = { 'README.md': 'hi\n', 'scenes/main.gd': 'extends Node\n', 'scenes/enemy.gd': 'extends Node2D\n', 'assets/big.txt': 'x\n', 'notes/todo.md': '- ship\n' };
+    const { project, sandbox, call, cleanup } = setup(files, { stagingLimits: { maxFiles: 3 } });
+    try {
+        const tools = (await sandbox.handleMcp({ jsonrpc: '2.0', id: 1, method: 'tools/list' })).result.tools.map(t => t.name);
+        assert.ok(!tools.includes('run_command'), 'commands are off for a large project, Docker or not');
+        assert.match((await sandbox.handleRequest('GET', '/agent/status')).body.largeProject, /more than 3 files/);
+
+        // Reads, listings and searches see the whole real project without copying it.
+        const listed = (await call('list_files', {})).content[0].text.split('\n');
+        assert.deepStrictEqual(listed, Object.keys(files).sort());
+        assert.deepStrictEqual((await call('list_files', { path: 'scenes' })).content[0].text.split('\n'), ['scenes/enemy.gd', 'scenes/main.gd']);
+        assert.strictEqual((await call('read_file', { path: 'scenes/main.gd' })).content[0].text, 'extends Node\n');
+        assert.match((await call('search_files', { query: 'Node2D' })).content[0].text, /^scenes\/enemy\.gd:1:/);
+        const ws = sandbox.staging.get('ws1');
+        assert.strictEqual(ws.lazy, true);
+        assert.deepStrictEqual(sandbox.staging.walk(ws.work), [], 'nothing copied yet');
+        // The user's own edits to untouched files show up straight away.
+        fs.writeFileSync(path.join(project, 'notes/todo.md'), '- ship\n- test\n');
+        assert.strictEqual((await call('read_file', { path: 'notes/todo.md' })).content[0].text, '- ship\n- test\n');
+
+        assert.strictEqual((await call('edit_file', { path: 'scenes/main.gd', old_text: 'Node', new_text: 'Node3D' })).isError, false);
+        await call('write_file', { path: 'scenes/boss.gd', content: 'extends Node\n' });
+        await call('delete_file', { path: 'README.md' });
+        assert.deepStrictEqual(sandbox.staging.walk(ws.work), ['scenes/boss.gd', 'scenes/main.gd'], 'only touched files are staged');
+        assert.strictEqual(fs.readFileSync(path.join(project, 'scenes/main.gd'), 'utf8'), 'extends Node\n', 'real file untouched');
+        const after = (await call('list_files', {})).content[0].text.split('\n');
+        assert.ok(after.includes('scenes/boss.gd') && !after.includes('README.md'), after.join(', '));
+        assert.strictEqual((await call('read_file', { path: 'scenes/main.gd' })).content[0].text, 'extends Node3D\n');
+        assert.strictEqual((await call('read_file', { path: 'README.md' })).isError, true);
+        assert.match((await call('read_file', { path: '../secret' })).content[0].text, /outside the workspace/);
+
+        const set = (await sandbox.handleRequest('GET', '/agent/changes')).body[0];
+        assert.deepStrictEqual(set.files.map(f => `${f.status}:${f.path}`), ['deleted:README.md', 'added:scenes/boss.gd', 'modified:scenes/main.gd']);
+        assert.match(set.diff, /-extends Node\n\+extends Node3D/);
+        const box = (await sandbox.handleRequest('POST', '/agent/sandboxes', {}, { agentId: 'a1', workspace: 'ws1' })).body;
+        assert.match(box.container.error, /too big to copy/);
+        assert.strictEqual((await sandbox.handleRequest('POST', '/agent/sandboxes/ws1/exec', {}, { command: 'ls' })).status, 503);
+
+        const approved = (await sandbox.handleRequest('POST', `/agent/changes/${set.id}/approve`, {}, { paths: set.files.map(f => f.path) })).body;
+        assert.deepStrictEqual(approved.written.sort(), ['README.md', 'scenes/boss.gd', 'scenes/main.gd']);
+        assert.strictEqual(fs.readFileSync(path.join(project, 'scenes/main.gd'), 'utf8'), 'extends Node3D\n');
+        assert.ok(fs.existsSync(path.join(project, 'scenes/boss.gd')) && !fs.existsSync(path.join(project, 'README.md')));
+        assert.strictEqual(fs.readFileSync(path.join(project, 'scenes/enemy.gd'), 'utf8'), 'extends Node2D\n');
+
+        // A staged file the user then changes on disk is not overwritten.
+        await call('edit_file', { path: 'scenes/enemy.gd', old_text: 'Node2D', new_text: 'CharacterBody2D' });
+        fs.writeFileSync(path.join(project, 'scenes/enemy.gd'), 'extends Area2D\n');
+        const next = (await sandbox.handleRequest('GET', '/agent/changes')).body[0];
+        const result = (await sandbox.handleRequest('POST', `/agent/changes/${next.id}/approve`, {}, {})).body;
+        assert.deepStrictEqual(result.written, []);
+        assert.strictEqual(fs.readFileSync(path.join(project, 'scenes/enemy.gd'), 'utf8'), 'extends Area2D\n');
+    } finally {
+        await cleanup();
+    }
+});
+
+test('a project over the size limit is staged on demand too', async () => {
+    const { sandbox, call, cleanup } = setup({ 'a.txt': 'a'.repeat(2000) + '\n', 'b.txt': 'b\n' }, { stagingLimits: { maxTotalBytes: 1000 } });
+    try {
+        assert.match((await sandbox.handleRequest('GET', '/agent/status')).body.largeProject, /larger than/);
+        await call('write_file', { path: 'b.txt', content: 'B\n' });
+        assert.deepStrictEqual(sandbox.staging.walk(sandbox.staging.get('ws1').work), ['b.txt']);
+        assert.deepStrictEqual((await sandbox.handleRequest('GET', '/agent/changes')).body[0].files.map(f => f.path), ['b.txt']);
+    } finally {
+        await cleanup();
+    }
+});
+
 test('commands run in an isolated container on the staging copy', { skip: !dockerUp && 'Docker engine not reachable', timeout: 300000 }, async () => {
     const { project, sandbox, call, cleanup } = setup({ 'index.js': 'console.log(1 + 1);\n' });
     try {
