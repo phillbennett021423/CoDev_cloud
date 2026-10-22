@@ -746,11 +746,12 @@
                 <select id="modalProvider" onchange="toggleProviderFields()" style="width: 100%;">
                     <option value="groq">Groq (free, fastest)</option>
                     <option value="openrouter">OpenRouter (free multi-model pool, or any model)</option>
+                    <option value="anthropic">Anthropic (Claude Haiku 5.5, paid)</option>
                 </select>
             </div>
 
             <div class="form-group" id="groupGroqKey">
-                <label>Paste Your Groq API Key Here <span id="groqKeyOptional" style="color: var(--text-muted);">(optional with OpenRouter: used for voice input)</span></label>
+                <label>Paste Your Groq API Key Here <span id="groqKeyOptional" style="color: var(--text-muted);">(optional with OpenRouter or Anthropic: used for voice input)</span></label>
                 <input type="text" id="modalGroqKey" placeholder="gsk_..." style="font-family: monospace;">
             </div>
 
@@ -763,6 +764,14 @@
                 <div class="form-group">
                     <label>OpenRouter model (openrouter/free picks a free model; any OpenRouter model id works)</label>
                     <input type="text" id="modalOpenRouterModel" placeholder="openrouter/free" style="font-family: monospace;">
+                </div>
+            </div>
+
+            <div id="groupAnthropic" style="display: none; flex-direction: column; gap: 10px;">
+                <a href="https://console.anthropic.com/settings/keys" target="_blank" style="font-size: 0.85rem; color: var(--accent);">🔑 Get an Anthropic API key</a>
+                <div class="form-group">
+                    <label>Anthropic API Key <span id="anthropicServerNote" style="display: none; color: var(--text-muted);">(optional here: CoDev's server has ANTHROPIC_API_KEY)</span></label>
+                    <input type="text" id="modalAnthropicKey" placeholder="sk-ant-..." style="font-family: monospace;" autocomplete="off">
                 </div>
             </div>
 
@@ -839,16 +848,55 @@
             }
         }
 
-        // The AI provider: "groq" or "openrouter". Both speak the OpenAI chat API.
-        let currentBackend = localStorage.getItem("codev_backend") === "openrouter" ? "openrouter" : "groq";
+        // The AI provider: "groq", "openrouter" or "anthropic". Groq and OpenRouter speak
+        // the OpenAI chat API; Anthropic requests are translated in groqChatMessage.
+        const BACKENDS = ["groq", "openrouter", "anthropic"];
+        const BACKEND_NAMES = { groq: "Groq", openrouter: "OpenRouter", anthropic: "Anthropic" };
+        let currentBackend = BACKENDS.includes(localStorage.getItem("codev_backend")) ? localStorage.getItem("codev_backend") : "groq";
         let groqKey = String(localStorage.getItem("codev_groq_key") || "").replace(/[\s\u200B-\u200D\uFEFF"'`]+/g, "");
         // Keys saved by older versions weren't cleaned of pasted spaces or quotes.
         let openRouterKey = String(localStorage.getItem("codev_openrouter_key") || "").replace(/[\s\u200B-\u200D\uFEFF"'`]+/g, "");
         const DEFAULT_OPENROUTER_MODEL = "openrouter/free";
         let openRouterModel = localStorage.getItem("codev_openrouter_model") || DEFAULT_OPENROUTER_MODEL;
+        let anthropicKey = String(localStorage.getItem("codev_anthropic_key") || "").replace(/[\s\u200B-\u200D\uFEFF"'`]+/g, "");
+        // Keys saved under the older code_dev_* names are moved to the provider they belong to.
+        for (const name of ["code_dev_anthropic_key", "code_dev_api_key"]) {
+            const legacy = String(localStorage.getItem(name) || "").replace(/[\s\u200B-\u200D\uFEFF"'`]+/g, "");
+            if (/^sk-ant-/.test(legacy) && !anthropicKey) localStorage.setItem("codev_anthropic_key", anthropicKey = legacy);
+            else if (/^gsk_/.test(legacy) && !groqKey) localStorage.setItem("codev_groq_key", groqKey = legacy);
+            else if (/^sk-or-/i.test(legacy) && !openRouterKey) localStorage.setItem("codev_openrouter_key", openRouterKey = legacy);
+        }
+        const ANTHROPIC_MODEL = "claude-haiku-5-5";
+        // True when server.js (npm start) has ANTHROPIC_API_KEY and relays requests,
+        // so the page itself needs no Anthropic key. Set by checkServerAnthropic().
+        let anthropicViaServer = false;
 
         function activeProviderKey() {
+            if (currentBackend === "anthropic") return anthropicKey || (anthropicViaServer ? "server" : "");
             return currentBackend === "openrouter" ? openRouterKey : groqKey;
+        }
+
+        // When the saved provider has no key but another one does, switch to that one
+        // so setup is skipped. Returns false when no provider has a key at all.
+        function pickProviderWithKey() {
+            if (activeProviderKey()) return true;
+            const keys = { groq: groqKey, openrouter: openRouterKey, anthropic: anthropicKey || (anthropicViaServer ? "server" : "") };
+            const backend = BACKENDS.find(b => keys[b]);
+            if (!backend) return false;
+            currentBackend = backend;
+            localStorage.setItem("codev_backend", backend);
+            logConsoleActivity(`Using ${BACKEND_NAMES[backend]}, the provider with a saved API key.`);
+            return true;
+        }
+
+        // Asks server.js whether it holds an Anthropic key. Only the local server
+        // page can have one; the Android and Windows apps use the key from Settings.
+        async function checkServerAnthropic() {
+            if (location.protocol !== "http:" || !/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return;
+            try {
+                const reply = await (await fetch("/anthropic/status")).json();
+                anthropicViaServer = reply.available === true;
+            } catch (err) { /* an older server.js without the relay */ }
         }
 
         // Real Local Filesystem Handles
@@ -1193,9 +1241,9 @@
         }
 
         function updateStatusDisplay() {
-            const openRouter = currentBackend === "openrouter";
-            document.getElementById("activeProviderLabel").innerText = openRouter ? `Provider: OpenRouter · ${openRouterModel} (Temp 0.0)` : "Provider: Groq Cloud (Temp 0.0)";
-            document.getElementById("statusText").innerText = activeProviderKey() ? (openRouter ? "OpenRouter Live" : "Groq Live") : "Awaiting API Key";
+            const labels = { groq: "Provider: Groq Cloud (Temp 0.0)", openrouter: `Provider: OpenRouter · ${openRouterModel} (Temp 0.0)`, anthropic: `Provider: Anthropic · ${ANTHROPIC_MODEL}` };
+            document.getElementById("activeProviderLabel").innerText = labels[currentBackend];
+            document.getElementById("statusText").innerText = activeProviderKey() ? `${BACKEND_NAMES[currentBackend]} Live` : "Awaiting API Key";
         }
 
         const VIEW_NAMES = ["chat", "project", "codev", "cloud", "console"];
@@ -2107,7 +2155,7 @@
                 const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" });
                 const calls = message.tool_calls || [];
                 if (!calls.length) return message.content || "";
-                messages.push({ role: "assistant", content: message.content || "", tool_calls: calls });
+                messages.push({ role: "assistant", content: message.content || "", tool_calls: calls, anthropic_content: message.anthropic_content });
                 for (const call of calls) {
                     const tool = tools.find(t => t.name === call.function?.name);
                     let args = {};
@@ -2958,6 +3006,8 @@
             document.getElementById("modalProvider").value = currentBackend;
             document.getElementById("modalOpenRouterKey").value = openRouterKey;
             document.getElementById("modalOpenRouterModel").value = openRouterModel;
+            document.getElementById("modalAnthropicKey").value = anthropicKey;
+            document.getElementById("anthropicServerNote").style.display = anthropicViaServer ? "inline" : "none";
             toggleProviderFields();
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
             document.getElementById("modalLocalTools").checked = localToolsEnabled;
@@ -2974,18 +3024,22 @@
             }
             refreshMcpStatus();
             document.getElementById("modalSearchHelperUrl").value = searchHelperUrl;
-            document.getElementById("modalCancelBtn").style.display = activeProviderKey() ? "inline-block" : "none";
+            document.getElementById("modalCancelBtn").style.display = "inline-block";
             if (isMobileLayout() && openDrawerName) closeDrawers();
             document.getElementById("settingsModal").style.display = "flex";
         }
 
         function toggleProviderFields() {
-            const openRouter = document.getElementById("modalProvider").value === "openrouter";
-            document.getElementById("groupOpenRouter").style.display = openRouter ? "flex" : "none";
-            document.getElementById("groqKeyOptional").style.display = openRouter ? "inline" : "none";
+            const provider = document.getElementById("modalProvider").value;
+            document.getElementById("groupOpenRouter").style.display = provider === "openrouter" ? "flex" : "none";
+            document.getElementById("groupAnthropic").style.display = provider === "anthropic" ? "flex" : "none";
+            document.getElementById("groqKeyOptional").style.display = provider !== "groq" ? "inline" : "none";
             showSettingsError("");
-            if (openRouter && !document.getElementById("modalOpenRouterKey").value) document.getElementById("modalOpenRouterKey").focus();
+            if (provider === "openrouter" && !document.getElementById("modalOpenRouterKey").value) document.getElementById("modalOpenRouterKey").focus();
+            if (provider === "anthropic" && !document.getElementById("modalAnthropicKey").value && !anthropicViaServer) document.getElementById("modalAnthropicKey").focus();
         }
+
+        const KEY_FIELDS = { groq: "modalGroqKey", openrouter: "modalOpenRouterKey", anthropic: "modalAnthropicKey" };
 
         // Settings problems show inside the dialog, not in a native alert: in the
         // Windows app an alert leaves text boxes unable to take clicks or typing.
@@ -2997,11 +3051,8 @@
             if (field) { field.focus(); field.select?.(); }
         }
 
-        function closeSettingsModal() { 
-            if (!activeProviderKey()) {
-                showSettingsError(`Please enter ${currentBackend === "openrouter" ? "an OpenRouter" : "a Groq"} API key to launch CoDev Studio Pro.`, currentBackend === "openrouter" ? "modalOpenRouterKey" : "modalGroqKey");
-                return;
-            }
+        // Settings can always be closed, with or without a key.
+        function closeSettingsModal() {
             showSettingsError("");
             document.getElementById("settingsModal").style.display = "none"; 
         }
@@ -3022,6 +3073,30 @@
         }
 
         let lastRejectedKey = "";
+
+        // Asks Anthropic whether the key is real before saving it, so a typo shows up
+        // here instead of as a 401 on the first message. "" means it works or
+        // Anthropic couldn't be reached.
+        async function checkAnthropicKey(key) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 8000);
+            try {
+                const response = await fetch("https://api.anthropic.com/v1/models?limit=1", {
+                    headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+                    signal: controller.signal
+                });
+                if (response.status === 401 || response.status === 403) {
+                    const reply = await response.json().catch(() => ({}));
+                    return `Anthropic answered ${response.status}: "${reply.error?.message || "invalid x-api-key"}". CoDev sent the key ${describeKey(key)}; check it matches yours at console.anthropic.com. Press Launch again to save it anyway.`;
+                }
+                return "";
+            } catch (err) {
+                logConsoleActivity(`Couldn't check the Anthropic key (${err.message}); saving it anyway.`);
+                return "";
+            } finally {
+                clearTimeout(timer);
+            }
+        }
 
         async function checkOpenRouterKey(key) {
             if (/\.\.\.|…|\*{3,}/.test(key)) {
@@ -3045,10 +3120,26 @@
         }
 
         async function saveSettings() {
-            let backend = document.getElementById("modalProvider").value === "openrouter" ? "openrouter" : "groq";
+            let backend = BACKENDS.includes(document.getElementById("modalProvider").value) ? document.getElementById("modalProvider").value : "groq";
             let newGroqKey = cleanApiKey(document.getElementById("modalGroqKey").value);
             let newOpenRouterKey = cleanApiKey(document.getElementById("modalOpenRouterKey").value);
+            let newAnthropicKey = cleanApiKey(document.getElementById("modalAnthropicKey").value);
             // A key pasted into the other provider's box goes where it belongs.
+            for (const field of ["groq", "openrouter"]) {
+                const value = field === "groq" ? newGroqKey : newOpenRouterKey;
+                if (!/^sk-ant-/.test(value)) continue;
+                if (!newAnthropicKey) newAnthropicKey = value;
+                if (field === "groq") newGroqKey = ""; else newOpenRouterKey = "";
+                if (backend === field) backend = "anthropic";
+            }
+            if (/^gsk_/.test(newAnthropicKey)) {
+                if (!newGroqKey) newGroqKey = newAnthropicKey;
+                newAnthropicKey = "";
+            }
+            if (/^sk-or-/i.test(newAnthropicKey)) {
+                if (!newOpenRouterKey) newOpenRouterKey = newAnthropicKey;
+                newAnthropicKey = "";
+            }
             if (/^sk-or-/i.test(newGroqKey)) {
                 if (!newOpenRouterKey) newOpenRouterKey = newGroqKey;
                 newGroqKey = "";
@@ -3063,7 +3154,12 @@
             toggleProviderFields();
             document.getElementById("modalGroqKey").value = newGroqKey;
             document.getElementById("modalOpenRouterKey").value = newOpenRouterKey;
+            document.getElementById("modalAnthropicKey").value = newAnthropicKey;
 
+            if (backend === "anthropic" && !newAnthropicKey.startsWith("sk-ant-") && !(newAnthropicKey === "" && anthropicViaServer)) {
+                showSettingsError("Please enter a valid Anthropic API key starting with 'sk-ant-'.", "modalAnthropicKey");
+                return;
+            }
             if (backend === "groq" && !newGroqKey.startsWith("gsk_")) {
                 showSettingsError("Please enter a valid Groq API key starting with 'gsk_'.", "modalGroqKey");
                 return;
@@ -3072,18 +3168,20 @@
                 showSettingsError("Please paste your OpenRouter API key (it usually starts with 'sk-or-').", "modalOpenRouterKey");
                 return;
             }
-            // The Groq key is optional with OpenRouter; a malformed one is just not used.
-            if (backend === "openrouter" && newGroqKey && !newGroqKey.startsWith("gsk_")) newGroqKey = "";
-            // A key OpenRouter just rejected is saved anyway on the second press.
-            if (backend === "openrouter" && newOpenRouterKey !== openRouterKey && newOpenRouterKey !== lastRejectedKey) {
+            // The Groq key is optional with OpenRouter and Anthropic; a malformed one is just not used.
+            if (backend !== "groq" && newGroqKey && !newGroqKey.startsWith("gsk_")) newGroqKey = "";
+            // A key the provider just rejected is saved anyway on the second press.
+            const checks = { openrouter: [newOpenRouterKey, openRouterKey, checkOpenRouterKey], anthropic: [newAnthropicKey, anthropicKey, checkAnthropicKey] };
+            const [keyToCheck, savedKey, checkKey] = checks[backend] || [];
+            if (keyToCheck && keyToCheck !== savedKey && keyToCheck !== lastRejectedKey) {
                 const launchBtn = document.getElementById("modalLaunchBtn");
                 launchBtn.disabled = true;
                 showSettingsError("");
-                const problem = await checkOpenRouterKey(newOpenRouterKey);
+                const problem = await checkKey(keyToCheck);
                 launchBtn.disabled = false;
                 if (problem) {
-                    lastRejectedKey = newOpenRouterKey;
-                    showSettingsError(problem, "modalOpenRouterKey");
+                    lastRejectedKey = keyToCheck;
+                    showSettingsError(problem, KEY_FIELDS[backend]);
                     return;
                 }
             }
@@ -3095,6 +3193,8 @@
             localStorage.setItem("codev_backend", currentBackend);
             localStorage.setItem("codev_openrouter_key", openRouterKey);
             localStorage.setItem("codev_openrouter_model", openRouterModel);
+            anthropicKey = newAnthropicKey;
+            localStorage.setItem("codev_anthropic_key", anthropicKey);
 
             autoGroundingEnabled = document.getElementById("modalAutoGround").checked;
             searchHelperUrl = document.getElementById("modalSearchHelperUrl").value.trim() || DEFAULT_SEARCH_HELPER_URL;
@@ -3124,7 +3224,8 @@
 
             localStorage.setItem("codev_groq_key", groqKey);
             updateStatusDisplay();
-            logConsoleActivity(`Settings saved. Provider: ${currentBackend === "openrouter" ? `OpenRouter (${openRouterModel})` : "Groq"}.`);
+            const modelNote = { groq: "", openrouter: ` (${openRouterModel})`, anthropic: ` (${ANTHROPIC_MODEL}${anthropicKey ? "" : " via CoDev's server"})` }[currentBackend];
+            logConsoleActivity(`Settings saved. Provider: ${BACKEND_NAMES[currentBackend]}${modelNote}.`);
             document.getElementById("settingsModal").style.display = "none";
         }
 
@@ -3499,6 +3600,7 @@
         // Groq's model names; with OpenRouter the model is swapped for the OpenRouter
         // model from Settings, which serves text, tools and images alike.
         async function groqChatMessage(body) {
+            if (currentBackend === "anthropic") return anthropicChatMessage(body);
             const openRouter = currentBackend === "openrouter";
             const provider = openRouter
                 ? { name: "OpenRouter", host: "openrouter.ai", url: "https://openrouter.ai/api/v1/chat/completions", key: openRouterKey,
@@ -3525,14 +3627,106 @@
             throw new Error(`${provider.name} API Error: ` + (data.error?.message || JSON.stringify(data)) + code);
         }
 
+        // Turns an OpenAI-style image part into an Anthropic image block.
+        function toAnthropicImage(url) {
+            const match = /^data:([^;,]+);base64,(.*)$/.exec(url);
+            return match
+                ? { type: "image", source: { type: "base64", media_type: match[1], data: match[2] } }
+                : { type: "image", source: { type: "url", url } };
+        }
+
+        // Converts the OpenAI chat body CoDev builds into an Anthropic Messages request.
+        // Assistant turns from an earlier tool round carry the original Anthropic content
+        // (thinking and tool_use blocks), which goes back unchanged.
+        function toAnthropicRequest(body) {
+            const system = [];
+            const messages = [];
+            const push = (role, blocks) => {
+                const last = messages[messages.length - 1];
+                if (last && last.role === role) last.content.push(...blocks);
+                else messages.push({ role, content: [...blocks] });
+            };
+            for (const m of body.messages) {
+                if (m.role === "system") {
+                    system.push(typeof m.content === "string" ? m.content : m.content.map(p => p.text || "").join("\n"));
+                } else if (m.role === "tool") {
+                    push("user", [{ type: "tool_result", tool_use_id: m.tool_call_id, content: String(m.content ?? "") }]);
+                } else if (m.role === "assistant") {
+                    if (m.anthropic_content) { push("assistant", m.anthropic_content); continue; }
+                    const blocks = m.content ? [{ type: "text", text: m.content }] : [];
+                    for (const call of m.tool_calls || []) {
+                        let input = {};
+                        try { input = JSON.parse(call.function?.arguments || "{}") || {}; } catch (err) { /* bad JSON: no args */ }
+                        blocks.push({ type: "tool_use", id: call.id, name: call.function?.name, input });
+                    }
+                    if (blocks.length) push("assistant", blocks);
+                } else {
+                    const parts = typeof m.content === "string" ? [{ type: "text", text: m.content }] : m.content;
+                    // Images go before the text, which is where Claude reads them best.
+                    const blocks = parts.filter(p => p.type === "image_url").map(p => toAnthropicImage(p.image_url.url))
+                        .concat(parts.filter(p => p.type === "text" && p.text).map(p => ({ type: "text", text: p.text })));
+                    push("user", blocks.length ? blocks : [{ type: "text", text: "(empty message)" }]);
+                }
+            }
+            // No temperature: the Messages API rejects sampling settings.
+            const request = { model: ANTHROPIC_MODEL, max_tokens: 16000, messages };
+            if (system.length) request.system = system.join("\n\n");
+            if (body.tools?.length) {
+                request.tools = body.tools.map(t => ({ name: t.function.name, description: t.function.description || "", input_schema: t.function.parameters || { type: "object", properties: {} } }));
+                request.tool_choice = { type: body.tool_choice === "none" ? "none" : "auto" };
+            }
+            return request;
+        }
+
+        // Sends a chat request to Anthropic and answers in the OpenAI message shape
+        // ({ content, tool_calls }) the rest of CoDev expects. With no key in Settings
+        // on the local server page, server.js adds ANTHROPIC_API_KEY and relays it.
+        async function anthropicChatMessage(body) {
+            const viaServer = !anthropicKey && anthropicViaServer;
+            const url = viaServer ? "/anthropic/v1/messages" : "https://api.anthropic.com/v1/messages";
+            const headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01" };
+            if (!viaServer) {
+                headers["x-api-key"] = anthropicKey;
+                // Anthropic only answers browser pages that say they hold the user's own key.
+                headers["anthropic-dangerous-direct-browser-access"] = "true";
+            }
+            let response;
+            try {
+                response = await fetch(url, { method: "POST", headers, body: JSON.stringify(toAnthropicRequest(body)) });
+            } catch (err) {
+                throw new Error(viaServer
+                    ? `Couldn't reach CoDev's server to relay to Anthropic (${err.message}). Is npm start still running?`
+                    : `Couldn't reach Anthropic at api.anthropic.com (${err.message}). Check that this device is online, and that a firewall, antivirus, VPN or ad blocker isn't blocking api.anthropic.com.`);
+            }
+            const data = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } }));
+            if (!response.ok) {
+                if (response.status === 401) {
+                    throw new Error(viaServer
+                        ? `Anthropic rejected the ANTHROPIC_API_KEY on CoDev's server (401: ${data.error?.message || "unauthorized"}). Fix it in .env and restart, or put a key in Settings.`
+                        : `Anthropic rejected the API key (401: ${data.error?.message || "unauthorized"}). CoDev sent ${describeKey(anthropicKey)}. Open Settings and check it matches your key from console.anthropic.com.`);
+                }
+                throw new Error(`Anthropic API Error: ${data.error?.message || JSON.stringify(data)}${data.error?.type ? ` (${data.error.type})` : ""}`);
+            }
+            if (data.stop_reason === "refusal") {
+                throw new Error(`Claude declined this request${data.stop_details?.explanation ? `: ${data.stop_details.explanation}` : "."}`);
+            }
+            const content = data.content || [];
+            const text = content.filter(b => b.type === "text").map(b => b.text).join("");
+            const calls = content.filter(b => b.type === "tool_use")
+                .map(b => ({ id: b.id, type: "function", function: { name: b.name, arguments: JSON.stringify(b.input || {}) } }));
+            if (data.stop_reason === "max_tokens" && !calls.length) logConsoleActivity("[Anthropic] The reply hit the length limit and was cut short.");
+            const message = { role: "assistant", content: text, anthropic_content: content };
+            if (calls.length) message.tool_calls = calls;
+            return message;
+        }
+
         async function groqChat(body) {
             return (await groqChatMessage(body)).content || "";
         }
 
         async function callAI(systemPrompt, userMessage, options = {}) {
             if (!activeProviderKey()) {
-                openSettingsModal();
-                throw new Error(`${currentBackend === "openrouter" ? "OpenRouter" : "Groq"} API key required. Please enter your key in settings.`);
+                throw new Error(`No ${BACKEND_NAMES[currentBackend]} API key saved yet. Open ⚙️ Settings, pick a provider and paste its key (Anthropic keys start with sk-ant-).`);
             }
 
             const technicalGuardrails = `CRITICAL TECHNICAL & STRICT COMPLIANCE RULES:
@@ -3562,7 +3756,7 @@
                 return groqChat({ model: TEXT_MODEL, temperature: 0.0, messages });
             }
 
-            logConsoleActivity(`[Vision] Sending ${images.length} image(s) to ${currentBackend === "openrouter" ? openRouterModel : VISION_MODEL}.`);
+            logConsoleActivity(`[Vision] Sending ${images.length} image(s) to ${{ groq: VISION_MODEL, openrouter: openRouterModel, anthropic: ANTHROPIC_MODEL }[currentBackend]}.`);
             return groqChat({
                 model: VISION_MODEL,
                 temperature: 0.0,
@@ -3749,13 +3943,12 @@
             }
         }
 
-        // First-Launch Onboarding Wizard Check
-        window.addEventListener('DOMContentLoaded', () => {
-            if (!activeProviderKey()) {
-                document.getElementById("settingsModal").style.display = "flex";
-            } else {
-                document.getElementById("settingsModal").style.display = "none";
-            }
+        // Startup never opens Settings on its own: the workspace loads straight away,
+        // and Settings opens only from the ⚙️ button.
+        window.addEventListener('DOMContentLoaded', async () => {
+            document.getElementById("settingsModal").style.display = "none";
+            await checkServerAnthropic();
+            if (!pickProviderWithKey()) logConsoleActivity("No API key saved yet. Add a Groq, OpenRouter or Anthropic key under ⚙️ Settings to chat with the agents.");
             updateStatusDisplay();
             renderChatList();
             renderAgentList();
