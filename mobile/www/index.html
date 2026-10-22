@@ -442,6 +442,7 @@
             <span id="tab-console" onclick="switchView('console')">Console Logs</span>
         </div>
         <div class="header-right">
+            <button class="folder-connect-btn" id="pendingChangesBtn" style="display: none;" onclick="openPendingChanges()" title="Agent changes waiting for your review">📝 Review changes</button>
             <button class="folder-connect-btn" onclick="connectLocalFolder()">📁 Connect Local Folder</button>
             <div class="user-status">
                 <span class="status-dot"></span> <span id="statusText">Active Browser Storage</span>
@@ -537,6 +538,9 @@
                                 <label class="checkbox-group" style="color: var(--codev-blue);">
                                     <input type="checkbox" id="isCodevReasoningCheckbox" checked> ⚡ Deep Reasoning Mode
                                 </label>
+                                <label class="checkbox-group" id="sandboxModeLabel" style="color: var(--codev-purple);" title="Checking for CoDev's agent sandbox...">
+                                    <input type="checkbox" id="isSandboxCheckbox" disabled onchange="toggleSandboxMode()"> 🧪 Sandbox &amp; Review Changes
+                                </label>
                             </div>
                         </div>
 
@@ -548,6 +552,7 @@
                             <div class="compact-badge" id="badgeSelfHeal" style="color: var(--success); display:none;">🛡️ Self-Heal</div>
                             <div class="compact-badge" id="badgeReasoning" style="color: var(--codev-blue); display:none;">⚡ Deep Reasoning</div>
                             <div class="compact-badge" id="badgeWebSearch" style="color: var(--codev-blue); display:none;">🔎 Web Search</div>
+                            <div class="compact-badge" id="badgeSandbox" style="color: var(--codev-purple); display:none;">🧪 Sandbox</div>
                         </div>
 
                         <div class="attachment-tray" id="attachmentTray"></div>
@@ -861,6 +866,8 @@
         </div>
     </div>
 
+    <script src="agent-ui/agent-client.js"></script>
+    <script src="agent-ui/diff-review.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
         // text boxes stop taking clicks and typing until the window is refocused.
@@ -1306,6 +1313,7 @@
                 document.getElementById("badgeSelfHeal").style.display = isHealChecked ? "flex" : "none";
                 document.getElementById("badgeReasoning").style.display = isReasonChecked ? "flex" : "none";
                 document.getElementById("badgeWebSearch").style.display = webSearchEnabled ? "flex" : "none";
+                document.getElementById("badgeSandbox").style.display = sandboxModeActive() ? "flex" : "none";
             }
         }
 
@@ -2186,7 +2194,7 @@
             return commands;
         }
 
-        async function buildLocalTools() {
+        async function buildLocalTools(ctx) {
             const tools = [
                 {
                     name: "web_search",
@@ -2205,6 +2213,8 @@
                     }
                 },
             ];
+            // Sandbox mode: the sandbox's own file and command tools replace every tool that writes to disk.
+            if (ctx && ctx.sandbox) return buildSandboxTools(tools, ctx);
             const mcpTools = await fetchAllMcpTools();
             // The folder connected in the page gets its own tools. When the Windows app or the
             // helper serves the project instead and nothing is loaded here, they'd only confuse.
@@ -2347,6 +2357,9 @@
             if (name === "edit_workspace_file") return `✏️ Editing ${args.name}`;
             if (name === "run_local_command" || name === "run_approved_command") return `▶️ Running ${args.name}`;
             if (name === "write_workspace_file") return `✏️ Writing ${args.name}`;
+            if (name === "delete_file") return `🗑️ Deleting ${args.path} (staged)`;
+            if (name === "sandbox_diff") return "🧾 Checking the staged diff";
+            if (name === "submit_changes") return "📝 Submitting changes for your review";
             if (name === "list_files") return `📁 Listing ${args.path || "project"} files`;
             if (name === "read_file") return `📄 Reading ${args.path}`;
             if (name === "write_file" || name === "edit_file") return `✏️ Editing ${args.path}`;
@@ -2371,7 +2384,7 @@
             const split = fullName.indexOf("__");
             const name = split > 0 ? fullName.slice(split + 2) : fullName;
             if (/^(Error|Tool failed|The user declined|No loaded|No file|old_text must|Use a file path)/.test(result)) return;
-            if (/^(write_file|edit_file|write_workspace_file|edit_workspace_file)$/.test(name)) {
+            if (/^(write_file|edit_file|delete_file|write_workspace_file|edit_workspace_file)$/.test(name)) {
                 const path = normalizeWorkspacePath(args.path || args.name);
                 if (!path) return;
                 if (ctx.changes && !ctx.changes.includes(path)) ctx.changes.push(path);
@@ -2383,11 +2396,13 @@
 
         // Runs the model ↔ tool loop until the model answers in plain text.
         async function runToolLoop(messages, ctx) {
-            const tools = await buildLocalTools();
+            const tools = await buildLocalTools(ctx);
             const toolDefs = tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
             // Tell the model what "MCP" means here, so a request like "use MCP to..." lands on these tools.
             const mcpNames = (await fetchAllMcpTools()).map(t => t.qualifiedName || t.name);
-            if (messages[0]?.role === "system") {
+            if (messages[0]?.role === "system" && ctx.sandbox) {
+                messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + sandboxToolNote(tools) };
+            } else if (messages[0]?.role === "system") {
                 messages[0] = { ...messages[0], content: messages[0].content + (mcpNames.length
                     ? `\n\n[MCP] The user's MCP tools are connected and work on their computer: ${mcpNames.join(", ")}. When the user mentions MCP, they mean these tools. Use them to read, create and edit files and to run code, instead of only showing code.`
                     : `\n\n[MCP] No MCP tools are connected right now. If the user asks for MCP, file edits or running code on their computer, tell them to choose a project folder under Settings > Web grounding & local tools in the Windows app, or add an MCP server there, then ask again.`) };
@@ -4061,7 +4076,8 @@
         const MAX_CONTEXT_FILES = 8;
         let recentWorkspaceFiles = [];
 
-        async function getWorkspace() {
+        async function getWorkspace(sandbox) {
+            if (sandbox) return sandboxWorkspace(sandbox);
             const mcpTools = await fetchAllMcpTools();
             const canRun = mcpTools.some(t => t.name === "run_command" || t.name === "run_approved_command");
             const servers = new Map();
@@ -4101,7 +4117,8 @@
             if (!ws) {
                 return "[Workspace status] No project is connected, so there are no files to work on. Say so in one line and tell the user how to connect one (📁 Connect Local Folder in Project Files, or the project folder under ⚙️ Settings in the Windows app), then still do everything you can without it.";
             }
-            const savedWhere = ws.kind === "loaded" && !connectedDirectoryHandle
+            const savedWhere = ws.kind === "sandbox" ? ", which stages them in your sandbox; the user reviews the diff and approves it before anything reaches their disk"
+                : ws.kind === "loaded" && !connectedDirectoryHandle
                 ? " (these files were picked, not a folder, so edits stay in CoDev until the user saves them from Project Files)" : ", which saves them to disk";
             return [`[Workspace status] Project: ${ws.label}.`,
                 ws.canWrite ? `Edits: use ${ws.writeTools}${savedWhere}.` : "Edits: no write tool is connected (the desktop helper is read-only without --autonomous), so give the exact changes as code.",
@@ -4219,6 +4236,255 @@
             return hits.join("\n") + (hits.length >= 200 ? "\n[stopped at 200 matches]" : "");
         }
 
+        // AGENT SANDBOX & DIFF REVIEW
+        // With 🧪 Sandbox on, each agent in a task works in its own Docker container on
+        // a staging copy of the project (desktop/sandbox, reached through server.js or
+        // the Windows app; see agent-ui/agent-client.js). Agents in one task share that
+        // copy, so a Group Swarm and the Self-Healing pass build on each other's edits.
+        // Nothing reaches the real project until the user approves the diff in the
+        // review screen (agent-ui/diff-review.js), and files whose syntax check failed
+        // can't be approved. Without Docker the staging and review still work; only
+        // run_command is missing. Android and the web have no sandbox.
+        const agentInfra = { client: null, status: null, error: "" };
+        let sandboxModeEnabled = (localStorage.getItem("codev_sandbox_mode") ?? "1") === "1";
+        let agentToolsCache = { at: 0, tools: [] };
+        let reviewQueue = Promise.resolve();
+        let reviewOpen = false;
+
+        async function initAgentInfra() {
+            const transport = window.CodevAgentClient ? CodevAgentClient.detectTransport(window) : null;
+            if (transport) {
+                const client = CodevAgentClient.createAgentClient({ transport });
+                try {
+                    agentInfra.status = await client.status();
+                    agentInfra.client = client;
+                } catch (err) {
+                    agentInfra.error = err.message;
+                }
+            } else {
+                agentInfra.error = "it needs the Windows app or CoDev opened from npm start on this computer";
+            }
+            updateSandboxControls();
+            if (sandboxAvailable()) {
+                logConsoleActivity(`[Sandbox] ${sandboxStatusText()}`);
+                refreshPendingChanges();
+            } else if (agentInfra.client || transport) {
+                logConsoleActivity(`[Sandbox] Off: ${sandboxUnavailableReason()}`);
+            }
+        }
+
+        function sandboxAvailable() {
+            const s = agentInfra.status;
+            if (!agentInfra.client || !s || s.enabled === false) return false;
+            const service = s.services && s.services.sandbox;
+            return service && typeof service.available === "boolean" ? service.available : Boolean(s.workspace);
+        }
+
+        function sandboxUnavailableReason() {
+            if (!agentInfra.client) return agentInfra.error || "the agent sandbox isn't reachable";
+            const service = agentInfra.status?.services?.sandbox;
+            if (agentInfra.status?.enabled === false) return "the sandbox is turned off";
+            return service?.detail || "no project folder is set (start CoDev with start-codev.bat C:\\path\\to\\project, or set CODEV_WORKSPACE)";
+        }
+
+        function sandboxStatusText() {
+            const s = agentInfra.status || {};
+            const docker = s.docker?.available ? `Docker ${s.docker.version || "is running"}, so agents run code in their own containers`
+                : `Docker isn't available (${s.docker?.error || "not running"}), so agents can edit but not run code`;
+            return `Agents work on a sandboxed copy of ${s.workspace || "the project"} and you review their changes before they're saved. ${docker}.`;
+        }
+
+        function updateSandboxControls() {
+            const box = document.getElementById("isSandboxCheckbox");
+            const ready = sandboxAvailable();
+            box.disabled = !ready;
+            box.checked = ready && sandboxModeEnabled;
+            document.getElementById("sandboxModeLabel").title = ready ? sandboxStatusText() : `Sandbox unavailable: ${sandboxUnavailableReason()}`;
+        }
+
+        function sandboxModeActive() {
+            return sandboxAvailable() && document.getElementById("isSandboxCheckbox").checked;
+        }
+
+        function toggleSandboxMode() {
+            sandboxModeEnabled = document.getElementById("isSandboxCheckbox").checked;
+            localStorage.setItem("codev_sandbox_mode", sandboxModeEnabled ? "1" : "0");
+            logConsoleActivity(sandboxModeEnabled ? "[Sandbox] On: agents' edits wait for your review." : "[Sandbox] Off: agents edit your project directly.");
+        }
+
+        async function openAgentSandbox(dispatch, agent) {
+            const sandbox = await dispatch.sandboxFor(agent);
+            if (sandbox.container && sandbox.container.running === false && sandbox.container.error) {
+                logConsoleActivity(`[Sandbox] ${agent.name}: no container (${sandbox.container.error}); file edits are still staged for review.`);
+            } else {
+                logConsoleActivity(`[Sandbox] ${agent.name} is working in sandbox ${sandbox.id}.`);
+            }
+            return { id: sandbox.id, agentId: String(agent.id), agentName: agent.name };
+        }
+
+        async function fetchAgentTools() {
+            if (!agentInfra.client) return [];
+            if (Date.now() - agentToolsCache.at < 60000) return agentToolsCache.tools;
+            let tools = [];
+            try { tools = await agentInfra.client.listTools(); } catch (err) {
+                logConsoleActivity(`[Sandbox] Agent tools unavailable: ${err.message}`);
+            }
+            agentToolsCache = { at: Date.now(), tools };
+            return tools;
+        }
+
+        async function callAgentTool(name, args, sandbox) {
+            const result = await agentInfra.client.callTool(name, args, { agentId: sandbox.agentId, sandboxId: sandbox.id }) || {};
+            let text = mcpContentToText(result.content);
+            if (!text && result.structuredContent) text = JSON.stringify(result.structuredContent, null, 2);
+            return (result.isError ? "Error: " : "") + (text || "(no output)");
+        }
+
+        // The tool list in sandbox mode: web search, the sandbox's file and command tools,
+        // and the other MCP tools (the agents' browser, the servers from Settings) through
+        // runMcpTool, which keeps their confirm and approval prompts. The page's folder
+        // tools and the Windows app's built-in folder tools write straight to disk, so
+        // they're left out.
+        async function buildSandboxTools(base, ctx) {
+            const tools = base.slice();
+            const schema = tool => tool.inputSchema && tool.inputSchema.type === "object" ? tool.inputSchema : { type: "object", properties: {} };
+            for (const tool of await fetchAgentTools()) {
+                if (!CodevAgentClient.SANDBOX_TOOLS.includes(tool.name) || tools.some(t => t.name === tool.name)) continue;
+                tools.push({
+                    name: tool.name,
+                    description: `[Sandbox] ${tool.description || tool.title || tool.name}`,
+                    inputSchema: schema(tool),
+                    run: async args => callAgentTool(tool.name, args, ctx.sandbox)
+                });
+            }
+            for (const tool of await fetchAllMcpTools()) {
+                const name = tool.qualifiedName || tool.name;
+                if (tool.transport === "desktop" || tools.some(t => t.name === name)) continue;
+                tools.push({
+                    name,
+                    description: (tool.server ? `[MCP server "${tool.server}"] ` : "") + (tool.description || tool.title || tool.name),
+                    inputSchema: schema(tool),
+                    run: async args => runMcpTool(tool, args, ctx)
+                });
+            }
+            return tools;
+        }
+
+        function sandboxToolNote(tools) {
+            const canRun = tools.some(t => t.name === "run_command");
+            return `[Sandbox] You are working in an isolated copy of the user's project${canRun ? " with your own Docker container" : ""}. `
+                + "Use list_files, read_file and search_files to read it, and write_file, edit_file and delete_file to change it. "
+                + (canRun ? "Run code, tests and builds with run_command (Linux sh, in /workspace). " : "No command tool is available, so you can't run code; never claim you did. ")
+                + "Every change is staged: the user reviews the diff before anything is saved to their disk, and files that fail the syntax check can't be saved. "
+                + "Before you finish, check sandbox_diff and fix any failed checks, then call submit_changes with a short summary.";
+        }
+
+        // The project as seen from the sandbox, for the workspace context injection.
+        function sandboxWorkspace(sandbox) {
+            return {
+                kind: "sandbox",
+                label: `a sandboxed copy of ${agentInfra.status?.workspace || "the project"}`,
+                list: async () => (await callAgentTool("list_files", {}, sandbox)).split("\n").filter(line => line && !/^(\[|Error: |The folder is empty)/.test(line)),
+                read: path => callAgentTool("read_file", { path }, sandbox),
+                canWrite: true,
+                writeTools: "edit_file and write_file",
+                canRun: Boolean(agentInfra.status?.docker?.available)
+            };
+        }
+
+        // After a task: stage what the agents changed, show the review, and remove the
+        // containers. A review kept for later stays approvable from 📝 in the header.
+        async function finishSandboxDispatch(session, dispatch) {
+            if (!dispatch || !dispatch.sandboxes.length) return;
+            try {
+                let changeset;
+                try {
+                    changeset = await dispatch.stage();
+                } catch (err) {
+                    appendMessageToSession(session, "❌ Sandbox", `Couldn't prepare the agents' changes for review: ${err.message}. Nothing was written to your project.`);
+                    return;
+                }
+                if (!changeset || !Array.isArray(changeset.files) || !changeset.files.length) {
+                    logConsoleActivity("[Sandbox] The agents made no file changes.");
+                    return;
+                }
+                logConsoleActivity(`[Sandbox] ${changeset.files.length} changed file(s) are waiting for your review.`);
+                const outcome = await reviewChangeset(changeset);
+                appendMessageToSession(session, "📝 Change Review", CodevAgentClient.describeReviewOutcome(outcome));
+            } catch (err) {
+                appendMessageToSession(session, "❌ Sandbox", `The review couldn't finish: ${err.message}`);
+            } finally {
+                const errors = await dispatch.dispose();
+                errors.forEach(err => logConsoleActivity(`[Sandbox] Couldn't remove a sandbox: ${err.message}`));
+            }
+        }
+
+        // One review screen at a time: a background task that finishes during a review waits its turn.
+        function reviewChangeset(changeset, title) {
+            const next = reviewQueue.then(async () => {
+                reviewOpen = true;
+                try {
+                    // The latest version: it may have been staged again since this task asked.
+                    const fresh = changeset.id ? await agentInfra.client.getChange(changeset.id).catch(() => changeset) : changeset;
+                    if (fresh.status && fresh.status !== "pending") return { decision: fresh.status, paths: [], result: fresh.result || null };
+                    return await CodevDiffReview.open({ changeset: fresh, client: agentInfra.client, title });
+                } finally {
+                    reviewOpen = false;
+                }
+            });
+            reviewQueue = next.catch(() => {});
+            return next.then(async outcome => {
+                await afterReview(outcome);
+                return outcome;
+            });
+        }
+
+        async function afterReview(outcome) {
+            refreshPendingChanges();
+            if (outcome.decision !== "approved") {
+                logConsoleActivity(outcome.decision === "rejected" ? "[Sandbox] You rejected the changes." : "[Sandbox] Changes kept for review later.");
+                return;
+            }
+            const written = outcome.result?.written || [];
+            (outcome.result?.skipped || []).forEach(s => logConsoleActivity(`[Sandbox] Not saved: ${s.path || s} (${s.reason || "skipped"})`));
+            if (!written.length) return;
+            logConsoleActivity(`[Sandbox] Saved ${written.length} file(s) to your project: ${written.join(", ")}`);
+            recentWorkspaceFiles = [...written, ...recentWorkspaceFiles.filter(p => !written.includes(p))].slice(0, 10);
+            desktopMcpCache.at = 0;
+            // The page's copy of a connected folder is read again, so the editor shows the saved files.
+            if (connectedDirectoryHandle) await scanConnectedDirectory().catch(err => logConsoleActivity(`[Workspace] ${err.message}`));
+        }
+
+        async function refreshPendingChanges() {
+            const button = document.getElementById("pendingChangesBtn");
+            if (!sandboxAvailable() || reviewOpen) return;
+            let pending = [];
+            try { pending = await agentInfra.client.listChanges(); } catch (err) { /* server gone: hide the button */ }
+            button.style.display = pending.length ? "inline-flex" : "none";
+            button.textContent = `📝 Review changes (${pending.length})`;
+        }
+
+        // 📝 in the header: reviews the pending change sets one after another, until the
+        // user keeps one for later or none are left.
+        async function openPendingChanges() {
+            if (!sandboxAvailable() || reviewOpen) return;
+            const seen = new Set();
+            for (;;) {
+                let pending;
+                try { pending = await agentInfra.client.listChanges(); } catch (err) {
+                    logConsoleActivity(`[Sandbox] Couldn't list pending changes: ${err.message}`);
+                    return;
+                }
+                const next = pending.find(set => !seen.has(set.id));
+                if (!next) return refreshPendingChanges();
+                seen.add(next.id);
+                const who = next.submission?.agent || next.agentId;
+                const outcome = await reviewChangeset(next, `Review pending changes${who ? ` from ${who}` : ""}`);
+                logConsoleActivity(`[Sandbox] ${CodevAgentClient.describeReviewOutcome(outcome)}`);
+                if (outcome.decision === "deferred") return;
+            }
+        }
+
         // AGENT EXECUTION
         // Each tool context collects the agent's sources, the files it changed and the
         // commands it ran. A tool step means the agent is acting, so its avatar switches
@@ -4241,8 +4507,8 @@
         // One agent's turn. The workspace is indexed again for every agent, since the
         // agent before it may have changed files.
         async function runAgentStep(session, agent, task, opts) {
-            const { extraContext = "", aiOptions = {}, webSources = [], memory = "", notes = "", title } = opts;
-            appendMessageToSession(session, `🤖 ${agent.name} (Working...)`, "📁 Indexing the workspace…");
+            const { extraContext = "", aiOptions = {}, webSources = [], memory = "", notes = "", title, dispatch } = opts;
+            appendMessageToSession(session, `🤖 ${agent.name} (Working...)`, dispatch ? "🧪 Starting a sandbox…" : "📁 Indexing the workspace…");
             const placeholder = session.messages[session.messages.length - 1];
             setAgentState(agent.id, "thinking");
             const tools = createToolContext(session, placeholder, agent, webSources);
@@ -4252,7 +4518,10 @@
                 appendMessageToSession(session, sender, text, null, sources);
             };
             try {
-                const ws = await getWorkspace().catch(err => {
+                // Sandbox mode: this agent's container on the task's shared staging copy.
+                // If it can't start, the agent doesn't run, rather than writing to disk unreviewed.
+                if (dispatch) tools.sandbox = await openAgentSandbox(dispatch, agent);
+                const ws = await getWorkspace(tools.sandbox).catch(err => {
                     logConsoleActivity(`[Workspace] ${err.message}`);
                     return null;
                 });
@@ -4369,7 +4638,9 @@
                 if (session.id === activeChatId) renderActiveChatFeed();
             }
 
-            const stepOptions = { extraContext: injectedContext, aiOptions, webSources, memory: collectiveMemory };
+            // 🧪 Sandbox: the agents' edits are staged and reviewed (finishSandboxDispatch) before they are saved.
+            const dispatch = sandboxModeActive() ? CodevAgentClient.createSandboxDispatch(agentInfra.client, { task: userText }) : null;
+            const stepOptions = { extraContext: injectedContext, aiOptions, webSources, memory: collectiveMemory, dispatch };
 
             if (isBackground) {
                 document.getElementById("isBackgroundWorkerCheckbox").checked = false;
@@ -4378,6 +4649,7 @@
                 (async () => {
                     const result = await runAgentStep(session, activeAgent, userText, { ...stepOptions, title: a => `⚡ Background Complete [${a.name}]` });
                     if (isSelfHeal) await runSelfHealingPass(session, [result], userText, { ...stepOptions, memory: "" });
+                    await finishSandboxDispatch(session, dispatch);
                 })();
                 return;
             }
@@ -4399,11 +4671,13 @@
                 }
                 // A self-healing agent in the swarm has already verified the work.
                 if (isSelfHeal && !ordered.some(a => agentDevRole(a) === "self_healing")) await runSelfHealingPass(session, results, userText, { ...stepOptions, memory: "" });
+                await finishSandboxDispatch(session, dispatch);
                 return;
             }
 
             const result = await runAgentStep(session, activeAgent, userText, stepOptions);
             if (isSelfHeal) await runSelfHealingPass(session, [result], userText, { ...stepOptions, memory: "" });
+            await finishSandboxDispatch(session, dispatch);
         }
 
         // Startup never opens Settings on its own: the workspace loads straight away,
@@ -4417,6 +4691,7 @@
             renderAgentList();
             updateWorkspaceGrid();
             updateMobileTabs();
+            initAgentInfra();
             // Phones start with the mode toggles folded away to leave room for the chat.
             if (isMobileLayout()) toggleChatControls();
         });
