@@ -63,6 +63,8 @@ SECRET_NAME = re.compile(r"^\.|\.(env|pem|key|pfx|p12|keystore|jks)$|^(secrets|c
 
 def is_secret_name(name):
     return name not in (".", "..") and bool(SECRET_NAME.search(name))
+
+
 MCP_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 # Only CoDev itself may call the helper: pages opened from disk send "null",
