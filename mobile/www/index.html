@@ -477,6 +477,11 @@
                             <button id="micBtn" class="mic-btn" onclick="toggleSpeechRecognition()" title="Voice Input (STT)">🎤</button>
                             <button id="attachBtn" class="tool-btn" onclick="document.getElementById('attachmentInput').click()" title="Attach images, PDFs or short videos">📎</button>
                             <button id="webSearchBtn" class="tool-btn" onclick="toggleWebSearch()" title="Search the web for every message: off (technical questions are searched automatically)" aria-pressed="false">🔎</button>
+                            <select id="responseLengthSelect" class="tool-btn" onchange="setResponseLength(this.value)" title="Reply length" aria-label="Reply length">
+                                <option value="short">Short</option>
+                                <option value="medium">Medium</option>
+                                <option value="long">Long</option>
+                            </select>
                             <button class="send-btn" onclick="sendChatMessage()">Send Task</button>
                         </div>
                     </div>
@@ -2088,6 +2093,23 @@
         let attachmentSeq = 0;
         let webSearchEnabled = false;
 
+        // Reply length picked next to the chat input: a system prompt hint plus a
+        // max_tokens cap sent to every provider. gpt-oss spends part of the cap on
+        // reasoning, so even Short leaves room for that.
+        const RESPONSE_LENGTHS = {
+            short: { maxTokens: 2048, hint: "RESPONSE LENGTH: Short. Answer in a few sentences or a brief list. Show only the code that changes, and skip background and recaps." },
+            medium: { maxTokens: 6144, hint: "RESPONSE LENGTH: Medium. Give a focused answer with the key details and complete code where it is needed, without long digressions." },
+            long: { maxTokens: 16384, hint: "RESPONSE LENGTH: Long. Give a thorough, detailed answer: explain the reasoning, cover edge cases, and include complete code and examples." }
+        };
+        let responseLength = RESPONSE_LENGTHS[localStorage.getItem("codev_response_length")] ? localStorage.getItem("codev_response_length") : "medium";
+
+        function setResponseLength(value) {
+            responseLength = RESPONSE_LENGTHS[value] ? value : "medium";
+            localStorage.setItem("codev_response_length", responseLength);
+            document.getElementById("responseLengthSelect").value = responseLength;
+        }
+        document.addEventListener("DOMContentLoaded", () => setResponseLength(responseLength));
+
         function toggleWebSearch() {
             webSearchEnabled = !webSearchEnabled;
             const btn = document.getElementById("webSearchBtn");
@@ -3392,6 +3414,7 @@
         // Groq's model names; with OpenRouter the model is swapped for the OpenRouter
         // model from Settings, which serves text, tools and images alike.
         async function groqChatMessage(body) {
+            body = { max_tokens: RESPONSE_LENGTHS[responseLength].maxTokens, ...body };
             if (currentBackend === "anthropic") return anthropicChatMessage(body);
             const openRouter = currentBackend === "openrouter";
             const provider = openRouter
@@ -3461,7 +3484,7 @@
                 }
             }
             // No temperature: the Messages API rejects sampling settings.
-            const request = { model: ANTHROPIC_MODEL, max_tokens: 16000, messages };
+            const request = { model: ANTHROPIC_MODEL, max_tokens: body.max_tokens || 16000, messages };
             if (system.length) request.system = system.join("\n\n");
             if (body.tools?.length) {
                 request.tools = body.tools.map(t => ({ name: t.function.name, description: t.function.description || "", input_schema: t.function.parameters || { type: "object", properties: {} } }));
@@ -3531,7 +3554,7 @@
 6. CITATIONS: When a statement relies on a web snippet, cite it inline as [n] using that snippet's number. Never cite a source that was not provided. Workspace files are cited by file name.
 7. TOOLS: When tools are available, use them on your own initiative. Call web_search before answering about any API, library, engine feature, syntax, version or error message you are not certain about, and for any code implementation that is unfamiliar. Call list_workspace_files and read_workspace_file (or list_files and read_file) to check the user's real code instead of assuming. When the user asks you to change, create, run or test code and file or command tools (write_workspace_file, write_file, edit_file, run_command, run_approved_command) are available, do it with those tools directly instead of only showing code, then verify by reading the file back or running it. Never claim you searched, read, ran or verified something unless a tool result in this conversation shows it.`;
             
-            const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}`;
+            const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}\n\n${RESPONSE_LENGTHS[responseLength].hint}`;
             const images = options.images || [];
 
             if (images.length === 0) {
