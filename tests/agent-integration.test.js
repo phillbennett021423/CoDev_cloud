@@ -257,6 +257,9 @@ test('a coding prompt through the page is staged, reviewed and saved', async t =
     const { page, errors } = await openPage(launched.browser, ctx.server.url, { steps });
     await sendPrompt(page, 'Build a small greeter page in site/ that says hello to the name typed in');
     const rows = await waitForReview(page, 120000);
+    const offered = (await page.evaluate(() => window.__modelCalls))[0].tools;
+    assert.ok(offered.includes('write_file') && !offered.includes('write_workspace_file'), `tools offered: ${offered.join(', ')}`);
+    if (ctx.tools.includes('browser_navigate')) assert.ok(offered.includes('browser_navigate'), 'browser tools stay available in sandbox mode');
     const byPath = Object.fromEntries(rows.map(r => [r.path, r]));
     assert.ok(byPath['site/index.html'] && byPath['site/greet.js'], JSON.stringify(rows));
     assert.equal(byPath['site/typo.js'].blocked, true, 'the syntax error is blocked in the review');
