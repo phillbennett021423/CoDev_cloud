@@ -53,6 +53,16 @@ MAX_SEARCHED_FILES = 2000
 MAX_SEARCHED_FILE_BYTES = 1024 * 1024
 MAX_MCP_BODY_BYTES = 2 * 1024 * 1024
 SKIPPED_DIRS = {".git", "node_modules", "__pycache__", ".godot", ".import", "venv", ".venv", "dist", "build"}
+
+
+# Files that can hold API keys and secrets, which agents never see: hidden files
+# and folders (.env, .git, anything starting with a dot), env files like
+# production.env, key and certificate files, and secrets.* / credentials.*.
+SECRET_NAME = re.compile(r"^\.|\.(env|pem|key|pfx|p12|keystore|jks)$|^(secrets|credentials)\.", re.IGNORECASE)
+
+
+def is_secret_name(name):
+    return name not in (".", "..") and bool(SECRET_NAME.search(name))
 MCP_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 # Only CoDev itself may call the helper: pages opened from disk send "null",
@@ -118,6 +128,8 @@ def project_path(rel):
     root = os.path.realpath(PROJECT_DIR)
     if full != root and not full.startswith(root + os.sep):
         raise ToolError(f"'{rel}' is outside the project folder {PROJECT_DIR}")
+    if any(is_secret_name(part) for part in os.path.relpath(full, root).split(os.sep)):
+        raise ToolError(f"'{rel}' is a hidden or env file (it may hold keys), which agents can't access")
     return full
 
 
@@ -128,8 +140,8 @@ def tool_list_files(args):
     root = os.path.realpath(PROJECT_DIR)
     found = []
     for folder, dirs, files in os.walk(start):
-        dirs[:] = sorted(d for d in dirs if d not in SKIPPED_DIRS)
-        for name in sorted(files):
+        dirs[:] = sorted(d for d in dirs if d not in SKIPPED_DIRS and not is_secret_name(d))
+        for name in sorted(n for n in files if not is_secret_name(n)):
             found.append(os.path.relpath(os.path.join(folder, name), root).replace(os.sep, "/"))
             if len(found) >= MAX_LISTED_FILES:
                 return "\n".join(found) + f"\n[stopped at {MAX_LISTED_FILES} files]"
@@ -156,8 +168,8 @@ def tool_search_files(args):
     root = os.path.realpath(PROJECT_DIR)
     hits, searched = [], 0
     for folder, dirs, files in os.walk(start):
-        dirs[:] = sorted(d for d in dirs if d not in SKIPPED_DIRS)
-        for name in sorted(files):
+        dirs[:] = sorted(d for d in dirs if d not in SKIPPED_DIRS and not is_secret_name(d))
+        for name in sorted(n for n in files if not is_secret_name(n)):
             full = os.path.join(folder, name)
             searched += 1
             if searched > MAX_SEARCHED_FILES:

@@ -51,6 +51,8 @@ Every message is treated as a task on your project. You don't type file paths or
 - **Autonomous execution.** Agents search the project, edit files and, where a command tool exists, run the code, tests or build themselves. Tools are always on.
 - **Locked developer roles.** Each agent has a role (Agent Configuration → Developer Role): **Architect** plans and implements, **Swarm** builds on the team's changes, **Self-Healing** re-reads changed files, runs what can be run and fixes failures. A role's prompt always applies; an agent's own instructions only add to it. In Group Swarm the agents run Architect → Swarm → Self-Healing, each seeing what the others changed. With 🛡️ Self-Healing on, a solo or background task that changed files gets a verify-and-fix pass afterwards.
 
+**Files with keys stay hidden.** Agents can't list, search, read or write hidden files and folders (`.env`, `.git`, anything whose name starts with a dot), env files like `production.env`, key and certificate files (`.pem`, `.key`, `.pfx`, `.p12`, `.keystore`, `.jks`) or `secrets.*` and `credentials.*`, whichever folder tools they use: the sandbox, the Windows app's, the Python helper's or the page's own. Commands an agent runs directly on your computer (outside the sandbox) aren't filtered, so leave those off if that matters to you.
+
 **Run file edits and commands without asking me first** (Settings) is on by default, so agents save files and run commands with no confirm dialog. Turn it off to approve each change.
 
 | Where CoDev runs | Project the agents see | Edits | Run code |
@@ -98,6 +100,7 @@ The page code is `mobile/www/agent-ui/` (`agent-client.js` talks to the `/agent/
 
 - `tests/agent-client.test.js`: the diff parser, review model and API client (no setup needed).
 - `tests/agent-ui.test.js`: the page's sandbox mode and review screen in headless Chromium, against a stand-in server (needs Playwright and Chromium, Chrome or Edge).
+- `tests/secret-files.test.js`: the Windows app's and the Python helper's folder tools never show agents `.env` or other files that can hold keys (the helper part needs Python).
 - `tests/agent-integration.test.js`: starts the real `server.js` with a throwaway project, sends a sample coding prompt through the page, checks the diff gate (bad files blocked, nothing written before approval, nothing written on reject), runs commands in an ephemeral Docker container and checks it's removed afterwards, then runs a headless browser task against the page the agent saved.
 
 Each test that needs Docker, Chromium or a server feature that isn't there is skipped with the reason, so the suite also passes on a computer without them. On Windows, start Docker Desktop and run `npm run setup` first to test everything. The model is scripted in these tests, so no API key is needed.

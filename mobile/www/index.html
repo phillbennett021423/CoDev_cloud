@@ -950,13 +950,21 @@
 
         function isProjectFileName(name) {
             const lower = name.toLowerCase();
-            return PROJECT_FILE_EXTENSIONS.some(ext => lower.endsWith(ext));
+            return !isSecretName(name) && PROJECT_FILE_EXTENSIONS.some(ext => lower.endsWith(ext));
         }
 
-        // Paths in the connected folder use / and can't climb out of it.
+        // Files that can hold API keys and secrets, which agents never see: hidden files
+        // and folders (.env, .git, anything starting with a dot), env files like
+        // production.env, key and certificate files, and secrets.* / credentials.*.
+        const SECRET_NAME = /^\.|\.(env|pem|key|pfx|p12|keystore|jks)$|^(secrets|credentials)\./i;
+        function isSecretName(name) {
+            return SECRET_NAME.test(String(name));
+        }
+
+        // Paths in the connected folder use / and can't climb out of it or into hidden files.
         function normalizeWorkspacePath(path) {
             const parts = String(path || "").replace(/\\/g, "/").split("/").filter(p => p && p !== ".");
-            if (!parts.length || parts.includes("..")) return "";
+            if (!parts.length || parts.includes("..") || parts.some(isSecretName)) return "";
             return parts.join("/");
         }
 
@@ -1037,6 +1045,7 @@
             const walk = async (dirHandle, prefix) => {
                 for await (const [name, handle] of dirHandle.entries()) {
                     const path = prefix + name;
+                    if (isSecretName(name)) continue;
                     if (handle.kind === 'directory') {
                         if (!WORKSPACE_SKIPPED_DIRS.has(name)) await walk(handle, path + "/");
                     } else if (isProjectFileName(name)) {

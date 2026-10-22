@@ -50,10 +50,19 @@ function toRel(root, full) {
     return path.relative(root, full).split(path.sep).join('/');
 }
 
-// Hidden files and folders (names starting with a dot, like .env or .git) can
-// hold keys and settings, so they're never copied, listed, read or written.
+// Files that can hold API keys and secrets: hidden files and folders (.env, .git,
+// anything starting with a dot), env files like production.env, key and
+// certificate files, and secrets.* / credentials.*. They're never copied,
+// listed, read or written. desktop/mcp-tools.js, the Python helper and the
+// page use the same rule.
+const SECRET_NAME = /^\.|\.(env|pem|key|pfx|p12|keystore|jks)$|^(secrets|credentials)\./i;
+
+function isSecretName(name) {
+    return name !== '.' && name !== '..' && SECRET_NAME.test(name);
+}
+
 function isHidden(rel) {
-    return String(rel).split('/').some(part => part.startsWith('.') && part !== '.' && part !== '..');
+    return String(rel).split('/').some(isSecretName);
 }
 
 // Project-relative paths of regular files under dir (symlinks, hidden files and
@@ -65,7 +74,7 @@ function walk(dir, { limit = MAX_FILES * 4, onSymlink } = {}) {
         try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { return; }
         for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
             if (found.length >= limit) return;
-            if (entry.name.startsWith('.')) continue;
+            if (isSecretName(entry.name)) continue;
             const full = path.join(current, entry.name);
             if (entry.isSymbolicLink()) { if (onSymlink) onSymlink(toRel(dir, full)); continue; }
             if (entry.isDirectory()) { if (!SKIPPED_DIRS.has(entry.name)) visit(full); }
@@ -225,7 +234,7 @@ function createStaging({ getProjectDir, root, limits = {} } = {}) {
     // Hidden files and folders at any depth (.env, .git, CoDev's own .codev data
     // with other sandboxes' copies) are off limits for reading and writing.
     function refuseHidden(key, rel) {
-        if (isHidden(key)) throw new StagingError(`'${rel}' is a hidden file or folder (its name starts with a dot), which agents can't access`);
+        if (isHidden(key)) throw new StagingError(`'${rel}' is a hidden or secret file (like .env or a key file), which agents can't access`);
     }
 
     // Where to read rel from: the workspace copy, or the real project for a file
@@ -333,7 +342,7 @@ function createStaging({ getProjectDir, root, limits = {} } = {}) {
         const results = [];
         for (const { path: rel, hash } of files) {
             try {
-                if (isHidden(String(rel).replace(/\\/g, '/'))) throw new StagingError('it is a hidden file or folder, which the sandbox never writes');
+                if (isHidden(String(rel).replace(/\\/g, '/'))) throw new StagingError('it is a hidden or secret file, which the sandbox never writes');
                 const workFile = containedPath(ws.work, rel);
                 const current = readOrNull(workFile);
                 const currentHash = current === null ? 'deleted' : sha(current);

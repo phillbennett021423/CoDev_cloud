@@ -15,6 +15,19 @@ const MAX_SEARCHED_FILES = 2000;
 const MAX_SEARCHED_FILE_BYTES = 1024 * 1024;
 const SKIPPED_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.godot', '.import', 'venv', '.venv', 'dist', 'build']);
 
+// Files that can hold API keys and secrets, which agents never see: hidden files
+// and folders (.env, .git, anything starting with a dot), env files like
+// production.env, key and certificate files, and secrets.* / credentials.*.
+const SECRET_NAME = /^\.|\.(env|pem|key|pfx|p12|keystore|jks)$|^(secrets|credentials)\./i;
+
+function isSecretName(name) {
+    return name !== '.' && name !== '..' && SECRET_NAME.test(name);
+}
+
+function isSecretPath(rel) {
+    return String(rel).split(/[\\/]/).some(isSecretName);
+}
+
 class ToolError extends Error {}
 
 function createMcpTools(getProjectDir) {
@@ -28,6 +41,7 @@ function createMcpTools(getProjectDir) {
         if (realFull !== realRoot && !realFull.startsWith(realRoot + path.sep)) {
             throw new ToolError(`'${rel}' is outside the project folder ${root}`);
         }
+        if (isSecretPath(path.relative(root, full))) throw new ToolError(`'${rel}' is a hidden or env file (it may hold keys), which agents can't access`);
         return full;
     }
 
@@ -40,6 +54,7 @@ function createMcpTools(getProjectDir) {
         const walk = dir => {
             for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
                 if (found.length >= limit) return;
+                if (isSecretName(entry.name)) continue;
                 const full = path.join(dir, entry.name);
                 if (entry.isDirectory()) { if (!SKIPPED_DIRS.has(entry.name)) walk(full); }
                 else found.push(path.relative(root, full).split(path.sep).join('/'));
