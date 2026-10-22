@@ -21,7 +21,7 @@
     "appId": "com.codev.studio",
     "productName": "CoDev Studio",
     "artifactName": "CoDev-Studio-Setup.${ext}",
-    "files": ["main.js", "preload.js", "mcp-tools.js", "mcp-hub.js", "sandbox/**/*", "www/**/*"],
+    "files": ["main.js", "preload.js", "mcp-tools.js", "mcp-hub.js", "sandbox/**/*", "!sandbox/test/**", "www/**/*"],
     "directories": { "output": "dist", "buildResources": "build" },
     "win": { "icon": "build/icon.png", "target": "nsis" },
     "nsis": { "oneClick": true, "perMachine": false, "createDesktopShortcut": true, "createStartMenuShortcut": true, "shortcutName": "CoDev Studio" }
