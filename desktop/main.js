@@ -1,11 +1,13 @@
 // CoDev Studio desktop app: the same page as the Android app (mobile/www),
 // in its own window. The page talks to Groq directly; the main process only
 // does what a page can't, like fetching DuckDuckGo results without CORS.
-const { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { createMcpTools } = require('./mcp-tools');
 const { createNodeMcpHub } = require('./mcp-hub');
+const { createSandbox } = require('./sandbox');
+const { createBrowserService } = require('./browser');
 const { pathToFileURL } = require('url');
 
 const WWW = path.join(__dirname, 'www');
@@ -62,6 +64,42 @@ app.whenReady().then(() => {
     ipcMain.handle('codev:mcp', (_event, message) => handleMcp(message));
     ipcMain.handle('codev:mcp-folder', () => getProjectDir());
 
+    // Sandboxed agents: tools that work in a staging copy of the project, commands in
+    // per-agent Docker containers, and the review gate (the only path that writes
+    // agents' changes to the project folder, after the user approves the diff).
+    const sandbox = createSandbox({ getProjectDir, log: line => console.log(line) });
+    ipcMain.handle('codev:sandbox-mcp', (_event, message) => sandbox.handleMcp(message));
+    ipcMain.handle('codev:agent-request', async (_event, req) => {
+        const { method, path: urlPath, body } = req || {};
+        const url = new URL(String(urlPath || '/'), 'app://codev');
+        const reply = await sandbox.handleRequest(method, url.pathname, Object.fromEntries(url.searchParams), body);
+        return reply || { status: 404, body: { error: 'Not found' } };
+    });
+    app.on('before-quit', () => { sandbox.closeSync(); });
+
+    // Agents' headless browsers. Saved logins are encrypted with safeStorage (DPAPI
+    // on Windows) in this app's user data folder; the page asks the user before any is used.
+    const browserTools = createBrowserService({ dataDir: app.getPath('userData'), safeStorage, getProjectDir });
+    ipcMain.handle('codev:browser-mcp', (_event, message) => browserTools.handle(message));
+    // Live view: frames and inspector events go to the window that asked for them.
+    const liveWatches = new Map(); // webContents id -> unsubscribe
+    ipcMain.handle('codev:browser-live', async (event, req = {}) => {
+        const sender = event.sender;
+        if (req.op === 'watch') {
+            if (liveWatches.has(sender.id)) liveWatches.get(sender.id)();
+            const stop = browserTools.live.subscribe(String(req.agentId || ''), update => { if (!sender.isDestroyed()) sender.send('codev:browser-live-event', update); });
+            liveWatches.set(sender.id, stop);
+            sender.once('destroyed', () => { stop(); liveWatches.delete(sender.id); });
+            return { ok: true };
+        }
+        if (req.op === 'unwatch') {
+            if (liveWatches.has(sender.id)) liveWatches.get(sender.id)();
+            liveWatches.delete(sender.id);
+            return { ok: true };
+        }
+        try { return await browserTools.live.control(req.agentId, req.control || {}); } catch (err) { return { error: err.message }; }
+    });
+
     // External MCP servers from Settings (stdio processes and remote URLs), through the official SDK.
     const mcpHub = createNodeMcpHub({
         readConfig: () => desktopSettings.mcpServers,
@@ -72,7 +110,7 @@ app.whenReady().then(() => {
     });
     ipcMain.handle('codev:mcp-hub', (_event, req) => mcpHub.handle(req));
     // Stop the server processes the hub started.
-    app.on('before-quit', () => { mcpHub.close(); });
+    app.on('before-quit', () => { mcpHub.close(); browserTools.close(); });
     ipcMain.handle('codev:mcp-pick-folder', async event => {
         const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
             title: 'Choose the project folder agents can work in',

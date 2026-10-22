@@ -11,7 +11,8 @@
     "dist": "npm run copy-www && electron-builder --win nsis --publish never"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1"
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "playwright-core": "1.64.1"
   },
   "devDependencies": {
     "electron": "44.4.5",
@@ -21,7 +22,8 @@
     "appId": "com.codev.studio",
     "productName": "CoDev Studio",
     "artifactName": "CoDev-Studio-Setup.${ext}",
-    "files": ["main.js", "preload.js", "mcp-tools.js", "mcp-hub.js", "www/**/*"],
+    "files": ["main.js", "preload.js", "mcp-tools.js", "mcp-hub.js", "sandbox/**/*", "!sandbox/test/**", "browser/**/*", "www/**/*"],
+    "asarUnpack": ["node_modules/playwright-core/**"],
     "directories": { "output": "dist", "buildResources": "build" },
     "win": { "icon": "build/icon.png", "target": "nsis" },
     "nsis": { "oneClick": true, "perMachine": false, "createDesktopShortcut": true, "createStartMenuShortcut": true, "shortcutName": "CoDev Studio" }
