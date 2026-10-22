@@ -3024,7 +3024,7 @@
             }
             refreshMcpStatus();
             document.getElementById("modalSearchHelperUrl").value = searchHelperUrl;
-            document.getElementById("modalCancelBtn").style.display = activeProviderKey() ? "inline-block" : "none";
+            document.getElementById("modalCancelBtn").style.display = "inline-block";
             if (isMobileLayout() && openDrawerName) closeDrawers();
             document.getElementById("settingsModal").style.display = "flex";
         }
@@ -3051,11 +3051,8 @@
             if (field) { field.focus(); field.select?.(); }
         }
 
-        function closeSettingsModal() { 
-            if (!activeProviderKey()) {
-                showSettingsError(`Please enter ${currentBackend === "groq" ? "a" : "an"} ${BACKEND_NAMES[currentBackend]} API key to launch CoDev Studio Pro.`, KEY_FIELDS[currentBackend]);
-                return;
-            }
+        // Settings can always be closed, with or without a key.
+        function closeSettingsModal() {
             showSettingsError("");
             document.getElementById("settingsModal").style.display = "none"; 
         }
@@ -3076,6 +3073,30 @@
         }
 
         let lastRejectedKey = "";
+
+        // Asks Anthropic whether the key is real before saving it, so a typo shows up
+        // here instead of as a 401 on the first message. "" means it works or
+        // Anthropic couldn't be reached.
+        async function checkAnthropicKey(key) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 8000);
+            try {
+                const response = await fetch("https://api.anthropic.com/v1/models?limit=1", {
+                    headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+                    signal: controller.signal
+                });
+                if (response.status === 401 || response.status === 403) {
+                    const reply = await response.json().catch(() => ({}));
+                    return `Anthropic answered ${response.status}: "${reply.error?.message || "invalid x-api-key"}". CoDev sent the key ${describeKey(key)}; check it matches yours at console.anthropic.com. Press Launch again to save it anyway.`;
+                }
+                return "";
+            } catch (err) {
+                logConsoleActivity(`Couldn't check the Anthropic key (${err.message}); saving it anyway.`);
+                return "";
+            } finally {
+                clearTimeout(timer);
+            }
+        }
 
         async function checkOpenRouterKey(key) {
             if (/\.\.\.|…|\*{3,}/.test(key)) {
@@ -3149,16 +3170,18 @@
             }
             // The Groq key is optional with OpenRouter and Anthropic; a malformed one is just not used.
             if (backend !== "groq" && newGroqKey && !newGroqKey.startsWith("gsk_")) newGroqKey = "";
-            // A key OpenRouter just rejected is saved anyway on the second press.
-            if (backend === "openrouter" && newOpenRouterKey !== openRouterKey && newOpenRouterKey !== lastRejectedKey) {
+            // A key the provider just rejected is saved anyway on the second press.
+            const checks = { openrouter: [newOpenRouterKey, openRouterKey, checkOpenRouterKey], anthropic: [newAnthropicKey, anthropicKey, checkAnthropicKey] };
+            const [keyToCheck, savedKey, checkKey] = checks[backend] || [];
+            if (keyToCheck && keyToCheck !== savedKey && keyToCheck !== lastRejectedKey) {
                 const launchBtn = document.getElementById("modalLaunchBtn");
                 launchBtn.disabled = true;
                 showSettingsError("");
-                const problem = await checkOpenRouterKey(newOpenRouterKey);
+                const problem = await checkKey(keyToCheck);
                 launchBtn.disabled = false;
                 if (problem) {
-                    lastRejectedKey = newOpenRouterKey;
-                    showSettingsError(problem, "modalOpenRouterKey");
+                    lastRejectedKey = keyToCheck;
+                    showSettingsError(problem, KEY_FIELDS[backend]);
                     return;
                 }
             }
@@ -3703,8 +3726,7 @@
 
         async function callAI(systemPrompt, userMessage, options = {}) {
             if (!activeProviderKey()) {
-                openSettingsModal();
-                throw new Error(`${BACKEND_NAMES[currentBackend]} API key required. Please enter your key in settings.`);
+                throw new Error(`No ${BACKEND_NAMES[currentBackend]} API key saved yet. Open ⚙️ Settings, pick a provider and paste its key (Anthropic keys start with sk-ant-).`);
             }
 
             const technicalGuardrails = `CRITICAL TECHNICAL & STRICT COMPLIANCE RULES:
@@ -3921,14 +3943,12 @@
             }
         }
 
-        // First-Launch Onboarding Wizard Check
+        // Startup never opens Settings on its own: the workspace loads straight away,
+        // and Settings opens only from the ⚙️ button.
         window.addEventListener('DOMContentLoaded', async () => {
+            document.getElementById("settingsModal").style.display = "none";
             await checkServerAnthropic();
-            if (!pickProviderWithKey()) {
-                document.getElementById("settingsModal").style.display = "flex";
-            } else {
-                document.getElementById("settingsModal").style.display = "none";
-            }
+            if (!pickProviderWithKey()) logConsoleActivity("No API key saved yet. Add a Groq, OpenRouter or Anthropic key under ⚙️ Settings to chat with the agents.");
             updateStatusDisplay();
             renderChatList();
             renderAgentList();
