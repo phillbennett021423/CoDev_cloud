@@ -672,14 +672,15 @@
                         <span id="desktopMcpFolder" style="font-family: monospace; font-size: 0.8rem; overflow-wrap: anywhere;"></span>
                     </div>
                 </div>
-                <div id="mcpStatus" style="font-size: 0.8rem; color: var(--text-muted);"></div>
+                <div id="mcpStatus" style="font-size: 0.8rem; color: var(--text-muted); white-space: pre-line; overflow-wrap: anywhere;"></div>
                 <div class="form-group">
                     <label>Desktop helper address (the Android app doesn't need it)</label>
                     <input type="text" id="modalSearchHelperUrl" style="font-family: monospace;">
                 </div>
                 <div class="form-group">
-                    <label>MCP server (the helper's /mcp, or any Streamable HTTP MCP server)</label>
-                    <input type="text" id="modalMcpUrl" style="font-family: monospace;">
+                    <label>MCP servers, in the "mcpServers" JSON format MCP servers document. "command" servers run on this computer (Windows app, or start-codev.bat); "url" servers work everywhere, including Android.</label>
+                    <textarea id="modalMcpServers" spellcheck="false" placeholder='{ "mcpServers": { "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\code"] }, "docs": { "url": "https://example.com/mcp" } } }'></textarea>
+                    <button class="btn-secondary" type="button" onclick="testMcpServers()">🔌 Save &amp; connect</button>
                 </div>
             </details>
 
@@ -1567,68 +1568,172 @@
         // Described the way MCP describes tools (name, description, inputSchema) and
         // sent to Groq as function tools. The model decides when to call them; the app
         // runs them here, on the device, and returns the result. Nothing here is paid.
-        // Tools from an MCP server (the desktop helper's /mcp by default) are added to
-        // the same list and called over MCP's Streamable HTTP transport.
+        // Tools from MCP servers (Windows app built-ins, and the servers set up in
+        // Settings) are added to the same list.
         const MAX_TOOL_ROUNDS = 12;
         const MAX_TOOL_RESULT_CHARS = 12000;
-        const MCP_PROTOCOL_VERSION = "2025-06-18";
-        const MCP_TIMEOUT_MS = 2000;
         let localToolsEnabled = (localStorage.getItem("codev_local_tools") ?? "1") === "1";
         // On: agents edit files and run commands without a confirm dialog.
         let toolsAutoRun = (localStorage.getItem("codev_tools_autorun") ?? "1") === "1";
-        let mcpServerUrl = localStorage.getItem("codev_mcp_url") ?? `${DEFAULT_SEARCH_HELPER_URL}/mcp`;
         let helperCommandsCache = { at: 0, commands: [] };
-        let mcpCache = { at: 0, url: "", tools: [] };
-        let mcpSession = { url: "", id: null, protocolVersion: MCP_PROTOCOL_VERSION };
         let mcpRequestId = 0;
 
-        // One JSON-RPC request over Streamable HTTP. Servers may answer with JSON or an SSE stream.
-        async function mcpPost(message, timeoutMs) {
-            const headers = { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" };
-            if (mcpSession.url === mcpServerUrl) {
-                headers["MCP-Protocol-Version"] = mcpSession.protocolVersion;
-                if (mcpSession.id) headers["Mcp-Session-Id"] = mcpSession.id;
-            }
-            const controller = new AbortController();
-            const timer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
+        // EXTERNAL MCP SERVERS (Settings > MCP servers), through the official MCP SDK.
+        // mcp/mcp-hub-core.js connects to each server, runs the initialize handshake
+        // and lists tools and resources. Where it runs depends on the platform:
+        //  - Windows app: in the main process over IPC, so stdio servers (npx, uvx,
+        //    python, an .exe) work as well as remote ones.
+        //  - A browser on the computer running server.js: in server.js via /mcp-hub, same.
+        //  - Android app and the web: here in the page, url servers only (a phone or a
+        //    browser tab can't start a process). On Android, Streamable HTTP goes
+        //    through the native HTTP client, so the server doesn't have to allow CORS.
+        let mcpServersConfig = localStorage.getItem("codev_mcp_servers") ?? defaultMcpServersConfig();
+        let mcpHubPromise = null;
+
+        // Before this, Settings had one MCP server URL (the desktop helper's /mcp).
+        function defaultMcpServersConfig() {
+            const legacyUrl = localStorage.getItem("codev_mcp_url") ?? `${DEFAULT_SEARCH_HELPER_URL}/mcp`;
+            const isPhone = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+            const servers = legacyUrl && !isPhone ? { helper: { url: legacyUrl, type: "http" } } : {};
+            return JSON.stringify({ mcpServers: servers }, null, 2);
+        }
+
+        function mcpServersConfigured() {
             try {
-                const response = await fetch(mcpServerUrl, { method: "POST", headers, body: JSON.stringify(message), signal: controller.signal });
-                const sessionId = response.headers.get("Mcp-Session-Id");
-                if (sessionId) mcpSession.id = sessionId;
-                if (!("id" in message)) return null;
-                if (!response.ok) throw new Error(`MCP server returned HTTP ${response.status}`);
-                const type = response.headers.get("Content-Type") || "";
-                let replies;
-                if (type.includes("text/event-stream")) {
-                    replies = (await response.text()).split(/\r?\n\r?\n/)
-                        .map(event => event.split(/\r?\n/).filter(l => l.startsWith("data:")).map(l => l.slice(5).trim()).join("\n"))
-                        .filter(Boolean).map(data => { try { return JSON.parse(data); } catch (err) { return null; } });
-                } else {
-                    replies = [].concat(await response.json());
+                const config = JSON.parse(mcpServersConfig || "{}");
+                return Object.keys(config.mcpServers || config).length > 0;
+            } catch (err) { return false; }
+        }
+
+        function loadMcpScript(src) {
+            return new Promise((resolve, reject) => {
+                const script = document.createElement("script");
+                script.src = src;
+                script.onload = resolve;
+                script.onerror = () => reject(new Error(`${src} is missing next to index.html`));
+                document.head.appendChild(script);
+            });
+        }
+
+        // fetch() for the SDK's Streamable HTTP transport, over Capacitor's native HTTP.
+        // It buffers whole replies, which is fine for request/reply POSTs, but it can't
+        // hold open the optional server-to-client GET stream: answering 405 there is
+        // how the spec says a server declines it, and the SDK carries on without it.
+        function capacitorMcpFetch(http) {
+            return async (url, init = {}) => {
+                const method = (init.method || "GET").toUpperCase();
+                const headers = {};
+                new Headers(init.headers || {}).forEach((value, key) => { headers[key] = value; });
+                if (method === "GET") return new Response(null, { status: 405 });
+                let data = init.body;
+                if (typeof data === "string" && (headers["content-type"] || "").includes("application/json")) {
+                    try { data = JSON.parse(data); } catch (err) { /* send as text */ }
                 }
-                const reply = replies.find(r => r && r.id === message.id);
-                if (!reply) throw new Error("MCP server sent no reply");
-                if (reply.error) throw new Error(reply.error.message || "MCP error");
-                return reply.result;
-            } finally {
-                if (timer) clearTimeout(timer);
+                const reply = await http.request({ url: String(url), method, headers, data, responseType: "text" });
+                const replyHeaders = new Headers();
+                for (const [key, value] of Object.entries(reply.headers || {})) {
+                    try { replyHeaders.set(key, String(value)); } catch (err) { /* header the browser won't accept */ }
+                }
+                const empty = reply.status === 202 || reply.status === 204 || reply.data == null || reply.data === "";
+                const body = empty ? null : (typeof reply.data === "string" ? reply.data : JSON.stringify(reply.data));
+                return new Response(body, { status: reply.status, headers: replyHeaders });
+            };
+        }
+
+        // server.js answers /mcp-hub once `npm install` has added the MCP SDK.
+        async function localMcpHubSender() {
+            if (location.protocol !== "http:" || !/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return null;
+            const send = async req => {
+                const response = await fetch("/mcp-hub", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) });
+                const reply = await response.json().catch(() => ({ error: `CoDev's server returned HTTP ${response.status}` }));
+                return response.ok ? reply : { error: reply.error || `HTTP ${response.status}` };
+            };
+            try {
+                const reply = await send({ op: "status" });
+                if (!reply.error) return send;
+                logConsoleActivity(`[MCP] ${reply.error} Until then, only url servers work.`);
+            } catch (err) { /* an older server.js without /mcp-hub */ }
+            return null;
+        }
+
+        async function openMcpHub() {
+            let send = window.codevDesktop?.mcpHub ? (req => window.codevDesktop.mcpHub(req)) : await localMcpHubSender();
+            if (!send) {
+                if (!window.CodevMcpSdk) await loadMcpScript("vendor/mcp/mcp-sdk.min.js");
+                if (!window.CodevMcpHubCore) await loadMcpScript("mcp/mcp-hub-core.js");
+                const http = getNativeSpeechPlugin("CapacitorHttp");
+                const hub = window.CodevMcpHubCore.createMcpHub({
+                    sdk: window.CodevMcpSdk,
+                    httpFetch: http ? capacitorMcpFetch(http) : undefined,
+                    platform: http ? "android" : "web",
+                    log: logConsoleActivity
+                });
+                send = req => hub.handle(req);
+            }
+            const reply = await send({ op: "configure", config: mcpServersConfig });
+            if (reply.error) logConsoleActivity(`[MCP] ${reply.error}`);
+            return send;
+        }
+
+        async function mcpHubRequest(req) {
+            if (!mcpHubPromise) mcpHubPromise = openMcpHub().catch(err => { mcpHubPromise = null; throw err; });
+            const reply = await (await mcpHubPromise)(req);
+            if (reply.error) throw new Error(reply.error);
+            return reply.result;
+        }
+
+        async function saveMcpServersConfig(text) {
+            JSON.parse(text || "{}"); // throws on bad JSON before anything is saved
+            mcpServersConfig = text;
+            localStorage.setItem("codev_mcp_servers", text);
+            if (mcpHubPromise) await mcpHubRequest({ op: "configure", config: text });
+        }
+
+        // Tools from every configured server, named "<server>__<tool>" for the model.
+        async function fetchHubMcpTools() {
+            if (!mcpServersConfigured()) return [];
+            try {
+                return (await mcpHubRequest({ op: "listTools" })).map(t => ({ ...t, transport: "hub" }));
+            } catch (err) {
+                logConsoleActivity(`[MCP] ${err.message}`);
+                return [];
             }
         }
 
-        function mcpCall(method, params, timeoutMs) {
-            return mcpPost({ jsonrpc: "2.0", id: ++mcpRequestId, method, params: params || {} }, timeoutMs);
+        // Resources (files, docs, database rows...) the servers expose, read on demand.
+        async function fetchMcpResources() {
+            if (!mcpServersConfigured()) return [];
+            try { return await mcpHubRequest({ op: "listResources" }); } catch (err) { return []; }
         }
 
-        async function mcpConnect() {
-            mcpSession = { url: "", id: null, protocolVersion: MCP_PROTOCOL_VERSION };
-            const init = await mcpCall("initialize", {
-                protocolVersion: MCP_PROTOCOL_VERSION,
-                capabilities: {},
-                clientInfo: { name: "codev-studio", version: "1.0.0" }
-            }, MCP_TIMEOUT_MS);
-            mcpSession = { url: mcpServerUrl, id: mcpSession.id, protocolVersion: init.protocolVersion || MCP_PROTOCOL_VERSION };
-            await mcpPost({ jsonrpc: "2.0", method: "notifications/initialized" }, MCP_TIMEOUT_MS);
-            logConsoleActivity(`[MCP] Connected to ${init.serverInfo?.name || mcpServerUrl}.`);
+        function mcpContentToText(items) {
+            return (items || []).map(c => {
+                if (c.type === "text") return c.text;
+                if (c.type === "resource") return c.resource?.text ?? `[${c.resource?.mimeType || "binary"} resource ${c.resource?.uri}]`;
+                if (c.type === "resource_link") return `[resource ${c.uri}${c.name ? ` (${c.name})` : ""}]`;
+                return `[${c.type} content${c.mimeType ? `, ${c.mimeType}` : ""}]`;
+            }).join("\n");
+        }
+
+        async function readMcpResource(server, uri) {
+            const result = await mcpHubRequest({ op: "readResource", server, uri });
+            const text = (result.contents || []).map(c => typeof c.text === "string"
+                ? (result.contents.length > 1 ? `--- ${c.uri} ---\n${c.text}` : c.text)
+                : `[${c.mimeType || "binary"} content at ${c.uri}, ${Math.round((c.blob || "").length * 0.75)} bytes]`).join("\n\n");
+            return text || "(empty resource)";
+        }
+
+        async function testMcpServers() {
+            const box = document.getElementById("mcpStatus");
+            try {
+                await saveMcpServersConfig(document.getElementById("modalMcpServers").value.trim());
+            } catch (err) {
+                box.textContent = `⚠️ ${err.message}`;
+                return;
+            }
+            box.textContent = "Connecting to MCP servers...";
+            try { await mcpHubRequest({ op: "refresh" }); } catch (err) { /* shown per server below */ }
+            refreshMcpStatus();
         }
 
         // The Windows app has MCP tools built in for the project folder chosen in Settings.
@@ -1661,46 +1766,39 @@
             if (!box) return;
             box.textContent = "Checking MCP tools...";
             desktopMcpCache.at = 0;
-            mcpCache.at = 0;
-            const tools = await fetchAllMcpTools();
-            box.textContent = tools.length
-                ? `✅ MCP tools connected: ${tools.map(t => t.name).join(", ")}`
-                : (window.codevDesktop?.mcp ? "⚠️ No MCP tools yet. Choose a project folder above." : "⚠️ No MCP tools connected. Start the helper with --autonomous (see tools/ddgs-helper).");
-        }
-
-        // Built-in desktop tools first, then any HTTP MCP server's tools with other names.
-        async function fetchAllMcpTools() {
-            const tools = await fetchDesktopMcpTools();
-            for (const t of await fetchMcpTools()) if (!tools.some(x => x.name === t.name)) tools.push(t);
-            return tools;
-        }
-
-        // Tools the MCP server offers, re-listed at most once a minute.
-        async function fetchMcpTools() {
-            if (!mcpServerUrl) return [];
-            if (mcpCache.url === mcpServerUrl && Date.now() - mcpCache.at < 60000) return mcpCache.tools;
-            let tools = [];
-            try {
-                if (mcpSession.url !== mcpServerUrl) await mcpConnect();
-                let result;
-                try {
-                    result = await mcpCall("tools/list", {}, MCP_TIMEOUT_MS);
-                } catch (err) {
-                    await mcpConnect(); // the server may have dropped our session
-                    result = await mcpCall("tools/list", {}, MCP_TIMEOUT_MS);
-                }
-                tools = (result.tools || []).filter(t => t && typeof t.name === "string");
-            } catch (err) {
-                mcpSession.url = ""; // server not running: try again next time
+            const builtIn = await fetchDesktopMcpTools();
+            const lines = [];
+            if (window.codevDesktop?.mcp) {
+                lines.push(builtIn.length ? `✅ Built-in: ${builtIn.map(t => t.name).join(", ")}` : "⚠️ Built-in tools: choose a project folder above.");
             }
-            mcpCache = { at: Date.now(), url: mcpServerUrl, tools };
-            return tools;
+            if (mcpServersConfigured()) {
+                await fetchHubMcpTools();
+                await fetchMcpResources();
+                let servers = [];
+                try { servers = await mcpHubRequest({ op: "status" }); } catch (err) { lines.push(`⚠️ ${err.message}`); }
+                for (const s of servers) {
+                    if (s.status === "connected") {
+                        const via = s.transport === "stdio" ? "stdio" : s.transport === "sse" ? "HTTP+SSE" : "Streamable HTTP";
+                        const name = s.serverInfo ? `${s.serverInfo.name} ${s.serverInfo.version || ""}`.trim() : "server";
+                        lines.push(`✅ ${s.name} (${name}, ${via}${s.protocolVersion ? `, MCP ${s.protocolVersion}` : ""}): ${s.toolCount ?? 0} tools, ${s.resourceCount ?? 0} resources`);
+                    } else {
+                        lines.push(`❌ ${s.name}: ${s.error || s.status}`);
+                    }
+                }
+            }
+            box.textContent = lines.length ? lines.join("\n") : "No MCP servers set up yet. Add one below.";
+        }
+
+        // Built-in desktop tools first, then the configured servers' tools.
+        async function fetchAllMcpTools() {
+            return [...await fetchDesktopMcpTools(), ...await fetchHubMcpTools()];
         }
 
         async function runMcpTool(tool, args) {
+            const shownName = tool.qualifiedName || tool.name;
             if (!toolsAutoRun && !tool.annotations?.readOnlyHint) {
-                if (!confirm(`An agent wants to use ${tool.name} on your computer:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`)) {
-                    logConsoleActivity(`[Tool] You declined: ${tool.name}`);
+                if (!confirm(`An agent wants to use ${shownName}${tool.server ? ` (MCP server "${tool.server}")` : " on your computer"}:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`)) {
+                    logConsoleActivity(`[Tool] You declined: ${shownName}`);
                     return "The user declined this tool call.";
                 }
             }
@@ -1710,10 +1808,11 @@
                 if (reply.error) throw new Error(reply.error.message);
                 result = reply.result;
             } else {
-                result = await mcpCall("tools/call", { name: tool.name, arguments: args });
+                result = await mcpHubRequest({ op: "callTool", server: tool.server, name: tool.name, arguments: args });
             }
-            const text = (result.content || []).map(c => c.type === "text" ? c.text : `[${c.type} content]`).join("\n");
-            if (result.isError) logConsoleActivity(`[Tool] ${tool.name} reported an error.`);
+            let text = mcpContentToText(result.content);
+            if (!text && result.structuredContent) text = JSON.stringify(result.structuredContent, null, 2);
+            if (result.isError) logConsoleActivity(`[Tool] ${shownName} reported an error.`);
             return (result.isError ? "Error: " : "") + (text || "(no output)");
         }
 
@@ -1779,12 +1878,30 @@
             ];
             const mcpTools = await fetchAllMcpTools();
             for (const tool of mcpTools) {
-                if (tools.some(t => t.name === tool.name)) continue;
+                const name = tool.qualifiedName || tool.name;
+                if (tools.some(t => t.name === name)) continue;
                 tools.push({
-                    name: tool.name,
-                    description: tool.description || tool.name,
+                    name,
+                    description: (tool.server ? `[MCP server "${tool.server}"] ` : "") + (tool.description || tool.title || tool.name),
                     inputSchema: tool.inputSchema && tool.inputSchema.type === "object" ? tool.inputSchema : { type: "object", properties: {} },
                     run: async (args) => runMcpTool(tool, args)
+                });
+            }
+            const resources = await fetchMcpResources();
+            if (resources.length) {
+                tools.push({
+                    name: "mcp_list_resources",
+                    description: "List the resources (files, documents, records) the connected MCP servers expose, with the server and URI to read each one.",
+                    inputSchema: { type: "object", properties: {} },
+                    run: async () => resources.map(r => r.uri
+                        ? `server=${r.server} uri=${r.uri}  ${r.title || r.name}${r.mimeType ? ` (${r.mimeType})` : ""}${r.description ? ` - ${r.description}` : ""}`
+                        : `server=${r.server} uri template=${r.uriTemplate}  ${r.title || r.name}: fill in the {placeholders}${r.description ? ` - ${r.description}` : ""}`).join("\n")
+                });
+                tools.push({
+                    name: "mcp_read_resource",
+                    description: "Read one MCP resource by its server and URI (from mcp_list_resources).",
+                    inputSchema: { type: "object", properties: { server: { type: "string", enum: [...new Set(resources.map(r => r.server))] }, uri: { type: "string" } }, required: ["server", "uri"] },
+                    run: async ({ server, uri }) => readMcpResource(String(server || ""), String(uri || ""))
                 });
             }
             // Older helpers without /mcp still offer their approved commands.
@@ -1839,7 +1956,11 @@
             return `Exit code: ${data.exit_code}${data.timed_out ? " (timed out)" : ""}\n--- stdout ---\n${data.stdout || ""}\n--- stderr ---\n${data.stderr || ""}`;
         }
 
-        function describeToolCall(name, args) {
+        function describeToolCall(fullName, args) {
+            const split = fullName.indexOf("__");
+            const name = split > 0 ? fullName.slice(split + 2) : fullName;
+            if (name === "mcp_list_resources") return "📚 Listing MCP resources";
+            if (name === "mcp_read_resource") return `📄 Reading ${args.uri}`;
             if (name === "web_search") return `🔎 Searching: ${args.query}`;
             if (name === "read_workspace_file") return `📄 Reading ${args.name}`;
             if (name === "list_workspace_files") return "📁 Listing project files";
@@ -1849,7 +1970,7 @@
             if (name === "read_file") return `📄 Reading ${args.path}`;
             if (name === "write_file" || name === "edit_file") return `✏️ Editing ${args.path}`;
             if (name === "run_command") return `▶️ Running: ${String(args.command || "").slice(0, 80)}`;
-            return `🛠️ ${name}`;
+            return `🛠️ ${fullName}`;
         }
 
         // Runs the model ↔ tool loop until the model answers in plain text.
@@ -1857,11 +1978,15 @@
             const tools = await buildLocalTools();
             const toolDefs = tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
             // Tell the model what "MCP" means here, so a request like "use MCP to..." lands on these tools.
-            const mcpNames = (await fetchAllMcpTools()).map(t => t.name);
+            const mcpNames = (await fetchAllMcpTools()).map(t => t.qualifiedName || t.name);
             if (messages[0]?.role === "system") {
                 messages[0] = { ...messages[0], content: messages[0].content + (mcpNames.length
                     ? `\n\n[MCP] The user's MCP tools are connected and work on their computer: ${mcpNames.join(", ")}. When the user mentions MCP, they mean these tools. Use them to read, create and edit files and to run code, instead of only showing code.`
-                    : `\n\n[MCP] No MCP tools are connected right now. If the user asks for MCP, file edits or running code on their computer, tell them to choose a project folder under Settings > Web grounding & local tools in the Windows app (or start the helper with --autonomous), then ask again.`) };
+                    : `\n\n[MCP] No MCP tools are connected right now. If the user asks for MCP, file edits or running code on their computer, tell them to choose a project folder under Settings > Web grounding & local tools in the Windows app, or add an MCP server there, then ask again.`) };
+                // Instructions servers sent in their initialize reply, so the model uses them as intended.
+                const instructions = mcpServersConfigured() ? (await mcpHubRequest({ op: "status" }).catch(() => []))
+                    .filter(s => s.status === "connected" && s.instructions).map(s => `[MCP server "${s.name}" instructions] ${s.instructions.slice(0, 1500)}`) : [];
+                if (instructions.length) messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + instructions.join("\n\n") };
             }
             for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
                 const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" });
@@ -2722,7 +2847,7 @@
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
             document.getElementById("modalLocalTools").checked = localToolsEnabled;
             document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
-            document.getElementById("modalMcpUrl").value = mcpServerUrl;
+            document.getElementById("modalMcpServers").value = mcpServersConfig;
             if (window.codevDesktop?.mcpFolder) {
                 document.getElementById("desktopMcpGroup").style.display = "flex";
                 window.codevDesktop.mcpFolder().then(folder => {
@@ -2872,9 +2997,10 @@
             }
             toolsAutoRun = document.getElementById("modalToolsAutoRun").checked;
             localStorage.setItem("codev_tools_autorun", toolsAutoRun ? "1" : "0");
-            mcpServerUrl = document.getElementById("modalMcpUrl").value.trim();
-            localStorage.setItem("codev_mcp_url", mcpServerUrl);
-            mcpCache.at = 0;
+            const mcpText = document.getElementById("modalMcpServers").value.trim();
+            if (mcpText !== mcpServersConfig) {
+                saveMcpServersConfig(mcpText).catch(err => alert(`MCP servers weren't saved: ${err.message}`));
+            }
             helperCommandsCache.at = 0;
             localStorage.setItem("codev_search_helper_url", searchHelperUrl);
 

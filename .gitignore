@@ -1,0 +1,3 @@
+node_modules/
+# Your MCP servers, which may hold API keys.
+mcp-servers.json

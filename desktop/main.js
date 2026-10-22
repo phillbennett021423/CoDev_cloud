@@ -5,6 +5,7 @@ const { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } = require('e
 const fs = require('fs');
 const path = require('path');
 const { createMcpTools } = require('./mcp-tools');
+const { createNodeMcpHub } = require('./mcp-hub');
 const { pathToFileURL } = require('url');
 
 const WWW = path.join(__dirname, 'www');
@@ -60,6 +61,18 @@ app.whenReady().then(() => {
     const handleMcp = createMcpTools(getProjectDir);
     ipcMain.handle('codev:mcp', (_event, message) => handleMcp(message));
     ipcMain.handle('codev:mcp-folder', () => getProjectDir());
+
+    // External MCP servers from Settings (stdio processes and remote URLs), through the official SDK.
+    const mcpHub = createNodeMcpHub({
+        readConfig: () => desktopSettings.mcpServers,
+        writeConfig: config => {
+            desktopSettings.mcpServers = config;
+            fs.writeFileSync(settingsFile, JSON.stringify(desktopSettings, null, 2));
+        }
+    });
+    ipcMain.handle('codev:mcp-hub', (_event, req) => mcpHub.handle(req));
+    // Stop the server processes the hub started.
+    app.on('before-quit', () => { mcpHub.close(); });
     ipcMain.handle('codev:mcp-pick-folder', async event => {
         const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
             title: 'Choose the project folder agents can work in',
