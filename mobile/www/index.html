@@ -433,6 +433,15 @@
         .live-log .warn { color: var(--warning); }
         .live-log .error { color: var(--danger); }
         .live-log .muted { color: var(--text-muted); }
+        /* The same live view, embedded in the card of the agent whose browser is open. */
+        .agent-browser-panel { position: relative; background: #000; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; outline: none; cursor: default; }
+        .agent-browser-panel:focus-visible, .agent-browser-panel:focus { border-color: var(--accent); }
+        #agentViewport { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: contain; background: #000; cursor: crosshair; user-select: none; -webkit-user-drag: none; }
+        .agent-browser-panel .live-note { font-size: 0.75rem; padding: 8px; bottom: 26px; }
+        .agent-browser-bar { display: flex; gap: 4px; align-items: center; padding: 3px 6px; background: var(--bg-panel); border-top: 1px solid var(--border-color); }
+        .agent-browser-bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 0.7rem; color: var(--text-muted); }
+        .agent-browser-bar button { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 2px 6px; cursor: pointer; font-size: 0.7rem; }
+        .agent-browser-bar button.live-control-on { background: var(--warning); color: #111; border-color: var(--warning); font-weight: bold; }
         @media (max-width: 900px) {
             .live-panel { top: 0; right: 0; width: 100vw; height: 100dvh; border-radius: 0; }
             .live-body { flex-direction: column; }
@@ -2204,16 +2213,21 @@
         // LIVE VIEW: the agent's browser as a stream of frames (Chromium's screencast),
         // with the user's mouse and keyboard sent back. Any input takes over from the
         // agent, whose browser tools wait until "Hand back". The Windows app streams over
-        // IPC; server.js over server-sent events from /browser/live.
+        // IPC; server.js over server-sent events from /browser/live. The stream stays open
+        // while agents have browser tools, so the agent's card shows its browser too.
         const LIVE_MAX_ROWS = 300;
-        const live = { agentId: "", stop: null, frame: null, userControl: false, tab: "console", rows: { console: [], network: [], dom: [] }, lastMove: 0, sessions: [] };
+        const live = { agentId: "", stop: null, frame: null, userControl: false, tab: "console", rows: { console: [], network: [], dom: [] }, lastMove: 0, sessions: [], cardAgentId: "" };
 
         function toggleLiveView(force) {
             const panel = document.getElementById("livePanel");
             const open = force ?? !panel.classList.contains("open");
             panel.classList.toggle("open", open);
-            if (!open) { if (live.stop) live.stop(); live.stop = null; return; }
-            watchLiveAgent(live.agentId);
+            if (open && !live.stop) watchLiveAgent(live.agentId);
+        }
+
+        // An agent's card shows its browser while it has one open and it's the one watched.
+        function liveCardAgentId() {
+            return live.sessions.some(s => s.agentId === live.agentId) ? live.agentId : "";
         }
 
         // One stream at a time: the chosen agent's, or only the session list.
@@ -2237,6 +2251,7 @@
             renderLiveLog();
             renderLiveFrame();
             live.stop = openLiveStream(live.agentId, onLiveUpdate);
+            placeCardLiveView();
         }
 
         function onLiveUpdate(update) {
@@ -2248,12 +2263,14 @@
                 select.innerHTML = "";
                 if (!options.length) select.appendChild(new Option("No browsers open", ""));
                 options.forEach(id => {
-                    const agent = agents.find(a => a.id === id);
+                    const agent = agents.find(a => String(a.id) === id);
                     select.appendChild(new Option(`${agent ? agent.name : id}${known.includes(id) ? "" : " (closed)"}`, id));
                 });
                 select.value = live.agentId;
-                // Start on the first open browser; follow it when it's the only one.
-                if (!live.agentId && known.length) watchLiveAgent(known[0]);
+                // Start on the selected agent's browser, else the first open one, and move to
+                // an open one when the watched browser closes.
+                if (known.length && !known.includes(live.agentId)) return watchLiveAgent(known.includes(String(selectedAgentId)) ? String(selectedAgentId) : known[0]);
+                placeCardLiveView();
                 return;
             }
             if (update.agentId && update.agentId !== live.agentId) return;
@@ -2347,17 +2364,71 @@
             const btn = document.getElementById("liveTakeoverBtn");
             btn.textContent = live.userControl ? "↩️ Hand back" : "✋ Take over";
             btn.classList.toggle("live-control-on", live.userControl);
+            renderCardLiveFrame();
         }
 
-        async function liveControl(control) {
-            if (!live.agentId) return;
-            let reply;
-            try {
-                reply = window.codevDesktop?.browserLive
-                    ? await window.codevDesktop.browserLive({ op: "control", agentId: live.agentId, control })
-                    : await postJson("/browser/live/control", { agentId: live.agentId, control });
-            } catch (err) { reply = { error: err.message }; }
-            if (reply?.error && control.op !== "move") logConsoleActivity(`[Live] ${reply.error}`);
+        function renderCardLiveFrame() {
+            const img = document.getElementById("agentViewport");
+            if (!img) return;
+            if (live.frame) img.src = `data:image/jpeg;base64,${live.frame.data}`;
+            else img.removeAttribute("src");
+            img.style.visibility = live.frame ? "" : "hidden";
+            document.getElementById("agentViewportNote").style.display = live.frame ? "none" : "";
+            document.getElementById("agentViewportUrl").textContent = live.frame ? live.frame.url : "";
+            const btn = document.getElementById("agentViewportControl");
+            btn.textContent = live.userControl ? "↩️ Hand back" : "✋ Take over";
+            btn.classList.toggle("live-control-on", live.userControl);
+        }
+
+        // Puts the live view in the watched agent's card, or takes it out when its browser closed.
+        function placeCardLiveView() {
+            const want = liveCardAgentId();
+            const current = document.querySelector(".agent-browser-panel");
+            if (current && current.parentElement.dataset.agentId === want) return renderCardLiveFrame();
+            if (current) current.remove();
+            live.cardAgentId = want;
+            const card = want && [...document.querySelectorAll(".agent-card")].find(c => c.dataset.agentId === want);
+            if (card) renderAgentBrowserPanel(card);
+            renderCardLiveFrame();
+        }
+
+        // The card's live view: the agent's browser, which the user can click and type into.
+        function renderAgentBrowserPanel(card) {
+            const panel = document.createElement("div");
+            panel.className = "agent-browser-panel";
+            panel.tabIndex = 0;
+            panel.title = "The agent's browser, live. Click or type here to take over.";
+            panel.innerHTML = `
+                <img id="agentViewport" alt="" aria-label="The agent's browser, live">
+                <div class="live-note" id="agentViewportNote">Connecting to the agent's browser…</div>
+                <div class="agent-browser-bar">
+                    <span id="agentViewportUrl"></span>
+                    <button type="button" id="agentViewportControl" title="Pause the agent and use its browser yourself, or hand it back">✋ Take over</button>
+                    <button type="button" title="Open the full live view, with the console, network and DOM" aria-label="Open the full live view">⤢</button>
+                </div>`;
+            // Clicks here drive the browser; they don't select the card (which would redraw it).
+            panel.addEventListener("click", e => e.stopPropagation());
+            const [control, expand] = panel.querySelectorAll(".agent-browser-bar button");
+            control.onclick = toggleLiveTakeover;
+            expand.onclick = () => toggleLiveView(true);
+            setupLiveInput(panel, panel.querySelector("#agentViewport"));
+            card.appendChild(panel);
+        }
+
+        // Input goes one event at a time, in order: a click must land before the keys typed after it.
+        function liveControl(control) {
+            if (!live.agentId) return Promise.resolve();
+            const agentId = live.agentId;
+            live.sending = (live.sending || Promise.resolve()).then(async () => {
+                let reply;
+                try {
+                    reply = window.codevDesktop?.browserLive
+                        ? await window.codevDesktop.browserLive({ op: "control", agentId, control })
+                        : await postJson("/browser/live/control", { agentId, control });
+                } catch (err) { reply = { error: err.message }; }
+                if (reply?.error && control.op !== "move") logConsoleActivity(`[Live] ${reply.error}`);
+            });
+            return live.sending;
         }
 
         function toggleLiveTakeover() {
@@ -2365,36 +2436,34 @@
         }
 
         // Screen position on the picture → the page's own CSS pixels.
-        function livePoint(event) {
-            const img = document.getElementById("liveFrame");
+        function livePoint(event, img) {
             const box = img.getBoundingClientRect();
             if (!live.frame || !box.width) return null;
             return { x: Math.round((event.clientX - box.left) / box.width * live.frame.width), y: Math.round((event.clientY - box.top) / box.height * live.frame.height) };
         }
 
-        function setupLiveInput() {
-            const screen = document.getElementById("liveScreen");
-            const img = document.getElementById("liveFrame");
+        // screen takes the keyboard; img the mouse. Used by the live panel and the agent's card.
+        function setupLiveInput(screen = document.getElementById("liveScreen"), img = document.getElementById("liveFrame")) {
             const buttons = ["left", "middle", "right"];
-            img.addEventListener("mousedown", e => { e.preventDefault(); screen.focus(); const p = livePoint(e); if (p) liveControl({ op: "down", button: buttons[e.button] || "left", ...p }); });
-            img.addEventListener("mouseup", e => { const p = livePoint(e); if (p) liveControl({ op: "up", button: buttons[e.button] || "left", ...p }); });
+            img.addEventListener("mousedown", e => { e.preventDefault(); screen.focus(); const p = livePoint(e, img); if (p) liveControl({ op: "down", button: buttons[e.button] || "left", ...p }); });
+            img.addEventListener("mouseup", e => { const p = livePoint(e, img); if (p) liveControl({ op: "up", button: buttons[e.button] || "left", ...p }); });
             img.addEventListener("contextmenu", e => e.preventDefault());
             img.addEventListener("mousemove", e => {
                 // Only while driving, and at most ~25 times a second.
                 if (!live.userControl || Date.now() - live.lastMove < 40) return;
                 live.lastMove = Date.now();
-                const p = livePoint(e);
+                const p = livePoint(e, img);
                 if (p) liveControl({ op: "move", ...p });
             });
-            img.addEventListener("wheel", e => { e.preventDefault(); const p = livePoint(e); if (p) liveControl({ op: "wheel", deltaX: e.deltaX, deltaY: e.deltaY, ...p }); }, { passive: false });
+            img.addEventListener("wheel", e => { e.preventDefault(); const p = livePoint(e, img); if (p) liveControl({ op: "wheel", deltaX: e.deltaX, deltaY: e.deltaY, ...p }); }, { passive: false });
             screen.addEventListener("keydown", e => {
-                if (!live.frame) return;
+                if (!live.frame || e.target.closest("button, input, select")) return;
                 if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") return; // the paste event sends the text
                 e.preventDefault();
                 liveControl({ op: "keydown", key: e.key });
             });
             screen.addEventListener("keyup", e => {
-                if (!live.frame || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v")) return;
+                if (!live.frame || e.target.closest("button, input, select") || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v")) return;
                 e.preventDefault();
                 liveControl({ op: "keyup", key: e.key });
             });
@@ -4000,6 +4069,7 @@
                     </div>
                     <div class="agent-instructions-preview">${escapeHtml(agent.instructions)}</div>
                 `;
+                card.dataset.agentId = agent.id;
                 // The whole card selects the agent; the checkbox only toggles swarm membership.
                 card.onclick = () => selectAgent(agent.id, true);
                 const groupBox = card.querySelector('input[type="checkbox"]');
@@ -4007,12 +4077,14 @@
                 groupBox.onchange = () => toggleAgentGroup(agent.id, groupBox.checked);
                 list.appendChild(card);
             });
+            placeCardLiveView();
             loadAgentIntoEditor();
             updateActiveAgentIndicator();
         }
 
         function selectAgent(id, fromTap) {
             selectedAgentId = id;
+            if (live.stop && String(id) !== live.agentId && live.sessions.some(s => s.agentId === String(id))) watchLiveAgent(String(id));
             renderAgentList();
             if (fromTap && isMobileLayout() && openDrawerName === "agents") closeDrawers();
         }
@@ -4979,7 +5051,11 @@
             initAgentInfra();
             // The live view is there wherever agents have a browser (Windows app, npm start).
             setupLiveInput();
-            fetchBrowserMcpTools().then(tools => { if (tools.length) document.getElementById("liveViewBtn").style.display = ""; });
+            fetchBrowserMcpTools().then(tools => {
+                if (!tools.length) return;
+                document.getElementById("liveViewBtn").style.display = "";
+                watchLiveAgent("");
+            });
             // Phones start with the mode toggles folded away to leave room for the chat.
             if (isMobileLayout()) toggleChatControls();
         });

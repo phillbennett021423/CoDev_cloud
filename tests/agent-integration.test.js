@@ -321,6 +321,68 @@ test('a headless browser verification task checks the saved page', async t => {
     }
 });
 
+test("the agent's card shows its browser live, and the user can drive it from there", async t => {
+    if (ctx.skip) return t.skip(ctx.skip);
+    if (!ctx.status.browser.available) return t.skip(`browser service unavailable: ${ctx.status.browser.error || 'not installed'}`);
+    if (!ctx.tools.includes('browser_navigate')) return t.skip('no browser tools are listed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    // A page that fills the agent's screen with one button and notes clicks and keys.
+    const site = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(DRIVE_HTML);
+    });
+    await new Promise(r => site.listen(0, '127.0.0.1', r));
+    t.after(() => site.close());
+    const url = `http://127.0.0.1:${site.address().port}/`;
+
+    const { page, errors } = await openPage(launched.browser, ctx.server.url, {
+        steps: [[{ name: 'browser_navigate', arguments: { url } }], 'Opened the page.']
+    });
+    page.on('dialog', dialog => dialog.accept());
+    const agentId = await page.evaluate(() => String(selectedAgentId));
+    t.after(() => ctx.tool('browser_close', {}, agentId).catch(() => {}));
+    await sendPrompt(page, 'Open the test page in your browser');
+    await waitForChat(page, /Opened the page\./);
+
+    // The live picture appears in the selected agent's own card.
+    const viewport = page.locator(`.agent-card[data-agent-id="${agentId}"] .agent-browser-panel #agentViewport`);
+    await viewport.waitFor({ state: 'visible', timeout: 20000 });
+    await page.waitForFunction(() => (document.getElementById('agentViewport').getAttribute('src') || '').startsWith('data:image/jpeg;base64,'), null, { timeout: 20000 });
+    assert.equal(await page.textContent('#agentViewportUrl'), url);
+    if (process.env.CODEV_CARD_SCREENSHOT) await page.locator(`.agent-card[data-agent-id="${agentId}"]`).screenshot({ path: process.env.CODEV_CARD_SCREENSHOT });
+
+    // Clicking and typing on the card drive the agent's browser and take it over.
+    await viewport.click();
+    await page.keyboard.type('Hi');
+    await page.waitForFunction(() => /Hand back/.test(document.getElementById('agentViewportControl').textContent), null, { timeout: 10000 });
+    const paused = await ctx.tool('browser_get_text', { selector: '#out', mode: 'text' }, agentId);
+    assert.match(paused.text, /taken over your browser/);
+    await page.click('#agentViewportControl');
+    await page.waitForFunction(() => /Take over/.test(document.getElementById('agentViewportControl').textContent), null, { timeout: 10000 });
+    let text = '';
+    for (let i = 0; i < 20 && !/click Hi$/.test(text); i++) {
+        text = (await ctx.tool('browser_get_text', { selector: '#out', mode: 'text' }, agentId)).text;
+        if (!/click Hi$/.test(text)) await new Promise(r => setTimeout(r, 250));
+    }
+    assert.match(text, /click Hi$/);
+    assert.deepEqual(errors, []);
+});
+
+const DRIVE_HTML = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Drive me</title></head>
+<body style="margin:0">
+  <button id="target" style="width:100vw;height:90vh;font-size:40px">Click me</button>
+  <div id="out"></div>
+  <script>
+    const out = document.getElementById('out');
+    document.getElementById('target').addEventListener('click', () => { out.textContent += 'click '; });
+    document.addEventListener('keydown', e => { if (e.key.length === 1) out.textContent += e.key; });
+  </script>
+</body></html>
+`;
+
 // The first frame /browser/live sends for an agent, as CoDev's page would receive it.
 async function firstLiveFrame(base, agentId, timeout = 10000) {
     const res = await fetch(`${base}/browser/live?agent=${encodeURIComponent(agentId)}`, { signal: AbortSignal.timeout(timeout) });
