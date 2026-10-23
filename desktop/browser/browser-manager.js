@@ -2,6 +2,9 @@
 // user data folder (profile, cache, cookies, local storage), created in a
 // temporary folder when the agent first opens a page and deleted when the session
 // closes, so nothing one agent signs in to is visible to another.
+// The browser presents itself as the ordinary Chrome or Edge it is: no
+// "HeadlessChrome" in its user agent, and no navigator.webdriver or automation
+// flag, which sites like Google read as a script and refuse to sign in.
 // The browser comes from playwright-core. It uses, in order: CODEV_BROWSER_PATH,
 // Playwright's own Chromium (npx playwright install chromium), then the Edge or
 // Chrome already installed on this computer.
@@ -13,6 +16,15 @@ const path = require('path');
 const DEFAULT_MAX_SESSIONS = 4;
 const DEFAULT_IDLE_MS = 15 * 60 * 1000;
 const VIEWPORT = { width: 1280, height: 800 };
+const BROWSER_ARGS = ['--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-sync',
+    '--disable-blink-features=AutomationControlled'];
+// --enable-automation sets navigator.webdriver and the "controlled by automated software" banner.
+const IGNORED_DEFAULT_ARGS = ['--enable-automation'];
+
+// The browser's own user agent, as a normal (not headless) window of it sends it.
+function ordinaryUserAgent(userAgent) {
+    return String(userAgent || '').replace(/HeadlessChrome/g, 'Chrome');
+}
 
 class BrowserUnavailableError extends Error {}
 
@@ -51,6 +63,7 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
     // 'close' (agentId), for the live view.
     const events = new EventEmitter();
     let launchChoice = null;
+    let userAgent = null;
     let sweepTimer = null;
 
     function isLoopback(host) {
@@ -92,13 +105,16 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
             // CoDev closes the browsers itself on Ctrl+C or quit, then deletes the profiles;
             // Playwright's own signal handlers would exit before that runs.
             handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
-            args: ['--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-sync']
+            args: BROWSER_ARGS,
+            ignoreDefaultArgs: IGNORED_DEFAULT_ARGS
         };
         const candidates = launchChoice ? [launchChoice] : launchCandidates();
         const failures = [];
         for (const candidate of candidates) {
             try {
-                const context = await playwright.chromium.launchPersistentContext(userDataDir, { ...base, ...candidate.options });
+                const options = { ...base, ...candidate.options };
+                if (!userAgent) userAgent = await probeUserAgent(options);
+                const context = await playwright.chromium.launchPersistentContext(userDataDir, { ...options, userAgent });
                 if (!launchChoice) log(`[Browser] Using headless ${candidate.label}.`);
                 launchChoice = candidate;
                 return context;
@@ -108,6 +124,17 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
         }
         launchChoice = null;
         throw new BrowserUnavailableError(`No browser could start for the agent. Run "npx playwright install chromium" (or npm run setup), or set CODEV_BROWSER_PATH to a Chrome/Edge executable.\n${failures.join('\n')}`);
+    }
+
+    // The user agent this browser sends, read once from a throwaway start of it.
+    async function probeUserAgent({ executablePath, channel }) {
+        const browser = await playwright.chromium.launch({ headless: true, args: BROWSER_ARGS, ignoreDefaultArgs: IGNORED_DEFAULT_ARGS,
+            handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false, ...(executablePath ? { executablePath } : {}), ...(channel ? { channel } : {}) });
+        try {
+            return ordinaryUserAgent(await (await browser.newPage()).evaluate(() => navigator.userAgent));
+        } finally {
+            await browser.close().catch(() => {});
+        }
     }
 
     function sweepIdle() {
@@ -205,4 +232,4 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
     return { get, peek, has: agentId => sessions.has(agentId), close, closeAll, list, status, isBlocked, events };
 }
 
-module.exports = { createBrowserManager, BrowserUnavailableError };
+module.exports = { createBrowserManager, BrowserUnavailableError, ordinaryUserAgent };
