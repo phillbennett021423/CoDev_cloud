@@ -43,6 +43,16 @@ Settings are read by `config.js` from the environment or `.env`:
 
 `server.js` loads the agent services through `agent-services.js`: the sandbox containers and diff review (`desktop/sandbox`) and the headless browser (`agents/browser`). A service that isn't installed is skipped. The page reaches their tools at `POST /agent-tools` (MCP JSON-RPC: `initialize`, `tools/list`, `tools/call`), the review gate under `/agent/`, and what's on at `GET /agent/status`. All of these answer CoDev's own page only. Ctrl+C removes the agents' containers and browser profiles.
 
+## Outlier slips
+
+The **📈 Outlier** tab (when CoDev runs on your computer with `npm start` or `start-codev.bat`) reads your signed-in Outlier pages, scores the props and recommends 4- and 6-leg power and flex entries:
+
+1. **Sign in to Outlier** opens a browser window. Sign in there once and close it. That sign-in is kept in a browser profile used only by this pipeline, in your app-data folder (`codev-server/outlier/profile`), never in the repo, so it carries over between runs. Agents' own browsers still start empty. **Forget Outlier sign-in** deletes it.
+2. **Scrape & analyze** opens the pages listed under **Pages and sign-in** in a hidden browser, reads the prop cards and odds tables into JSON (`agents/outlier/extract.js`), and runs `tools/outlier-analytics/analyze.py` on them (needs Python 3; set `CODEV_PYTHON` if it isn't on the PATH). **Auto** repeats it every few minutes while the tab is open.
+3. **I played this** tracks an entry; mark its legs hit/miss when they settle and the filters retune themselves (see `tools/outlier-analytics/README.md`).
+
+The parser doesn't depend on Outlier's markup, but if it misses props, **Save page snapshot** stores the page (HTML and the data it loaded) in the same folder so selectors can be added to `config.json` there. Agents can read the latest entries with the read-only `outlier_slips` tool. Automated reading may be against Outlier's terms; that's your call. The numbers are estimates, not guarantees.
+
 ## Autonomous developer workspace
 
 Every message is treated as a task on your project. You don't type file paths or paste code:

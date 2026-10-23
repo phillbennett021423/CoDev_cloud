@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "filters": {
+    "min_juice": 130,
+    "min_l5_hit_rate": 0.7,
+    "min_floor_margin": 0.0,
+    "max_volatility": 0.35,
+    "min_leg_probability": 0.56,
+    "min_books": 1
+  },
+  "bounds": {
+    "min_juice": [110, 200],
+    "min_l5_hit_rate": [0.6, 1.0],
+    "min_floor_margin": [-0.25, 0.3],
+    "max_volatility": [0.15, 0.6],
+    "min_leg_probability": [0.52, 0.7]
+  },
+  "model": {
+    "market_weight": 0.65,
+    "history_prior_games": 5,
+    "assumed_vig": 0.045
+  },
+  "slips": {
+    "sizes": [4, 6],
+    "max_legs_per_game": 2,
+    "max_legs_per_team": 2,
+    "candidate_pool": 14,
+    "slips_per_type": 3
+  },
+  "payouts": {
+    "power": { "4": { "4": 10 }, "6": { "6": 37.5 } },
+    "flex": { "4": { "4": 6, "3": 1.5 }, "6": { "6": 25, "5": 2, "4": 0.4 } }
+  },
+  "avoid_markets": [],
+  "market_penalty": {}
+}
