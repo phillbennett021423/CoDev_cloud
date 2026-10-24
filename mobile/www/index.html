@@ -492,18 +492,18 @@
 
     <div class="live-panel" id="livePanel" role="dialog" aria-label="Live view of an agent's browser">
         <div class="live-bar">
-            <select id="liveAgent" onchange="watchLiveAgent(this.value)" title="Which agent's browser"></select>
+            <select id="liveAgent" onchange="live.picked = true; watchLiveAgent(this.value)" title="Whose browser: any agent's (opens when you type an address) or the signed-in Outlier one"></select>
             <button type="button" onclick="liveControl({ op: 'back' })" title="Back">◀</button>
             <button type="button" onclick="liveControl({ op: 'forward' })" title="Forward">▶</button>
             <button type="button" onclick="liveControl({ op: 'reload' })" title="Reload">⟳</button>
-            <input type="text" id="liveUrl" placeholder="Address" autocomplete="off" onkeydown="if (event.key === 'Enter') liveControl({ op: 'navigate', url: this.value })">
+            <input type="text" id="liveUrl" placeholder="Address or search" autocomplete="off" onkeydown="if (event.key === 'Enter') liveControl({ op: 'navigate', url: this.value })">
             <button type="button" id="liveTakeoverBtn" onclick="toggleLiveTakeover()" title="Pause the agent and use its browser yourself">✋ Take over</button>
             <button type="button" onclick="toggleLiveView(false)" title="Close">✕</button>
         </div>
         <div class="live-body">
             <div class="live-screen" id="liveScreen" tabindex="0">
                 <img id="liveFrame" alt="The agent's browser" style="display: none;">
-                <div class="live-note" id="liveNote">No agent has a browser open yet. It appears here as soon as one opens a page.</div>
+                <div class="live-note" id="liveNote">No browser open yet. Pick one above and type an address or a search to open it, or wait for an agent to open a page.</div>
                 <div class="live-banner" id="liveBanner" style="display: none;">You have control. The agent waits until you hand it back.</div>
             </div>
             <div class="live-side">
@@ -1419,7 +1419,9 @@
             };
             // Only CoDev's own server runs the pipeline (not the Windows app or Android yet).
             const available = !window.codevDesktop && location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
-            outlierView = window.CodevOutlierView.mount(document.getElementById("view-outlier"), { postJson, getJson, available });
+            // openLive: the live view on the signed-in Outlier browser, to browse it yourself.
+            const openLive = id => { live.outlier = id; live.picked = true; toggleLiveView(true); watchLiveAgent(id); renderLiveAgents(); };
+            outlierView = window.CodevOutlierView.mount(document.getElementById("view-outlier"), { postJson, getJson, available, openLive });
         }
 
         function switchView(viewName) {
@@ -2238,13 +2240,19 @@
         // IPC; server.js over server-sent events from /browser/live. The stream stays open
         // while agents have browser tools, so the agent's card shows its browser too.
         const LIVE_MAX_ROWS = 300;
-        const live = { agentId: "", stop: null, frame: null, userControl: false, tab: "console", rows: { console: [], network: [], dom: [] }, lastMove: 0, sessions: [], cardAgentId: "" };
+        const live = { agentId: "", stop: null, frame: null, userControl: false, tab: "console", rows: { console: [], network: [], dom: [] }, lastMove: 0, sessions: [], cardAgentId: "", picked: false, outlier: "" };
+        // The user can open any agent's browser (or the signed-in Outlier one, "@outlier",
+        // on the server) from the address bar before the agent does; sending the agent a
+        // message hands its browser back, so it carries on from the page the user left.
 
         function toggleLiveView(force) {
             const panel = document.getElementById("livePanel");
             const open = force ?? !panel.classList.contains("open");
             panel.classList.toggle("open", open);
             if (open && !live.stop) watchLiveAgent(live.agentId);
+            if (open && !live.outlier && !window.codevDesktop?.browserLive) {
+                fetch("/outlier/state").then(r => (r.ok ? r.json() : null)).then(state => { live.outlier = state?.liveSession || ""; renderLiveAgents(); }).catch(() => {});
+            }
         }
 
         // An agent's card shows its browser while it has one open and it's the one watched.
@@ -2276,22 +2284,29 @@
             placeCardLiveView();
         }
 
+        // Every agent's browser, open or not, plus the Outlier one when the server has it.
+        function renderLiveAgents() {
+            const select = document.getElementById("liveAgent");
+            const known = live.sessions.map(s => s.agentId);
+            const options = [...new Set([...known, ...agents.map(a => String(a.id)), live.outlier, live.agentId].filter(Boolean))];
+            select.innerHTML = "";
+            if (!options.length) select.appendChild(new Option("No browsers", ""));
+            options.forEach(id => {
+                const agent = agents.find(a => String(a.id) === id);
+                const name = id === live.outlier ? "📈 Outlier (signed in)" : agent ? agent.name : id;
+                select.appendChild(new Option(`${name}${known.includes(id) ? "" : " (not open)"}`, id));
+            });
+            select.value = live.agentId;
+        }
+
         function onLiveUpdate(update) {
             if (update.type === "sessions") {
                 live.sessions = update.sessions;
-                const select = document.getElementById("liveAgent");
                 const known = live.sessions.map(s => s.agentId);
-                const options = [...new Set([...known, live.agentId].filter(Boolean))];
-                select.innerHTML = "";
-                if (!options.length) select.appendChild(new Option("No browsers open", ""));
-                options.forEach(id => {
-                    const agent = agents.find(a => String(a.id) === id);
-                    select.appendChild(new Option(`${agent ? agent.name : id}${known.includes(id) ? "" : " (closed)"}`, id));
-                });
-                select.value = live.agentId;
+                renderLiveAgents();
                 // Start on the selected agent's browser, else the first open one, and move to
-                // an open one when the watched browser closes.
-                if (known.length && !known.includes(live.agentId)) return watchLiveAgent(known.includes(String(selectedAgentId)) ? String(selectedAgentId) : known[0]);
+                // an open one when the watched browser closes, unless the user picked this one.
+                if (known.length && !known.includes(live.agentId) && !live.picked) return watchLiveAgent(known.includes(String(selectedAgentId)) ? String(selectedAgentId) : known[0]);
                 placeCardLiveView();
                 return;
             }
@@ -2309,6 +2324,10 @@
                 live.frame = null;
                 live.userControl = false;
                 return renderLiveFrame();
+            }
+            if (update.type === "warning") {
+                addLiveRow("console", `⚠️ ${update.text}`, "error");
+                return logConsoleActivity(`[Live] ⚠️ ${update.text}`);
             }
             const time = new Date(update.at).toLocaleTimeString();
             if (update.type === "console") addLiveRow("console", `${time} ${update.level}: ${update.text}`, update.level === "error" ? "error" : update.level === "warning" ? "warn" : "");
@@ -2380,7 +2399,9 @@
             } else {
                 img.style.display = "none";
                 note.style.display = "";
-                note.textContent = live.agentId ? "Waiting for this agent's browser to show something…" : "No agent has a browser open yet. It appears here as soon as one opens a page.";
+                note.textContent = !live.agentId ? "No browser open yet. Pick one above and type an address or a search to open it, or wait for an agent to open a page."
+                    : live.sessions.some(s => s.agentId === live.agentId) ? "Waiting for this browser to show something…"
+                    : "Not open yet. Type an address or a search above to open it and browse yourself; the agent picks up from there when you send it a message.";
             }
             document.getElementById("liveBanner").style.display = live.userControl ? "" : "none";
             const btn = document.getElementById("liveTakeoverBtn");
@@ -2454,7 +2475,18 @@
         }
 
         function toggleLiveTakeover() {
-            liveControl({ op: live.userControl ? "release" : "takeover" });
+            liveControl({ op: live.userControl ? "release" : live.sessions.some(s => s.agentId === live.agentId) ? "takeover" : "open" });
+        }
+
+        // A new message to the agents: give back any agent browser the user is driving,
+        // so the agents can use it (the Outlier one goes back when it reads a page).
+        function handBackLiveBrowsers() {
+            live.sessions.filter(s => s.userControl && !String(s.agentId).startsWith("@")).forEach(s => {
+                const control = { op: "release" };
+                (window.codevDesktop?.browserLive
+                    ? window.codevDesktop.browserLive({ op: "control", agentId: s.agentId, control })
+                    : postJson("/browser/live/control", { agentId: s.agentId, control })).catch(() => {});
+            });
         }
 
         // Screen position on the picture → the page's own CSS pixels.
@@ -4971,6 +5003,7 @@
             appendMessageToActiveSession("👤 You", userText, attachments.map(a => ({ name: a.name, kind: a.kind, thumb: a.thumb })));
             inputField.value = "";
             clearAttachments();
+            handBackLiveBrowsers();
 
             const session = chatSessions.find(s => s.id === activeChatId);
             if (session) session.isGroup = isGroup;

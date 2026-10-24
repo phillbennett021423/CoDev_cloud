@@ -11,6 +11,7 @@
 // not a tool, runs the action. Passwords are typed into the page by this module
 // and never appear in a tool result.
 const crypto = require('crypto');
+const { resolveAddress, checkPage, advice, SEARCH } = require('./page-check');
 const fs = require('fs');
 const path = require('path');
 const { BrowserUnavailableError } = require('./browser-manager');
@@ -52,7 +53,12 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
 
     function checkUrl(raw) {
         let url;
-        try { url = new URL(String(raw || '').trim()); } catch { throw new ToolError(`"${raw}" is not a full web address. Include https://.`); }
+        // A bare domain ("espn.com") gets https://; words are not an address.
+        const typed = String(raw || '').trim();
+        const resolved = /^https?:\/\//i.test(typed) || /^(about|data):/i.test(typed) ? null : (() => { try { return resolveAddress(typed); } catch { return null; } })();
+        try { url = new URL(resolved && resolved.how !== 'search' ? resolved.url : typed); } catch {
+            throw new ToolError(`"${raw}" is not a web address. Use a full address like https://example.com, or ${SEARCH}<words> to search.`);
+        }
         if (url.href === 'about:blank' || url.protocol === 'data:') return url;
         if (!/^https?:$/.test(url.protocol)) throw new ToolError(`Agents' browsers only open http:// and https:// pages, not ${url.protocol}`);
         if (manager.isBlocked(url)) throw new ToolError(`${url.origin} is CoDev's own server or helper, which agents' browsers can't open.`);
@@ -97,8 +103,18 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
     async function navigate({ url, wait_until: waitUntil }, ctx) {
         const target = checkUrl(url);
         const { page } = await manager.get(ctx.agentId);
-        const response = await page.goto(target.href, { waitUntil: ['load', 'domcontentloaded', 'networkidle'].includes(waitUntil) ? waitUntil : 'load', timeout: NAVIGATION_TIMEOUT_MS });
+        let response;
+        try {
+            response = await page.goto(target.href, { waitUntil: ['load', 'domcontentloaded', 'networkidle'].includes(waitUntil) ? waitUntil : 'load', timeout: NAVIGATION_TIMEOUT_MS });
+        } catch (err) {
+            if (err && err.name === 'TimeoutError') throw err;
+            throw new ToolError(advice(await checkPage(page, null, { error: err }), target.href));
+        }
         const status = response ? ` (HTTP ${response.status()})` : '';
+        // A dead link or a parked "domain for sale" page is not the site: say so, so the
+        // agent searches for the real address instead of reading the parking page.
+        const check = target.href === 'about:blank' ? { ok: true } : await checkPage(page, response);
+        if (!check.ok) return failure(`Opened ${page.url()}${status}, but it's not a working site. ${advice(check, page.url())}`);
         return text(`${await pageSummary(page)}`.replace(/^Page: /, `Opened${status}: `));
     }
 
@@ -337,7 +353,9 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
     ];
 
     function context(meta = {}) {
-        const agentId = String(meta['codev/agentId'] || 'default').slice(0, 64);
+        // Ids starting with @ are CoDev's own browsers (the signed-in Outlier one):
+        // an agent never gets one, whatever id the page sends.
+        const agentId = String(meta['codev/agentId'] || 'default').replace(/^@+/, '').slice(0, 64) || 'default';
         return { agentId, agentName: String(meta['codev/agentName'] || agentId).slice(0, 64) };
     }
 

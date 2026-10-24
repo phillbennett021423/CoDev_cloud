@@ -84,7 +84,8 @@ div.ov-why { font-size: 0.78rem; }
             )))));
     }
 
-    function mount(container, { postJson, getJson, available = true } = {}) {
+    // openLive(id): shows the live view on the signed-in Outlier browser (the page's).
+    function mount(container, { postJson, getJson, available = true, openLive = null } = {}) {
         if (!document.getElementById(STYLE_ID)) document.head.append(el("style", { id: STYLE_ID, text: CSS }));
         let state = null;
         let error = "";
@@ -140,6 +141,12 @@ div.ov-why { font-size: 0.78rem; }
                     el("button", { class: "ov-btn", disabled: busy, onclick: () => act("Opening the sign-in window…", "/outlier/signin") }, "🔑 Sign in to Outlier"),
                     el("button", { class: "ov-btn primary", disabled: busy, onclick: () => act("Reading Outlier…", "/outlier/scrape") }, "⟳ Scrape & analyze"),
                     el("button", { class: "ov-btn", disabled: busy || !(state && state.scrapedAt), onclick: () => act("Scoring…", "/outlier/analyze") }, "Re-score"),
+                    // Browse the signed-in browser yourself, then read whatever page is open.
+                    state && state.liveSession && openLive ? el("button", { class: "ov-btn", disabled: busy, title: "Open the signed-in Outlier browser in the live view to browse or search it yourself", onclick: () => openLive(state.liveSession) }, "🖥️ Browse") : null,
+                    state && state.liveSession ? el("button", { class: "ov-btn", disabled: busy, title: "Read the props on the page open in the Outlier browser now and add them to the analysis", onclick: async () => {
+                        const reply = await act("Reading the open page…", "/outlier/read-page", {}, { reload: false });
+                        if (reply && reply.read) { info = `Read ${reply.read.props} prop(s) from the open page.`; render(); }
+                    } }, "📄 Read this page") : null,
                     el("label", { class: "ov-status" }, "Auto ",
                         el("select", { class: "ov-select", onchange: e => setAuto(Number(e.target.value)) },
                             [0, 5, 10, 15, 30].map(m => el("option", { value: m, selected: m === auto }, m ? `every ${m} min` : "off"))))));
