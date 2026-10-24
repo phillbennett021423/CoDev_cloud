@@ -20,7 +20,7 @@ const hasPython = ['python3', 'python'].some(cmd => spawnSync(cmd, ['--version']
 const PARKED = '<html><head><title>example-odds.com</title></head><body><h1>example-odds.com</h1><p>This domain is for sale! Buy this domain today.</p></body></html>';
 
 test('typed text becomes an address, a shortcut or a search', () => {
-    assert.deepEqual(resolveAddress('outlier'), { url: 'https://app.outlier.bet/', how: 'shortcut' });
+    assert.deepEqual(resolveAddress('outlier'), { url: 'https://app.outlier.bet/login', how: 'shortcut' });
     assert.deepEqual(resolveAddress('ESPN'), { url: 'https://www.espn.com/', how: 'shortcut' });
     assert.deepEqual(resolveAddress('espn.com/nba/scoreboard'), { url: 'https://espn.com/nba/scoreboard', how: 'address' });
     assert.deepEqual(resolveAddress('http://example.com/x?y=1'), { url: 'http://example.com/x?y=1', how: 'address' });
@@ -67,7 +67,7 @@ test('dead links and parked domains are told apart from real pages', async t => 
     assert.equal((await checkPage(article, null)).ok, true);
 });
 
-test('the user opens and drives a browser, then the agent takes it back on the same page', async t => {
+test('the user opens and drives a browser while the agent works in a background tab', async t => {
     const launched = await launchBrowser();
     if (launched.skip) return t.skip(launched.skip);
     await launched.browser.close();
@@ -92,16 +92,22 @@ test('the user opens and drives a browser, then the agent takes it back on the s
     assert.match(parked.warning, /parked or for-sale/);
     assert.equal(warnings.length, 1);
 
-    // While the user drives, the agent's tools wait; once handed back, the agent
-    // carries on from the page the user left open.
-    const refused = await service.callTool('browser_get_text', {}, ctx);
-    assert.equal(refused.isError, true);
-    assert.match(refused.content[0].text, /taken over/);
+    // While the user drives, the agent reads the user's page, and acts in a background
+    // tab of the same browser: the user's tab and control are untouched.
     await service.live.control('agent-1', { op: 'navigate', url: `${base}/board` });
-    await service.live.control('agent-1', { op: 'release' });
     const read = await service.callTool('browser_get_text', {}, ctx);
     assert.equal(read.isError, false, read.content[0].text);
     assert.match(read.content[0].text, /Nikola Jokic/);
+    const userTab = service.manager.peek('agent-1').page;
+    const acted = await service.callTool('browser_navigate', { url: `${base}/ok` }, ctx);
+    assert.equal(acted.isError, false, acted.content[0].text);
+    assert.equal(userTab.url(), `${base}/board`, "the user's tab stays where the user left it");
+    assert.equal(service.manager.peek('agent-1').page, userTab, 'the live view still shows the user');
+    assert.equal(service.live.isUserControlled('agent-1'), true, 'the user keeps control');
+    assert.match((await service.callTool('browser_get_text', {}, ctx)).content[0].text, /Tonight's odds/, 'the agent reads its own tab');
+    // Handing back shows what the agent was doing.
+    await service.live.control('agent-1', { op: 'release' });
+    assert.equal(service.manager.peek('agent-1').page.url(), `${base}/ok`);
 
     // The agent's own navigation gets the same dead/parked check.
     const nav = await service.callTool('browser_navigate', { url: `${base}/parked` }, ctx);
@@ -143,4 +149,18 @@ test("Read this page parses whatever is open in the signed-in Outlier browser", 
     assert.equal(JSON.parse(reply.content[0].text).props.length, 4);
     const sneaky = await service.callTool('outlier_extract_page', {}, { agentId: '@outlier' });
     assert.equal(sneaky.isError, true, "an agent can't read the signed-in browser");
+});
+
+test("Outlier opens at its sign-in portal, and saved look-alike domains go back to it", () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-url-'));
+    try {
+        const pipeline = createOutlierPipeline({ dataDir, log: () => {} });
+        assert.equal(pipeline.state().config.signInUrl, 'https://app.outlier.bet/login');
+        fs.writeFileSync(pipeline.files.config, JSON.stringify({ signInUrl: 'https://www.outlier.com/login', pages: [{ kind: 'props', url: 'https://outlier.ai/props' }, { kind: 'odds', url: 'https://app.outlier.bet/odds' }] }));
+        const { config } = pipeline.state();
+        assert.equal(config.signInUrl, 'https://app.outlier.bet/login');
+        assert.deepEqual(config.pages.map(p => p.url), ['https://app.outlier.bet/', 'https://app.outlier.bet/odds']);
+    } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+    }
 });

@@ -152,15 +152,24 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
             throw err;
         }
         await context.route(url => isBlocked(url), route => route.abort('blockedbyclient'));
-        // userControl: the user took over in the live view, so the agent's tools wait.
-        const session = { agentId, dir, kept: Boolean(kept), context, page: context.pages()[0] || await context.newPage(), lastUsed: Date.now(), startedAt: Date.now(), userControl: false };
-        // A link that opens a new tab becomes the page the agent is working on.
+        // page: the tab the live view shows. userControl: the user drives it in the
+        // live view; the agent then works in agentPage, a background tab of the same
+        // browser (same cookies and sign-ins), and never touches the user's tab.
+        const session = { agentId, dir, kept: Boolean(kept), context, page: context.pages()[0] || await context.newPage(), agentPage: null,
+            openingAgentPage: false, lastUsed: Date.now(), startedAt: Date.now(), userControl: false };
+        // A link that opens a new tab becomes the page whoever clicked it is working on.
         context.on('page', page => {
-            session.page = page;
-            events.emit('page', session);
+            if (session.openingAgentPage) return;
+            const show = () => {
+                session.page = page;
+                events.emit('page', session);
+            };
+            if (!session.agentPage) show();
+            else page.opener().then(opener => { if (opener && opener === session.agentPage) session.agentPage = page; else show(); }, show);
             page.on('close', () => {
+                if (session.agentPage === page) session.agentPage = null;
                 if (session.page !== page) return;
-                session.page = context.pages().slice(-1)[0] || null;
+                session.page = context.pages().filter(p => p !== session.agentPage).slice(-1)[0] || null;
                 if (session.page) events.emit('page', session);
             });
         });
@@ -196,6 +205,40 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
         return session;
     }
 
+    // The tab the agent should act in: the shown one, or while the user drives it, a
+    // background tab of its own (opened on the user's page) so it never types or
+    // clicks over the user.
+    async function workPage(agentId) {
+        const session = await get(agentId);
+        if (!session.userControl) return session.page;
+        if (!session.agentPage || session.agentPage.isClosed()) {
+            session.openingAgentPage = true;
+            try { session.agentPage = await session.context.newPage(); } finally { session.openingAgentPage = false; }
+            // It starts on the page the user has open, so "click Save" means the same page.
+            const url = session.page && !session.page.isClosed() ? session.page.url() : '';
+            if (/^https?:/.test(url)) await session.agentPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+            log(`[Browser] ${agentId} works in a background tab while you drive its browser.`);
+        }
+        return session.agentPage;
+    }
+
+    // The tab the agent reads: its background tab while it has one, else the shown one
+    // (reading never gets in the user's way, so it doesn't need a tab of its own).
+    async function readPage(agentId) {
+        const session = await get(agentId);
+        return session.agentPage && !session.agentPage.isClosed() ? session.agentPage : session.page;
+    }
+
+    // When the user hands back: the agent's background tab, if any, becomes the shown
+    // one (the user's tab stays open behind it).
+    function handBack(session) {
+        if (session.agentPage && !session.agentPage.isClosed()) {
+            session.page = session.agentPage;
+            events.emit('page', session);
+        }
+        session.agentPage = null;
+    }
+
     async function close(agentId) {
         const session = sessions.get(agentId);
         if (!session) return false;
@@ -225,7 +268,7 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
         profiles.set(String(agentId), dir);
     }
 
-    return { get, peek, has: agentId => sessions.has(agentId), close, closeAll, list, status, isBlocked, events, registerProfile };
+    return { get, peek, workPage, readPage, handBack, has: agentId => sessions.has(agentId), close, closeAll, list, status, isBlocked, events, registerProfile };
 }
 
 module.exports = { createBrowserManager, BrowserUnavailableError };
