@@ -476,6 +476,7 @@
             <span id="tab-project" onclick="switchView('project')">📁 Project Files</span>
             <span id="tab-codev" onclick="switchView('codev')" style="color: var(--codev-blue); font-weight: bold;">⚡ CoDev Hub</span>
             <span id="tab-cloud" onclick="switchView('cloud')" style="color: var(--codev-purple); font-weight: bold;">☁️ CoDev Cloud</span>
+            <span id="tab-outlier" onclick="switchView('outlier')" style="color: var(--success); font-weight: bold;">📈 Outlier</span>
             <span id="tab-console" onclick="switchView('console')">Console Logs</span>
         </div>
         <div class="header-right">
@@ -740,6 +741,9 @@
                 </div>
             </div>
 
+            <!-- Outlier slips (agents/outlier on CoDev's server; agent-ui/outlier-view.js draws it) -->
+            <div id="view-outlier" class="alt-view-content"></div>
+
             <div id="view-console" class="alt-view-content">
                 <h3>Runtime & API Telemetry Logs</h3>
                 <div class="console-output" id="consoleOutput">
@@ -934,6 +938,7 @@
 
     <script src="agent-ui/agent-client.js"></script>
     <script src="agent-ui/diff-review.js"></script>
+    <script src="agent-ui/outlier-view.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
         // text boxes stop taking clicks and typing until the window is refocused.
@@ -1398,8 +1403,24 @@
             document.getElementById("statusText").innerText = activeProviderKey() ? `${BACKEND_NAMES[currentBackend]} Live` : "Awaiting API Key";
         }
 
-        const VIEW_NAMES = ["chat", "project", "codev", "cloud", "console"];
-        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", console: "Switched to Console Logs." };
+        const VIEW_NAMES = ["chat", "project", "codev", "cloud", "outlier", "console"];
+        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", outlier: "Switched to Outlier slips.", console: "Switched to Console Logs." };
+
+        // Drawn the first time it's opened, then refreshed on each visit.
+        let outlierView = null;
+        function showOutlierView() {
+            if (!window.CodevOutlierView) return;
+            if (outlierView) return outlierView.refresh();
+            const getJson = async url => {
+                const response = await fetch(url);
+                const reply = await response.json().catch(() => ({ error: `CoDev's server returned HTTP ${response.status}` }));
+                if (!response.ok) throw new Error(reply.error || `HTTP ${response.status}`);
+                return reply;
+            };
+            // Only CoDev's own server runs the pipeline (not the Windows app or Android yet).
+            const available = !window.codevDesktop && location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+            outlierView = window.CodevOutlierView.mount(document.getElementById("view-outlier"), { postJson, getJson, available });
+        }
 
         function switchView(viewName) {
             if (!VIEW_NAMES.includes(viewName)) return;
@@ -1414,6 +1435,7 @@
 
             if (viewName === "project" && (Object.keys(loadedProjectFiles).length > 0 || Object.keys(loadedModelAssets).length > 0)) renderProjectFiles();
             if (viewName === "project") resumeModelViewer();
+            if (viewName === "outlier") showOutlierView();
             if (VIEW_LOG_MESSAGES[viewName]) logConsoleActivity(VIEW_LOG_MESSAGES[viewName]);
             if (isMobileLayout() && openDrawerName) closeDrawers();
             updateMobileTabs();

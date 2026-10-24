@@ -7,3 +7,5 @@ mcp-servers.json
 !.env.example
 # Agent sandboxes, staged changes and browser profiles (npm run setup makes it).
 .codev/
+# Python bytecode (tools/outlier-analytics).
+__pycache__/
