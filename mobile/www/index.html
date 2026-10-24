@@ -2316,6 +2316,15 @@
                 placeCardLiveView();
                 return;
             }
+            // A dead link, redirect or parked page: that browser is left open and handed to the
+            // user, so show it (whichever browser was being watched).
+            if (update.type === "paused") {
+                logConsoleActivity(`[Live] ⏸️ ${update.agentId === live.outlier ? "Outlier" : agents.find(a => String(a.id) === update.agentId)?.name || update.agentId}'s browser is paused for you: ${update.text}`);
+                if (update.agentId !== live.agentId) { live.picked = true; watchLiveAgent(update.agentId); }
+                toggleLiveView(true);
+                addLiveRow("console", `⏸️ Paused for you: ${update.text} Fix it here, then press Hand back.`, "error");
+                return;
+            }
             if (update.agentId && update.agentId !== live.agentId) return;
             if (update.type === "frame") {
                 live.frame = update;

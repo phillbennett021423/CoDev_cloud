@@ -9,11 +9,27 @@ const SHORTCUTS = {
     outlier: 'https://app.outlier.bet/login',
     'outlier.bet': 'https://app.outlier.bet/login',
     'outlier login': 'https://app.outlier.bet/login',
+    'outlierbet.com': 'https://app.outlier.bet/login',
+    outlierbet: 'https://app.outlier.bet/login',
     espn: 'https://www.espn.com/',
     'the odds api': 'https://the-odds-api.com/',
     'odds api': 'https://the-odds-api.com/'
 };
 const SEARCH = 'https://duckduckgo.com/?q=';
+
+// Wrong addresses for a known site, whatever the path: outlierbet.com (and
+// outlier-bet, outlierbets...) is not Outlier, whose app is app.outlier.bet.
+const REWRITES = [
+    { host: /(^|\.)outlier-?bets?\.(com|net|io|co|app)$/i, url: 'https://app.outlier.bet/login' }
+];
+
+// url (a full address) -> the known site's real address when it's a wrong one, else as is.
+function fixKnownAddress(url) {
+    let host;
+    try { host = new URL(url).hostname; } catch { return url; }
+    const rewrite = REWRITES.find(r => r.host.test(host));
+    return rewrite ? rewrite.url : url;
+}
 
 // "espn.com" -> https://espn.com/, "https://x.y/z" as is, anything else a search.
 function resolveAddress(input, { shortcuts = SHORTCUTS } = {}) {
@@ -22,13 +38,13 @@ function resolveAddress(input, { shortcuts = SHORTCUTS } = {}) {
     const shortcut = shortcuts[text.toLowerCase()];
     if (shortcut) return { url: shortcut, how: 'shortcut' };
     if (/^[a-z][a-z0-9+.-]*:/i.test(text) && !/^[^\s/:]+:\d+(\/|$)/.test(text)) {
-        if (/^https?:\/\//i.test(text)) return { url: new URL(text).href, how: 'address' };
+        if (/^https?:\/\//i.test(text)) return { url: fixKnownAddress(new URL(text).href), how: 'address' };
         if (/^about:blank$/i.test(text)) return { url: 'about:blank', how: 'address' };
         throw new Error(`Only http:// and https:// pages open here, not ${text.split(':')[0]}:`);
     }
     // A host with a dot and no spaces (optionally a port and path) is an address.
     if (!/\s/.test(text) && /^(localhost|[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,})(:\d+)?([/?#].*)?$/i.test(text)) {
-        return { url: new URL(`https://${text}`).href, how: 'address' };
+        return { url: fixKnownAddress(new URL(`https://${text}`).href), how: 'address' };
     }
     return { url: SEARCH + encodeURIComponent(text), how: 'search' };
 }
@@ -77,4 +93,4 @@ function advice(check, url) {
     return `${check.problem} Don't use ${host}: search for the site's real address instead.`;
 }
 
-module.exports = { resolveAddress, checkPage, advice, SHORTCUTS, SEARCH };
+module.exports = { resolveAddress, fixKnownAddress, checkPage, advice, SHORTCUTS, SEARCH };

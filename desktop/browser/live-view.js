@@ -162,6 +162,15 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
         broadcastSessions();
     });
     manager.events.on('page', session => { startCast(session.agentId); broadcastSessions(); });
+    // Everyone watching anything hears about a pause, so the page can open that browser.
+    manager.events.on('pause', session => {
+        const event = { type: 'paused', agentId: session.agentId, text: session.paused.reason, url: session.paused.url };
+        send(session.agentId, { type: 'state', agentId: session.agentId, open: true, userControl: true });
+        for (const [agentId, listeners] of watchers) if (agentId !== session.agentId) for (const l of listeners) { try { l(event); } catch { /* gone */ } }
+        for (const l of watchers.get(session.agentId) || []) { try { l(event); } catch { /* gone */ } }
+        for (const l of stateListeners) { try { l(event); } catch { /* gone */ } }
+        broadcastSessions();
+    });
     manager.events.on('close', agentId => {
         casts.delete(agentId);
         send(agentId, { type: 'closed', agentId });

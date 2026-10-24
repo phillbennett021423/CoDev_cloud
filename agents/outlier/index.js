@@ -16,7 +16,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { collectPage, parseCollected, propId } = require('./extract');
-const { checkPage, advice } = require('../../desktop/browser/page-check');
+const { checkPage, advice, fixKnownAddress } = require('../../desktop/browser/page-check');
 
 // The signed-in browser's id in the shared browser service. Agents' ids never start with @.
 const SESSION = '@outlier';
@@ -40,13 +40,13 @@ const DEFAULT_CONFIG = {
 };
 const SIGN_IN_WAIT_MS = 10 * 60 * 1000;
 
-// outlier.com, outlier.ai and look-alikes are other companies or parked domains,
+// outlierbet.com, outlier.com, outlier.ai and look-alikes are other companies or parked domains,
 // not Outlier's betting app: saved addresses on them go back to the real ones.
 const OUTLIER_HOST = /(^|\.)outlier\.bet$/i;
 function isWrongOutlierHost(value) {
     try {
         const host = new URL(value).hostname;
-        return /outlier/i.test(host) && !OUTLIER_HOST.test(host);
+        return (/outlier/i.test(host) && !OUTLIER_HOST.test(host)) || fixKnownAddress(value) !== value;
     } catch { return false; }
 }
 function fixOutlierUrls(cfg) {
@@ -250,8 +250,8 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             const page = await shared.manager.workPage(SESSION);
             const session = shared.manager.peek(SESSION);
             const background = session && page === session.agentPage;
-            return { page, done: async () => {
-                if (!background) return;
+            return { page, shared: true, done: async () => {
+                if (!background || page.__codevKeep) return;
                 if (session.agentPage === page) session.agentPage = null;
                 await page.close().catch(() => {});
             } };
@@ -276,7 +276,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     try { api.push({ url: response.url(), body: await response.json() }); } catch { /* not JSON after all */ }
                 };
                 page.on('response', onResponse);
-                await gotoChecked(page, target.url);
+                await gotoChecked(page, target.url, { pausable: browser.shared });
                 await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
                 await page.waitForTimeout(cfg.settleMs);
                 // Boards load more rows as they scroll.
@@ -297,6 +297,11 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 page.off('response', onResponse);
                 if (looksSignedOut(page, collected)) {
                     state.signedIn = false;
+                    // Redirected to sign in: leave that page open in the live view to sign in there.
+                    if (browser.shared && shared.manager.pause(SESSION, page, 'Outlier asked to sign in.')) {
+                        page.__codevKeep = true;
+                        throw new Error('Outlier asked to sign in. The Outlier browser is paused on the sign-in page in the live view (🖥️ Browse): sign in there, then run the scrape again.');
+                    }
                     throw new Error('Outlier asked to sign in. Click "Sign in to Outlier", sign in once in the window that opens, then close it.');
                 }
                 state.signedIn = true;
@@ -317,14 +322,24 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
 
     // Opens url and fails with a plain reason when it's a dead link or a parked
     // "domain for sale" page instead of the site.
-    async function gotoChecked(page, url) {
+    // pausable: the page is in the shared "@outlier" browser, which then stays open on
+    // the bad page, paused for the user in the live view, instead of closing.
+    async function gotoChecked(page, url, { pausable = false } = {}) {
         let response;
+        let problem = '';
         try { response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }); } catch (err) {
-            throw new Error(`Couldn't open ${url}: ${advice(await checkPage(page, null, { error: err }), url)}`);
+            problem = `Couldn't open ${url}: ${advice(await checkPage(page, null, { error: err }), url)}`;
         }
-        const check = await checkPage(page, response);
-        if (!check.ok) throw new Error(`${url} isn't a working page. ${advice(check, url)} Fix it under Pages in the Outlier view.`);
-        return response;
+        if (!problem) {
+            const check = await checkPage(page, response);
+            if (!check.ok) problem = `${url} isn't a working page. ${advice(check, url)}`;
+        }
+        if (!problem) return response;
+        if (pausable && shared && shared.manager.pause(SESSION, page, problem)) {
+            page.__codevKeep = true;
+            throw new Error(`${problem} The Outlier browser is paused on that page in the live view (🖥️ Browse): fix it there or under Pages, then run the scrape again.`);
+        }
+        throw new Error(`${problem} Fix it under Pages in the Outlier view.`);
     }
 
     // Reads the page open in a browser right now (the user's own browsing in the

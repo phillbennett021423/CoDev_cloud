@@ -29,6 +29,10 @@ test('typed text becomes an address, a shortcut or a search', () => {
     assert.equal(resolveAddress('rebounds').how, 'search', 'one word with no dot is a search');
     assert.throws(() => resolveAddress('file:///etc/passwd'), /Only http/);
     assert.throws(() => resolveAddress('  '), /Type an address/);
+    // outlierbet.com isn't Outlier: typed or linked, it goes to the real sign-in portal.
+    assert.equal(resolveAddress('outlierbet.com').url, 'https://app.outlier.bet/login');
+    assert.equal(resolveAddress('https://www.outlierbet.com/props?x=1').url, 'https://app.outlier.bet/login');
+    assert.equal(resolveAddress('www.outlierbet.com').url, 'https://app.outlier.bet/login');
 });
 
 // A stand-in web: a real page, a parked one, a redirect to a parking host's
@@ -113,6 +117,24 @@ test('the user opens and drives a browser while the agent works in a background 
     const nav = await service.callTool('browser_navigate', { url: `${base}/parked` }, ctx);
     assert.equal(nav.isError, true);
     assert.match(nav.content[0].text, /not a working site/);
+    // ...and instead of failing closed, the browser stays open on that page, paused for the user.
+    const paused = [];
+    service.live.subscribe('', update => { if (update.type === 'paused') paused.push(update); });
+    assert.match(nav.content[0].text, /paused and left open/);
+    const session = service.manager.peek('agent-1');
+    assert.ok(session && session.paused, 'still open, paused');
+    assert.equal(session.page.url(), `${base}/parked`, 'the live view shows the parked page');
+    assert.equal(service.live.isUserControlled('agent-1'), true, 'the user has it');
+    const closing = await service.callTool('browser_close', {}, ctx);
+    assert.equal(closing.isError, true);
+    assert.ok(service.manager.peek('agent-1'), "the agent can't close it while it's paused");
+    await service.live.control('agent-1', { op: 'navigate', url: `${base}/ok` });
+    await service.live.control('agent-1', { op: 'release' });
+    assert.equal(service.manager.peek('agent-1').paused, null, 'handing back ends the pause');
+    // A second pause reaches someone watching only the list, so the page can open that browser.
+    await service.callTool('browser_navigate', { url: `${base}/gone` }, ctx);
+    assert.equal(paused.length, 1);
+    assert.equal(paused[0].agentId, 'agent-1');
 
     // CoDev's own browsers (ids starting with @) are never an agent's.
     assert.equal(service.context({ 'codev/agentId': '@outlier' }).agentId, 'outlier');
@@ -156,11 +178,39 @@ test("Outlier opens at its sign-in portal, and saved look-alike domains go back 
     try {
         const pipeline = createOutlierPipeline({ dataDir, log: () => {} });
         assert.equal(pipeline.state().config.signInUrl, 'https://app.outlier.bet/login');
-        fs.writeFileSync(pipeline.files.config, JSON.stringify({ signInUrl: 'https://www.outlier.com/login', pages: [{ kind: 'props', url: 'https://outlier.ai/props' }, { kind: 'odds', url: 'https://app.outlier.bet/odds' }] }));
+        fs.writeFileSync(pipeline.files.config, JSON.stringify({ signInUrl: 'https://outlierbet.com/', pages: [{ kind: 'props', url: 'https://outlier.ai/props' }, { kind: 'odds', url: 'https://app.outlier.bet/odds' }] }));
         const { config } = pipeline.state();
         assert.equal(config.signInUrl, 'https://app.outlier.bet/login');
         assert.deepEqual(config.pages.map(p => p.url), ['https://app.outlier.bet/', 'https://app.outlier.bet/odds']);
     } finally {
         fs.rmSync(dataDir, { recursive: true, force: true });
     }
+});
+
+test('a scrape that hits a parked or dead page leaves the Outlier browser open for the user', async t => {
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const base = await startSite(t);
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-session-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const browser = createBrowserService({ dataDir, profileRoot: path.join(dataDir, 'profiles'), passphrase: 'test', log: () => {} });
+    t.after(() => browser.close());
+    const pipeline = createOutlierPipeline({ dataDir: path.join(dataDir, 'outlier'), shared: { manager: browser.manager, live: browser.live }, log: () => {} });
+    fs.mkdirSync(path.join(dataDir, 'outlier'), { recursive: true });
+    const write = url => fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, scrolls: 1, market: false }));
+
+    write(`${base}/parked`);
+    await assert.rejects(pipeline.scrape(), /paused on that page/);
+    let session = browser.manager.peek('@outlier');
+    assert.ok(session && session.paused, 'left open and paused');
+    assert.equal(session.page.url(), `${base}/parked`);
+    assert.equal(browser.live.isUserControlled('@outlier'), true);
+
+    // Paused while the user had it: the scrape ran in a background tab, which now shows.
+    await browser.live.control('@outlier', { op: 'navigate', url: `${base}/somewhere` });
+    write(`${base}/gone`);
+    await assert.rejects(pipeline.scrape(), /paused on that page/);
+    session = browser.manager.peek('@outlier');
+    assert.equal(session.page.url(), `${base}/gone`, 'the failing tab is shown, not closed');
 });
