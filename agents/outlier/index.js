@@ -93,6 +93,8 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         history: path.join(dataDir, 'history.json'),
         weights: path.join(dataDir, 'weights.json'),
         learn: path.join(dataDir, 'learn-report.json'),
+        // Every price seen for each prop, with times: line movement and closing line value.
+        marketLog: path.join(dataDir, 'market-log.json'),
         snapshots: path.join(dataDir, 'snapshots')
     };
     // busy: what the one browser is doing ('signin' | 'scrape' | 'snapshot'); the
@@ -253,8 +255,69 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     }
 
     async function analyze() {
-        await runPython(['analyze', '--input', files.scrape, '--weights', files.weights, '--out', files.result], { python });
+        await runPython(['analyze', '--input', files.scrape, '--weights', files.weights, '--out', files.result,
+            '--history', files.history, '--market-log', files.marketLog], { python });
         return readJson(files.result, null);
+    }
+
+    // After each scrape: log every prop's price with the time, and move the
+    // closing price of each open leg you played to the latest one. Props come
+    // off the board at the start, so the last price seen is the close.
+    function recordPrices(result, at = new Date().toISOString()) {
+        if (!result) return;
+        const market = readJson(files.marketLog, {});
+        for (const leg of result.legs) {
+            const m = leg.metrics || {};
+            if (m.consensus == null) continue;
+            const seen = market[leg.id] || (market[leg.id] = { firstSeen: at, openPrice: m.consensus, points: [] });
+            seen.lastSeen = at;
+            const last = seen.points[seen.points.length - 1];
+            if (!last || last.price !== m.consensus) seen.points.push({ at, price: m.consensus, fair: m.fairProb });
+            if (seen.points.length > 60) seen.points.splice(0, seen.points.length - 60);
+        }
+        // Forget props not seen for a week.
+        const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+        for (const [id, seen] of Object.entries(market)) if (Date.parse(seen.lastSeen) < cutoff) delete market[id];
+        writeJson(files.marketLog, market);
+
+        const byId = new Map(result.legs.map(l => [l.id, l]));
+        const data = history();
+        let changed = false;
+        for (const entry of data.entries) {
+            for (const leg of entry.legs) {
+                const now = byId.get(leg.id);
+                if (leg.result || !now || now.metrics.consensus == null) continue;
+                leg.closePrice = now.metrics.consensus;
+                leg.closeFair = now.metrics.fairProb;
+                leg.closeAt = at;
+                changed = true;
+            }
+        }
+        if (changed) writeJson(files.history, data);
+    }
+
+    // Bankroll and entry sizes live in weights.json with the filters.
+    async function setStrategy(update = {}) {
+        const weights = readJson(files.weights, {});
+        const b = update.bankroll || {};
+        const bankroll = { ...(weights.bankroll || {}) };
+        const num = (v, lo, hi) => (Number.isFinite(Number(v)) && Number(v) >= lo && Number(v) <= hi ? Number(v) : undefined);
+        for (const [key, lo, hi] of [['units', 0.01, 1e9], ['kelly_fraction', 0, 1], ['max_stake_pct', 0, 1], ['drawdown_cut', 0.01, 1]]) {
+            if (b[key] !== undefined) {
+                const value = num(b[key], lo, hi);
+                if (value === undefined) throw new Error(`${key} must be between ${lo} and ${hi}.`);
+                bankroll[key] = value;
+            }
+        }
+        weights.bankroll = bankroll;
+        if (Array.isArray(update.sizes)) {
+            const sizes = update.sizes.map(Number).filter(n => n === 4 || n === 6);
+            if (!sizes.length) throw new Error('Pick 4-leg, 6-leg or both.');
+            weights.slips = { ...(weights.slips || {}), sizes };
+        }
+        writeJson(files.weights, weights);
+        if (fs.existsSync(files.scrape)) await analyze();
+        return snapshotState();
     }
 
     async function scrape() {
@@ -266,6 +329,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             const settledNow = settleFromResults(parsed.results);
             if (settledNow) await learn();
             const result = await analyze();
+            recordPrices(result);
             state.lastRun = new Date().toISOString();
             log(`[Outlier] Read ${parsed.props.length} prop(s) from ${pages.length} page(s); ${result ? result.counts.slips : 0} entr(ies) recommended.`);
             return { ok: true, pages: parsed.pages, settled: settledNow };
@@ -294,7 +358,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
 
     const history = () => readJson(files.history, { entries: [] });
 
-    function track(slipId) {
+    function track(slipId, stake) {
         const result = readJson(files.result, null);
         const slip = result && result.slips.find(s => s.id === slipId);
         if (!slip) throw new Error('That entry is no longer in the latest results. Run the analysis again.');
@@ -303,9 +367,12 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         const entry = {
             id: `e${Date.now().toString(36)}`, slipId, recordedAt: new Date().toISOString(), type: slip.type, size: slip.size,
             ev: slip.ev, allHitProb: slip.allHitProb, weightsVersion: result.weightsVersion,
+            // What you actually staked (defaults to the Kelly stake), for the bankroll.
+            stake: Number.isFinite(Number(stake)) && Number(stake) >= 0 ? Number(stake) : slip.stakeUnits || 0,
             legs: slip.legs.map(id => {
                 const l = legsById.get(id);
-                return { id, player: l.player, market: l.market, line: l.line, side: l.side, game: l.game || null, metrics: l.metrics, result: null };
+                return { id, player: l.player, market: l.market, line: l.line, side: l.side, game: l.game || null, metrics: l.metrics,
+                    takenPrice: l.metrics.consensus, takenAt: new Date().toISOString(), result: null };
             })
         };
         data.entries.push(entry);
@@ -356,8 +423,11 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         return readJson(files.learn, null);
     }
 
+    // Filters back to defaults; your bankroll and entry sizes stay.
     async function resetWeights() {
+        const { bankroll, slips } = readJson(files.weights, {});
         try { fs.rmSync(files.weights); } catch { /* already default */ }
+        if (bankroll || slips) writeJson(files.weights, { ...(bankroll && { bankroll }), ...(slips && slips.sizes && { slips: { sizes: slips.sizes } }) });
         try { fs.rmSync(files.learn); } catch { /* none yet */ }
         if (fs.existsSync(files.scrape)) await analyze();
         return { ok: true };
@@ -397,7 +467,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         return { available: true, detail: state.busy ? `busy: ${state.busy}` : state.signedIn === false ? 'signed out of Outlier' : 'ready' };
     }
 
-    return { signIn, scrape, snapshot, analyze, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
+    return { signIn, scrape, snapshot, analyze, recordPrices, setStrategy, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
         state: snapshotState, status, close, files, settleFromResults };
 }
 
@@ -425,7 +495,7 @@ function createService(config = {}, { log = console.log, pipeline } = {}) {
             const result = outlier.state().result;
             if (!result) return { content: [{ type: 'text', text: 'No Outlier analysis yet. Ask the user to run it from the Outlier view.' }] };
             const legs = new Map(result.legs.map(l => [l.id, l]));
-            const lines = result.slips.map(s => `${s.size}-leg ${s.type}: EV ${(s.ev * 100).toFixed(1)}%, all legs ${(s.allHitProb * 100).toFixed(1)}%\n`
+            const lines = result.slips.map(s => `${s.size}-leg ${s.type}: EV ${(s.ev * 100).toFixed(1)}%, all legs ${(s.allHitProb * 100).toFixed(1)}%, stake ${s.stakeUnits} units\n`
                 + s.legs.map(id => { const l = legs.get(id); return `  - ${l.player} ${l.side} ${l.line} ${l.market || ''} (${l.metrics.consensus}, L5 ${Math.round((l.metrics.l5 || 0) * 100)}%, p ${Math.round((l.metrics.p || 0) * 100)}%)`; }).join('\n'));
             return { content: [{ type: 'text', text: `Scraped ${result.scrapedAt}. ${result.counts.passed}/${result.counts.props} props passed.\n${lines.join('\n') || result.notes.join('\n')}\nEstimates, not guarantees.` }] };
         },
@@ -436,7 +506,8 @@ function createService(config = {}, { log = console.log, pipeline } = {}) {
             'POST /outlier/analyze': safe(async () => { await outlier.analyze(); return outlier.state(); }),
             'POST /outlier/snapshot': safe(() => outlier.snapshot()),
             'POST /outlier/config': safe(body => outlier.setConfig(body)),
-            'POST /outlier/track': safe(body => outlier.track(body.slipId)),
+            'POST /outlier/track': safe(body => outlier.track(body.slipId, body.stake)),
+            'POST /outlier/strategy': safe(body => outlier.setStrategy(body)),
             'POST /outlier/untrack': safe(body => outlier.untrack(body.entryId)),
             'POST /outlier/outcomes': safe(async body => { await outlier.recordOutcomes(body.entryId, body.results); return outlier.state(); }),
             'POST /outlier/reset-weights': safe(async () => { await outlier.resetWeights(); return outlier.state(); }),

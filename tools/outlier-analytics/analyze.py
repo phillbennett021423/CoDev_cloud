@@ -257,6 +257,165 @@ def leg_score(metrics):
     return (metrics["p"] or 0.0) - 0.05 * max(0.0, vol - 0.2)
 
 
+# ---- correlation -----------------------------------------------------------
+# Legs in the same game aren't independent. Each same-game pair gets a
+# correlation (on the hit/miss outcome) from the rules in weights["correlation"]:
+# which market groups, teammates or opponents, and the game's pace. The rules
+# are written for two overs; one under flips the sign.
+
+def market_group(leg, cfg):
+    key = market_key(leg)
+    best, best_len = None, 0
+    for group, names in cfg.get("groups", {}).items():
+        for name in names:
+            if (key == name or key.startswith(name + " ") or key.endswith(" " + name)) and len(name) > best_len:
+                best, best_len = group, len(name)
+    return best
+
+
+def pair_correlation(a, b, weights):
+    """(rho, why) for two legs; (0, None) when they aren't linked."""
+    cfg = weights.get("correlation") or {}
+    if not cfg.get("enabled") or not a.get("game") or a.get("game") != b.get("game"):
+        return 0.0, None
+    ga, gb = market_group(a, cfg), market_group(b, cfg)
+    if not ga or not gb:
+        return 0.0, None
+    if a.get("team") and b.get("team"):
+        relation = "teammates" if a["team"] == b["team"] else "opponents"
+    else:
+        relation = None
+    rho, why = 0.0, None
+    for rule in cfg.get("rules", []):
+        if rule["relation"] not in ("any", relation):
+            continue
+        if {rule["a"], rule["b"]} == {ga, gb} or (rule["a"] == rule["b"] == ga == gb):
+            rho, why = float(rule["rho"]), rule.get("why")
+            break
+    over_a = (a.get("side") or "over") == "over"
+    over_b = (b.get("side") or "over") == "over"
+    # Game pace: a total above the league's line means more possessions for everyone.
+    total = a.get("gameTotal") or b.get("gameTotal")
+    pace_line = cfg.get("pace_totals", {}).get(str(a.get("league") or b.get("league") or "").upper())
+    pace_groups = set(cfg.get("pace_groups", []))
+    if total and pace_line and float(total) >= pace_line and over_a and over_b and ga in pace_groups and gb in pace_groups:
+        rho += cfg.get("pace_boost", 0.0)
+        why = f"{why}; fast game (total {total:g})" if why else f"fast game (total {total:g})"
+    if rho and over_a != over_b:
+        rho = -rho
+    return rho, why
+
+
+def joint_both(p1, p2, rho):
+    """P(both hit) for two correlated legs, kept to what the marginals allow."""
+    both = p1 * p2 + rho * math.sqrt(p1 * (1 - p1) * p2 * (1 - p2))
+    return min(max(both, max(0.0, p1 + p2 - 1)), min(p1, p2))
+
+
+def correlated_distribution(legs, weights):
+    """P(exactly k legs hit), with same-game pairs correlated; and the pairs used.
+
+    Legs are paired within a game (strongest link first); everything else is
+    independent. With at most two legs per game (the default) that is exact.
+    """
+    probs = [l["metrics"]["p"] for l in legs]
+    links = []
+    for i, j in itertools.combinations(range(len(legs)), 2):
+        rho, why = pair_correlation(legs[i], legs[j], weights)
+        if rho:
+            links.append((abs(rho), rho, i, j, why))
+    links.sort(reverse=True)
+    used, pairs = set(), []
+    for _, rho, i, j, why in links:
+        if i in used or j in used:
+            continue
+        used.update((i, j))
+        pairs.append((i, j, rho, why))
+    dist = [1.0]
+
+    def convolve(dist, block):
+        out = [0.0] * (len(dist) + len(block) - 1)
+        for k, mass in enumerate(dist):
+            for extra, q in enumerate(block):
+                out[k + extra] += mass * q
+        return out
+
+    for i, j, rho, _ in pairs:
+        p1, p2 = probs[i], probs[j]
+        both = joint_both(p1, p2, rho)
+        dist = convolve(dist, [1 - p1 - p2 + both, p1 + p2 - 2 * both, both])
+    for i, p in enumerate(probs):
+        if i not in used:
+            dist = convolve(dist, [1 - p, p])
+    info = [{"legs": [legs[i]["id"], legs[j]["id"]], "rho": rnd(rho, 3), "why": why} for i, j, rho, why in pairs]
+    return dist, info
+
+
+# ---- stake sizing ----------------------------------------------------------
+
+def kelly_fraction(dist, table):
+    """Share of bankroll that maximizes expected log growth for one entry."""
+    payout = {int(k): float(v) for k, v in table.items()}
+    if sum(m * payout.get(k, 0.0) for k, m in enumerate(dist)) <= 1.0:
+        return 0.0
+
+    def growth(f):
+        return sum(m * math.log(1 + f * (payout.get(k, 0.0) - 1)) for k, m in enumerate(dist) if m > 0)
+
+    lo, hi = 0.0, 0.999
+    # Growth is concave in f: ternary search.
+    for _ in range(80):
+        a, b = lo + (hi - lo) / 3, hi - (hi - lo) / 3
+        if growth(a) < growth(b):
+            lo = a
+        else:
+            hi = b
+    return (lo + hi) / 2
+
+
+def entry_payout(entry, weights):
+    """Payout multiple of a settled entry, or None while legs are open. A push
+    drops the leg, so the entry pays as one size smaller (a refund if that
+    size has no table)."""
+    results = [l.get("result") for l in entry.get("legs", [])]
+    if any(r not in ("hit", "miss", "push") for r in results):
+        return None
+    size = sum(1 for r in results if r != "push")
+    hits = sum(1 for r in results if r == "hit")
+    table = weights["payouts"].get(entry.get("type"), {}).get(str(size))
+    if not table:
+        return 1.0
+    return float(table.get(str(hits), 0.0))
+
+
+def bankroll_state(history, weights):
+    """Bankroll after the settled entries, its peak, and the drawdown from it."""
+    cfg = weights["bankroll"]
+    current = peak = float(cfg["units"])
+    settled = 0
+    for entry in sorted(history.get("entries", []), key=lambda e: e.get("recordedAt", "")):
+        stake = entry.get("stake")
+        mult = entry_payout(entry, weights)
+        if not stake or mult is None:
+            continue
+        current += stake * (mult - 1)
+        peak = max(peak, current)
+        settled += 1
+    drawdown = (peak - current) / peak if peak > 0 else 0.0
+    return {"start": cfg["units"], "current": rnd(current, 2), "peak": rnd(peak, 2), "drawdown": rnd(drawdown), "settledEntries": settled}
+
+
+def stake_for(dist, table, weights, bank):
+    cfg = weights["bankroll"]
+    full = kelly_fraction(dist, table)
+    fraction = cfg["kelly_fraction"]
+    # Losing streak: bet half as much until the bankroll recovers.
+    if bank["drawdown"] >= cfg["drawdown_cut"]:
+        fraction /= 2
+    pct = min(full * fraction, cfg["max_stake_pct"])
+    return {"kellyFull": rnd(full), "stakePct": rnd(pct), "stakeUnits": round(max(bank["current"], 0) * pct, 2)}
+
+
 # ---- entries ---------------------------------------------------------------
 
 def hit_distribution(probs):
@@ -271,13 +430,18 @@ def hit_distribution(probs):
     return dist
 
 
-def entry_value(probs, table):
+def dist_value(dist, table):
     """Expected profit per 1 unit staked, chance of all legs, chance of profit."""
-    dist = hit_distribution(probs)
     payout = {int(k): float(v) for k, v in table.items()}
     ev = sum(mass * payout.get(k, 0.0) for k, mass in enumerate(dist)) - 1.0
     profit = sum(mass for k, mass in enumerate(dist) if payout.get(k, 0.0) > 1.0)
-    return ev, dist[-1], profit, dist
+    return ev, dist[-1], profit
+
+
+def entry_value(probs, table):
+    """dist_value for independent legs, plus the distribution."""
+    dist = hit_distribution(probs)
+    return (*dist_value(dist, table), dist)
 
 
 def fits(combo, slips_cfg):
@@ -300,8 +464,9 @@ def fits(combo, slips_cfg):
     return True
 
 
-def build_slips(legs, weights):
+def build_slips(legs, weights, bank=None):
     cfg = weights["slips"]
+    bank = bank or bankroll_state({}, weights)
     pool = sorted(legs, key=lambda l: leg_score(l["metrics"]), reverse=True)[: cfg["candidate_pool"]]
     slips, notes = [], []
     for kind, tables in weights["payouts"].items():
@@ -316,12 +481,12 @@ def build_slips(legs, weights):
             for combo in itertools.combinations(pool, size):
                 if not fits(combo, cfg):
                     continue
-                probs = [l["metrics"]["p"] for l in combo]
-                ev, all_hit, profit, dist = entry_value(probs, table)
-                ranked.append((ev, all_hit, profit, dist, combo))
+                dist, links = correlated_distribution(combo, weights)
+                ev, all_hit, profit = dist_value(dist, table)
+                ranked.append((ev, all_hit, profit, dist, links, combo))
             ranked.sort(key=lambda r: (r[0], r[1]), reverse=True)
             chosen = []
-            for ev, all_hit, profit, dist, combo in ranked:
+            for ev, all_hit, profit, dist, links, combo in ranked:
                 ids = {l["id"] for l in combo}
                 # Different entries, not the same one with a leg or two swapped.
                 if any(len(ids & c) > size // 2 for c in chosen):
@@ -337,6 +502,8 @@ def build_slips(legs, weights):
                     "profitProb": rnd(profit),
                     "distribution": [rnd(m) for m in dist],
                     "payouts": table,
+                    "correlations": links,
+                    **stake_for(dist, table, weights, bank),
                 })
                 if len(chosen) >= cfg["slips_per_type"]:
                     break
@@ -347,17 +514,31 @@ def build_slips(legs, weights):
     return slips, notes
 
 
-def analyze(scrape, weights):
+def line_movement(leg, metrics, market_log):
+    """Where this prop opened and how far its fair probability has moved since."""
+    seen = (market_log or {}).get(leg["id"])
+    if not seen or seen.get("openPrice") is None or metrics["fairProb"] is None:
+        return {}
+    open_implied = implied_prob(seen["openPrice"])
+    shift = (metrics["impliedProb"] or open_implied) - open_implied
+    return {"openPrice": seen["openPrice"], "openedAt": seen.get("firstSeen"), "move": rnd(shift)}
+
+
+def analyze(scrape, weights, history=None, market_log=None):
     props = scrape.get("props") or []
     legs = []
     for i, raw in enumerate(props):
         leg = dict(raw)
         leg.setdefault("id", f"leg-{i + 1}")
         leg["metrics"] = leg_metrics(leg, weights)
+        leg["metrics"].update(line_movement(leg, leg["metrics"], market_log))
         leg["rejected"] = rejections(leg, leg["metrics"], weights)
         legs.append(leg)
     passed = [l for l in legs if not l["rejected"]]
-    slips, notes = build_slips(passed, weights)
+    bank = bankroll_state(history or {}, weights)
+    slips, notes = build_slips(passed, weights, bank)
+    if bank["drawdown"] >= weights["bankroll"]["drawdown_cut"]:
+        notes.append(f"Bankroll is {bank['drawdown']:.0%} below its peak, so stakes are halved until it recovers.")
     if not props:
         notes.insert(0, "The scrape found no props. If the Outlier page shows some, save a page snapshot so the parser can be tuned to it.")
     legs.sort(key=lambda l: (bool(l["rejected"]), -leg_score(l["metrics"])))
@@ -367,6 +548,7 @@ def analyze(scrape, weights):
         "weightsVersion": weights.get("version", 1),
         "filters": weights["filters"],
         "counts": {"props": len(legs), "passed": len(passed), "slips": len(slips)},
+        "bankroll": {**weights["bankroll"], **bank},
         "legs": legs,
         "slips": slips,
         "notes": notes,
@@ -423,10 +605,32 @@ def threshold_grid(lo, hi, steps=20):
     return [lo + (hi - lo) * i / steps for i in range(steps + 1)]
 
 
+def leg_clv(leg):
+    """Closing line value in probability points: the close's fair chance minus
+    the fair chance when the entry was taken. Positive = the market moved your way."""
+    taken = (leg.get("metrics") or {}).get("fairProb")
+    close = leg.get("closeFair")
+    if taken is None or close is None:
+        return None
+    return close - taken
+
+
+def clv_summary(history):
+    values = [v for e in history.get("entries", []) for v in (leg_clv(l) for l in e.get("legs", [])) if v is not None]
+    if not values:
+        return {"legs": 0}
+    summary = {"legs": len(values), "average": rnd(statistics.fmean(values)), "beatClose": rnd(sum(1 for v in values if v > 0) / len(values))}
+    if len(values) >= MIN_SAMPLE:
+        summary["verdict"] = ("beating the close: the edge looks real" if summary["average"] > 0.005
+                              else "not beating the close: wins so far may be luck" if summary["average"] < -0.005
+                              else "about even with the close")
+    return summary
+
+
 def learn(history, weights):
     weights = json.loads(json.dumps(weights))
     legs = settled_legs(history)
-    report = {"generatedAt": now_iso(), "settledLegs": len(legs), "changes": [], "notes": []}
+    report = {"generatedAt": now_iso(), "settledLegs": len(legs), "changes": [], "notes": [], "clv": clv_summary(history)}
     if len(legs) < MIN_SAMPLE:
         report["notes"].append(f"{len(legs)} settled leg(s) so far; the filters start adjusting at {MIN_SAMPLE}, so one bad night doesn't rewrite them.")
         return weights, report
@@ -520,6 +724,7 @@ def learn(history, weights):
         if len(hit_vals) >= 5 and len(miss_vals) >= 5:
             traits.append({"metric": label, "hits": rnd(statistics.fmean(hit_vals), 3), "misses": rnd(statistics.fmean(miss_vals), 3)})
     report["missTraits"] = traits
+    report["clv"] = clv_summary(history)
     if report["changes"]:
         weights["version"] = int(weights.get("version", 1)) + 1
     else:
@@ -565,6 +770,8 @@ def main(argv=None):
     a.add_argument("--input", required=True)
     a.add_argument("--weights")
     a.add_argument("--out")
+    a.add_argument("--history", help="entries played, for the bankroll")
+    a.add_argument("--market-log", help="first-seen prices, for line movement")
     l = sub.add_parser("learn")
     l.add_argument("--history", required=True)
     l.add_argument("--weights")
@@ -574,7 +781,8 @@ def main(argv=None):
 
     weights = load_weights(args.weights)
     if args.command == "analyze":
-        result = analyze(load_json(args.input), weights)
+        result = analyze(load_json(args.input), weights, load_json(args.history, {"entries": []}),
+                         load_json(args.market_log, {}))
         if args.out:
             write_json(args.out, result)
         else:

@@ -45,7 +45,7 @@ Settings are read by `config.js` from the environment or `.env`:
 
 ## Outlier slips
 
-The **📈 Outlier** tab (when CoDev runs on your computer with `npm start` or `start-codev.bat`) reads your signed-in Outlier pages, scores the props and recommends 4- and 6-leg power and flex entries:
+The **📈 Outlier** tab (when CoDev runs on your computer with `npm start` or `start-codev.bat`) reads your signed-in Outlier pages, scores the props and recommends 4-leg power and flex entries (6-leg optional), weighing same-game correlation, with a fractional-Kelly stake for each and closing line value tracked for the entries you play:
 
 1. **Sign in to Outlier** opens a browser window. Sign in there once and close it. That sign-in is kept in a browser profile used only by this pipeline, in your app-data folder (`codev-server/outlier/profile`), never in the repo, so it carries over between runs. Agents' own browsers still start empty. **Forget Outlier sign-in** deletes it.
 2. **Scrape & analyze** opens the pages listed under **Pages and sign-in** in a hidden browser, reads the prop cards and odds tables into JSON (`agents/outlier/extract.js`), and runs `tools/outlier-analytics/analyze.py` on them (needs Python 3; set `CODEV_PYTHON` if it isn't on the PATH). **Auto** repeats it every few minutes while the tab is open.

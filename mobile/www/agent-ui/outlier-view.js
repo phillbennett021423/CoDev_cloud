@@ -37,6 +37,7 @@
 .ov-section h3 { font-size: 0.95rem; margin: 8px 0; }
 .ov-section details summary { cursor: pointer; font-size: 0.9rem; font-weight: 600; margin: 6px 0; }
 .ov-why { color: var(--text-muted); }
+div.ov-why { font-size: 0.78rem; }
 .ov-form { display: flex; flex-direction: column; gap: 8px; font-size: 0.82rem; }
 .ov-form textarea, .ov-form input[type=text] { background: var(--bg-dark); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px; font-family: monospace; font-size: 0.8rem; }
 .ov-form textarea { min-height: 70px; }
@@ -71,7 +72,10 @@
             el("tbody", {}, legs.map(l => el("tr", {},
                 el("td", { text: l.player || "?" }),
                 el("td", { text: legLabel(l) }),
-                el("td", { text: price(l.metrics && l.metrics.consensus) }),
+                el("td", { title: l.metrics && l.metrics.openPrice != null ? `Opened ${price(l.metrics.openPrice)}` : null },
+                    price(l.metrics && l.metrics.consensus),
+                    l.metrics && l.metrics.openPrice != null && l.metrics.openPrice !== l.metrics.consensus
+                        ? el("span", { class: "ov-why", text: ` (from ${price(l.metrics.openPrice)})` }) : null),
                 el("td", { text: pct(l.metrics && l.metrics.l5) }),
                 el("td", { text: l.metrics && l.metrics.floorMargin != null ? `${l.metrics.floorMargin >= 0 ? "+" : ""}${pct(l.metrics.floorMargin)}` : "–" }),
                 el("td", { text: pct(l.metrics && l.metrics.p) }),
@@ -163,11 +167,25 @@
                     el("span", { text: `All legs hit: ${pct(slip.allHitProb, 1)}` }),
                     el("span", { text: `Pays something: ${pct(slip.profitProb, 1)}` })),
                 legRows(slip.legs.map(id => legs.get(id)).filter(Boolean)),
-                el("div", { class: "ov-actions" },
-                    el("button", { class: "ov-btn", disabled: Boolean(working), onclick: () => act("Tracking…", "/outlier/track", { slipId: slip.id }) }, "✓ I played this"))));
+                (slip.correlations || []).map(c => el("div", { class: "ov-why" },
+                    `🔗 ${c.legs.map(id => (legs.get(id) || {}).player || id).join(" + ")}: ${c.rho > 0 ? "+" : ""}${c.rho} ${c.why ? `(${c.why})` : ""}`)),
+                stakeRow(slip)));
             return el("div", { class: "ov-section" },
                 el("div", { class: "ov-grid" }, cards.length ? cards : el("div", { class: "ov-note" }, "No entries this time.")),
                 result.notes.map(n => el("div", { class: "ov-note", text: n })));
+        }
+
+        // Kelly stake, editable before tracking: what you actually bet is what the bankroll counts.
+        function stakeRow(slip) {
+            const bank = (state.result && state.result.bankroll) || {};
+            const input = el("input", { type: "number", min: "0", step: "0.01", value: slip.stakeUnits ?? 0, class: "ov-select", style: "width: 80px;", "aria-label": "Stake in units" });
+            const label = slip.stakeUnits
+                ? `Stake ${slip.stakeUnits} u (${pct(slip.stakePct, 1)} of ${bank.current ?? "?"} u; full Kelly ${pct(slip.kellyFull, 1)} × ${bank.kelly_fraction ?? "?"})`
+                : "No stake: no edge after the payouts";
+            return el("div", { class: "ov-actions" },
+                el("span", { class: "ov-status", text: label }),
+                input,
+                el("button", { class: "ov-btn", disabled: Boolean(working), onclick: () => act("Tracking…", "/outlier/track", { slipId: slip.id, stake: Number(input.value) }) }, "✓ I played this"));
         }
 
         function trackedSection() {
@@ -178,8 +196,12 @@
             const entryCard = entry => {
                 const picks = {};
                 return el("div", { class: "ov-card" },
-                    el("h4", {}, `${entry.size}-leg ${entry.type === "flex" ? "Flex" : "Power"}`, el("span", { class: "ov-why", text: when(entry.recordedAt) })),
-                    legRows(entry.legs, ["Result"], leg => [el("td", {}, el("select", {
+                    el("h4", {}, `${entry.size}-leg ${entry.type === "flex" ? "Flex" : "Power"}${entry.stake ? ` · ${entry.stake} u` : ""}`, el("span", { class: "ov-why", text: when(entry.recordedAt) })),
+                    legRows(entry.legs, ["Close", "Result"], leg => [el("td", {
+                        title: "Closing line value: how far the market's fair chance moved after you took it",
+                        text: leg.closeFair != null && leg.metrics && leg.metrics.fairProb != null
+                            ? `${price(leg.closePrice)} (${leg.closeFair >= leg.metrics.fairProb ? "+" : ""}${((leg.closeFair - leg.metrics.fairProb) * 100).toFixed(1)} pts)` : "–"
+                    }), el("td", {}, el("select", {
                         class: "ov-select",
                         onchange: e => { picks[leg.id] = e.target.value || null; }
                     }, ["", "hit", "miss", "push"].map(v => el("option", { value: v, selected: (leg.result || "") === v }, v || "pending"))))]),
@@ -208,6 +230,7 @@
                     report ? el("div", { class: "ov-form" },
                         el("div", { text: `From ${report.settledLegs} settled leg(s)${report.hitRate != null ? `: hit ${pct(report.hitRate)} vs ${pct(report.predictedRate)} predicted` : ""}.` }),
                         (report.changes || []).map(c => el("div", {}, el("strong", { text: `${c.setting}: ${c.from ?? "–"} → ${c.to}` }), " ", el("span", { class: "ov-why", text: c.why }))),
+                        report.clv && report.clv.legs ? el("div", { text: `Closing line value: ${report.clv.average >= 0 ? "+" : ""}${(report.clv.average * 100).toFixed(1)} pts on average over ${report.clv.legs} leg(s), beat the close ${pct(report.clv.beatClose)} of the time${report.clv.verdict ? ` (${report.clv.verdict})` : ""}.` }) : null,
                         (report.notes || []).map(n => el("div", { class: "ov-why", text: n })),
                         (report.missTraits || []).length ? el("div", { class: "ov-why", text: "Misses vs hits: " + report.missTraits.map(t => `${t.metric} ${t.misses} vs ${t.hits}`).join(" · ") }) : null
                     ) : el("div", { class: "ov-why", text: "No results recorded yet." }),
@@ -221,6 +244,31 @@
                 el("details", {},
                     el("summary", { text: `All props read (${result.legs.length})` }),
                     legRows(result.legs, ["Why not"], l => [el("td", { class: "ov-why", text: l.rejected.length ? l.rejected.join("; ") : "✓ passed" })])));
+        }
+
+        function strategySection() {
+            const result = state && state.result;
+            const bank = (result && result.bankroll) || (state && state.weights && state.weights.bankroll) || { units: 100, kelly_fraction: 0.25, max_stake_pct: 0.03 };
+            const sizes = (state && state.weights && state.weights.slips && state.weights.slips.sizes) || [4];
+            const units = el("input", { type: "number", min: "1", step: "1", value: bank.units ?? bank.start, class: "ov-select", style: "width: 90px;" });
+            const kelly = el("select", { class: "ov-select" },
+                [[1, "Full Kelly"], [0.5, "Half Kelly"], [0.25, "Quarter Kelly"], [0.125, "Eighth Kelly"]].map(([v, t]) => el("option", { value: v, selected: Number(bank.kelly_fraction) === v }, t)));
+            const cap = el("input", { type: "number", min: "0.1", max: "100", step: "0.1", value: ((bank.max_stake_pct ?? 0.03) * 100).toFixed(1), class: "ov-select", style: "width: 70px;" });
+            const four = el("input", { type: "checkbox", checked: sizes.includes(4) });
+            const six = el("input", { type: "checkbox", checked: sizes.includes(6) });
+            return el("div", { class: "ov-section" },
+                el("details", {},
+                    el("summary", { text: "Bankroll and entry sizes" }),
+                    el("div", { class: "ov-form" },
+                        bank.current != null ? el("div", { text: `Bankroll ${bank.current} u (started ${bank.start}, peak ${bank.peak}${bank.drawdown ? `, ${pct(bank.drawdown)} below peak` : ""}). Stakes halve when it is ${pct(bank.drawdown_cut)} below its peak.` }) : null,
+                        el("label", {}, "Starting bankroll (units) ", units),
+                        el("label", {}, "Stake size ", kelly, " capped at ", cap, " % of bankroll per entry"),
+                        el("label", {}, four, " 4-leg entries  ", six, " 6-leg entries"),
+                        el("div", { class: "ov-actions" },
+                            el("button", { class: "ov-btn primary", disabled: Boolean(working), onclick: () => act("Saving…", "/outlier/strategy", {
+                                bankroll: { units: Number(units.value), kelly_fraction: Number(kelly.value), max_stake_pct: Number(cap.value) / 100 },
+                                sizes: [four.checked && 4, six.checked && 6].filter(Boolean)
+                            }) }, "Save")))));
         }
 
         function settingsSection() {
@@ -268,7 +316,7 @@
                 error ? el("div", { class: "ov-error", role: "alert", text: error }) : null,
                 info ? el("div", { class: "ov-note", role: "status", text: info }) : null,
                 (state && state.lastError && !error) ? el("div", { class: "ov-error", text: state.lastError }) : null,
-                slipsSection(), trackedSection(), learningSection(), propsSection(), settingsSection()].filter(Boolean));
+                slipsSection(), trackedSection(), learningSection(), strategySection(), propsSection(), settingsSection()].filter(Boolean));
         }
 
         render();

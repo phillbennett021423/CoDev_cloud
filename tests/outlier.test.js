@@ -29,6 +29,16 @@ test('a prop card becomes a prop', () => {
     assert.deepEqual(prop.recent, [14, 13, 12, 9, 15]);
 });
 
+test("the matchup names the game; the player's team and the game total are read apart", () => {
+    const prop = parseText('NBA\nLAL @ DEN\nO/U 231.5\nNikola Jokic\nDEN - C\nRebounds\nOver 11.5\nFanDuel -145');
+    assert.equal(prop.line, 11.5, 'the total is not the line');
+    assert.equal(prop.side, 'over');
+    assert.equal(prop.gameTotal, 231.5);
+    assert.equal(prop.team, 'DEN');
+    assert.equal(prop.opponent, 'LAL');
+    assert.equal(parseText('LAL @ DEN\nNikola Jokic\nRebounds\nOver 11.5\nFanDuel -145').team, undefined, 'unknown, not guessed');
+});
+
 test('consensus, fractions and pick-em words', () => {
     const prop = parseText('Jayson Tatum\nPoints\nLess 27.5\nConsensus -132\nL5 4/5');
     assert.equal(prop.side, 'under');
@@ -121,7 +131,27 @@ test('scrape, analyze, track an entry and learn from it, with a profile that per
     const report = await again.recordOutcomes(entry.id, Object.fromEntries(entry.legs.map((l, i) => [l.id, i ? 'hit' : 'miss'])));
     assert.equal(report.settledLegs, 4);
     assert.match(report.notes[0], /start adjusting at 20/);
+    // Each scrape logs prices with times and moves open legs' closing price.
+    const firstLeg = state.result.legs.find(l => l.id === entry.legs[1].id);
+    again.recordPrices({ legs: [{ ...firstLeg, metrics: { ...firstLeg.metrics, consensus: -200, fairProb: 0.64 } }] }, '2026-10-24T01:00:00.000Z');
+    const closed = again.state().history.entries[0].legs[1];
+    assert.equal(closed.result, 'hit', 'settled legs keep their close');
+    assert.equal(closed.closePrice, undefined);
+    const log = JSON.parse(fs.readFileSync(again.files.marketLog, 'utf8'));
+    assert.equal(log[firstLeg.id].openPrice, firstLeg.metrics.consensus);
+    assert.equal(log[firstLeg.id].points.at(-1).price, -200);
+    // Stakes: the tracked entry carries the Kelly stake; bankroll settings re-score.
+    assert.equal(entry.stake, power4.stakeUnits);
+    const after = await again.setStrategy({ bankroll: { units: 500, kelly_fraction: 0.5 }, sizes: [4, 6] });
+    assert.equal(after.result.bankroll.units, 500);
+    assert.ok(after.result.slips.some(s => s.size === 6) || after.result.notes.some(n => /6-leg/.test(n)));
+    await assert.rejects(again.setStrategy({ bankroll: { kelly_fraction: 3 } }), /between/);
+
     // Results read off a history page settle open legs by player, line and side.
     const open = again.track(power4.id);
     assert.equal(again.settleFromResults([{ player: open.legs[0].player, line: open.legs[0].line, side: open.legs[0].side, result: 'hit' }]), 1);
+    again.recordPrices({ legs: [{ ...firstLeg, id: open.legs[2].id, metrics: { ...firstLeg.metrics, consensus: -210, fairProb: 0.66 } }] });
+    const openLeg = again.state().history.entries.at(-1).legs[2];
+    assert.equal(openLeg.closePrice, -210);
+    assert.equal(openLeg.closeFair, 0.66);
 });

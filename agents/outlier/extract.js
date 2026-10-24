@@ -70,7 +70,7 @@ function collectPage(selectors) {
 const BOOKS = ['fanduel', 'draftkings', 'betmgm', 'caesars', 'pinnacle', 'bet365', 'espn bet', 'espnbet', 'fanatics', 'betrivers',
     'hard rock', 'hardrock', 'bovada', 'betonline', 'circa', 'pointsbet', 'unibet', 'novig', 'prophetx', 'sporttrade',
     'prizepicks', 'underdog', 'sleeper', 'betr', 'dabble', 'parlayplay', 'chalkboard', 'fliff', 'consensus'];
-const MARKETS = ['pts+reb+ast', 'pts + reb + ast', 'pra', 'pts+reb', 'pts+ast', 'reb+ast', 'points', 'rebounds', 'assists', 'threes', '3-pointers made',
+const MARKETS = ['team total', 'game total', 'total points', 'pts+reb+ast', 'pts + reb + ast', 'pra', 'pts+reb', 'pts+ast', 'reb+ast', 'points', 'rebounds', 'assists', 'threes', '3-pointers made',
     '3pt made', 'three pointers', 'steals', 'blocks', 'blks+stls', 'turnovers', 'fantasy score', 'fantasy points', 'double double',
     'passing yards', 'pass yards', 'passing tds', 'pass tds', 'rushing yards', 'rush yards', 'receiving yards', 'rec yards', 'receptions',
     'rush+rec yards', 'pass attempts', 'completions', 'interceptions', 'longest reception', 'tackles', 'sacks',
@@ -155,10 +155,29 @@ function hitRates(text) {
     return rates;
 }
 
-function matchup(text) {
+// "LAL @ DEN" names the game, not the player's side. The player's team is a
+// line of its own that names one of the two ("DEN", "DEN - C", "(DEN)").
+function matchup(text, lines) {
     const m = text.match(/\b([A-Z]{2,4})\s*(?:@|vs\.?|v\.?)\s*([A-Z]{2,4})\b/);
     if (!m) return {};
-    return { team: m[1], opponent: m[2], game: [m[1], m[2]].sort().join('-') };
+    const teams = [m[1], m[2]];
+    const out = { teams, game: [...teams].sort().join('-') };
+    for (const line of lines) {
+        if (/@|\bvs?\.?\b/.test(line)) continue;
+        const named = teams.filter(t => new RegExp(`(^|[\\s(\u00b7|-])${t}($|[\\s)\u00b7|-])`).test(line));
+        if (named.length === 1 && line.length <= 16) {
+            out.team = named[0];
+            out.opponent = teams.find(t => t !== named[0]);
+            break;
+        }
+    }
+    return out;
+}
+
+// The game's total ("O/U 232.5", "Total: 47.5"), for pace.
+function gameTotal(text) {
+    const m = text.match(/\b(?:o\/u|game total|total)\s*:?\s*(\d{1,3}(?:\.\d+)?)\b/i);
+    return m ? Number(m[1]) : null;
 }
 
 // "Recent: 27, 31, 22" / "Last 5: 27 31 22 19 30" -> numbers, most recent first.
@@ -176,7 +195,8 @@ function parseText(raw, page = {}, { requireOdds = true } = {}) {
     const text = String(raw || '').replace(/−/g, '-');
     // innerText separates table cells with tabs.
     const lines = text.split(/[\n\t]+/).map(l => l.trim()).filter(Boolean);
-    const lineMatch = text.match(LINE_RE);
+    // "O/U 231.5" is the game's total, not this prop's line.
+    const lineMatch = text.replace(/\b(?:o\/u|game total|total)\s*:?\s*\d{1,3}(?:\.\d+)?\b/gi, ' ').match(LINE_RE);
     if (!lineMatch) return null;
     const prop = {
         player: findPlayer(lines),
@@ -184,7 +204,8 @@ function parseText(raw, page = {}, { requireOdds = true } = {}) {
         line: Number(lineMatch[2]),
         side: sideOf(lineMatch[1]),
         league: LEAGUES.find(l => new RegExp(`\\b${l}\\b`).test(text)) || null,
-        ...matchup(text),
+        ...matchup(text, lines),
+        gameTotal: gameTotal(text),
         odds: [],
         hitRates: hitRates(text),
         recent: recentGames(text),

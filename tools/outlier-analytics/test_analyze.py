@@ -100,10 +100,16 @@ class Filters(unittest.TestCase):
 
 
 class Slips(unittest.TestCase):
+    def test_only_4_leg_entries_by_default(self):
+        result = A.analyze({"props": [prop(i, price=-140 - 5 * i) for i in range(10)]}, A.load_weights(None))
+        self.assertEqual({(s["type"], s["size"]) for s in result["slips"]}, {("power", 4), ("flex", 4)})
+
     def test_builds_4_and_6_leg_entries_with_limits(self):
         props = [prop(i, price=-140 - 5 * i) for i in range(10)]
         props.append(prop(99, player="Player 0", price=-300))  # same player as p0
-        result = A.analyze({"props": props}, A.load_weights(None))
+        w = A.load_weights(None)
+        w["slips"]["sizes"] = [4, 6]
+        result = A.analyze({"props": props}, w)
         sizes = {(s["type"], s["size"]) for s in result["slips"]}
         self.assertIn(("power", 4), sizes)
         self.assertIn(("flex", 6), sizes)
@@ -126,6 +132,108 @@ class Slips(unittest.TestCase):
     def test_empty_scrape_explains(self):
         result = A.analyze({"props": []}, A.load_weights(None))
         self.assertIn("snapshot", result["notes"][0])
+
+
+class Correlation(unittest.TestCase):
+    def setUp(self):
+        self.w = A.load_weights(None)
+
+    def leg(self, i, market, team, side="over", **extra):
+        leg = prop(i, market=market, side=side, game="BOS-MIA", league="NBA", team=team, **extra)
+        leg["metrics"] = A.leg_metrics(leg, self.w)
+        return leg
+
+    def test_assists_and_teammate_threes_reinforce(self):
+        rho, why = A.pair_correlation(self.leg(1, "Assists", "BOS"), self.leg(2, "Threes", "BOS"), self.w)
+        self.assertGreater(rho, 0)
+        self.assertIn("assists", why)
+
+    def test_one_under_flips_the_sign(self):
+        rho, _ = A.pair_correlation(self.leg(1, "Assists", "BOS"), self.leg(2, "Points", "BOS", side="under"), self.w)
+        self.assertLess(rho, 0)
+
+    def test_fast_game_adds_pace(self):
+        slow, _ = A.pair_correlation(self.leg(1, "Points", "BOS", gameTotal=212), self.leg(2, "Points", "MIA"), self.w)
+        fast, why = A.pair_correlation(self.leg(1, "Points", "BOS", gameTotal=238), self.leg(2, "Points", "MIA"), self.w)
+        self.assertGreater(fast, slow)
+        self.assertIn("fast game", why)
+
+    def test_different_games_are_independent(self):
+        a, b = self.leg(1, "Assists", "BOS"), self.leg(2, "Points", "BOS")
+        b["game"] = "LAL-DEN"
+        self.assertEqual(A.pair_correlation(a, b, self.w), (0.0, None))
+
+    def test_positive_correlation_raises_all_hit_chance(self):
+        legs = [self.leg(1, "Assists", "BOS"), self.leg(2, "Threes", "BOS")] + [
+            dict(prop(i), metrics=A.leg_metrics(prop(i), self.w)) for i in (3, 4)]
+        dist, links = A.correlated_distribution(legs, self.w)
+        indep = A.hit_distribution([l["metrics"]["p"] for l in legs])
+        self.assertAlmostEqual(sum(dist), 1.0)
+        self.assertGreater(dist[-1], indep[-1])
+        self.assertEqual(len(links), 1)
+        # Same mean number of hits: correlation moves variance, not expectation.
+        self.assertAlmostEqual(sum(k * m for k, m in enumerate(dist)), sum(k * m for k, m in enumerate(indep)))
+
+    def test_joint_probability_stays_valid(self):
+        self.assertLessEqual(A.joint_both(0.9, 0.2, 0.99), 0.2)
+        self.assertGreaterEqual(A.joint_both(0.6, 0.6, -0.99), 0.2 - 1e-9)
+
+
+class Staking(unittest.TestCase):
+    def setUp(self):
+        self.w = A.load_weights(None)
+
+    def test_kelly_zero_without_edge(self):
+        self.assertEqual(A.kelly_fraction(A.hit_distribution([0.5] * 4), {"4": 10}), 0.0)
+
+    def test_kelly_matches_closed_form_for_a_single_payout(self):
+        # One outcome paying b-to-1 with chance p: f* = p - (1 - p) / b.
+        p = 0.65 ** 4
+        f = A.kelly_fraction(A.hit_distribution([0.65] * 4), {"4": 10})
+        self.assertAlmostEqual(f, p - (1 - p) / 9, places=4)
+
+    def test_stake_is_fractional_and_capped(self):
+        bank = A.bankroll_state({}, self.w)
+        stake = A.stake_for(A.hit_distribution([0.7] * 4), {"4": 10}, self.w, bank)
+        self.assertLessEqual(stake["stakePct"], self.w["bankroll"]["max_stake_pct"])
+        self.assertAlmostEqual(stake["stakeUnits"], 100 * stake["stakePct"], places=2)
+
+    def test_drawdown_halves_stakes(self):
+        w = self.w
+        w["bankroll"]["max_stake_pct"] = 1.0
+        losses = {"entries": [{"recordedAt": f"2026-10-0{i}", "type": "power", "size": 4, "stake": 10,
+                               "legs": [{"result": "miss"}] + [{"result": "hit"}] * 3} for i in range(1, 4)]}
+        bank = A.bankroll_state(losses, w)
+        self.assertEqual(bank["current"], 70)
+        self.assertAlmostEqual(bank["drawdown"], 0.3)
+        dist = A.hit_distribution([0.7] * 4)
+        fresh = A.stake_for(dist, {"4": 10}, w, A.bankroll_state({}, w))
+        hurt = A.stake_for(dist, {"4": 10}, w, bank)
+        self.assertAlmostEqual(hurt["stakePct"], fresh["stakePct"] / 2, places=3)
+
+    def test_push_pays_as_smaller_entry(self):
+        entry = {"type": "flex", "legs": [{"result": "push"}] + [{"result": "hit"}] * 3}
+        self.assertEqual(A.entry_payout(entry, self.w), 1.0)  # no 3-leg flex table: refund
+        entry = {"type": "flex", "legs": [{"result": "hit"}] * 3 + [{"result": "miss"}]}
+        self.assertEqual(A.entry_payout(entry, self.w), 1.5)
+        self.assertIsNone(A.entry_payout({"type": "flex", "legs": [{"result": None}]}, self.w))
+
+
+class ClosingLine(unittest.TestCase):
+    def test_clv_summary(self):
+        legs = [{"metrics": {"fairProb": 0.58}, "closeFair": 0.61}, {"metrics": {"fairProb": 0.6}, "closeFair": 0.59},
+                {"metrics": {"fairProb": 0.6}}]
+        summary = A.clv_summary({"entries": [{"legs": legs}]})
+        self.assertEqual(summary["legs"], 2)
+        self.assertAlmostEqual(summary["average"], 0.01)
+        self.assertEqual(summary["beatClose"], 0.5)
+
+    def test_line_movement_from_market_log(self):
+        leg = prop(1, price=-160)
+        result = A.analyze({"props": [leg]}, A.load_weights(None), market_log={"p1": {"openPrice": -130, "firstSeen": "t0"}})
+        metrics = result["legs"][0]["metrics"]
+        self.assertEqual(metrics["openPrice"], -130)
+        self.assertGreater(metrics["move"], 0, "steam toward this side")
 
 
 def settled(n, rng, l5_split=0.8):

@@ -9,11 +9,26 @@
     "min_books": 1
   },
   "bounds": {
-    "min_juice": [110, 200],
-    "min_l5_hit_rate": [0.6, 1.0],
-    "min_floor_margin": [-0.25, 0.3],
-    "max_volatility": [0.15, 0.6],
-    "min_leg_probability": [0.52, 0.7]
+    "min_juice": [
+      110,
+      200
+    ],
+    "min_l5_hit_rate": [
+      0.6,
+      1.0
+    ],
+    "min_floor_margin": [
+      -0.25,
+      0.3
+    ],
+    "max_volatility": [
+      0.15,
+      0.6
+    ],
+    "min_leg_probability": [
+      0.52,
+      0.7
+    ]
   },
   "model": {
     "market_weight": 0.65,
@@ -21,16 +36,218 @@
     "assumed_vig": 0.045
   },
   "slips": {
-    "sizes": [4, 6],
+    "sizes": [
+      4
+    ],
     "max_legs_per_game": 2,
     "max_legs_per_team": 2,
     "candidate_pool": 14,
     "slips_per_type": 3
   },
   "payouts": {
-    "power": { "4": { "4": 10 }, "6": { "6": 37.5 } },
-    "flex": { "4": { "4": 6, "3": 1.5 }, "6": { "6": 25, "5": 2, "4": 0.4 } }
+    "power": {
+      "4": {
+        "4": 10
+      },
+      "6": {
+        "6": 37.5
+      }
+    },
+    "flex": {
+      "4": {
+        "4": 6,
+        "3": 1.5
+      },
+      "6": {
+        "6": 25,
+        "5": 2,
+        "4": 0.4
+      }
+    }
   },
   "avoid_markets": [],
-  "market_penalty": {}
+  "market_penalty": {},
+  "correlation": {
+    "enabled": true,
+    "groups": {
+      "playmaking": [
+        "assists"
+      ],
+      "scoring": [
+        "points",
+        "threes",
+        "3-pointers made",
+        "3pt made",
+        "three pointers",
+        "pts+reb+ast",
+        "pra",
+        "pts+reb",
+        "pts+ast",
+        "fantasy score",
+        "fantasy points"
+      ],
+      "rebounding": [
+        "rebounds",
+        "reb+ast"
+      ],
+      "passing": [
+        "passing yards",
+        "pass yards",
+        "passing tds",
+        "pass tds",
+        "completions",
+        "pass attempts"
+      ],
+      "receiving": [
+        "receiving yards",
+        "rec yards",
+        "receptions",
+        "longest reception"
+      ],
+      "rushing": [
+        "rushing yards",
+        "rush yards",
+        "rush+rec yards"
+      ],
+      "hitting": [
+        "hits",
+        "total bases",
+        "runs",
+        "rbis",
+        "hits+runs+rbis",
+        "home runs",
+        "singles"
+      ],
+      "pitching": [
+        "strikeouts",
+        "pitcher strikeouts",
+        "outs recorded"
+      ],
+      "total": [
+        "team total",
+        "game total",
+        "alt total",
+        "alternate total",
+        "total points"
+      ]
+    },
+    "rules": [
+      {
+        "relation": "teammates",
+        "a": "playmaking",
+        "b": "scoring",
+        "rho": 0.12,
+        "why": "assists need teammates' made shots"
+      },
+      {
+        "relation": "teammates",
+        "a": "passing",
+        "b": "receiving",
+        "rho": 0.2,
+        "why": "the QB's yards are the receiver's yards"
+      },
+      {
+        "relation": "teammates",
+        "a": "scoring",
+        "b": "scoring",
+        "rho": -0.04,
+        "why": "teammates share shots"
+      },
+      {
+        "relation": "teammates",
+        "a": "rebounding",
+        "b": "rebounding",
+        "rho": -0.05,
+        "why": "teammates share rebounds"
+      },
+      {
+        "relation": "teammates",
+        "a": "rushing",
+        "b": "passing",
+        "rho": -0.05,
+        "why": "run-heavy script means fewer passes"
+      },
+      {
+        "relation": "teammates",
+        "a": "hitting",
+        "b": "hitting",
+        "rho": 0.08,
+        "why": "a big inning lifts the lineup"
+      },
+      {
+        "relation": "opponents",
+        "a": "scoring",
+        "b": "scoring",
+        "rho": 0.05,
+        "why": "shootout script"
+      },
+      {
+        "relation": "opponents",
+        "a": "passing",
+        "b": "passing",
+        "rho": 0.08,
+        "why": "both QBs throw in a shootout"
+      },
+      {
+        "relation": "opponents",
+        "a": "passing",
+        "b": "receiving",
+        "rho": 0.05,
+        "why": "shootout script"
+      },
+      {
+        "relation": "opponents",
+        "a": "pitching",
+        "b": "hitting",
+        "rho": -0.15,
+        "why": "the pitcher's strikeouts are the hitters' outs"
+      },
+      {
+        "relation": "any",
+        "a": "total",
+        "b": "scoring",
+        "rho": 0.12,
+        "why": "a high-scoring game lifts scorers"
+      },
+      {
+        "relation": "any",
+        "a": "total",
+        "b": "passing",
+        "rho": 0.12,
+        "why": "a high-scoring game lifts passers"
+      },
+      {
+        "relation": "any",
+        "a": "total",
+        "b": "receiving",
+        "rho": 0.1,
+        "why": "a high-scoring game lifts receivers"
+      }
+    ],
+    "pace_totals": {
+      "NBA": 230,
+      "WNBA": 165,
+      "NCAAB": 145,
+      "CBB": 145,
+      "NFL": 47,
+      "NCAAF": 55,
+      "CFB": 55,
+      "MLB": 9,
+      "NHL": 6.5
+    },
+    "pace_boost": 0.04,
+    "pace_groups": [
+      "scoring",
+      "playmaking",
+      "passing",
+      "receiving",
+      "total"
+    ]
+  },
+  "bankroll": {
+    "units": 100,
+    "kelly_fraction": 0.25,
+    "max_stake_pct": 0.03,
+    "drawdown_cut": 0.2
+  }
 }
