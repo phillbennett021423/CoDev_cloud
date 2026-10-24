@@ -15,7 +15,8 @@ const REPO_DIR = __dirname;
 const KEYS = {
     anthropic: { env: 'ANTHROPIC_API_KEY', prefix: 'sk-ant-', label: 'Anthropic', use: 'Anthropic relay (/anthropic/v1/messages)' },
     openrouter: { env: 'OPENROUTER_API_KEY', prefix: 'sk-or-', label: 'OpenRouter', use: 'OpenRouter models' },
-    manus: { env: 'MANUS_API_KEY', prefix: '', label: 'Manus', use: 'Q tasks' }
+    manus: { env: 'MANUS_API_KEY', prefix: '', label: 'Manus', use: 'Q tasks' },
+    oddsApi: { env: 'ODDS_API_KEY', prefix: '', label: 'The Odds API', use: 'free-tier market odds in the Outlier tab' }
 };
 
 function readKey({ env, prefix, label }) {

@@ -74,6 +74,7 @@ div.ov-why { font-size: 0.78rem; }
                 el("td", { text: legLabel(l) }),
                 el("td", { title: l.metrics && l.metrics.openPrice != null ? `Opened ${price(l.metrics.openPrice)}` : null },
                     price(l.metrics && l.metrics.consensus),
+                    l.metrics && l.metrics.marketBooks ? el("span", { class: "ov-why", text: ` · ${l.metrics.books} books${l.metrics.fairSource === "sharp" ? ", sharp" : ""}` }) : null,
                     l.metrics && l.metrics.openPrice != null && l.metrics.openPrice !== l.metrics.consensus
                         ? el("span", { class: "ov-why", text: ` (from ${price(l.metrics.openPrice)})` }) : null),
                 el("td", { text: pct(l.metrics && l.metrics.l5) }),
@@ -246,6 +247,54 @@ div.ov-why { font-size: 0.78rem; }
                     legRows(result.legs, ["Why not"], l => [el("td", { class: "ov-why", text: l.rejected.length ? l.rejected.join("; ") : "✓ passed" })])));
         }
 
+        function marketSection() {
+            const m = state && state.market;
+            if (!m) return null;
+            const sum = m.summary;
+            const odds = (m.config && m.config.odds_api) || {};
+            const espn = (m.config && m.config.espn) || {};
+            const cfg = state.config || {};
+            const sports = el("input", { type: "text", value: (odds.sports || ["basketball_nba"]).join(", "), "aria-label": "Odds API sports" });
+            const props = el("input", { type: "text", value: (odds.prop_markets || []).join(", "), placeholder: "player_points, player_rebounds", "aria-label": "Odds API prop markets" });
+            const leagues = el("input", { type: "text", value: (espn.leagues || ["basketball/nba"]).join(", "), "aria-label": "ESPN leagues" });
+            const boards = el("textarea", { "aria-label": "Public odds pages", placeholder: "https://… one public odds-comparison page per line" });
+            boards.value = (cfg.publicBoards || []).join("\n");
+            const on = el("input", { type: "checkbox", checked: cfg.market !== false });
+            const feedLine = f => f.error ? `error: ${f.error}` : `${f.source}: ${f.skipped ? f.skipped : `${f.quotes} quotes from ${f.calls} call(s)`}`;
+            return el("div", { class: "ov-section" },
+                el("details", {},
+                    el("summary", { text: `Market odds${sum ? ` (${sum.lines} lines across ${(sum.bookHold || []).length} books)` : ""}` }),
+                    el("div", { class: "ov-form" },
+                        el("div", { class: "ov-status" },
+                            el("span", { class: m.hasOddsApiKey ? "good" : "bad", text: m.hasOddsApiKey ? "● Odds API key set" : "● No ODDS_API_KEY (free at the-odds-api.com; add it to .env)" }),
+                            sum && sum.oddsApiRemaining != null ? el("span", { text: `${sum.oddsApiRemaining} free credits left this month` }) : null,
+                            m.last ? el("span", { text: `Last refresh ${when(m.last.at)}` }) : null),
+                        m.last ? el("div", { class: "ov-why", text: [...(m.last.feeds || []).map(feedLine), ...(m.last.boards || []).map(b => b.error ? `${b.source || "boards"}: ${b.error}` : `${b.source}: ${b.props} props`)].join(" · ") }) : null,
+                        sum && sum.bookHold && sum.bookHold.length ? el("div", {},
+                            el("strong", { text: "Juice by book " }), el("span", { class: "ov-why", text: "(average hold; lower is sharper)" }),
+                            el("div", { class: "ov-why", text: sum.bookHold.map(b => `${b.book} ${pct(b.hold, 1)}`).join(" · ") })) : null,
+                        sum && sum.bestEdges && sum.bestEdges.length ? el("div", { class: "ov-scroll" }, el("strong", { text: "Prices better than the no-vig line" }),
+                            el("table", { class: "ov-table" },
+                                el("thead", {}, el("tr", {}, ["Bet", "Book", "Price", "Fair", "Edge", "Books"].map(h => el("th", { text: h })))),
+                                el("tbody", {}, sum.bestEdges.map(e => el("tr", {},
+                                    el("td", { text: `${e.subject && e.subject !== "game" ? `${e.subject} ` : ""}${e.side} ${e.line ?? ""} ${e.market}${e.game ? ` (${e.game})` : ""}` }),
+                                    el("td", { text: e.book }), el("td", { text: price(e.price) }), el("td", { text: price(e.fairPrice) }),
+                                    el("td", { text: `+${(e.edge * 100).toFixed(1)} pts` }), el("td", { text: e.books })))))) : null,
+                        el("div", { class: "ov-actions" },
+                            el("button", { class: "ov-btn", disabled: Boolean(working || state.busy), onclick: () => act("Refreshing market odds…", "/outlier/market/refresh") }, "⟳ Refresh market odds")),
+                        el("label", {}, on, " Cross-reference every scrape with these feeds"),
+                        el("label", {}, "Odds API sports ", sports),
+                        el("label", {}, "Odds API prop markets (cost credits per game) ", props),
+                        el("label", {}, "ESPN leagues ", leagues),
+                        el("div", { class: "ov-why", text: "Public odds-comparison pages, one per line. They're read with a fresh, signed-out browser; check each site's terms." }),
+                        boards,
+                        el("div", { class: "ov-actions" },
+                            el("button", { class: "ov-btn primary", disabled: Boolean(working), onclick: async () => {
+                                const ok = await act("Saving…", "/outlier/config", { market: on.checked, publicBoards: boards.value.split("\n").map(x => x.trim()).filter(Boolean) }, { reload: false });
+                                if (ok) await act("Saving…", "/outlier/market/config", { odds_api: { sports: sports.value, prop_markets: props.value }, espn: { leagues: leagues.value } });
+                            } }, "Save")))));
+        }
+
         function strategySection() {
             const result = state && state.result;
             const bank = (result && result.bankroll) || (state && state.weights && state.weights.bankroll) || { units: 100, kelly_fraction: 0.25, max_stake_pct: 0.03 };
@@ -316,7 +365,7 @@ div.ov-why { font-size: 0.78rem; }
                 error ? el("div", { class: "ov-error", role: "alert", text: error }) : null,
                 info ? el("div", { class: "ov-note", role: "status", text: info }) : null,
                 (state && state.lastError && !error) ? el("div", { class: "ov-error", text: state.lastError }) : null,
-                slipsSection(), trackedSection(), learningSection(), strategySection(), propsSection(), settingsSection()].filter(Boolean));
+                slipsSection(), trackedSection(), learningSection(), strategySection(), marketSection(), propsSection(), settingsSection()].filter(Boolean));
         }
 
         render();

@@ -123,7 +123,10 @@ def leg_metrics(leg, weights):
 
     implied = implied_prob(consensus) if consensus is not None else None
     fair = None
-    if implied is not None:
+    if leg.get("marketFair") is not None:
+        # market_data.py's no-vig price across books (sharp books first).
+        fair = float(leg["marketFair"])
+    elif implied is not None:
         opp = consensus_price(opposite)
         if opp is not None:
             fair = implied / (implied + implied_prob(opp))
@@ -191,6 +194,8 @@ def leg_metrics(leg, weights):
         "volatility": rnd(volatility),
         "games": len(recent),
         "p": rnd(prob),
+        "fairSource": leg.get("marketFairFrom") if leg.get("marketFair") is not None else ("both sides" if opposite else "assumed vig") if fair is not None else None,
+        "marketBooks": leg.get("marketBooks"),
     }
 
 

@@ -25,6 +25,16 @@ A prop makes the cut when its odds are at least as juiced as `-min_juice` (‑13
 
 The view also shows where each prop's odds opened (`market-log.json` keeps every price seen, with its time).
 
+## Market odds (free)
+
+`market_data.py` cross-references Outlier's numbers with the rest of the market, at no cost:
+
+- **The Odds API, free tier** (`ODDS_API_KEY` in `.env`, free at the-odds-api.com, 500 credits a month): main lines (moneyline, spread, total) for the sports listed under **Market odds** in the view, and player props for the next couple of games when you list prop markets (`player_points`, `player_rebounds`, …). Each call costs credits per market per region, so it fetches at most every 30 minutes, keeps 50 credits in reserve, and shows how many are left.
+- **ESPN's public scoreboard JSON** (no key): team names and abbreviations (so every source keys games like Outlier does, e.g. `DEN-LAL`), game totals for the pace rule, and the moneyline, spread and total it lists. It's an unofficial feed and can change shape; both shapes seen so far are read.
+- **Public odds-comparison pages** you list: CoDev opens them in a fresh, signed-out browser (never the Outlier profile) and parses their tables like Outlier's. Check each site's terms before adding it.
+
+Every quote goes into `market.db` (SQLite) with its source, book and time. For each line, the newest quote per book is grouped with the other side: each book's hold (juice), the no-vig fair chance (the average of the sharp books when one has the line, e.g. Pinnacle or Circa, else the median of all books with both sides), and the best price on each side with its edge over fair. Before scoring, each Outlier prop picks up every book's price for the same player, market and line, and its fair chance comes from that market instead of one site. `python market_data.py summary --db market.db --csv lines.csv` dumps every line by book (with pandas if installed).
+
 ## Same-game correlation
 
 Two legs from the same game aren't independent. `weights.correlation` gives each pair a correlation on hit/miss from its market groups and whether the players are teammates or opponents: a point guard's assists and a teammate's points or threes (+0.12), a QB and his receiver (+0.2), two scorers on opposite teams (+0.05, a shootout), a pitcher's strikeouts against the hitters he faces (‑0.15), a game or team total with its scorers (+0.12), teammates competing for the same shots or rebounds (‑0.04/‑0.05). A game total above the league's pace line (NBA 230, NFL 47, …) adds +0.04 for overs. Rules are for two overs; an under flips the sign. Each same-game pair's joint chance is `p1·p2 + ρ·√(p1(1−p1)p2(1−p2))`, so positively linked legs raise the chance that all hit and get ranked higher, while the expected number of hits stays the same. Teammate rules only apply when the page names the player's team (a matchup like "LAL @ DEN" alone only says they share a game). The numbers are starting estimates, not fitted to data; edit them in your `weights.json`.

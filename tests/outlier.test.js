@@ -105,15 +105,15 @@ test('scrape, analyze, track an entry and learn from it, with a profile that per
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
     const pipeline = createOutlierPipeline({ dataDir, log: () => {} });
     // Written straight to the file: setConfig refuses this computer's own addresses.
-    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url: `${base}/board` }], settleMs: 50, scrolls: 1 }));
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url: `${base}/board` }], settleMs: 50, scrolls: 1, market: false }));
 
     await assert.rejects(pipeline.scrape(), /asked to sign in/);
     assert.equal(pipeline.state().signedIn, false);
 
     // "Signing in": visit /login with the pipeline's own profile, as the sign-in window would.
-    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url: `${base}/login` }], settleMs: 50, scrolls: 1 }));
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url: `${base}/login` }], settleMs: 50, scrolls: 1, market: false }));
     await pipeline.scrape();
-    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url: `${base}/board` }], settleMs: 50, scrolls: 1 }));
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url: `${base}/board` }], settleMs: 50, scrolls: 1, market: false }));
     // A fresh pipeline object on the same folder: the cookie came from disk.
     const again = createOutlierPipeline({ dataDir, log: () => {} });
     await again.scrape();
@@ -154,4 +154,53 @@ test('scrape, analyze, track an entry and learn from it, with a profile that per
     const openLeg = again.state().history.entries.at(-1).legs[2];
     assert.equal(openLeg.closePrice, -210);
     assert.equal(openLeg.closeFair, 0.66);
+});
+
+test('public odds boards are read with a fresh browser and cross-referenced into the scrape', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+
+    // A public odds-comparison table (no sign-in) quoting both sides at three books.
+    const comparison = `<table><thead><tr><th>Player</th><th>Prop</th><th>Line</th><th>Pinnacle</th><th>BetMGM</th><th>Caesars</th></tr></thead><tbody>
+        <tr><td>Nikola Jokic</td><td>Rebounds</td><td>o11.5</td><td>-140</td><td>-150</td><td>-145</td></tr>
+        <tr><td>Nikola Jokic</td><td>Rebounds</td><td>u11.5</td><td>+120</td><td>+115</td><td>+110</td></tr></tbody></table>`;
+    const seen = [];
+    const server = http.createServer((req, res) => {
+        seen.push({ url: req.url, cookie: req.headers.cookie || '' });
+        res.writeHead(200, { 'Content-Type': 'text/html', 'Set-Cookie': 'session=ok; Path=/; Max-Age=3600' });
+        res.end(req.url === '/compare' ? comparison : BOARD);
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-market-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, oddsApiKey: '', log: () => {} });
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url: `${base}/board` }], settleMs: 50, scrolls: 1,
+        publicBoards: [`${base}/compare`] }));
+    // No network feeds in tests.
+    pipeline.setMarketConfig({ odds_api: { enabled: false }, espn: { enabled: false } });
+
+    await pipeline.scrape();
+    const state = pipeline.state();
+    const board = seen.find(r => r.url === '/compare');
+    assert.ok(board, 'the public board was read');
+    assert.equal(board.cookie, '', 'with a fresh browser, not the Outlier profile');
+    assert.deepEqual(state.market.last.boards, [{ source: '127.0.0.1', props: 2, error: undefined }]);
+    assert.ok(state.market.summary.lines >= 1);
+    assert.equal(state.market.summary.bookHold.length, 3);
+
+    const jokic = state.result.legs.find(l => l.player === 'Nikola Jokic');
+    assert.deepEqual(jokic.odds.map(o => o.book).sort(), ['betmgm', 'caesars', 'draftkings', 'fanduel', 'pinnacle']);
+    assert.equal(jokic.metrics.fairSource, 'sharp', 'Pinnacle sets the no-vig price');
+    assert.equal(jokic.metrics.marketBooks, 3);
+
+    // Market settings only take known keys and clean lists.
+    const cfg = pipeline.setMarketConfig({ odds_api: { sports: 'basketball_nba, americanfootball_nfl', prop_markets: ['player_points', 'bad key!'], apiKey: 'nope' } });
+    assert.deepEqual(cfg.odds_api.sports, ['basketball_nba', 'americanfootball_nfl']);
+    assert.deepEqual(cfg.odds_api.prop_markets, ['player_points']);
+    assert.equal(cfg.odds_api.apiKey, undefined, 'the key never goes in the settings file');
+    assert.throws(() => pipeline.setConfig({ publicBoards: ['file:///etc/passwd'] }), /Only http/);
 });

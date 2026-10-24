@@ -15,6 +15,7 @@ const { spawn } = require('child_process');
 const { collectPage, parseCollected, propId } = require('./extract');
 
 const ANALYTICS = path.join(__dirname, '..', '..', 'tools', 'outlier-analytics', 'analyze.py');
+const MARKET = path.join(__dirname, '..', '..', 'tools', 'outlier-analytics', 'market_data.py');
 const DEFAULT_CONFIG = {
     signInUrl: 'https://app.outlier.bet/',
     // kind: props (prop cards and boards), odds (odds boards), slips or history (settled entries).
@@ -24,7 +25,11 @@ const DEFAULT_CONFIG = {
     selectors: null,
     showBrowser: false,
     settleMs: 2500,
-    scrolls: 6
+    scrolls: 6,
+    // Free market odds (market_data.py) and public odds-comparison pages read
+    // with a fresh, signed-out browser, cross-referenced into each scrape.
+    market: true,
+    publicBoards: []
 };
 const SIGN_IN_WAIT_MS = 10 * 60 * 1000;
 
@@ -55,12 +60,13 @@ function isLoopback(host) {
 }
 
 // Runs analyze.py. CODEV_PYTHON wins; otherwise python3/python (py on Windows).
-function runPython(args, { python = process.env.CODEV_PYTHON, timeoutMs = 120000 } = {}) {
+// env: extra environment for the script (keys go there, never on the command line).
+function runPython(args, { python = process.env.CODEV_PYTHON, timeoutMs = 120000, script = ANALYTICS, env } = {}) {
     const candidates = python ? [python] : process.platform === 'win32' ? ['python', 'py', 'python3'] : ['python3', 'python'];
     return new Promise((resolve, reject) => {
         const tryNext = i => {
             if (i >= candidates.length) return reject(new Error('Python was not found. Install Python 3 (python.org) or set CODEV_PYTHON to its path, then try again.'));
-            const child = spawn(candidates[i], [ANALYTICS, ...args], { windowsHide: true });
+            const child = spawn(candidates[i], [script, ...args], { windowsHide: true, env: env ? { ...process.env, ...env } : process.env });
             let stderr = '';
             const timer = setTimeout(() => child.kill(), timeoutMs);
             child.stderr.on('data', d => { stderr += d; });
@@ -70,7 +76,7 @@ function runPython(args, { python = process.env.CODEV_PYTHON, timeoutMs = 120000
                 if (code === 0) resolve();
                 // The Windows Store "python" stub exits 9009 when Python isn't really installed.
                 else if (code === 9009) tryNext(i + 1);
-                else reject(new Error(`The analytics script failed: ${stderr.trim().split('\n').slice(-3).join(' ') || `exit ${code}`}`));
+                else reject(new Error(`${path.basename(script)} failed: ${stderr.trim().split('\n').slice(-3).join(' ') || `exit ${code}`}`));
             });
         };
         tryNext(0);
@@ -83,7 +89,7 @@ function sameLeg(a, b) {
         && (!a.market || !b.market || norm(a.market) === norm(b.market));
 }
 
-function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier'), playwright = loadPlaywright(), python,
+function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier'), playwright = loadPlaywright(), python, oddsApiKey = process.env.ODDS_API_KEY,
     blockedPorts = [3000, Number(process.env.PORT) || 3000, 8787], log = console.log } = {}) {
     const files = {
         profile: path.join(dataDir, 'profile'),
@@ -95,6 +101,12 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         learn: path.join(dataDir, 'learn-report.json'),
         // Every price seen for each prop, with times: line movement and closing line value.
         marketLog: path.join(dataDir, 'market-log.json'),
+        // Free feeds + public boards, every quote with its book and time (SQLite).
+        marketDb: path.join(dataDir, 'market.db'),
+        marketConfig: path.join(dataDir, 'market.json'),
+        boards: path.join(dataDir, 'public-boards.json'),
+        marketSummary: path.join(dataDir, 'market-summary.json'),
+        marketFetch: path.join(dataDir, 'market-fetch.json'),
         snapshots: path.join(dataDir, 'snapshots')
     };
     // busy: what the one browser is doing ('signin' | 'scrape' | 'snapshot'); the
@@ -112,6 +124,8 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         }
         if (update.selectors === null || (update.selectors && typeof update.selectors.row === 'string')) next.selectors = update.selectors;
         if (typeof update.showBrowser === 'boolean') next.showBrowser = update.showBrowser;
+        if (typeof update.market === 'boolean') next.market = update.market;
+        if (Array.isArray(update.publicBoards)) next.publicBoards = update.publicBoards.filter(Boolean).map(checkUrl);
         writeJson(files.config, next);
         return next;
     }
@@ -254,6 +268,104 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         return { pages, saved };
     }
 
+    // ---- free market odds ----
+
+    const MARKET_KEYS = ['enabled', 'sports', 'regions', 'main_markets', 'prop_markets', 'max_prop_events', 'min_minutes_between', 'reserve_credits'];
+
+    function setMarketConfig(update = {}) {
+        const current = readJson(files.marketConfig, {});
+        const next = { ...current, odds_api: { ...(current.odds_api || {}) }, espn: { ...(current.espn || {}) } };
+        const list = v => (Array.isArray(v) ? v : String(v || '').split(/[\s,]+/)).map(x => String(x).trim()).filter(x => /^[a-z0-9_/\-]+$/i.test(x));
+        for (const [key, value] of Object.entries(update.odds_api || {})) {
+            if (!MARKET_KEYS.includes(key)) continue;
+            if (key === 'enabled') next.odds_api.enabled = Boolean(value);
+            else if (key === 'regions') next.odds_api.regions = list(value).join(',') || 'us';
+            else if (['sports', 'main_markets', 'prop_markets'].includes(key)) next.odds_api[key] = list(value);
+            else if (Number.isFinite(Number(value)) && Number(value) >= 0) next.odds_api[key] = Number(value);
+        }
+        if (update.espn) {
+            if ('enabled' in update.espn) next.espn.enabled = Boolean(update.espn.enabled);
+            if ('leagues' in update.espn) next.espn.leagues = list(update.espn.leagues);
+        }
+        if (update.sharp_books) next.sharp_books = list(update.sharp_books).map(b => b.toLowerCase());
+        writeJson(files.marketConfig, next);
+        return next;
+    }
+
+    // Public odds-comparison pages, read with a fresh signed-out browser (never
+    // the Outlier profile), parsed the same way as Outlier's own pages.
+    async function readPublicBoards(urls) {
+        if (!urls.length) return [];
+        if (!playwright) throw new Error('Reading public boards needs playwright-core (npm install).');
+        let browser;
+        for (const candidate of launchCandidates()) {
+            try { browser = await playwright.chromium.launch({ headless: true, handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false, ...candidate.options }); break; } catch { /* next */ }
+        }
+        if (!browser) throw new Error('No browser could start to read the public boards.');
+        const boards = [];
+        try {
+            const context = await browser.newContext({ viewport: { width: 1366, height: 900 }, acceptDownloads: false });
+            await context.route(url => isLoopback(url.hostname) && blocked.has(url.port || '80'), route => route.abort('blockedbyclient'));
+            const page = await context.newPage();
+            for (const url of urls) {
+                try {
+                    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+                    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+                    await page.waitForTimeout(config().settleMs);
+                    const collected = await page.evaluate(collectPage, null);
+                    const { props } = parseCollected([{ kind: 'odds', collected }]);
+                    boards.push({ source: new URL(url).hostname, url, props });
+                } catch (err) {
+                    boards.push({ source: new URL(url).hostname, url, props: [], error: String(err.message).split('\n')[0] });
+                }
+            }
+        } finally {
+            await browser.close().catch(() => {});
+        }
+        return boards;
+    }
+
+    const market = (args, extra = {}) => runPython([args[0], '--db', files.marketDb, '--config', files.marketConfig, ...args.slice(1)],
+        { python, script: MARKET, ...extra });
+
+    // Free feeds, then public boards, into market.db; then the summary for the view.
+    async function refreshMarket() {
+        const report = { at: new Date().toISOString(), feeds: [], boards: [] };
+        try {
+            await market(['fetch', '--out', files.marketFetch], { env: { ODDS_API_KEY: oddsApiKey || '' } });
+            report.feeds = (readJson(files.marketFetch, {}).feeds) || [];
+        } catch (err) {
+            report.feeds.push({ error: err.message });
+        }
+        try {
+            const boards = await readPublicBoards(config().publicBoards || []);
+            if (boards.length) {
+                writeJson(files.boards, boards);
+                await market(['ingest', '--input', files.boards, '--out', files.marketFetch]);
+            }
+            report.boards = boards.map(b => ({ source: b.source, props: b.props.length, error: b.error }));
+        } catch (err) {
+            report.boards.push({ error: err.message });
+        }
+        await market(['summary', '--out', files.marketSummary]);
+        state.market = report;
+        return report;
+    }
+
+    async function marketRefreshRoute() {
+        claim('market');
+        try {
+            await refreshMarket();
+            if (fs.existsSync(files.scrape)) {
+                await market(['enrich', '--input', files.scrape, '--out', files.scrape]);
+                recordPrices(await analyze());
+            }
+            return snapshotState();
+        } finally {
+            state.busy = null;
+        }
+    }
+
     async function analyze() {
         await runPython(['analyze', '--input', files.scrape, '--weights', files.weights, '--out', files.result,
             '--history', files.history, '--market-log', files.marketLog], { python });
@@ -328,6 +440,16 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             writeJson(files.scrape, { scrapedAt: new Date().toISOString(), source: 'outlier', ...parsed });
             const settledNow = settleFromResults(parsed.results);
             if (settledNow) await learn();
+            // Cross-reference with the free feeds and public boards; a feed
+            // that's down never stops the scrape.
+            if (config().market !== false) {
+                try {
+                    await refreshMarket();
+                    await market(['enrich', '--input', files.scrape, '--out', files.scrape]);
+                } catch (err) {
+                    state.market = { ...(state.market || {}), error: err.message };
+                }
+            }
             const result = await analyze();
             recordPrices(result);
             state.lastRun = new Date().toISOString();
@@ -454,6 +576,12 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             weights: readJson(files.weights, null),
             learnReport: readJson(files.learn, null),
             config: config(),
+            market: {
+                summary: readJson(files.marketSummary, null),
+                last: state.market || null,
+                config: readJson(files.marketConfig, {}),
+                hasOddsApiKey: Boolean(oddsApiKey)
+            },
             dataDir
         };
     }
@@ -467,7 +595,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         return { available: true, detail: state.busy ? `busy: ${state.busy}` : state.signedIn === false ? 'signed out of Outlier' : 'ready' };
     }
 
-    return { signIn, scrape, snapshot, analyze, recordPrices, setStrategy, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
+    return { signIn, scrape, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
         state: snapshotState, status, close, files, settleFromResults };
 }
 
@@ -482,7 +610,7 @@ const safe = fn => async (req, res, body) => {
 };
 
 function createService(config = {}, { log = console.log, pipeline } = {}) {
-    const outlier = pipeline || createOutlierPipeline({ log });
+    const outlier = pipeline || createOutlierPipeline({ log, oddsApiKey: (config.keys && config.keys.oddsApi) || undefined });
     return {
         name: 'outlier',
         tools: [{
@@ -508,6 +636,8 @@ function createService(config = {}, { log = console.log, pipeline } = {}) {
             'POST /outlier/config': safe(body => outlier.setConfig(body)),
             'POST /outlier/track': safe(body => outlier.track(body.slipId, body.stake)),
             'POST /outlier/strategy': safe(body => outlier.setStrategy(body)),
+            'POST /outlier/market/refresh': safe(() => outlier.refreshMarketRoute()),
+            'POST /outlier/market/config': safe(body => { outlier.setMarketConfig(body); return outlier.state(); }),
             'POST /outlier/untrack': safe(body => outlier.untrack(body.entryId)),
             'POST /outlier/outcomes': safe(async body => { await outlier.recordOutcomes(body.entryId, body.results); return outlier.state(); }),
             'POST /outlier/reset-weights': safe(async () => { await outlier.resetWeights(); return outlier.state(); }),
