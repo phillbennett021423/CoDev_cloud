@@ -11,7 +11,7 @@
 // not a tool, runs the action. Passwords are typed into the page by this module
 // and never appear in a tool result.
 const crypto = require('crypto');
-const { resolveAddress, checkPage, advice, SEARCH } = require('./page-check');
+const { resolveAddress, fixKnownAddress, checkPage, advice, SEARCH } = require('./page-check');
 const fs = require('fs');
 const path = require('path');
 const { BrowserUnavailableError } = require('./browser-manager');
@@ -58,7 +58,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
         // A bare domain ("espn.com") gets https://; words are not an address.
         const typed = String(raw || '').trim();
         const resolved = /^https?:\/\//i.test(typed) || /^(about|data):/i.test(typed) ? null : (() => { try { return resolveAddress(typed); } catch { return null; } })();
-        try { url = new URL(resolved && resolved.how !== 'search' ? resolved.url : typed); } catch {
+        try { url = new URL(fixKnownAddress(resolved && resolved.how !== 'search' ? resolved.url : typed)); } catch {
             throw new ToolError(`"${raw}" is not a web address. Use a full address like https://example.com, or ${SEARCH}<words> to search.`);
         }
         if (url.href === 'about:blank' || url.protocol === 'data:') return url;
@@ -110,13 +110,13 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
             response = await page.goto(target.href, { waitUntil: ['load', 'domcontentloaded', 'networkidle'].includes(waitUntil) ? waitUntil : 'load', timeout: NAVIGATION_TIMEOUT_MS });
         } catch (err) {
             if (err && err.name === 'TimeoutError') throw err;
-            throw new ToolError(advice(await checkPage(page, null, { error: err }), target.href));
+            return pausedFor(ctx, page, advice(await checkPage(page, null, { error: err }), target.href));
         }
         const status = response ? ` (HTTP ${response.status()})` : '';
         // A dead link or a parked "domain for sale" page is not the site: say so, so the
         // agent searches for the real address instead of reading the parking page.
         const check = target.href === 'about:blank' ? { ok: true } : await checkPage(page, response);
-        if (!check.ok) return failure(`Opened ${page.url()}${status}, but it's not a working site. ${advice(check, page.url())}`);
+        if (!check.ok) return pausedFor(ctx, page, `Opened ${page.url()}${status}, but it's not a working site. ${advice(check, page.url())}`);
         return text(`${await pageSummary(page)}`.replace(/^Page: /, `Opened${status}: `));
     }
 
@@ -196,7 +196,17 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
         ], isError: false };
     }
 
+    // A dead link, redirect or parked page: the browser stays open with that page shown,
+    // paused for the user in the live view, and the agent is told to wait.
+    function pausedFor(ctx, page, problem) {
+        manager.pause(ctx.agentId, page, problem);
+        return failure(`${problem}\nYour browser is paused and left open in the live view so the user can fix it (they may search for the right address or sign in). ` +
+            'Don\'t close it: ask the user what to do, or search for the real address. The user hands it back when they\'re done.');
+    }
+
     async function closeBrowser(_args, ctx) {
+        const session = manager.peek(ctx.agentId);
+        if (session && session.paused) return failure('Your browser is paused for the user in the live view. Leave it open; the user hands it back when they\'re done.');
         return text(await manager.close(ctx.agentId) ? 'Closed your browser; its profile and cookies were deleted.' : 'Your browser was not open.');
     }
 

@@ -118,7 +118,8 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
     function sweepIdle() {
         const now = Date.now();
         for (const [agentId, session] of sessions) {
-            if (now - session.lastUsed > idleMs) {
+            // A browser paused for the user stays open until they deal with it.
+            if (!session.paused && now - session.lastUsed > idleMs) {
                 log(`[Browser] Closing ${agentId}'s browser after ${Math.round(idleMs / 60000)} idle minutes.`);
                 close(agentId);
             }
@@ -237,6 +238,25 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
             events.emit('page', session);
         }
         session.agentPage = null;
+        session.paused = null;
+    }
+
+    // A dead link, redirect or parked page: instead of failing and closing, the page
+    // stays open and shown, the user gets control in the live view, and the browser
+    // is kept (no idle close) until they hand it back. page: the tab that hit it.
+    function pause(agentId, page, reason) {
+        const session = sessions.get(agentId);
+        if (!session) return false;
+        if (page && !page.isClosed() && session.page !== page) {
+            if (session.agentPage === page) session.agentPage = null;
+            session.page = page;
+            events.emit('page', session);
+        }
+        session.paused = { reason: String(reason || ''), at: new Date().toISOString(), url: session.page && !session.page.isClosed() ? session.page.url() : '' };
+        session.userControl = true;
+        log(`[Browser] Paused ${agentId}'s browser for you: ${session.paused.reason}`);
+        events.emit('pause', session);
+        return true;
     }
 
     async function close(agentId) {
@@ -268,7 +288,7 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
         profiles.set(String(agentId), dir);
     }
 
-    return { get, peek, workPage, readPage, handBack, has: agentId => sessions.has(agentId), close, closeAll, list, status, isBlocked, events, registerProfile };
+    return { get, peek, workPage, readPage, handBack, pause, has: agentId => sessions.has(agentId), close, closeAll, list, status, isBlocked, events, registerProfile };
 }
 
 module.exports = { createBrowserManager, BrowserUnavailableError };
