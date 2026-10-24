@@ -47,8 +47,10 @@ function sameSite(domain, host) {
     return h === d || h.endsWith(`.${d}`) || d.endsWith(`.${h}`);
 }
 
-// isUserControlled(agentId): true while the user drives that browser in the live view.
-function createBrowserTools({ manager, vault, getProjectDir = () => '', screenshotDir, isUserControlled = () => false, log = console.log }) {
+// While the user drives an agent's browser in the live view, the agent's tools that
+// act (navigate, click, type) use a background tab of that browser (manager.workPage),
+// never the user's tab; reading tools read the user's page (manager.readPage).
+function createBrowserTools({ manager, vault, getProjectDir = () => '', screenshotDir, log = console.log }) {
     const pending = new Map();
 
     function checkUrl(raw) {
@@ -102,7 +104,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
 
     async function navigate({ url, wait_until: waitUntil }, ctx) {
         const target = checkUrl(url);
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.workPage(ctx.agentId);
         let response;
         try {
             response = await page.goto(target.href, { waitUntil: ['load', 'domcontentloaded', 'networkidle'].includes(waitUntil) ? waitUntil : 'load', timeout: NAVIGATION_TIMEOUT_MS });
@@ -120,19 +122,20 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
 
     async function click({ selector, double }, ctx) {
         if (typeof selector !== 'string' || !selector.trim()) throw new ToolError('browser_click needs a selector.');
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.workPage(ctx.agentId);
         const locator = page.locator(selector).first();
         if (double) await locator.dblclick({ timeout: ACTION_TIMEOUT_MS });
         else await locator.click({ timeout: ACTION_TIMEOUT_MS });
-        const session = await manager.get(ctx.agentId);
-        await settle(session.page);
-        return text(`Clicked ${selector}.\n${await pageSummary(session.page, false)}`);
+        // A link that opened a new tab: carry on there.
+        const after = await manager.workPage(ctx.agentId);
+        await settle(after);
+        return text(`Clicked ${selector}.\n${await pageSummary(after, false)}`);
     }
 
     async function fill({ selector, value, submit }, ctx) {
         if (typeof selector !== 'string' || !selector.trim()) throw new ToolError('browser_fill needs a selector.');
         if (typeof value !== 'string') throw new ToolError('browser_fill needs value as a string.');
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.workPage(ctx.agentId);
         const locator = page.locator(selector).first();
         await locator.fill(value, { timeout: ACTION_TIMEOUT_MS });
         if (submit) {
@@ -144,7 +147,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
 
     async function pressKey({ key, selector }, ctx) {
         if (typeof key !== 'string' || !key) throw new ToolError('browser_press_key needs a key, like Enter, Tab, Escape or Control+A.');
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.workPage(ctx.agentId);
         if (selector) await page.locator(selector).first().press(key, { timeout: ACTION_TIMEOUT_MS });
         else await page.keyboard.press(key);
         await settle(page);
@@ -152,7 +155,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
     }
 
     async function getText({ selector, mode, max_chars: maxChars }, ctx) {
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.readPage(ctx.agentId);
         const limit = Math.max(500, Math.min(MAX_TEXT_CHARS, Number(maxChars) || DEFAULT_TEXT_CHARS));
         const locator = page.locator(selector || 'body').first();
         let content;
@@ -165,7 +168,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
     }
 
     async function waitFor({ selector, text: wanted, timeout_seconds: seconds }, ctx) {
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.readPage(ctx.agentId);
         const timeout = Math.max(1, Math.min(60, Number(seconds) || 15)) * 1000;
         if (selector) await page.locator(selector).first().waitFor({ state: 'visible', timeout });
         else if (wanted) await page.getByText(String(wanted)).first().waitFor({ state: 'visible', timeout });
@@ -174,7 +177,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
     }
 
     async function screenshot({ selector, full_page: fullPage, save_as: saveAs }, ctx) {
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.readPage(ctx.agentId);
         const image = selector
             ? await page.locator(selector).first().screenshot({ timeout: ACTION_TIMEOUT_MS })
             : await page.screenshot({ fullPage: Boolean(fullPage), timeout: NAVIGATION_TIMEOUT_MS });
@@ -223,7 +226,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
 
     async function login(id, target, ctx) {
         const credential = vault.useCredential(id);
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.workPage(ctx.agentId);
         const onSite = () => { try { return new URL(page.url()).origin === credential.origin; } catch { return false; } };
         const refuse = where => failure(`Stopped before typing the password: the sign-in page is now on ${where}, not ${credential.origin}. ` +
             'Ask the user to save a login for that site if it is the right one.');
@@ -254,7 +257,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
 
     async function prepareSaveSession({ name }, ctx) {
         if (!manager.has(ctx.agentId)) throw new ToolError('Your browser is not open. Sign in first, then save the session.');
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.readPage(ctx.agentId);
         let host;
         try { host = new URL(page.url()).hostname; } catch { host = ''; }
         if (!host) throw new ToolError('Open the signed-in site first, then save its session.');
@@ -365,14 +368,9 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
         return failure(`${err && err.name || 'Error'}: ${firstLines(err && err.message)}`);
     }
 
-    function userHasControl() {
-        return failure('The user has taken over your browser in the live view. Wait for them to hand it back, then try again, or ask them what they want.');
-    }
-
     async function callTool(name, args = {}, ctx = context()) {
         const tool = TOOLS.find(t => t.name === name);
         if (!tool) return failure(`Unknown tool: ${name}`);
-        if (name !== 'browser_list_credentials' && isUserControlled(ctx.agentId)) return userHasControl();
         try {
             if (!tool.prepare) return await tool.run(args || {}, ctx);
             const { prompt, run } = await tool.prepare(args || {}, ctx);
@@ -391,7 +389,6 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
         const entry = pending.get(String(id || ''));
         pending.delete(String(id || ''));
         if (!entry || entry.expires < Date.now()) return failure('That approval request expired. Call the tool again.');
-        if (approved && isUserControlled(entry.agentId)) return userHasControl();
         if (!approved) {
             log(`[Browser] The user declined ${entry.tool} for ${entry.agentId}.`);
             return text('The user declined this. Do not try to get around it; ask the user what to do instead.');

@@ -5,8 +5,10 @@
 
 // Words that open a known site instead of a search.
 const SHORTCUTS = {
-    outlier: 'https://app.outlier.bet/',
-    'outlier.bet': 'https://app.outlier.bet/',
+    // Outlier's sign-in portal; signed in, it goes on to the app.
+    outlier: 'https://app.outlier.bet/login',
+    'outlier.bet': 'https://app.outlier.bet/login',
+    'outlier login': 'https://app.outlier.bet/login',
     espn: 'https://www.espn.com/',
     'the odds api': 'https://the-odds-api.com/',
     'odds api': 'https://the-odds-api.com/'

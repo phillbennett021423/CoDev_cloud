@@ -25,7 +25,7 @@ function createBrowserService({ dataDir, profileRoot = path.join(os.tmpdir(), 'c
     const vault = createCredentialVault({ dir: dataDir, safeStorage, passphrase, log });
     const live = createLiveView({ manager, isBlockedUrl: url => manager.isBlocked(url), log });
     const tools = createBrowserTools({ manager, vault, getProjectDir, screenshotDir: path.join(dataDir, 'browser-screenshots'),
-        isUserControlled: live.isUserControlled, log });
+        log });
     return { ...tools, live, manager };
 }
 

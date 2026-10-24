@@ -4,8 +4,9 @@
 // The picture comes straight from Chromium over the DevTools protocol
 // (Page.startScreencast sends a JPEG each time the page repaints), so it needs no
 // VNC, X server or Docker: the browsers run on this computer, not in a container.
-// While the user has control, the agent's browser tools wait (browser-tools.js asks
-// isUserControlled), so the two never fight over the page.
+// While the user has control, the agent's browser tools work in a background tab of
+// the same browser (browser-manager.js workPage), so the two never fight over a page;
+// handing back shows the agent's tab.
 const { resolveAddress, checkPage, advice } = require('./page-check');
 
 const SCREENCAST = { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 };
@@ -192,6 +193,7 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
     function setControl(session, userControl) {
         if (session.userControl === userControl) return;
         session.userControl = userControl;
+        if (!userControl) manager.handBack(session);
         log(`[Live] ${userControl ? 'You took over' : 'You handed back'} ${session.agentId}'s browser.`);
         send(session.agentId, { type: 'state', agentId: session.agentId, open: true, userControl });
         broadcastSessions();
@@ -205,7 +207,10 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
         const id = String(agentId || '');
         const { op } = req;
         let session = manager.peek(id);
+        const fresh = !session;
         if (!session && (op === 'open' || op === 'navigate') && id) session = await manager.get(id);
+        // "open" with a url: go there only if this just opened the browser (else keep the user's page).
+        if (op === 'open' && req.url && fresh && session) return control(id, { op: 'navigate', url: req.url });
         if (!session) throw new LiveError(`${agentId || 'That agent'} has no browser open.`);
         if (op === 'release') { setControl(session, false); return { ok: true }; }
         setControl(session, true);

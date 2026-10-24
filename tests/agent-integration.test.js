@@ -356,17 +356,24 @@ test("the agent's card shows its browser live, and the user can drive it from th
     // Clicking and typing on the card drive the agent's browser and take it over.
     await viewport.click();
     await page.keyboard.type('Hi');
+    await page.keyboard.press('Enter'); // on the focused button, Enter also clicks it
     await page.waitForFunction(() => /Hand back/.test(document.getElementById('agentViewportControl').textContent), null, { timeout: 10000 });
-    const paused = await ctx.tool('browser_get_text', { selector: '#out', mode: 'text' }, agentId);
-    assert.match(paused.text, /taken over your browser/);
+    // While the user drives, the agent can still read the page (what it does goes to a
+    // background tab: tests/browser-session.test.js).
+    let seen = '';
+    for (let i = 0; i < 20 && !/click Hi\[Enter\]/.test(seen); i++) {
+        seen = (await ctx.tool('browser_get_text', { selector: '#out', mode: 'text' }, agentId)).text;
+        if (!/click Hi\[Enter\]/.test(seen)) await new Promise(r => setTimeout(r, 250));
+    }
+    assert.match(seen, /click Hi\[Enter\]/, "the agent reads the user's page");
     await page.click('#agentViewportControl');
     await page.waitForFunction(() => /Take over/.test(document.getElementById('agentViewportControl').textContent), null, { timeout: 10000 });
     let text = '';
-    for (let i = 0; i < 20 && !/click Hi$/.test(text); i++) {
+    for (let i = 0; i < 20 && !/click Hi\[Enter\]/.test(text); i++) {
         text = (await ctx.tool('browser_get_text', { selector: '#out', mode: 'text' }, agentId)).text;
-        if (!/click Hi$/.test(text)) await new Promise(r => setTimeout(r, 250));
+        if (!/click Hi\[Enter\]/.test(text)) await new Promise(r => setTimeout(r, 250));
     }
-    assert.match(text, /click Hi$/);
+    assert.match(text, /click Hi\[Enter\]/);
     assert.deepEqual(errors, []);
 });
 
@@ -378,7 +385,7 @@ const DRIVE_HTML = `<!doctype html>
   <script>
     const out = document.getElementById('out');
     document.getElementById('target').addEventListener('click', () => { out.textContent += 'click '; });
-    document.addEventListener('keydown', e => { if (e.key.length === 1) out.textContent += e.key; });
+    document.addEventListener('keydown', e => { if (e.key.length === 1) out.textContent += e.key; if (e.key === 'Enter') out.textContent += '[Enter]'; });
   </script>
 </body></html>
 `;

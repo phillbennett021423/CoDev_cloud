@@ -8,8 +8,9 @@
 // keeps ONE browser profile of its own so the Outlier sign-in carries over. It
 // lives in this user's app-data folder (never the repo) and no agent can drive it.
 // When the browser service is running, that browser is its "@outlier" session:
-// the user sees it in the live view and can take over to browse or search, and
-// a scrape (or "Read this page") takes it back and reads whatever is open.
+// the user sees it in the live view and can browse or search in it for as long as
+// they like. "Read this page" reads whatever the user has open without taking it
+// over, and a scrape runs in a background tab while the user is browsing.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -23,7 +24,7 @@ const SESSION = '@outlier';
 const ANALYTICS = path.join(__dirname, '..', '..', 'tools', 'outlier-analytics', 'analyze.py');
 const MARKET = path.join(__dirname, '..', '..', 'tools', 'outlier-analytics', 'market_data.py');
 const DEFAULT_CONFIG = {
-    signInUrl: 'https://app.outlier.bet/',
+    signInUrl: 'https://app.outlier.bet/login',
     // kind: props (prop cards and boards), odds (odds boards), slips or history (settled entries).
     pages: [{ kind: 'props', url: 'https://app.outlier.bet/' }],
     // { row: 'css', fields: { player, market, line, odds, hitRates } } when the
@@ -38,6 +39,21 @@ const DEFAULT_CONFIG = {
     publicBoards: []
 };
 const SIGN_IN_WAIT_MS = 10 * 60 * 1000;
+
+// outlier.com, outlier.ai and look-alikes are other companies or parked domains,
+// not Outlier's betting app: saved addresses on them go back to the real ones.
+const OUTLIER_HOST = /(^|\.)outlier\.bet$/i;
+function isWrongOutlierHost(value) {
+    try {
+        const host = new URL(value).hostname;
+        return /outlier/i.test(host) && !OUTLIER_HOST.test(host);
+    } catch { return false; }
+}
+function fixOutlierUrls(cfg) {
+    if (isWrongOutlierHost(cfg.signInUrl)) cfg.signInUrl = DEFAULT_CONFIG.signInUrl;
+    if (Array.isArray(cfg.pages)) cfg.pages = cfg.pages.map(p => (isWrongOutlierHost(p.url) ? { ...p, url: DEFAULT_CONFIG.pages[0].url } : p));
+    return cfg;
+}
 
 function serverDataDir() {
     if (process.platform === 'win32' && process.env.APPDATA) return path.join(process.env.APPDATA, 'codev-server');
@@ -123,7 +139,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     if (shared) shared.manager.registerProfile(SESSION, files.profile);
     const closeShared = () => (shared ? shared.manager.close(SESSION).catch(() => false) : Promise.resolve(false));
 
-    const config = () => ({ ...DEFAULT_CONFIG, ...readJson(files.config, {}) });
+    const config = () => fixOutlierUrls({ ...DEFAULT_CONFIG, ...readJson(files.config, {}) });
 
     function setConfig(update = {}) {
         const next = config();
@@ -225,13 +241,20 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     }
 
     // Visits each configured page with the saved profile and collects its text.
-    // The shared "@outlier" browser when there is one (left open for the live view,
-    // taken back from the user), else a browser of its own that closes after.
+    // The shared "@outlier" browser when there is one (left open for the live view),
+    // else a browser of its own that closes after. While the user is browsing it,
+    // the scrape runs in a background tab and closes it after, so the user's tab and
+    // control are never touched.
     async function openForVisit(cfg) {
         if (shared && !cfg.showBrowser) {
-            if (shared.live.isUserControlled(SESSION)) await shared.live.control(SESSION, { op: 'release' }).catch(() => {});
-            const session = await shared.manager.get(SESSION);
-            return { page: session.page, done: async () => {} };
+            const page = await shared.manager.workPage(SESSION);
+            const session = shared.manager.peek(SESSION);
+            const background = session && page === session.agentPage;
+            return { page, done: async () => {
+                if (!background) return;
+                if (session.agentPage === page) session.agentPage = null;
+                await page.close().catch(() => {});
+            } };
         }
         await closeShared();
         const context = await launch({ headless: !cfg.showBrowser });
