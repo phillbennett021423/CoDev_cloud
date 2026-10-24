@@ -59,6 +59,9 @@ function createService(config = {}, { log = console.log } = {}) {
                 }
             }
         },
+        // For other services: the same browsers and live view (the Outlier
+        // pipeline keeps its signed-in browser here so the user can see and drive it).
+        shared: { manager: browser.manager, live: browser.live },
         status: () => browser.status(),
         close: () => browser.close()
     };

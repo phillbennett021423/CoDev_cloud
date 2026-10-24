@@ -6,13 +6,19 @@
 //
 // Unlike the agents' browsers, which start empty and are deleted, this pipeline
 // keeps ONE browser profile of its own so the Outlier sign-in carries over. It
-// lives in this user's app-data folder (never the repo), only ever opens the
-// pages in config.json, and no agent can drive it.
+// lives in this user's app-data folder (never the repo) and no agent can drive it.
+// When the browser service is running, that browser is its "@outlier" session:
+// the user sees it in the live view and can take over to browse or search, and
+// a scrape (or "Read this page") takes it back and reads whatever is open.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { collectPage, parseCollected, propId } = require('./extract');
+const { checkPage, advice } = require('../../desktop/browser/page-check');
+
+// The signed-in browser's id in the shared browser service. Agents' ids never start with @.
+const SESSION = '@outlier';
 
 const ANALYTICS = path.join(__dirname, '..', '..', 'tools', 'outlier-analytics', 'analyze.py');
 const MARKET = path.join(__dirname, '..', '..', 'tools', 'outlier-analytics', 'market_data.py');
@@ -90,7 +96,7 @@ function sameLeg(a, b) {
 }
 
 function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier'), playwright = loadPlaywright(), python, oddsApiKey = process.env.ODDS_API_KEY,
-    blockedPorts = [3000, Number(process.env.PORT) || 3000, 8787], log = console.log } = {}) {
+    blockedPorts = [3000, Number(process.env.PORT) || 3000, 8787], shared = null, log = console.log } = {}) {
     const files = {
         profile: path.join(dataDir, 'profile'),
         config: path.join(dataDir, 'config.json'),
@@ -113,6 +119,9 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // profile can't be open twice. signedIn: what the last visit found (null = unknown).
     const state = { busy: null, signedIn: null, lastError: null, lastRun: null, signInContext: null };
     const blocked = new Set(blockedPorts.map(String));
+    // shared: { manager, live } from the browser service, when it's running.
+    if (shared) shared.manager.registerProfile(SESSION, files.profile);
+    const closeShared = () => (shared ? shared.manager.close(SESSION).catch(() => false) : Promise.resolve(false));
 
     const config = () => ({ ...DEFAULT_CONFIG, ...readJson(files.config, {}) });
 
@@ -186,6 +195,8 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         claim('signin');
         let context;
         try {
+            // The profile can only be open once: the live view's copy closes.
+            await closeShared();
             context = await launch({ headless: false });
         } catch (err) {
             state.busy = null;
@@ -214,13 +225,26 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     }
 
     // Visits each configured page with the saved profile and collects its text.
+    // The shared "@outlier" browser when there is one (left open for the live view,
+    // taken back from the user), else a browser of its own that closes after.
+    async function openForVisit(cfg) {
+        if (shared && !cfg.showBrowser) {
+            if (shared.live.isUserControlled(SESSION)) await shared.live.control(SESSION, { op: 'release' }).catch(() => {});
+            const session = await shared.manager.get(SESSION);
+            return { page: session.page, done: async () => {} };
+        }
+        await closeShared();
+        const context = await launch({ headless: !cfg.showBrowser });
+        return { page: context.pages()[0] || await context.newPage(), done: () => context.close().catch(() => {}) };
+    }
+
     async function visitPages({ snapshot = false } = {}) {
         const cfg = config();
-        const context = await launch({ headless: !cfg.showBrowser });
+        const browser = await openForVisit(cfg);
         const pages = [];
         const saved = [];
         try {
-            const page = context.pages()[0] || await context.newPage();
+            const page = browser.page;
             for (const target of cfg.pages) {
                 const api = [];
                 const onResponse = async response => {
@@ -229,7 +253,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     try { api.push({ url: response.url(), body: await response.json() }); } catch { /* not JSON after all */ }
                 };
                 page.on('response', onResponse);
-                await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+                await gotoChecked(page, target.url);
                 await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
                 await page.waitForTimeout(cfg.settleMs);
                 // Boards load more rows as they scroll.
@@ -263,9 +287,50 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 }
             }
         } finally {
-            await context.close().catch(() => {});
+            await browser.done();
         }
         return { pages, saved };
+    }
+
+    // Opens url and fails with a plain reason when it's a dead link or a parked
+    // "domain for sale" page instead of the site.
+    async function gotoChecked(page, url) {
+        let response;
+        try { response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }); } catch (err) {
+            throw new Error(`Couldn't open ${url}: ${advice(await checkPage(page, null, { error: err }), url)}`);
+        }
+        const check = await checkPage(page, response);
+        if (!check.ok) throw new Error(`${url} isn't a working page. ${advice(check, url)} Fix it under Pages in the Outlier view.`);
+        return response;
+    }
+
+    // Reads the page open in a browser right now (the user's own browsing in the
+    // live view, or an agent's browser), adds its props to the latest read and
+    // re-scores. agentId defaults to the signed-in Outlier browser.
+    async function readOpenPage({ agentId = SESSION, kind = 'props', merge = true } = {}) {
+        if (!shared) throw new Error('Reading an open page needs the browser service (playwright-core).');
+        if (merge && state.busy && state.busy !== 'signin') throw new Error(`The Outlier browser is busy (${state.busy}). Try again in a moment.`);
+        const session = shared.manager.peek(String(agentId));
+        if (!session || !session.page || session.page.isClosed()) {
+            throw new Error(agentId === SESSION ? 'The Outlier browser isn\'t open. Open it in the live view first, or run a scrape.' : `${agentId} has no browser open.`);
+        }
+        const page = session.page;
+        const collected = await page.evaluate(collectPage, config().selectors || null);
+        const pageKind = ['props', 'odds', 'slips', 'history'].includes(kind) ? kind : 'props';
+        const parsed = parseCollected([{ kind: pageKind, url: page.url(), collected }]);
+        if (!merge) return parsed;
+        const previous = readJson(files.scrape, null);
+        const byId = new Map(((previous && previous.props) || []).map(p => [p.id, p]));
+        for (const prop of parsed.props) byId.set(prop.id, prop);
+        writeJson(files.scrape, { scrapedAt: new Date().toISOString(), source: 'outlier', props: [...byId.values()],
+            results: [...((previous && previous.results) || []), ...parsed.results],
+            pages: [...((previous && previous.pages) || []), ...parsed.pages] });
+        const settledNow = settleFromResults(parsed.results);
+        if (settledNow) await learn();
+        const result = await analyze();
+        recordPrices(result);
+        state.lastRun = new Date().toISOString();
+        return { ...parsed, settled: settledNow };
     }
 
     // ---- free market odds ----
@@ -309,7 +374,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             const page = await context.newPage();
             for (const url of urls) {
                 try {
-                    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+                    await gotoChecked(page, url);
                     await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
                     await page.waitForTimeout(config().settleMs);
                     const collected = await page.evaluate(collectPage, null);
@@ -557,6 +622,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
 
     async function forgetSignIn() {
         if (state.busy) throw new Error('Close the Outlier window first.');
+        await closeShared();
         fs.rmSync(files.profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
         state.signedIn = null;
         return { ok: true };
@@ -567,6 +633,8 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         return {
             busy: state.busy,
             signedIn: state.signedIn,
+            // The live view's id for the signed-in browser (null without the browser service).
+            liveSession: shared ? SESSION : null,
             profileSaved: fs.existsSync(files.profile) && fs.readdirSync(files.profile).length > 0,
             lastError: state.lastError,
             scrapedAt: scrapeFile && scrapeFile.scrapedAt,
@@ -587,6 +655,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     }
 
     async function close() {
+        await closeShared();
         if (state.signInContext) await state.signInContext.close().catch(() => {});
     }
 
@@ -595,7 +664,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         return { available: true, detail: state.busy ? `busy: ${state.busy}` : state.signedIn === false ? 'signed out of Outlier' : 'ready' };
     }
 
-    return { signIn, scrape, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
+    return { signIn, scrape, readOpenPage, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
         state: snapshotState, status, close, files, settleFromResults };
 }
 
@@ -609,16 +678,35 @@ const safe = fn => async (req, res, body) => {
     try { sendJson(res, 200, await fn(body || {})); } catch (err) { sendJson(res, 400, { error: err.message }); }
 };
 
-function createService(config = {}, { log = console.log, pipeline } = {}) {
-    const outlier = pipeline || createOutlierPipeline({ log, oddsApiKey: (config.keys && config.keys.oddsApi) || undefined });
+function createService(config = {}, { log = console.log, pipeline, services = {} } = {}) {
+    const shared = (services.browser && services.browser.shared) || null;
+    const outlier = pipeline || createOutlierPipeline({ log, shared, oddsApiKey: (config.keys && config.keys.oddsApi) || undefined });
     return {
         name: 'outlier',
         tools: [{
             name: 'outlier_slips',
             description: 'The latest Outlier entries CoDev recommends (4- and 6-leg power/flex), with each leg\'s odds, L5 hit rate and estimated hit chance. Read-only; the user runs the scrape from the Outlier view.',
             inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+        }, {
+            name: 'outlier_extract_page',
+            description: 'Runs the Outlier DOM extraction on the page open in YOUR browser (open it first with browser_navigate) and returns the props it finds as JSON: player, market, line, side, odds by book, hit rates. With add_to_analysis true, they are added to the latest Outlier read and the entries are re-scored.',
+            inputSchema: { type: 'object', properties: {
+                kind: { type: 'string', enum: ['props', 'odds', 'slips', 'history'], description: 'What the page shows (default props).' },
+                add_to_analysis: { type: 'boolean', description: 'Add the props to the Outlier analysis (default false).' }
+            }, additionalProperties: false }
         }],
-        async callTool(name) {
+        async callTool(name, args = {}, ctx = {}) {
+            if (name === 'outlier_extract_page') {
+                // The agent's own browser only, never the signed-in one.
+                const agentId = String(ctx.agentId || 'default').replace(/^@+/, '') || 'default';
+                try {
+                    const parsed = await outlier.readOpenPage({ agentId, kind: args.kind, merge: args.add_to_analysis === true });
+                    const text = JSON.stringify({ props: parsed.props, results: parsed.results, pages: parsed.pages }, null, 1);
+                    return { content: [{ type: 'text', text: text.length > 60000 ? `${text.slice(0, 60000)}\n… (cut)` : text }] };
+                } catch (err) {
+                    return { content: [{ type: 'text', text: err.message }], isError: true };
+                }
+            }
             if (name !== 'outlier_slips') return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
             const result = outlier.state().result;
             if (!result) return { content: [{ type: 'text', text: 'No Outlier analysis yet. Ask the user to run it from the Outlier view.' }] };
@@ -630,6 +718,11 @@ function createService(config = {}, { log = console.log, pipeline } = {}) {
         routes: {
             'GET /outlier/state': (req, res) => sendJson(res, 200, outlier.state()),
             'POST /outlier/signin': safe(() => outlier.signIn()),
+            // The page open in the live view right now (default the signed-in Outlier browser).
+            'POST /outlier/read-page': safe(async body => {
+                const parsed = await outlier.readOpenPage({ agentId: body.agentId || outlier.session, kind: body.kind });
+                return { ...outlier.state(), read: { props: parsed.props.length, pages: parsed.pages } };
+            }),
             'POST /outlier/scrape': safe(async () => { await outlier.scrape(); return outlier.state(); }),
             'POST /outlier/analyze': safe(async () => { await outlier.analyze(); return outlier.state(); }),
             'POST /outlier/snapshot': safe(() => outlier.snapshot()),

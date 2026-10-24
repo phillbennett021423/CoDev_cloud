@@ -4,7 +4,8 @@
 // POST /agent-tools as MCP JSON-RPC (initialize, tools/list, tools/call), the
 // same messages the Windows app's built-in tools take over IPC.
 //
-// A service module exports createService(config, { log }) returning
+// A service module exports createService(config, { log, services }) returning
+// (services: the ones started before it, by name)
 //   { name, tools: [{ name, description, inputSchema }] (or async listTools()),
 //     callTool(name, args, ctx) -> MCP CallToolResult,
 //     handleRequest?(method, pathname, query, body) -> { status, body } | null,
@@ -41,7 +42,9 @@ async function loadServices(config, { log = console.log, specs = SERVICES } = {}
             continue;
         }
         try {
-            const service = await mod.createService(config, { log: line => log(`[${spec.name}] ${line}`) });
+            // services: the ones already started, by name (outlier uses browser's).
+            const started = Object.fromEntries(services.map(s => [s.name, s]));
+            const service = await mod.createService(config, { log: line => log(`[${spec.name}] ${line}`), services: started });
             services.push(service);
         } catch (err) {
             skipped.push({ name: spec.name, detail: `failed to start: ${err.message}` });

@@ -6,6 +6,8 @@
 // VNC, X server or Docker: the browsers run on this computer, not in a container.
 // While the user has control, the agent's browser tools wait (browser-tools.js asks
 // isUserControlled), so the two never fight over the page.
+const { resolveAddress, checkPage, advice } = require('./page-check');
+
 const SCREENCAST = { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 };
 const MAX_BACKLOG = 300;
 const MAX_TEXT = 500;
@@ -196,10 +198,15 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
     }
 
     // The user's own input. Any input takes control from the agent until "release".
+    // "open" and "navigate" also start the browser when it isn't open yet, so the
+    // user can browse in an agent's browser (or the Outlier one) before the agent
+    // does, and the agent picks up on that same page when it's handed back.
     async function control(agentId, req = {}) {
-        const session = manager.peek(String(agentId || ''));
-        if (!session) throw new LiveError(`${agentId || 'That agent'} has no browser open.`);
+        const id = String(agentId || '');
         const { op } = req;
+        let session = manager.peek(id);
+        if (!session && (op === 'open' || op === 'navigate') && id) session = await manager.get(id);
+        if (!session) throw new LiveError(`${agentId || 'That agent'} has no browser open.`);
         if (op === 'release') { setControl(session, false); return { ok: true }; }
         setControl(session, true);
         session.lastUsed = Date.now();
@@ -209,7 +216,7 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
         const y = Number(req.y) || 0;
         const button = ['left', 'right', 'middle'].includes(req.button) ? req.button : 'left';
         switch (op) {
-            case 'takeover': break;
+            case 'takeover': case 'open': break;
             case 'move': await page.mouse.move(x, y); break;
             case 'down': await page.mouse.move(x, y); await page.mouse.down({ button }); break;
             case 'up': await page.mouse.move(x, y); await page.mouse.up({ button }); break;
@@ -218,11 +225,24 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
             case 'keyup': await page.keyboard.up(String(req.key)); break;
             case 'text': await page.keyboard.insertText(clip(req.text, 5000)); break;
             case 'navigate': {
+                // An address, a bare domain or words to search for.
                 let url;
-                try { url = new URL(String(req.url || '')); } catch { throw new LiveError('Type a full address, like https://example.com.'); }
-                if (!/^https?:$/.test(url.protocol) || isBlockedUrl(url)) throw new LiveError(`Agents' browsers can't open ${url.href}.`);
-                await page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
-                break;
+                try { url = new URL(resolveAddress(req.url).url); } catch (err) { throw new LiveError(err.message); }
+                if (url.href !== 'about:blank' && (!/^https?:$/.test(url.protocol) || isBlockedUrl(url))) throw new LiveError(`Agents' browsers can't open ${url.href}.`);
+                let response = null;
+                let check;
+                try {
+                    response = await page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                    check = url.href === 'about:blank' ? { ok: true } : await checkPage(page, response);
+                } catch (err) {
+                    check = await checkPage(page, null, { error: err });
+                }
+                if (!check.ok) {
+                    const warning = advice(check, url.href);
+                    send(id, { type: 'warning', agentId: id, text: warning, url: page.url() });
+                    return { ok: true, url: page.url(), warning };
+                }
+                return { ok: true, url: page.url() };
             }
             case 'back': await page.goBack({ timeout: 10000 }).catch(() => {}); break;
             case 'forward': await page.goForward({ timeout: 10000 }).catch(() => {}); break;

@@ -1,7 +1,9 @@
 // Headless Chromium for the agents. Every agent gets its own browser: its own
 // user data folder (profile, cache, cookies, local storage), created in a
 // temporary folder when the agent first opens a page and deleted when the session
-// closes, so nothing one agent signs in to is visible to another.
+// closes, so nothing one agent signs in to is visible to another. The one
+// exception is a browser given a kept profile with registerProfile (the Outlier
+// pipeline's), whose sign-ins carry over.
 // The browser comes from playwright-core. It uses, in order: CODEV_BROWSER_PATH,
 // Playwright's own Chromium (npx playwright install chromium), then the Edge or
 // Chrome already installed on this computer.
@@ -47,6 +49,9 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
 
     const blocked = blockedOrigins.map(origin => new URL(origin)).map(u => ({ port: u.port || (u.protocol === 'https:' ? '443' : '80'), loopback: isLoopback(u.hostname), host: u.hostname }));
     const sessions = new Map();
+    // agentId -> a profile folder of its own that is kept, not a temporary one
+    // (the Outlier pipeline's signed-in profile). See registerProfile.
+    const profiles = new Map();
     // 'open' (session), 'page' (session, when the agent's working page changes) and
     // 'close' (agentId), for the live view.
     const events = new EventEmitter();
@@ -123,20 +128,32 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
 
     async function open(agentId) {
         if (sessions.size >= maxSessions) {
-            const oldest = [...sessions.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
+            const byAge = [...sessions.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+            const oldest = byAge.find(([id]) => !profiles.has(id)) || byAge[0];
             log(`[Browser] ${maxSessions} browsers are open; closing ${oldest[0]}'s.`);
             await close(oldest[0]);
         }
-        fs.mkdirSync(ownRoot, { recursive: true });
-        const dir = fs.mkdtempSync(path.join(ownRoot, `${agentId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40)}-`));
+        const kept = profiles.get(agentId);
+        let dir;
+        if (kept) {
+            fs.mkdirSync(kept, { recursive: true });
+            dir = kept;
+        } else {
+            fs.mkdirSync(ownRoot, { recursive: true });
+            dir = fs.mkdtempSync(path.join(ownRoot, `${agentId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40)}-`));
+        }
+        const drop = () => { if (!kept) removeDir(dir); };
         let context;
         try { context = await launch(dir); } catch (err) {
-            removeDir(dir);
+            drop();
+            if (kept && /ProcessSingleton|profile.*in use|user data directory is already in use/i.test(err.message)) {
+                throw new BrowserUnavailableError(`${agentId}'s browser profile is open in another window. Close that window first.`);
+            }
             throw err;
         }
         await context.route(url => isBlocked(url), route => route.abort('blockedbyclient'));
         // userControl: the user took over in the live view, so the agent's tools wait.
-        const session = { agentId, dir, context, page: context.pages()[0] || await context.newPage(), lastUsed: Date.now(), startedAt: Date.now(), userControl: false };
+        const session = { agentId, dir, kept: Boolean(kept), context, page: context.pages()[0] || await context.newPage(), lastUsed: Date.now(), startedAt: Date.now(), userControl: false };
         // A link that opens a new tab becomes the page the agent is working on.
         context.on('page', page => {
             session.page = page;
@@ -151,7 +168,7 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
         context.on('close', () => {
             if (sessions.get(agentId) !== session) return;
             sessions.delete(agentId);
-            removeDir(dir);
+            drop();
             events.emit('close', agentId);
         });
         sessions.set(agentId, session);
@@ -184,7 +201,7 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
         if (!session) return false;
         sessions.delete(agentId);
         try { await session.context.close(); } catch { /* already gone */ }
-        removeDir(session.dir);
+        if (!session.kept) removeDir(session.dir);
         events.emit('close', agentId);
         return true;
     }
@@ -202,7 +219,13 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
     // An open session, without starting one or counting as the agent's use.
     const peek = agentId => sessions.get(agentId) || null;
 
-    return { get, peek, has: agentId => sessions.has(agentId), close, closeAll, list, status, isBlocked, events };
+    // agentId's browser keeps its profile in dir (cookies and sign-ins survive
+    // closing it and restarting CoDev). Takes effect the next time it opens.
+    function registerProfile(agentId, dir) {
+        profiles.set(String(agentId), dir);
+    }
+
+    return { get, peek, has: agentId => sessions.has(agentId), close, closeAll, list, status, isBlocked, events, registerProfile };
 }
 
 module.exports = { createBrowserManager, BrowserUnavailableError };

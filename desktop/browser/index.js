@@ -26,7 +26,7 @@ function createBrowserService({ dataDir, profileRoot = path.join(os.tmpdir(), 'c
     const live = createLiveView({ manager, isBlockedUrl: url => manager.isBlocked(url), log });
     const tools = createBrowserTools({ manager, vault, getProjectDir, screenshotDir: path.join(dataDir, 'browser-screenshots'),
         isUserControlled: live.isUserControlled, log });
-    return { ...tools, live };
+    return { ...tools, live, manager };
 }
 
 module.exports = { createBrowserService, defaultBlockedOrigins };
