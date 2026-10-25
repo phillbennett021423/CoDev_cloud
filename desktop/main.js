@@ -97,6 +97,7 @@ app.whenReady().then(() => {
             liveWatches.delete(sender.id);
             return { ok: true };
         }
+        if (req.op === 'forget-signins') return browserTools.manager.forgetSignIns(req.agentId || null);
         try { return await browserTools.live.control(req.agentId, req.control || {}); } catch (err) { return { error: err.message }; }
     });
 

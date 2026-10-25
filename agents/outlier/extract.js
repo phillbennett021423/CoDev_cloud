@@ -58,6 +58,14 @@ function collectPage(selectors) {
         if (!inner) out.cards.push(text(el));
     }
 
+    // Injury report lines ("Joel Embiid (PHI) - Out", "Out: Joel Embiid"): short blocks
+    // with an injury status and no price.
+    const STATUS = /\b(?:OUT|Out|Ruled Out|ruled out|Inactive|INACTIVE)\b/;
+    out.injuries = [...document.body.querySelectorAll('div, li, tr, span, p')]
+        .filter(el => { const t = text(el); return t.length > 0 && t.length <= 160 && STATUS.test(t) && !ODDS.test(t); })
+        .filter((el, _, all) => !all.some(other => other !== el && el.contains(other)))
+        .map(text);
+
     // Settled entries on a history page: blocks that say won/lost/hit/miss.
     const RESULT = /\b(won|lost|win|loss|hit|miss(ed)?|push|void|cashed)\b|[✓✔✗✘]/i;
     out.results = [...document.body.querySelectorAll('div, li, tr, article')]
@@ -221,6 +229,30 @@ function insights(text) {
     return out;
 }
 
+// Players ruled out, from an injury report line or a prop card ("Teammate out:
+// Joel Embiid"). team: the card's team, for a teammate named without one.
+const NAME = "([A-Z][A-Za-z.'\\-]+(?:\\s+[A-Z][A-Za-z.'\\-]+){1,3})";
+const INJURY_RES = [
+    new RegExp(`${NAME}\\s*(?:\\(([A-Z]{2,4})\\))?\\s*[-–:|]?\\s*\\(?(OUT|Out|Ruled Out|ruled out|Inactive|INACTIVE|Doubtful|Questionable|GTD)\\b`, 'g'),
+    new RegExp(`\\b(?:teammates?\\s+)?(?:OUT|Out|out|Ruled out|ruled out|Inactive)\\s*[:\\-]\\s*${NAME}(?:\\s*\\(([A-Z]{2,4})\\))?`, 'g')
+];
+function injuries(raw, team = null) {
+    const text = String(raw || '');
+    const found = [];
+    const usage = text.match(/\busg%?\s*[:=]?\s*(\d{1,2}(?:\.\d+)?)\s*%?/i);
+    for (const [i, re] of INJURY_RES.entries()) {
+        for (const m of text.matchAll(re)) {
+            const player = m[1].replace(/^(?:Teammates?|Out|Injury|Status)\s+/i, '').trim();
+            const status = i === 0 ? m[3].toLowerCase() : 'out';
+            if (!/\s/.test(player) || /^(over|under|more|less)\b/i.test(player)) continue;
+            const entry = { player, team: m[2] || (/teammate/i.test(text) ? team : null), status: status === 'ruled out' ? 'out' : status };
+            if (usage && found.length === 0 && i === 0 && !LINE_RE.test(text)) entry.usage = Number(usage[1]) / 100;
+            found.push(entry);
+        }
+    }
+    return found;
+}
+
 function propId(p) {
     return [p.player, p.market, p.line, p.side].map(v => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9.]+/g, '')).join('|');
 }
@@ -249,6 +281,9 @@ function parseText(raw, page = {}, { requireOdds = true } = {}) {
     };
     const found = insights(text);
     if (Object.keys(found).length) prop.insights = found;
+    const out = injuries(text, prop.team);
+    // "Teammate out" on a card whose team isn't shown: the out player is this player's teammate.
+    if (out.length) prop.injuries = out.map(o => (!o.team && /teammate/i.test(text) ? { ...o, teammateOf: prop.player } : o));
     // Prices: a line naming a book is that book's; "consensus"/"market" is the consensus.
     for (const l of lines) {
         const prices = [...l.matchAll(PRICE_RE)].map(m => toPrice(m[1])).filter(v => v !== null);
@@ -378,17 +413,28 @@ function parseCollected(pages) {
         seen.hitRates = { ...prop.hitRates, ...seen.hitRates };
     };
     const summary = [];
+    const ruledOut = new Map();
+    const addInjury = entry => {
+        const key = entry.player.toLowerCase();
+        ruledOut.set(key, { ...ruledOut.get(key), ...Object.fromEntries(Object.entries(entry).filter(([, v]) => v != null)) });
+    };
     for (const page of pages) {
         const c = page.collected || {};
         const before = byId.size;
         (c.configured || []).forEach(item => add(parseConfigured(item, c)));
         (c.tables || []).forEach(table => parseTable(table, c).forEach(add));
         (c.cards || []).forEach(card => add(parseText(card, c)));
+        (c.injuries || []).forEach(t => injuries(t).forEach(addInjury));
         if (page.kind === 'history' || page.kind === 'slips') (c.results || []).map(parseResult).filter(Boolean).forEach(r => results.push(r));
         summary.push({ kind: page.kind, url: c.url || page.url, title: c.title || '', props: byId.size - before,
             tables: (c.tables || []).length, cards: (c.cards || []).length });
     }
-    return { props: [...byId.values()], results, pages: summary };
+    for (const prop of byId.values()) {
+        (prop.injuries || []).forEach(addInjury);
+        delete prop.injuries;
+    }
+    // A player with a prop on the board is playing, unless a report says otherwise.
+    return { props: [...byId.values()], results, pages: summary, injuries: [...ruledOut.values()] };
 }
 
-module.exports = { insights, collectPage, parseCollected, parseText, parseTable, parseResult, propId, findMarket };
+module.exports = { insights, injuries, collectPage, parseCollected, parseText, parseTable, parseResult, propId, findMarket };

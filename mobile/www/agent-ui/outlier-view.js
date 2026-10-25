@@ -47,6 +47,8 @@ div.ov-why { font-size: 0.78rem; }
 .ov-pill.anchor { background: var(--accent-glow); color: var(--accent); }
 .ov-odds { font-size: 1.15rem; font-weight: bold; color: var(--accent); }
 .ov-ticket { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-glow); }
+.ov-pill.sharp { background: var(--accent); color: var(--bg-dark); }
+.ov-pill.vac { background: rgba(168,85,247,0.15); color: #c084fc; }
 .ov-roll { font-family: monospace; white-space: nowrap; }
 .ov-mode { display: inline-flex; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
 .ov-mode button { background: var(--bg-dark); color: var(--text-muted); border: none; padding: 5px 10px; cursor: pointer; font-size: 0.78rem; }
@@ -99,11 +101,14 @@ div.ov-why { font-size: 0.78rem; }
         const roll = (m.rolling || []).map(w => `${w.games}g ${w.avg}`).join(" · ");
         const tier = l.tier === "variance" ? el("span", { class: "ov-pill var", title: (l.varianceReasons || []).join("; "), text: "variance" })
             : l.tier === "anchor" ? el("span", { class: "ov-pill anchor", text: "high floor" }) : null;
+        const div = m.divergence;
+        const orphan = div && div.orphaned ? el("span", { class: "ov-pill sharp", title: `Sharp books ${price(div.sharpPrice)} (no-vig ${pct(div.sharpFair, 1)}) vs ${price(div.softPrice)}${div.softBook ? ` at ${div.softBook}` : ""}: ${div.gap >= 0 ? "+" : ""}${pct(div.gap, 1)} edge`, text: `sharp ${price(div.sharpPrice)}` }) : null;
+        const vac = m.vacuum && m.vacuum.statLift ? el("span", { class: "ov-pill vac", title: `${m.vacuum.out.join(", ")} out: ${pct(m.vacuum.vacated)} usage freed${m.vacuum.usageAfter ? `, usage to about ${pct(m.vacuum.usageAfter)}` : ""}`, text: `vacuum +${pct(m.vacuum.statLift)}` }) : null;
         return [
             el("td", { class: "ov-roll", title: m.baselineVerified ? "Every 3-5 game window clears the line" : "Not every 3-5 game window clears the line" },
                 roll ? `${m.baselineVerified ? "✓ " : m.baselineVerified === false ? "✗ " : ""}${roll}` : "–",
                 m.minutesFloor != null ? el("span", { class: "ov-why", text: ` · ${m.minutesFloor} min floor` }) : null),
-            el("td", {}, tier, (m.signals || []).length
+            el("td", {}, tier, orphan ? [" ", orphan] : null, vac ? [" ", vac] : null, (m.signals || []).length
                 ? el("div", { class: "ov-why", text: `${m.insightAdjust ? `${m.insightAdjust > 0 ? "+" : ""}${(m.insightAdjust * 100).toFixed(1)} pts: ` : ""}${m.signals.join("; ")}` }) : null)
         ];
     }
@@ -183,7 +188,8 @@ div.ov-why { font-size: 0.78rem; }
                     : el("span", { text: state.profileSaved ? "● Saved Outlier sign-in (checked on the next scrape)" : "● Not signed in yet" });
             return el("div", { class: "ov-status" }, signed,
                 el("span", { text: `Last scrape: ${when(state.scrapedAt)}` }),
-                state.result ? el("span", { text: `${state.result.strategy === "consistency" ? "Consistency (-119)" : "Sharp (-130)"}: ${state.result.counts.passed} of ${state.result.counts.props} props passed${state.result.counts.variance ? `, ${state.result.counts.variance} variance leg(s)` : ""}` }) : null,
+                state.result ? el("span", { text: `${state.result.strategy === "consistency" ? "Consistency (-119)" : "Sharp (-130)"}: ${state.result.counts.passed} of ${state.result.counts.props} props passed${state.result.counts.variance ? `, ${state.result.counts.variance} variance leg(s)` : ""}${state.result.counts.orphaned ? `, ${state.result.counts.orphaned} orphaned line(s)` : ""}` }) : null,
+                state.result && (state.result.ruledOut || []).length ? el("span", { text: `Ruled out: ${state.result.ruledOut.map(o => o.player).join(", ")}` }) : null,
                 state.busy === "signin" ? el("span", { text: "Sign-in window open: sign in, then close it." }) : null,
                 working ? el("span", { text: working }) : null);
         }
@@ -199,14 +205,28 @@ div.ov-why { font-size: 0.78rem; }
                 el("div", { class: "ov-actions" },
                     el("span", { class: "ov-odds", text: price(t.american) }),
                     el("span", { class: "ov-status", text: `${t.decimal}× · book ${pct(t.impliedProb, 1)} vs model ${pct(t.modelProb, 1)} to hit` })),
-                el("div", { class: "ov-why", text: `${t.anchors} high-floor leg(s)${t.varianceLegs ? ` + ${t.varianceLegs} variance leg` : ""}` }),
+                el("div", { class: "ov-why", text: `${t.anchors} high-floor leg(s)${t.varianceLegs ? ` + ${t.varianceLegs} variance leg` : ""} · game script: ${t.script === "reinforcing" ? "legs reinforce each other" : "no same-game links"}` }),
                 legRows(t.legs.map(id => legs.get(id)).filter(Boolean), ["3/4/5 games", "Signals"], insightCells),
-                (t.correlations || []).map(c => el("div", { class: "ov-why" },
+                (t.matrix || t.correlations || []).map(c => el("div", { class: "ov-why" },
                     `🔗 ${c.legs.map(id => (legs.get(id) || {}).player || id).join(" + ")}: ${c.rho > 0 ? "+" : ""}${c.rho} ${c.why ? `(${c.why})` : ""}`)),
                 stakeRow(t)));
             return el("div", { class: "ov-section" },
                 el("h3", { text: "Parlay tickets" }),
                 el("div", { class: "ov-grid" }, cards.length ? cards : el("div", { class: "ov-note" }, "No tickets this time: not enough legs qualify.")));
+        }
+
+        // Soft books still near -119 on props the sharp books have moved to -130 or past.
+        function orphanSection() {
+            const result = state && state.result;
+            const legs = ((result && result.legs) || []).filter(l => l.metrics && l.metrics.divergence && l.metrics.divergence.orphaned);
+            if (!legs.length) return null;
+            return el("div", { class: "ov-section" },
+                el("h3", { text: `Orphaned lines (${legs.length})` }),
+                el("div", { class: "ov-why", text: "The sharp books have moved; these books haven't. Edge = sharp no-vig chance minus the soft price's implied chance." }),
+                legRows(legs, ["Sharp vs soft", "Signals"], l => {
+                    const d = l.metrics.divergence;
+                    return [el("td", { text: `${price(d.sharpPrice)} vs ${price(d.softPrice)}${d.softBook ? ` (${d.softBook})` : ""} · ${d.gap >= 0 ? "+" : ""}${pct(d.gap, 1)}` }), insightCells(l)[1]];
+                }));
         }
 
         function slipsSection() {
@@ -369,12 +389,16 @@ div.ov-why { font-size: 0.78rem; }
             const juiceIn = numIn(c.target_juice, 1), bandIn = numIn(c.juice_band, 1, 52), loIn = numIn(Math.round(c.hit_rate_min * 100), 1, 52), hiIn = numIn(Math.round(c.hit_rate_max * 100), 1, 52), minIn = numIn(c.min_minutes, 1, 52);
             const ticketSizes = (w.tickets && w.tickets.sizes) || [4, 5, 6];
             const tBoxes = [4, 5, 6].map(n => [n, el("input", { type: "checkbox", checked: ticketSizes.includes(n) })]);
+            const outs = el("textarea", { "aria-label": "Players ruled out", placeholder: "Joel Embiid, PHI, 31" });
+            outs.value = ((w.vacuum && w.vacuum.manual_out) || []).map(o => [o.player, o.team || "", o.usage ?? ""].join(", ").replace(/(, )+$/, "")).join("\n");
             const strategyBox = el("div", { class: "ov-form" },
                 el("div", { class: "ov-mode", role: "group", "aria-label": "Strategy" }, modeBtns),
                 el("div", { class: "ov-why", text: "Consistency targets props near standard juice whose hit rate sits in a steady band (locked-in role, minutes floor), with every rolling 3-5 game window clearing the line. High-variance legs that otherwise qualify can fill one ticket spot." }),
                 el("label", {}, "Target juice -", juiceIn, " ± ", bandIn),
                 el("label", {}, "Hit-rate band ", loIn, " % to ", hiIn, " %  · minutes floor ", minIn),
-                el("label", {}, "Parlay tickets: ", tBoxes.map(([n, box]) => [box, ` ${n}-leg  `])));
+                el("label", {}, "Parlay tickets: ", tBoxes.map(([n, box]) => [box, ` ${n}-leg  `])),
+                el("div", { class: "ov-why", text: "Ruled out (one per line: player, team, usage %). Their usage is shared out to teammates' scoring, playmaking and rebounding props; players the pages list as out are added on their own." }),
+                outs);
             return el("div", { class: "ov-section" },
                 el("details", { open: true },
                     el("summary", { text: "Strategy, bankroll and sizes" }),
@@ -391,7 +415,9 @@ div.ov-why { font-size: 0.78rem; }
                                 strategy: mode,
                                 consistency: { target_juice: Number(juiceIn.value), juice_band: Number(bandIn.value), hit_rate_min: Number(loIn.value) / 100,
                                     hit_rate_max: Number(hiIn.value) / 100, min_minutes: Number(minIn.value) },
-                                ticketSizes: tBoxes.filter(([, box]) => box.checked).map(([n]) => n)
+                                ticketSizes: tBoxes.filter(([, box]) => box.checked).map(([n]) => n),
+                                ruledOut: outs.value.split("\n").map(line => line.split(",").map(x => x.trim())).filter(([player]) => player)
+                                    .map(([player, team, usage]) => ({ player, team: team || null, usage: usage || null }))
                             }) }, "Save")))));
         }
 
@@ -440,7 +466,7 @@ div.ov-why { font-size: 0.78rem; }
                 error ? el("div", { class: "ov-error", role: "alert", text: error }) : null,
                 info ? el("div", { class: "ov-note", role: "status", text: info }) : null,
                 (state && state.lastError && !error) ? el("div", { class: "ov-error", text: state.lastError }) : null,
-                ticketsSection(), slipsSection(), trackedSection(), learningSection(), strategySection(), marketSection(), propsSection(), settingsSection()].filter(Boolean));
+                ticketsSection(), orphanSection(), slipsSection(), trackedSection(), learningSection(), strategySection(), marketSection(), propsSection(), settingsSection()].filter(Boolean));
         }
 
         render();

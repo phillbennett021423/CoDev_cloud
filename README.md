@@ -48,11 +48,16 @@ Settings are read by `config.js` from the environment or `.env`:
 
 The **📈 Outlier** tab (when CoDev runs on your computer with `npm start` or `start-codev.bat`) reads your signed-in Outlier pages, scores the props and recommends 4-leg power and flex entries (6-leg optional), weighing same-game correlation, with a fractional-Kelly stake for each and closing line value tracked for the entries you play:
 
-1. **Sign in to Outlier** opens a browser window. Sign in there once and close it. That sign-in is kept in a browser profile used only by this pipeline, in your app-data folder (`codev-server/outlier/profile`), never in the repo, so it carries over between runs. Agents' own browsers still start empty. **Forget Outlier sign-in** deletes it.
+1. **Sign in to Outlier** opens a browser window. Sign in there once and close it. That sign-in is kept in a browser profile used only by this pipeline, in your app-data folder (`codev-server/outlier/profile`), never in the repo, so it carries over between runs. **Forget Outlier sign-in** deletes it.
 2. **Scrape & analyze** opens the pages listed under **Pages and sign-in** in a hidden browser, reads the prop cards and odds tables into JSON (`agents/outlier/extract.js`), and runs `tools/outlier-analytics/analyze.py` on them (needs Python 3; set `CODEV_PYTHON` if it isn't on the PATH). **Auto** repeats it every few minutes while the tab is open.
 3. With a free `ODDS_API_KEY` (the-odds-api.com), ESPN's public scoreboard and any public odds-comparison pages you list, each scrape cross-references every prop against the other books: no-vig fair price (sharp books first), each book's juice, best price (`tools/outlier-analytics/market_data.py`, stored in `market.db`).
 4. **I played this** tracks an entry; mark its legs hit/miss when they settle and the filters retune themselves (see `tools/outlier-analytics/README.md`).
 5. **Strategy: Consistency (-119)** looks for props near -119 whose players hit 60–75% with a steady 3/4/5-game baseline and a minutes floor, reads matchup, usage, pace and potential-volume stats off the page, and builds 4–6 leg parlay tickets with their combined odds. These are estimates; no filter guarantees a win.
+6. On top of either strategy, the analysis also:
+   - flags **orphaned lines**, where a soft book is still near -119 after the sharp books (Pinnacle and the like) moved to -130 or past;
+   - keeps legs that work against each other off the same ticket;
+   - shares a ruled-out starter's usage out to his teammates' props (from the page's injury notes or a list you type in);
+   - drops players whose minutes fell 10% or more over the last two games, or who face one of the stingiest defenses.
 
 The parser doesn't depend on Outlier's markup, but if it misses props, **Save page snapshot** stores the page (HTML and the data it loaded) in the same folder so selectors can be added to `config.json` there. Agents can read the latest entries with the read-only `outlier_slips` tool. Automated reading may be against Outlier's terms; that's your call. The numbers are estimates, not guarantees.
 
@@ -93,7 +98,7 @@ Tests: `node --test desktop/sandbox/test/sandbox.test.js` (the container tests r
 
 ## Agents' web browser
 
-On the Windows app and `npm start`, agents get a headless Chromium of their own (Playwright): `browser_navigate`, `browser_click`, `browser_fill`, `browser_press_key`, `browser_get_text` (rendered text, accessibility tree or HTML), `browser_wait_for`, `browser_screenshot` and `browser_close`. Each agent has a separate temporary profile (cache, cookies, storage) that is deleted when its browser closes or after 15 idle minutes. They can test your local dev server (`http://localhost:5173` and so on) but can't open CoDev's own server or helper.
+On the Windows app and `npm start`, agents get a headless Chromium of their own (Playwright): `browser_navigate`, `browser_click`, `browser_fill`, `browser_press_key`, `browser_get_text` (rendered text, accessibility tree or HTML), `browser_wait_for`, `browser_screenshot` and `browser_close`. Each agent has a separate browser profile (cache, cookies, local storage), kept in your app-data folder (`codev-server/browser-profiles/<agent>`, or the Windows app's own data folder), never in the repo. A site you sign in to in an agent's browser, from the live view or through the agent, stays signed in next time, even after a restart. Agents never see each other's sign-ins. **🧹 Forget sign-ins** in the live view deletes the shown agent's profile. Set `CODEV_BROWSER_KEEP_SIGNINS=0` in `.env` to go back to temporary profiles that are deleted when the browser closes. Idle browsers still close after 15 minutes, but their profiles stay. They can test your local dev server (`http://localhost:5173` and so on) but can't open CoDev's own server or helper.
 
 The browser is Playwright's Chromium (`npx playwright install chromium`, which `npm run setup` does), or else the Edge or Chrome already installed. Set `CODEV_BROWSER_PATH` to use a specific one.
 

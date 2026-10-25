@@ -360,7 +360,8 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         const previous = readJson(files.scrape, null);
         const byId = new Map(((previous && previous.props) || []).map(p => [p.id, p]));
         for (const prop of parsed.props) byId.set(prop.id, prop);
-        writeJson(files.scrape, { scrapedAt: new Date().toISOString(), source: 'outlier', props: [...byId.values()],
+        const outs = new Map([...((previous && previous.injuries) || []), ...parsed.injuries].map(o => [o.player.toLowerCase(), o]));
+        writeJson(files.scrape, { scrapedAt: new Date().toISOString(), source: 'outlier', props: [...byId.values()], injuries: [...outs.values()],
             results: [...((previous && previous.results) || []), ...parsed.results],
             pages: [...((previous && previous.pages) || []), ...parsed.pages] });
         const settledNow = settleFromResults(parsed.results);
@@ -546,6 +547,15 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             }
             if (c.hit_rate_min !== undefined && c.hit_rate_max !== undefined && c.hit_rate_min > c.hit_rate_max) throw new Error('The hit-rate band\'s low end is above its high end.');
             weights.consistency = c;
+        }
+        // Players ruled out that the pages didn't show: [{ player, team, usage }] (usage 0-1 or a percent).
+        if (Array.isArray(update.ruledOut)) {
+            const manual = update.ruledOut.slice(0, 40).map(o => ({
+                player: String((o && o.player) || '').trim().slice(0, 60),
+                team: String((o && o.team) || '').trim().toUpperCase().slice(0, 6) || null,
+                usage: o && o.usage !== undefined && o.usage !== '' && Number.isFinite(Number(o.usage)) && Number(o.usage) > 0 && Number(o.usage) <= 100 ? Number(o.usage) : null
+            })).filter(o => o.player);
+            weights.vacuum = { ...(weights.vacuum || {}), manual_out: manual };
         }
         if (Array.isArray(update.ticketSizes)) {
             const sizes = [...new Set(update.ticketSizes.map(Number).filter(n => n >= 4 && n <= 6))].sort();

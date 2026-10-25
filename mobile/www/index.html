@@ -202,6 +202,9 @@
         
         /* Chat View */
         .chat-messages { flex: 1; padding: 25px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; max-width: 1000px; width: 100%; margin: 0 auto; }
+        .chat-feed-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+        .chat-jump-btn { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); background: var(--bg-panel); color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 6px 16px; font-size: 0.8rem; cursor: pointer; box-shadow: 0 4px 15px rgba(0,0,0,0.35); z-index: 5; }
+        .chat-jump-btn:hover { background: var(--accent-glow); }
         .message { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 18px 22px; width: 100%; animation: fadeIn 0.2s ease; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
         .message .sender { font-size: 0.85rem; font-weight: bold; color: var(--accent); display: flex; align-items: center; gap: 6px; }
@@ -420,7 +423,7 @@
         .live-bar button { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 5px 9px; cursor: pointer; font-size: 0.8rem; }
         .live-bar button.live-control-on { background: var(--warning); color: #111; border-color: var(--warning); font-weight: bold; }
         .live-body { flex: 1; display: flex; min-height: 0; }
-        .live-screen { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; background: #000; position: relative; outline: none; }
+        .live-screen { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; background: #000; position: relative; outline: none; overscroll-behavior: contain; }
         .live-screen:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
         .live-screen img { max-width: 100%; max-height: 100%; user-select: none; -webkit-user-drag: none; cursor: crosshair; }
         .live-keys { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; resize: none; overflow: hidden; pointer-events: none; font-size: 16px; }
@@ -438,7 +441,7 @@
         /* The same live view, embedded in the card of the agent whose browser is open. */
         .agent-browser-panel { position: relative; background: #000; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; outline: none; cursor: default; }
         .agent-browser-panel:focus-visible, .agent-browser-panel:focus { border-color: var(--accent); }
-        #agentViewport { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: contain; background: #000; cursor: crosshair; user-select: none; -webkit-user-drag: none; }
+        #agentViewport { overscroll-behavior: contain; display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: contain; background: #000; cursor: crosshair; user-select: none; -webkit-user-drag: none; }
         .agent-browser-panel .live-note { font-size: 0.75rem; padding: 8px; bottom: 26px; }
         .agent-browser-bar { display: flex; gap: 4px; align-items: center; padding: 3px 6px; background: var(--bg-panel); border-top: 1px solid var(--border-color); }
         .agent-browser-bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 0.7rem; color: var(--text-muted); }
@@ -500,6 +503,7 @@
             <button type="button" onclick="liveControl({ op: 'reload' })" title="Reload">⟳</button>
             <input type="text" id="liveUrl" placeholder="Address or search" autocomplete="off" onkeydown="if (event.key === 'Enter') liveControl({ op: 'navigate', url: this.value })">
             <button type="button" id="liveTakeoverBtn" onclick="toggleLiveTakeover()" title="Pause the agent and use its browser yourself">✋ Take over</button>
+            <button type="button" onclick="forgetBrowserSignIns()" title="Sign-ins in the agents' browsers are kept between sessions. This deletes this agent's (cookies, local storage); Outlier's has its own button in the Outlier tab.">🧹 Forget sign-ins</button>
             <button type="button" onclick="toggleLiveView(false)" title="Close">✕</button>
         </div>
         <div class="live-body">
@@ -587,7 +591,10 @@
                     <span style="font-size: 0.75rem; color: var(--text-muted);" id="activeProviderLabel">Provider: Loading...</span>
                 </div>
                 
-                <div class="chat-messages" id="chatFeed"></div>
+                <div class="chat-feed-wrap">
+                    <div class="chat-messages" id="chatFeed"></div>
+                    <button type="button" class="chat-jump-btn" id="chatJumpBtn" hidden onclick="jumpChatToLatest()">↓ Latest messages</button>
+                </div>
                 
                 <div class="chat-input-wrapper">
                     <div class="chat-input-area">
@@ -1563,10 +1570,42 @@
             }
         }
 
+        // Auto-scroll follows new messages only while the feed is at (or near) the bottom.
+        // Scrolling up to read stops it until the user scrolls back down, sends a
+        // message or presses "Latest messages"; switching chats starts at the bottom.
+        const chatScroll = { follow: true, chatId: null, watching: false, resize: null };
+        const CHAT_BOTTOM_SLACK = 40;
+
+        function chatAtBottom(feed) {
+            return feed.scrollHeight - feed.scrollTop - feed.clientHeight <= CHAT_BOTTOM_SLACK;
+        }
+
+        function watchChatScroll(feed) {
+            if (chatScroll.watching) return;
+            chatScroll.watching = true;
+            feed.addEventListener("scroll", () => {
+                chatScroll.follow = chatAtBottom(feed);
+                if (chatScroll.follow) document.getElementById("chatJumpBtn").hidden = true;
+            }, { passive: true });
+            // Messages also grow without a re-render (the panel narrows and text rewraps,
+            // an image loads): while following, stay pinned to the bottom.
+            if (window.ResizeObserver) chatScroll.resize = new ResizeObserver(() => { if (chatScroll.follow) feed.scrollTop = feed.scrollHeight; });
+        }
+
+        function jumpChatToLatest() {
+            const feed = document.getElementById("chatFeed");
+            chatScroll.follow = true;
+            feed.scrollTop = feed.scrollHeight;
+            document.getElementById("chatJumpBtn").hidden = true;
+        }
+
         function renderActiveChatFeed() {
             const feed = document.getElementById("chatFeed");
+            watchChatScroll(feed);
             const session = chatSessions.find(s => s.id === activeChatId);
             if (!session) { feed.innerHTML = ""; return; }
+            if (chatScroll.chatId !== session.id) { chatScroll.chatId = session.id; chatScroll.follow = true; }
+            const keepTop = feed.scrollTop;
 
             const fragment = document.createDocumentFragment();
             const lastIndex = session.messages.length - 1;
@@ -1594,7 +1633,19 @@
                 fragment.appendChild(div);
             });
             feed.replaceChildren(fragment);
-            feed.scrollTop = feed.scrollHeight;
+            if (chatScroll.resize) {
+                chatScroll.resize.disconnect();
+                chatScroll.resize.observe(feed);
+                for (const child of feed.children) chatScroll.resize.observe(child);
+            }
+            const jump = document.getElementById("chatJumpBtn");
+            if (chatScroll.follow) {
+                feed.scrollTop = feed.scrollHeight;
+                jump.hidden = true;
+            } else {
+                feed.scrollTop = keepTop;
+                jump.hidden = chatAtBottom(feed);
+            }
         }
 
         function appendMessageToActiveSession(sender, text, attachments) {
@@ -2547,6 +2598,21 @@
             return { x: Math.round(x * live.frame.width), y: Math.round(y * live.frame.height) };
         }
 
+        // A wheel event's movement in the page's own pixels: Firefox and some mice report
+        // lines (deltaMode 1) or pages (2), and the picture is usually drawn smaller than
+        // the page, so a turn is scaled up to move the page as far as it looks like it should.
+        function liveWheelDelta(event, img) {
+            const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? (live.frame ? live.frame.height * 0.9 : 720) : 1;
+            const box = img.getBoundingClientRect();
+            let scale = 1;
+            if (live.frame && box.width && box.height) {
+                const shown = Math.min(box.width, box.height * live.frame.width / live.frame.height);
+                scale = live.frame.width / shown;
+            }
+            const clamp = v => Math.round(Math.max(-2000, Math.min(2000, (Number(v) || 0) * unit * scale)));
+            return { deltaX: clamp(event.deltaX), deltaY: clamp(event.deltaY) };
+        }
+
         // Keys Playwright knows by name; anything else that isn't one character (IME
         // composition, phone keyboards' "Unidentified") arrives as text through the input box.
         const LIVE_NAMED_KEYS = new Set(["Enter", "Tab", "Backspace", "Delete", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
@@ -2557,6 +2623,20 @@
         // the agent's card. Keys go through a hidden text box inside screen: it holds the focus
         // (so typing works on phones, whose keyboard only opens for a text box), and text typed
         // into it is sent as text, while named keys (Enter, Backspace, arrows, shortcuts) go as keys.
+        // Agents' browsers keep their sign-ins between sessions; this clears the shown agent's.
+        async function forgetBrowserSignIns() {
+            const agentId = live.agentId;
+            if (!agentId) { logConsoleActivity("[Live] Pick an agent's browser first."); return; }
+            if (agentId === live.outlier) { logConsoleActivity("[Live] Outlier's sign-in is cleared with Forget Outlier sign-in in the 📈 Outlier tab."); return; }
+            if (!confirm("Delete this agent's saved browser sign-ins (cookies and local storage)? Its browser closes.")) return;
+            try {
+                const reply = window.codevDesktop?.browserLive
+                    ? await window.codevDesktop.browserLive({ op: "forget-signins", agentId })
+                    : await postJson("/browser/forget-signins", { agentId });
+                logConsoleActivity(`[Live] ${reply.forgotten ? "Forgot this agent's browser sign-ins." : "This agent had no saved browser sign-ins."}`);
+            } catch (err) { logConsoleActivity(`[Live] Couldn't forget sign-ins: ${err.message}`); }
+        }
+
         function setupLiveInput(screen = document.getElementById("liveScreen"), img = document.getElementById("liveFrame")) {
             const buttons = ["left", "middle", "right"];
             const keys = document.createElement("textarea");
@@ -2608,7 +2688,23 @@
             img.addEventListener("pointercancel", () => { touch = null; });
             img.addEventListener("contextmenu", e => e.preventDefault());
             img.addEventListener("dragstart", e => e.preventDefault());
-            img.addEventListener("wheel", e => { e.preventDefault(); const p = livePoint(e, img); if (p) liveControl({ op: "wheel", deltaX: e.deltaX, deltaY: e.deltaY, ...p }); }, { passive: false });
+            // The wheel scrolls the page in the browser, not CoDev: each turn goes over as
+            // pixels (line and page steps converted), scaled to the page's size. The wheel
+            // is only taken from CoDev when there is a page to send it to, so the panel
+            // around an empty viewport still scrolls.
+            let lastPoint = null;
+            const onWheel = e => {
+                if (!live.frame) return;
+                e.preventDefault();
+                if (e.ctrlKey) return;   // a trackpad pinch: neither zoom CoDev nor scroll the page
+                const p = livePoint(e, img) || lastPoint || { x: Math.round(live.frame.width / 2), y: Math.round(live.frame.height / 2) };
+                lastPoint = p;
+                const { deltaX, deltaY } = liveWheelDelta(e, img);
+                if (deltaX || deltaY) liveControl({ op: "wheel", deltaX, deltaY, ...p });
+            };
+            img.addEventListener("wheel", onWheel, { passive: false });
+            // The black margins of the full live view scroll the page too.
+            if (screen.classList.contains("live-screen")) screen.addEventListener("wheel", e => { if (e.target === screen) onWheel(e); }, { passive: false });
             // Clicking the black area around the picture still gives the keyboard to the browser.
             screen.addEventListener("mousedown", e => { if (e.target === screen) { e.preventDefault(); focusKeys(); } });
             keys.addEventListener("keydown", e => {
@@ -5108,6 +5204,7 @@
             const attachments = pendingAttachments.filter(a => !a.error);
             if (!userText && attachments.length === 0) return;
             if (!userText) userText = "Describe and analyze the attached file(s).";
+            chatScroll.follow = true;   // your own message always brings the feed back down
 
             // The workspace itself is indexed for each agent in runAgentStep.
             let injectedContext = "";

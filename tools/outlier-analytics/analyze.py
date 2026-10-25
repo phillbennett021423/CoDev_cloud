@@ -203,10 +203,157 @@ def baseline_verified(rolling, line, side, min_rate):
     return True
 
 
+# ---- sharp books, injuries and form ----------------------------------------
+# Three more reads on a prop. Sharp divergence: a soft book still dealing a prop
+# near -119 while the sharp books (Pinnacle and the like) have moved to -130 or
+# heavier. Usage vacuum: a starter ruled out frees up shots and touches that his
+# teammates absorb. Streak decay: a player whose minutes just fell, or who faces
+# one of the stingiest defenses, is dropped before the hit rate catches up.
+
+def norm_name(value):
+    return " ".join("".join(ch for ch in str(value or "").lower() if ch.isalnum() or ch.isspace()).split())
+
+
+def sharp_divergence(leg, weights):
+    """The sharp books' price and no-vig chance vs the best soft price, or None."""
+    cfg = weights.get("divergence") or {}
+    sharp = {norm_name(b) for b in cfg.get("sharp_books", [])}
+    if not sharp:
+        return None
+
+    def split(entries):
+        sharp_prices, soft = [], []
+        for e in entries or []:
+            if not isinstance(e, dict):
+                continue
+            price = to_price(e.get("price"))
+            if price is None:
+                continue
+            if norm_name(e.get("book")) in sharp:
+                sharp_prices.append(price)
+            else:
+                soft.append((price, e.get("book")))
+        return sharp_prices, soft
+
+    sharp_side, soft = split(leg.get("odds"))
+    sharp_other, _ = split(leg.get("oppositeOdds"))
+    if not sharp_side:
+        return None
+    sharp_price = consensus_price(sharp_side)
+    if sharp_other:
+        a, b = implied_prob(sharp_price), implied_prob(consensus_price(sharp_other))
+        sharp_fair = a / (a + b)
+    elif leg.get("marketFair") is not None and leg.get("marketFairFrom") == "sharp":
+        sharp_fair = float(leg["marketFair"])
+    else:
+        sharp_fair = implied_prob(sharp_price) / (1.0 + weights["model"]["assumed_vig"])
+    if soft:
+        # The soft price you'd take: the one that pays the most.
+        soft_price, soft_book = max(soft, key=lambda o: decimal_odds(o[0]))
+    else:
+        soft_price, soft_book = to_price(leg.get("consensus")), None
+    if soft_price is None:
+        return None
+    gap = sharp_fair - implied_prob(soft_price)
+    orphaned = (juice(soft_price) <= cfg.get("soft_juice_max", 125) + 1e-9
+                and juice(sharp_price) >= cfg.get("sharp_juice_min", 130) - 1e-9
+                and gap >= cfg.get("min_gap", 0.01) - 1e-9)
+    return {"sharpPrice": sharp_price, "sharpFair": rnd(sharp_fair), "softPrice": soft_price, "softBook": soft_book,
+            "gap": rnd(gap), "orphaned": orphaned}
+
+
+def ruled_out(scrape, weights):
+    """Players ruled out, from the scrape's injury list and any added by hand,
+    with their usage when it is known."""
+    outs = {}
+    usage_of, team_of = {}, {}
+    for prop in scrape.get("props") or []:
+        usage = (prop.get("insights") or {}).get("usage")
+        if isinstance(usage, (int, float)) and prop.get("player"):
+            usage_of[norm_name(prop["player"])] = usage
+        if prop.get("team") and prop.get("player"):
+            team_of[norm_name(prop["player"])] = prop["team"]
+    entries = list(scrape.get("injuries") or []) + list((weights.get("vacuum") or {}).get("manual_out") or [])
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("player"):
+            continue
+        status = norm_name(entry.get("status") or "out")
+        if status not in ("out", "o", "inactive", "ruled out", "suspended"):
+            continue
+        name = norm_name(entry["player"])
+        usage = normalize_rate(entry.get("usage")) if entry.get("usage") is not None else usage_of.get(name)
+        mate = norm_name(entry.get("teammateOf"))
+        outs[name] = {"player": entry["player"], "team": entry.get("team") or team_of.get(mate), "usage": usage,
+                      "teammateOf": entry.get("teammateOf")}
+    return list(outs.values())
+
+
+def usage_vacuum(leg, outs, weights):
+    """(probability adjustment, details) for a player whose teammates are ruled out.
+
+    Usage on the floor adds up to 100%, so when players carrying a share v of it sit,
+    everyone left gets about v / (1 - v) more of their own (a 25% player becomes
+    ~33% when a 25% starter is out). Only part of that turns into counting stats
+    (elasticity), and the hit chance moves by a capped fraction of that lift.
+    """
+    cfg = weights.get("vacuum") or {}
+    team = norm_name(leg.get("team"))
+    me = norm_name(leg.get("player"))
+    if not cfg or not outs:
+        return 0.0, None
+    # Same team, or named as this player's teammate on his own card.
+    gone = [o for o in outs if norm_name(o["player"]) != me
+            and ((team and norm_name(o.get("team")) == team) or norm_name(o.get("teammateOf")) == me)]
+    if not gone:
+        return 0.0, None
+    vacated = min(0.6, sum(o["usage"] if isinstance(o.get("usage"), (int, float)) else cfg.get("starter_usage", 0.22) for o in gone))
+    if vacated < cfg.get("min_vacated", 0.1) - 1e-9:
+        return 0.0, None
+    share = vacated / (1 - vacated)
+    lift = share * cfg.get("elasticity", 0.6)
+    usage = (leg.get("insights") or {}).get("usage")
+    details = {"out": [o["player"] for o in gone], "vacated": rnd(vacated, 3), "statLift": rnd(lift, 3),
+               "usageAfter": rnd(usage * (1 + share), 3) if isinstance(usage, (int, float)) else None}
+    if market_group(leg, weights.get("correlation", {})) not in cfg.get("groups", []):
+        return 0.0, details
+    sign = -1.0 if (leg.get("side") or "over").lower() == "under" else 1.0
+    return sign * min(cfg.get("max_adjust", 0.04), lift * cfg.get("sensitivity", 0.25)), details
+
+
+def streak_decay(leg, weights):
+    """(reasons to drop it, probability penalty, why) from minutes, matchup and misses."""
+    cfg = weights.get("decay") or {}
+    if not cfg:
+        return [], 0.0, []
+    info = leg.get("insights") or {}
+    over = (leg.get("side") or "over").lower() != "under"
+    drop, penalty, why = [], 0.0, []
+    minutes = [m for m in (info.get("minutes") or []) if isinstance(m, (int, float))]
+    if len(minutes) >= 3:
+        last2 = statistics.fmean(minutes[:2])
+        base = statistics.fmean(minutes[2:5])
+        if base > 0 and last2 <= base * (1 - cfg.get("minutes_drop", 0.1)) + 1e-9:
+            drop.append(f"minutes down {1 - last2 / base:.0%} over the last two games ({last2:g} vs {base:.1f})")
+    rank = info.get("defenseRank")
+    league = (leg.get("league") or "").upper()
+    teams = info.get("defenseTeams") or (weights.get("insights") or {}).get("league_teams", {}).get(league) or 30
+    if over and isinstance(rank, (int, float)) and 1 <= rank <= max(1, teams * cfg.get("brutal_defense_share", 0.1)):
+        drop.append(f"brutal matchup: defense ranks {int(rank)}/{teams}")
+    line = leg.get("line")
+    recent = [v for v in (leg.get("recent") or []) if isinstance(v, (int, float))]
+    n = cfg.get("miss_streak", 2)
+    if isinstance(line, (int, float)) and n and len(recent) >= n:
+        if all((v <= line if over else v >= line) for v in recent[:n]):
+            penalty = cfg.get("miss_penalty", 0.0)
+            why.append(f"missed the last {n} games")
+    return drop, penalty, why
+
+
 # ---- one prop --------------------------------------------------------------
 
-def leg_metrics(leg, weights):
-    """Everything the filters and the slip builder need about one prop."""
+def leg_metrics(leg, weights, outs=None):
+    """Everything the filters and the slip builder need about one prop.
+    outs: players ruled out (ruled_out), for the usage vacuum."""
     model = weights["model"]
     side = (leg.get("side") or "over").lower()
     line = leg.get("line")
@@ -278,6 +425,14 @@ def leg_metrics(leg, weights):
             prob = fair
         prob *= 1 - weights.get("market_penalty", {}).get(market_key(leg), 0.0)
     signal_adjust, signals = insight_signals(leg, weights)
+    vacuum_adjust, vacuum = usage_vacuum(leg, outs, weights)
+    if vacuum_adjust:
+        signal_adjust += vacuum_adjust
+        signals = signals + [f"usage vacuum: {', '.join(vacuum['out'])} out ({vacuum['vacated']:.0%} usage, about {vacuum['statLift']:+.0%} volume)"]
+    decay_drop, decay_penalty, decay_why = streak_decay(leg, weights)
+    if decay_penalty:
+        signal_adjust -= decay_penalty
+        signals = signals + decay_why
     if prob is not None and signal_adjust:
         prob = min(0.97, max(0.03, prob + signal_adjust))
 
@@ -310,6 +465,9 @@ def leg_metrics(leg, weights):
         "minutesFloor": rnd(minutes_floor, 1) if isinstance(minutes_floor, (int, float)) else None,
         "insightAdjust": rnd(signal_adjust),
         "signals": signals,
+        "divergence": sharp_divergence(leg, weights),
+        "vacuum": vacuum,
+        "decay": decay_drop,
     }
 
 
@@ -415,8 +573,10 @@ def fmt_price(price):
 
 def leg_score(metrics):
     # Probability first; a small extra cost for swingy stat lines.
+    # and a nudge up for a line the sharp books have already moved past.
     vol = metrics["volatility"] or 0.0
-    return (metrics["p"] or 0.0) - 0.05 * max(0.0, vol - 0.2)
+    bonus = metrics.get("orphanBonus") or 0.0
+    return (metrics["p"] or 0.0) - 0.05 * max(0.0, vol - 0.2) + bonus
 
 
 # ---- correlation -----------------------------------------------------------
@@ -693,6 +853,21 @@ def american_from_decimal(dec):
     return round((dec - 1) * 100) if dec >= 2 else round(-100 / (dec - 1))
 
 
+def script_matrix(combo, weights, min_rho):
+    """Every same-game pair's correlation, and whether any two legs work against
+    each other (rho under min_rho: an over and an under that need opposite game
+    scripts, or two teammates fighting over the same shots or rebounds)."""
+    matrix, clash = [], False
+    for a, b in itertools.combinations(combo, 2):
+        rho, why = pair_correlation(a, b, weights)
+        if not rho:
+            continue
+        matrix.append({"legs": [a["id"], b["id"]], "rho": rnd(rho, 3), "why": why})
+        if rho < min_rho - 1e-9:
+            clash = True
+    return matrix, clash
+
+
 def build_tickets(anchors, variance, weights, bank=None):
     """4-6 leg parlay tickets from verified high-floor legs plus at most a few
     variance legs, ranked by expected value at the combined book odds."""
@@ -706,21 +881,25 @@ def build_tickets(anchors, variance, weights, bank=None):
         if len(pool) < size:
             notes.append(f"{size}-leg ticket: only {len(pool)} leg(s) qualify.")
             continue
-        ranked = []
+        ranked, clashes = [], 0
         for combo in itertools.combinations(pool, size):
             if sum(1 for l in combo if l.get("tier") == "variance") > cfg["max_variance_legs"]:
                 continue
             if not fits(combo, slips_cfg):
+                continue
+            matrix, clash = script_matrix(combo, weights, cfg.get("min_pair_rho", 0.0))
+            if clash:
+                clashes += 1
                 continue
             dec = 1.0
             for l in combo:
                 dec *= decimal_odds(l["metrics"]["consensus"])
             dist, links = correlated_distribution(combo, weights)
             all_hit = dist[-1]
-            ranked.append((all_hit * dec - 1, all_hit, dec, dist, links, combo))
+            ranked.append((all_hit * dec - 1, all_hit, dec, dist, links, combo, matrix))
         ranked.sort(key=lambda r: (r[0], r[1]), reverse=True)
         chosen = []
-        for ev, all_hit, dec, dist, links, combo in ranked:
+        for ev, all_hit, dec, dist, links, combo, matrix in ranked:
             ids = {l["id"] for l in combo}
             if any(len(ids & c) > size // 2 for c in chosen):
                 continue
@@ -738,12 +917,15 @@ def build_tickets(anchors, variance, weights, bank=None):
                 "modelProb": rnd(all_hit),
                 "ev": rnd(ev),
                 "correlations": links,
+                "matrix": matrix,
+                "script": "reinforcing" if any(m["rho"] > 0 for m in matrix) else "independent",
                 **stake_for(dist, table, weights, bank),
             })
             if len(chosen) >= cfg["tickets_per_size"]:
                 break
         if not ranked:
-            notes.append(f"{size}-leg ticket: no mix of legs fits the one-per-player and same-game limits.")
+            why = " and the game-script check (no same-game legs that work against each other)" if clashes else ""
+            notes.append(f"{size}-leg ticket: no mix of legs fits the one-per-player and same-game limits{why}.")
     tickets.sort(key=lambda t: (t["size"], -t["ev"]))
     return tickets, notes
 
@@ -761,19 +943,27 @@ def line_movement(leg, metrics, market_log):
 def analyze(scrape, weights, history=None, market_log=None):
     props = scrape.get("props") or []
     strategy = weights.get("strategy", "sharp")
+    outs = ruled_out(scrape, weights)
+    out_names = {norm_name(o["player"]) for o in outs}
     legs = []
     for i, raw in enumerate(props):
         leg = dict(raw)
         leg.setdefault("id", f"leg-{i + 1}")
-        leg["metrics"] = leg_metrics(leg, weights)
+        leg["metrics"] = leg_metrics(leg, weights, outs)
         leg["metrics"].update(line_movement(leg, leg["metrics"], market_log))
+        div = leg["metrics"]["divergence"]
+        if div and div["orphaned"]:
+            leg["metrics"]["orphanBonus"] = (weights.get("divergence") or {}).get("score_bonus", 0.0)
         if strategy == "consistency":
             leg["rejected"], variance = consistency_check(leg, leg["metrics"], weights)
-            leg["tier"] = None if leg["rejected"] else "variance" if variance else "anchor"
-            leg["varianceReasons"] = variance
         else:
-            leg["rejected"] = rejections(leg, leg["metrics"], weights)
-            leg["tier"] = None if leg["rejected"] else "anchor"
+            leg["rejected"], variance = rejections(leg, leg["metrics"], weights), []
+        leg["rejected"] += leg["metrics"]["decay"]
+        if norm_name(leg.get("player")) in out_names:
+            leg["rejected"].insert(0, "player is ruled out")
+        leg["tier"] = None if leg["rejected"] else "variance" if variance else "anchor"
+        if strategy == "consistency":
+            leg["varianceReasons"] = variance
         legs.append(leg)
     passed = [l for l in legs if l["tier"] == "anchor"]
     variance_legs = [l for l in legs if l["tier"] == "variance"]
@@ -793,7 +983,9 @@ def analyze(scrape, weights, history=None, market_log=None):
         "filters": weights["filters"],
         "strategy": strategy,
         "consistency": weights.get("consistency"),
-        "counts": {"props": len(legs), "passed": len(passed), "variance": len(variance_legs), "slips": len(slips), "tickets": len(tickets)},
+        "counts": {"props": len(legs), "passed": len(passed), "variance": len(variance_legs), "slips": len(slips), "tickets": len(tickets),
+                   "orphaned": sum(1 for l in legs if (l["metrics"]["divergence"] or {}).get("orphaned"))},
+        "ruledOut": outs,
         "bankroll": {**weights["bankroll"], **bank},
         "legs": legs,
         "slips": slips,
