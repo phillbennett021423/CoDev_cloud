@@ -43,6 +43,14 @@ div.ov-why { font-size: 0.78rem; }
 .ov-form textarea { min-height: 70px; }
 .ov-select { background: var(--bg-dark); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 2px 4px; font-size: 0.78rem; }
 .ov-error { color: var(--danger); font-size: 0.82rem; white-space: pre-wrap; }
+.ov-pill.var { background: rgba(245,158,11,0.15); color: var(--warning); }
+.ov-pill.anchor { background: var(--accent-glow); color: var(--accent); }
+.ov-odds { font-size: 1.15rem; font-weight: bold; color: var(--accent); }
+.ov-ticket { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-glow); }
+.ov-roll { font-family: monospace; white-space: nowrap; }
+.ov-mode { display: inline-flex; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
+.ov-mode button { background: var(--bg-dark); color: var(--text-muted); border: none; padding: 5px 10px; cursor: pointer; font-size: 0.78rem; }
+.ov-mode button.on { background: var(--accent); color: #031623; font-weight: bold; }
 `;
 
     function el(tag, attrs = {}, ...children) {
@@ -82,6 +90,22 @@ div.ov-why { font-size: 0.78rem; }
                 el("td", { text: pct(l.metrics && l.metrics.p) }),
                 ...(extraCell ? extraCell(l) : [])
             )))));
+    }
+
+    // Rolling 3/4/5-game averages (✓ when every window clears the line) and the
+    // matchup, usage, pace, volume and role signals behind the hit chance.
+    function insightCells(l) {
+        const m = l.metrics || {};
+        const roll = (m.rolling || []).map(w => `${w.games}g ${w.avg}`).join(" · ");
+        const tier = l.tier === "variance" ? el("span", { class: "ov-pill var", title: (l.varianceReasons || []).join("; "), text: "variance" })
+            : l.tier === "anchor" ? el("span", { class: "ov-pill anchor", text: "high floor" }) : null;
+        return [
+            el("td", { class: "ov-roll", title: m.baselineVerified ? "Every 3-5 game window clears the line" : "Not every 3-5 game window clears the line" },
+                roll ? `${m.baselineVerified ? "✓ " : m.baselineVerified === false ? "✗ " : ""}${roll}` : "–",
+                m.minutesFloor != null ? el("span", { class: "ov-why", text: ` · ${m.minutesFloor} min floor` }) : null),
+            el("td", {}, tier, (m.signals || []).length
+                ? el("div", { class: "ov-why", text: `${m.insightAdjust ? `${m.insightAdjust > 0 ? "+" : ""}${(m.insightAdjust * 100).toFixed(1)} pts: ` : ""}${m.signals.join("; ")}` }) : null)
+        ];
     }
 
     // openLive(id): shows the live view on the signed-in Outlier browser (the page's).
@@ -159,9 +183,30 @@ div.ov-why { font-size: 0.78rem; }
                     : el("span", { text: state.profileSaved ? "● Saved Outlier sign-in (checked on the next scrape)" : "● Not signed in yet" });
             return el("div", { class: "ov-status" }, signed,
                 el("span", { text: `Last scrape: ${when(state.scrapedAt)}` }),
-                state.result ? el("span", { text: `${state.result.counts.passed} of ${state.result.counts.props} props passed the filters` }) : null,
+                state.result ? el("span", { text: `${state.result.strategy === "consistency" ? "Consistency (-119)" : "Sharp (-130)"}: ${state.result.counts.passed} of ${state.result.counts.props} props passed${state.result.counts.variance ? `, ${state.result.counts.variance} variance leg(s)` : ""}` }) : null,
                 state.busy === "signin" ? el("span", { text: "Sign-in window open: sign in, then close it." }) : null,
                 working ? el("span", { text: working }) : null);
+        }
+
+        // 4-6 leg parlay tickets at the legs' combined book odds.
+        function ticketsSection() {
+            const result = state && state.result;
+            if (!result || !result.tickets) return null;
+            const legs = new Map(result.legs.map(l => [l.id, l]));
+            const cards = result.tickets.map(t => el("div", { class: "ov-card ov-ticket" },
+                el("h4", {}, `${t.size}-leg parlay`,
+                    el("span", { class: `ov-pill${t.ev < 0 ? " neg" : ""}`, text: `EV ${t.ev >= 0 ? "+" : ""}${pct(t.ev, 1)}` })),
+                el("div", { class: "ov-actions" },
+                    el("span", { class: "ov-odds", text: price(t.american) }),
+                    el("span", { class: "ov-status", text: `${t.decimal}× · book ${pct(t.impliedProb, 1)} vs model ${pct(t.modelProb, 1)} to hit` })),
+                el("div", { class: "ov-why", text: `${t.anchors} high-floor leg(s)${t.varianceLegs ? ` + ${t.varianceLegs} variance leg` : ""}` }),
+                legRows(t.legs.map(id => legs.get(id)).filter(Boolean), ["3/4/5 games", "Signals"], insightCells),
+                (t.correlations || []).map(c => el("div", { class: "ov-why" },
+                    `🔗 ${c.legs.map(id => (legs.get(id) || {}).player || id).join(" + ")}: ${c.rho > 0 ? "+" : ""}${c.rho} ${c.why ? `(${c.why})` : ""}`)),
+                stakeRow(t)));
+            return el("div", { class: "ov-section" },
+                el("h3", { text: "Parlay tickets" }),
+                el("div", { class: "ov-grid" }, cards.length ? cards : el("div", { class: "ov-note" }, "No tickets this time: not enough legs qualify.")));
         }
 
         function slipsSection() {
@@ -204,7 +249,7 @@ div.ov-why { font-size: 0.78rem; }
             const entryCard = entry => {
                 const picks = {};
                 return el("div", { class: "ov-card" },
-                    el("h4", {}, `${entry.size}-leg ${entry.type === "flex" ? "Flex" : "Power"}${entry.stake ? ` · ${entry.stake} u` : ""}`, el("span", { class: "ov-why", text: when(entry.recordedAt) })),
+                    el("h4", {}, `${entry.size}-leg ${entry.type === "parlay" ? `parlay ${price(entry.american)}` : entry.type === "flex" ? "Flex" : "Power"}${entry.stake ? ` · ${entry.stake} u` : ""}`, el("span", { class: "ov-why", text: when(entry.recordedAt) })),
                     legRows(entry.legs, ["Close", "Result"], leg => [el("td", {
                         title: "Closing line value: how far the market's fair chance moved after you took it",
                         text: leg.closeFair != null && leg.metrics && leg.metrics.fairProb != null
@@ -251,7 +296,8 @@ div.ov-why { font-size: 0.78rem; }
             return el("div", { class: "ov-section" },
                 el("details", {},
                     el("summary", { text: `All props read (${result.legs.length})` }),
-                    legRows(result.legs, ["Why not"], l => [el("td", { class: "ov-why", text: l.rejected.length ? l.rejected.join("; ") : "✓ passed" })])));
+                    legRows(result.legs, ["3/4/5 games", "Signals", "Why not"], l => [...insightCells(l),
+                        el("td", { class: "ov-why", text: l.rejected.length ? l.rejected.join("; ") : l.tier === "variance" ? `variance leg: ${(l.varianceReasons || []).join("; ")}` : "✓ passed" })])));
         }
 
         function marketSection() {
@@ -312,9 +358,27 @@ div.ov-why { font-size: 0.78rem; }
             const cap = el("input", { type: "number", min: "0.1", max: "100", step: "0.1", value: ((bank.max_stake_pct ?? 0.03) * 100).toFixed(1), class: "ov-select", style: "width: 70px;" });
             const four = el("input", { type: "checkbox", checked: sizes.includes(4) });
             const six = el("input", { type: "checkbox", checked: sizes.includes(6) });
+            const w = (state && state.weights) || {};
+            const c = { target_juice: 119, juice_band: 12, hit_rate_min: 0.6, hit_rate_max: 0.75, min_minutes: 24, ...(w.consistency || (result && result.consistency) || {}) };
+            let mode = w.strategy || (result && result.strategy) || "sharp";
+            const modeBtns = [["sharp", "Sharp: -130+, L5 ≥ 70%"], ["consistency", "Consistency: -119, 60–75%"]].map(([v, t]) => el("button", { type: "button", class: mode === v ? "on" : "", onclick: e => {
+                mode = v;
+                [...e.target.parentNode.children].forEach(b => b.classList.toggle("on", b === e.target));
+            } }, t));
+            const numIn = (v, step, width = 64) => el("input", { type: "number", step, value: v, class: "ov-select", style: `width: ${width}px;` });
+            const juiceIn = numIn(c.target_juice, 1), bandIn = numIn(c.juice_band, 1, 52), loIn = numIn(Math.round(c.hit_rate_min * 100), 1, 52), hiIn = numIn(Math.round(c.hit_rate_max * 100), 1, 52), minIn = numIn(c.min_minutes, 1, 52);
+            const ticketSizes = (w.tickets && w.tickets.sizes) || [4, 5, 6];
+            const tBoxes = [4, 5, 6].map(n => [n, el("input", { type: "checkbox", checked: ticketSizes.includes(n) })]);
+            const strategyBox = el("div", { class: "ov-form" },
+                el("div", { class: "ov-mode", role: "group", "aria-label": "Strategy" }, modeBtns),
+                el("div", { class: "ov-why", text: "Consistency targets props near standard juice whose hit rate sits in a steady band (locked-in role, minutes floor), with every rolling 3-5 game window clearing the line. High-variance legs that otherwise qualify can fill one ticket spot." }),
+                el("label", {}, "Target juice -", juiceIn, " ± ", bandIn),
+                el("label", {}, "Hit-rate band ", loIn, " % to ", hiIn, " %  · minutes floor ", minIn),
+                el("label", {}, "Parlay tickets: ", tBoxes.map(([n, box]) => [box, ` ${n}-leg  `])));
             return el("div", { class: "ov-section" },
-                el("details", {},
-                    el("summary", { text: "Bankroll and entry sizes" }),
+                el("details", { open: true },
+                    el("summary", { text: "Strategy, bankroll and sizes" }),
+                    strategyBox,
                     el("div", { class: "ov-form" },
                         bank.current != null ? el("div", { text: `Bankroll ${bank.current} u (started ${bank.start}, peak ${bank.peak}${bank.drawdown ? `, ${pct(bank.drawdown)} below peak` : ""}). Stakes halve when it is ${pct(bank.drawdown_cut)} below its peak.` }) : null,
                         el("label", {}, "Starting bankroll (units) ", units),
@@ -323,7 +387,11 @@ div.ov-why { font-size: 0.78rem; }
                         el("div", { class: "ov-actions" },
                             el("button", { class: "ov-btn primary", disabled: Boolean(working), onclick: () => act("Saving…", "/outlier/strategy", {
                                 bankroll: { units: Number(units.value), kelly_fraction: Number(kelly.value), max_stake_pct: Number(cap.value) / 100 },
-                                sizes: [four.checked && 4, six.checked && 6].filter(Boolean)
+                                sizes: [four.checked && 4, six.checked && 6].filter(Boolean),
+                                strategy: mode,
+                                consistency: { target_juice: Number(juiceIn.value), juice_band: Number(bandIn.value), hit_rate_min: Number(loIn.value) / 100,
+                                    hit_rate_max: Number(hiIn.value) / 100, min_minutes: Number(minIn.value) },
+                                ticketSizes: tBoxes.filter(([, box]) => box.checked).map(([n]) => n)
                             }) }, "Save")))));
         }
 
@@ -372,7 +440,7 @@ div.ov-why { font-size: 0.78rem; }
                 error ? el("div", { class: "ov-error", role: "alert", text: error }) : null,
                 info ? el("div", { class: "ov-note", role: "status", text: info }) : null,
                 (state && state.lastError && !error) ? el("div", { class: "ov-error", text: state.lastError }) : null,
-                slipsSection(), trackedSection(), learningSection(), strategySection(), marketSection(), propsSection(), settingsSection()].filter(Boolean));
+                ticketsSection(), slipsSection(), trackedSection(), learningSection(), strategySection(), marketSection(), propsSection(), settingsSection()].filter(Boolean));
         }
 
         render();

@@ -25,6 +25,28 @@ A prop makes the cut when its odds are at least as juiced as `-min_juice` (‑13
 
 The view also shows where each prop's odds opened (`market-log.json` keeps every price seen, with its time).
 
+## Consistency strategy (-119)
+
+Switch **Strategy** in the view to *Consistency* (or set `"strategy": "consistency"` in `weights.json`). Instead of the sharp filter's heavy juice and 70% L5, it looks for props priced near standard juice whose players hit at a steady clip:
+
+| Check | Default (`weights.consistency`) |
+| --- | --- |
+| Price | -119 ± 12 (-107 to -131) |
+| Hit rate | L10 (else L5) between 60% and 75% |
+| Rolling baseline | the last 3, 4 and 5 games each average past the line and hit at least 60% |
+| Minutes floor | the lowest of the last 5 games' minutes ≥ 24, when the page shows minutes |
+| Edge | estimated hit chance at least 2 points above the price's implied chance |
+
+A prop that passes but swings a lot (floor more than 15% past the line, or volatility over 0.30) is a **variance** leg instead of a **high-floor** one.
+
+## Matchup, usage, pace and volume
+
+When Outlier shows them, the parser reads defense rank vs the player's position ("DvP vs PG: 27th", "Opp Rank vs C 25/30"), usage ("USG% 27.4"), pace ("Pace 101.2"), potential volume ("Potential Assists 13.1", "Rebound Chances 18.2") and minutes ("Minutes: 36, 35, 34"). Each nudges the hit chance a little (`weights.insights`): a bottom-30% defense ±2 points, pace 1.5+ possessions off the league line ±1, usage of 25%+ on scoring and playmaking props +1, potential volume that projects 8%+ past the line ±1.5 (potential assists × 0.55, rebound chances × 0.58), and minutes up or down 3+ over the last three games ±1. Unders read each signal the other way. The total is capped at ±5 points. Rank 1 is taken to be the stingiest defense, so check that your page ranks the same way. These are rough priors, not fitted to results.
+
+## Parlay tickets
+
+Every analysis also builds 4-, 5- and 6-leg parlay tickets (`weights.tickets`) from the high-floor legs, with at most one variance leg each. They follow the one-per-player and same-game limits and use the same-game correlations. Each ticket shows its combined odds (American and decimal), the book's implied chance against the model's chance that all legs hit, EV at those odds, and a Kelly stake. Tracking a ticket pays the product of the hit legs' odds: a push drops that leg, and one miss loses the ticket.
+
 ## Market odds (free)
 
 `market_data.py` cross-references Outlier's numbers with the rest of the market, at no cost:

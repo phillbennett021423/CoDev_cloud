@@ -249,5 +249,74 @@
     "kelly_fraction": 0.25,
     "max_stake_pct": 0.03,
     "drawdown_cut": 0.2
+  },
+  "strategy": "sharp",
+  "consistency": {
+    "target_juice": 119,
+    "juice_band": 12,
+    "hit_rate_min": 0.6,
+    "hit_rate_max": 0.75,
+    "windows": [
+      3,
+      4,
+      5
+    ],
+    "min_minutes": 24,
+    "min_edge": 0.02,
+    "anchor_floor_margin": -0.15,
+    "anchor_max_volatility": 0.3
+  },
+  "insights": {
+    "league_teams": {
+      "NBA": 30,
+      "WNBA": 13,
+      "NCAAB": 360,
+      "CBB": 360,
+      "NFL": 32,
+      "NCAAF": 130,
+      "CFB": 130,
+      "MLB": 30,
+      "NHL": 32
+    },
+    "soft_defense_share": 0.3,
+    "defense_adjust": 0.02,
+    "pace_lines": {
+      "NBA": 99.5,
+      "WNBA": 96,
+      "NCAAB": 68,
+      "CBB": 68,
+      "NFL": 63,
+      "NCAAF": 70,
+      "CFB": 70
+    },
+    "pace_adjust": 0.01,
+    "high_usage": 0.25,
+    "usage_adjust": 0.01,
+    "usage_groups": [
+      "scoring",
+      "playmaking"
+    ],
+    "potential_conversion": {
+      "assists": 0.55,
+      "rebounds": 0.58,
+      "points": 1.0,
+      "receptions": 0.65
+    },
+    "potential_edge": 0.08,
+    "potential_adjust": 0.015,
+    "role_shift_minutes": 3,
+    "role_adjust": 0.01,
+    "max_adjust": 0.05
+  },
+  "tickets": {
+    "sizes": [
+      4,
+      5,
+      6
+    ],
+    "anchor_pool": 12,
+    "variance_pool": 4,
+    "max_variance_legs": 1,
+    "tickets_per_size": 2
   }
 }
