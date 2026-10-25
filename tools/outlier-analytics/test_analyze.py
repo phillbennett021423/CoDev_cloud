@@ -296,3 +296,88 @@ class CommandLine(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# A 7-for-10 hitter over 20.5 whose last 3, 4 and 5 games all average above the line.
+STEADY = [24, 22, 19, 25, 23, 18, 26, 22, 17, 24]
+SOFT = {"defenseRank": 28, "position": "PG", "minutes": [35, 34, 36, 33, 35]}
+
+
+def steady(i, price=-119, recent=None, insights=SOFT, **extra):
+    return prop(i, price=price, l5=0.8, recent=recent or STEADY, insights=insights, hitRates={"l5": 0.8, "l10": 0.7}, league="NBA", **extra)
+
+
+class Consistency(unittest.TestCase):
+    def setUp(self):
+        self.w = A.load_weights(None)
+        self.w["strategy"] = "consistency"
+
+    def leg(self, raw):
+        leg = dict(raw)
+        leg["metrics"] = A.leg_metrics(leg, self.w)
+        leg["rejected"], leg["variance"] = A.consistency_check(leg, leg["metrics"], self.w)
+        return leg
+
+    def test_rolling_windows_and_baseline(self):
+        m = self.leg(steady(1))["metrics"]
+        self.assertEqual([w["games"] for w in m["rolling"]], [3, 4, 5])
+        self.assertAlmostEqual(m["rolling"][0]["avg"], 21.67, places=2)
+        self.assertTrue(m["baselineVerified"])
+        self.assertEqual(m["minutesFloor"], 33)
+        # Last three under the line: the 3-game window fails.
+        cold = self.leg(steady(2, recent=[18, 19, 20] + STEADY[3:]))
+        self.assertFalse(cold["metrics"]["baselineVerified"])
+        self.assertTrue(any("baseline" in r for r in cold["rejected"]))
+
+    def test_standard_juice_band_and_hit_rate_band(self):
+        self.assertEqual(self.leg(steady(1))["rejected"], [])
+        self.assertTrue(any("outside -107 to -131" in r for r in self.leg(steady(2, price=-150))["rejected"]))
+        hot = steady(3)
+        hot["hitRates"] = {"l5": 1.0, "l10": 0.9}
+        self.assertTrue(any("consistency band" in r for r in self.leg(hot)["rejected"]))
+        short = steady(4, insights={**SOFT, "minutes": [20, 22, 21, 19, 22]})
+        self.assertTrue(any("minutes floor" in r for r in self.leg(short)["rejected"]))
+
+    def test_signals_move_the_hit_chance(self):
+        base = self.leg(steady(1, insights=None))["metrics"]
+        soft = self.leg(steady(1))["metrics"]
+        tough = self.leg(steady(1, insights={"defenseRank": 2}))["metrics"]
+        self.assertAlmostEqual(soft["p"] - base["p"], 0.02, places=3)
+        self.assertAlmostEqual(tough["p"] - base["p"], -0.02, places=3)
+        self.assertTrue(any("soft matchup" in s for s in soft["signals"]))
+        # An under reads the same matchup the other way.
+        under = self.leg(steady(1, side="under", line=26.5))["metrics"]
+        self.assertLess(under["insightAdjust"], 0)
+        full = self.leg(steady(1, insights={**SOFT, "pace": 103, "usage": 0.31, "potential": {"points": 30}}))["metrics"]
+        self.assertLessEqual(full["insightAdjust"], self.w["insights"]["max_adjust"] + 1e-9)
+
+    def test_boom_or_bust_leg_is_variance_not_anchor(self):
+        swing = self.leg(steady(1, recent=[40, 30, 21, 35, 28, 8, 45, 22, 6, 38]))
+        self.assertTrue(swing["variance"])
+
+    def test_tickets_mix_anchors_with_at_most_one_variance_leg(self):
+        props = [steady(i) for i in range(1, 7)]
+        props.append(steady(7, recent=[40, 30, 21, 35, 28, 8, 45, 22, 6, 38]))
+        result = A.analyze({"props": props}, self.w)
+        self.assertEqual(result["strategy"], "consistency")
+        tiers = {l["id"]: l["tier"] for l in result["legs"]}
+        self.assertEqual(tiers["p7"], "variance")
+        self.assertEqual(sum(1 for t in tiers.values() if t == "anchor"), 6)
+        sizes = sorted({t["size"] for t in result["tickets"]})
+        self.assertEqual(sizes, [4, 5, 6])
+        for t in result["tickets"]:
+            self.assertLessEqual(t["varianceLegs"], 1)
+            by_id = {l["id"]: l for l in result["legs"]}
+            dec = 1.0
+            for leg_id in t["legs"]:
+                dec *= A.decimal_odds(by_id[leg_id]["metrics"]["consensus"])
+            self.assertAlmostEqual(t["decimal"], round(dec, 3), places=2)
+            self.assertAlmostEqual(t["impliedProb"], 1 / dec, places=3)
+            self.assertEqual(t["american"], A.american_from_decimal(dec))
+            self.assertAlmostEqual(t["ev"], t["modelProb"] * dec - 1, places=2)
+
+    def test_parlay_payout_for_the_bankroll(self):
+        legs = [{"result": "hit", "takenPrice": -119}] * 3 + [{"result": "push", "takenPrice": -119}]
+        self.assertAlmostEqual(A.entry_payout({"type": "parlay", "legs": legs}, self.w), A.decimal_odds(-119) ** 3)
+        legs[0] = {"result": "miss", "takenPrice": -119}
+        self.assertEqual(A.entry_payout({"type": "parlay", "legs": legs}, self.w), 0.0)

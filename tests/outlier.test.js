@@ -204,3 +204,61 @@ test('public odds boards are read with a fresh browser and cross-referenced into
     assert.equal(cfg.odds_api.apiKey, undefined, 'the key never goes in the settings file');
     assert.throws(() => pipeline.setConfig({ publicBoards: ['file:///etc/passwd'] }), /Only http/);
 });
+
+test('matchup, usage, pace, potential and minutes are read from cards and tables', () => {
+    const { insights } = require('../agents/outlier/extract');
+    const card = parseText('NBA\nLAL @ DEN\nJamal Murray\nPoints\nOver 21.5\nFanDuel -119\nL10 70%\nPotential Assists 13.1\nUSG% 27.4\nPace 101.2\nDvP vs PG: 27th\nMinutes: 36, 35, 34, 33, 35');
+    assert.equal(card.market, 'Points', '"Potential Assists" does not make it an assists prop');
+    assert.deepEqual(card.insights, { defenseRank: 27, position: 'PG', usage: 0.274, pace: 101.2, potential: { assists: 13.1 }, minutes: [36, 35, 34, 33, 35] });
+    const [row] = parseTable({ headers: ['Player', 'Prop', 'Line', 'Odds', 'L5', 'USG%', 'Pace', 'DvP', 'Potential AST', 'MIN'],
+        rows: [['Jamal Murray', 'Assists', 'o6.5', '-119', '60%', '27.4%', '101.2', '27', '13.1', '34.8']] });
+    assert.deepEqual(row.insights, { usage: 0.274, pace: 101.2, defenseRank: 27, potential: { assists: 13.1 }, minutesAvg: 34.8 });
+    assert.deepEqual(insights('Rebound Chances 18.2 MIN 31.5 Opp Rank vs C 25/30'), { defenseRank: 25, defenseTeams: 30, position: 'C', potential: { rebounds: 18.2 }, minutesAvg: 31.5 });
+});
+
+test('the -119 consistency strategy builds parlay tickets the dashboard shows and tracks', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {} });
+    const steady = [24, 22, 19, 25, 23, 18, 26, 22, 17, 24];
+    const props = ['A Guard', 'B Wing', 'C Big', 'D Forward', 'E Shooter', 'F Center'].map((player, i) => ({
+        id: `p${i}`, player, market: 'Points', line: 20.5, side: 'over', league: 'NBA', team: `T${i}`, game: `G${i}`,
+        odds: [{ book: 'fanduel', price: -119 }], hitRates: { l5: 0.8, l10: 0.7 }, recent: steady,
+        insights: { defenseRank: 28, minutes: [35, 34, 36, 33, 35] }
+    }));
+    fs.writeFileSync(pipeline.files.scrape, JSON.stringify({ scrapedAt: new Date().toISOString(), props }));
+    const state = await pipeline.setStrategy({ strategy: 'consistency', ticketSizes: [4, 5, 6] });
+    assert.equal(state.result.strategy, 'consistency');
+    assert.deepEqual([...new Set(state.result.tickets.map(x => x.size))], [4, 5, 6]);
+    await assert.rejects(pipeline.setStrategy({ strategy: 'yolo' }), /sharp or consistency/);
+    const ticket = state.result.tickets[0];
+    const entry = pipeline.track(ticket.id, 1);
+    assert.equal(entry.type, 'parlay');
+    assert.equal(entry.american, ticket.american);
+
+    // The dashboard draws the tickets with the page's dark theme.
+    const page = await launched.browser.newPage();
+    const errors = [];
+    page.on('pageerror', err => errors.push(err.message));
+    await page.setContent('<style>:root{--bg-dark:#090d16;--bg-panel:#111827;--bg-card:#1f2937;--border-color:#374151;--accent:#0ea5e9;--accent-glow:rgba(14,165,233,.2);--text-main:#f3f4f6;--text-muted:#9ca3af;--success:#10b981;--danger:#ef4444;--warning:#f59e0b}</style><div id="v"></div>');
+    await page.addScriptTag({ path: path.join(__dirname, '..', 'mobile', 'www', 'agent-ui', 'outlier-view.js') });
+    await page.evaluate(s => window.CodevOutlierView.mount(document.getElementById('v'), { getJson: async () => s, postJson: async () => s }), pipeline.state());
+    await page.waitForSelector('.ov-ticket');
+    const shown = await page.evaluate(() => ({
+        tickets: document.querySelectorAll('.ov-ticket').length,
+        odds: document.querySelector('.ov-ticket .ov-odds').textContent,
+        accent: getComputedStyle(document.querySelector('.ov-ticket .ov-odds')).color,
+        text: document.getElementById('v').innerText
+    }));
+    assert.equal(shown.tickets, state.result.tickets.length);
+    assert.equal(shown.odds, `+${ticket.american}`);
+    assert.equal(shown.accent, 'rgb(14, 165, 233)');
+    assert.match(shown.text, /Consistency \(-119\)/);
+    assert.match(shown.text, /soft matchup/);
+    assert.match(shown.text, /parlay \+\d+/, 'the tracked ticket shows its odds');
+    assert.deepEqual(errors, []);
+});

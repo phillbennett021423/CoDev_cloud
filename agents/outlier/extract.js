@@ -186,6 +186,41 @@ function recentGames(text) {
     return m ? m[1].split(/[\s,|/]+/).map(Number).filter(Number.isFinite) : [];
 }
 
+// Matchup, role and volume numbers shown around a prop: defense rank vs the
+// player's position ("DvP 28th", "Opp rank vs PG: 28/30"), usage ("USG% 31.2"),
+// pace ("Pace 101.3"), potential volume ("Potential Assists 12.4", "Reb Chances
+// 18.2") and minutes ("MIN 35.2", "Minutes: 36, 34, 35"). Missing ones are left out.
+const POTENTIAL_STATS = { assists: /assists?|ast/, rebounds: /rebounds?|reb(?:ound)? chances|reb/, points: /points?|pts/, receptions: /targets|receptions?/ };
+function insights(text) {
+    const out = {};
+    const num = v => (v == null ? null : Number(v));
+    const dvp = text.match(/\b(?:dvp|def(?:ense)?\s*(?:vs\.?|v\.?)\s*(?:pos(?:ition)?|[A-Z]{1,2})|opp(?:onent)?\s*rank(?:\s*(?:vs\.?)\s*[A-Z]{1,2})?|matchup rank)(?:\s*vs\.?\s*[A-Z]{1,2})?\s*(?:rank)?\s*[:#]?\s*(\d{1,3})(?:st|nd|rd|th)?(?:\s*\/\s*(\d{1,3}))?/i);
+    if (dvp) {
+        out.defenseRank = num(dvp[1]);
+        if (dvp[2]) out.defenseTeams = num(dvp[2]);
+        const pos = text.match(/\bvs\.?\s*(PG|SG|SF|PF|C|G|F|QB|RB|WR|TE|LW|RW|D)\b/);
+        if (pos) out.position = pos[1];
+    }
+    const usg = text.match(/\busg%?\s*(?:rate)?\s*[:=]?\s*(\d{1,2}(?:\.\d+)?)\s*%?/i) || text.match(/(\d{1,2}(?:\.\d+)?)\s*%\s*usg\b/i)
+        || text.match(/\busage(?:\s*rate)?\s*[:=]?\s*(\d{1,2}(?:\.\d+)?)\s*%?/i);
+    if (usg) out.usage = Math.round(num(usg[1]) * 10) / 1000;
+    const pace = text.match(/\bpace\s*[:=]?\s*(\d{2,3}(?:\.\d+)?)/i);
+    if (pace) out.pace = num(pace[1]);
+    const potential = {};
+    for (const m of text.matchAll(/\b(?:potential|pot\.?)\s+([a-z]+(?:\s+chances)?)\s*[:=]?\s*(\d{1,3}(?:\.\d+)?)/gi)) {
+        const stat = Object.keys(POTENTIAL_STATS).find(k => POTENTIAL_STATS[k].test(m[1].toLowerCase()));
+        if (stat) potential[stat] = num(m[2]);
+    }
+    const chances = text.match(/\breb(?:ound)?\s*chances\s*[:=]?\s*(\d{1,3}(?:\.\d+)?)/i);
+    if (chances && potential.rebounds == null) potential.rebounds = num(chances[1]);
+    if (Object.keys(potential).length) out.potential = potential;
+    const minutesList = text.match(/\b(?:minutes|mins)\s*[:\-]\s*((?:\d{1,2}(?:\.\d+)?[\s,|/]+){2,}\d{1,2}(?:\.\d+)?)/i);
+    if (minutesList) out.minutes = minutesList[1].split(/[\s,|/]+/).map(Number).filter(Number.isFinite);
+    const minutesAvg = text.match(/\b(?:min|mins|minutes|mpg)\s*[:=]?\s*(\d{1,2}(?:\.\d+)?)\b(?!\s*[,|/]\s*\d)/i);
+    if (minutesAvg && !minutesList) out.minutesAvg = num(minutesAvg[1]);
+    return out;
+}
+
 function propId(p) {
     return [p.player, p.market, p.line, p.side].map(v => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9.]+/g, '')).join('|');
 }
@@ -200,7 +235,8 @@ function parseText(raw, page = {}, { requireOdds = true } = {}) {
     if (!lineMatch) return null;
     const prop = {
         player: findPlayer(lines),
-        market: findMarket(text),
+        // "Potential Assists 12.4" on a points card doesn't make it an assists prop.
+        market: findMarket(text.replace(/\b(?:potential|pot\.?)\s+[a-z]+(?:\s+chances)?|\breb(?:ound)?\s*chances/gi, ' ')),
         line: Number(lineMatch[2]),
         side: sideOf(lineMatch[1]),
         league: LEAGUES.find(l => new RegExp(`\\b${l}\\b`).test(text)) || null,
@@ -211,6 +247,8 @@ function parseText(raw, page = {}, { requireOdds = true } = {}) {
         recent: recentGames(text),
         source: page.url || null
     };
+    const found = insights(text);
+    if (Object.keys(found).length) prop.insights = found;
     // Prices: a line naming a book is that book's; "consensus"/"market" is the consensus.
     for (const l of lines) {
         const prices = [...l.matchAll(PRICE_RE)].map(m => toPrice(m[1])).filter(v => v !== null);
@@ -235,7 +273,10 @@ const COLUMN_RULES = [
     ['l5', /^(l5|last 5)$/i], ['l10', /^(l10|last 10)$/i], ['l20', /^(l20|last 20)$/i],
     ['h2h', /^h2h$/i], ['season', /^(szn|season|20\d\d)$/i],
     ['team', /^team$/i], ['opponent', /^(opp|opponent|vs)$/i], ['game', /^(game|matchup|event)$/i],
-    ['league', /^(league|sport)$/i]
+    ['league', /^(league|sport)$/i],
+    ['usage', /^(usg%?|usage( rate)?)$/i], ['pace', /^pace$/i],
+    ['defenseRank', /^(dvp|def(ense)? vs\.? pos(ition)?|opp(onent)? rank|matchup rank|def rank)$/i],
+    ['minutes', /^(min|mins|minutes|mpg)$/i], ['potential', /^(potential|pot\.?)\s+\w+/i]
 ];
 
 function parseTable(table, page = {}) {
@@ -272,6 +313,16 @@ function parseTable(table, page = {}) {
                     prop.line = Number(m[2] || m[1]);
                     if (m[2]) prop.side = sideOf(m[1]);
                 }
+            } else if (['usage', 'pace', 'defenseRank', 'minutes', 'potential'].includes(col.field)) {
+                const n = Number((value.match(/\d+(?:\.\d+)?/) || [])[0]);
+                if (!Number.isFinite(n)) return;
+                prop.insights = prop.insights || {};
+                if (col.field === 'usage') prop.insights.usage = n > 1 ? Math.round(n * 10) / 1000 : n;
+                else if (col.field === 'minutes') prop.insights.minutesAvg = n;
+                else if (col.field === 'potential') {
+                    const stat = Object.keys(POTENTIAL_STATS).find(k => POTENTIAL_STATS[k].test(String(table.headers[i]).toLowerCase().replace(/^(potential|pot\.?)\s+/, '')));
+                    if (stat) prop.insights.potential = { ...(prop.insights.potential || {}), [stat]: n };
+                } else prop.insights[col.field] = n;
             } else if (col.field === 'side') {
                 prop.side = sideOf(value.split(/\s+/)[0]) || prop.side;
             } else if (col.field) {
@@ -340,4 +391,4 @@ function parseCollected(pages) {
     return { props: [...byId.values()], results, pages: summary };
 }
 
-module.exports = { collectPage, parseCollected, parseText, parseTable, parseResult, propId, findMarket };
+module.exports = { insights, collectPage, parseCollected, parseText, parseTable, parseResult, propId, findMarket };

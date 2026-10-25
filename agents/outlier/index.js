@@ -530,6 +530,28 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             if (!sizes.length) throw new Error('Pick 4-leg, 6-leg or both.');
             weights.slips = { ...(weights.slips || {}), sizes };
         }
+        // sharp: -130+ juice, L5 >= 70%, high floor. consistency: -119 standard juice,
+        // 60-75% hit rate, verified rolling 3-5 game baseline, minutes floor.
+        if (update.strategy !== undefined) {
+            if (!['sharp', 'consistency'].includes(update.strategy)) throw new Error('Strategy is sharp or consistency.');
+            weights.strategy = update.strategy;
+        }
+        if (update.consistency) {
+            const c = { ...(weights.consistency || {}) };
+            for (const [key, lo, hi] of [['target_juice', 100, 200], ['juice_band', 0, 50], ['hit_rate_min', 0, 1], ['hit_rate_max', 0, 1], ['min_minutes', 0, 60], ['min_edge', 0, 0.3]]) {
+                if (update.consistency[key] === undefined) continue;
+                const value = num(update.consistency[key], lo, hi);
+                if (value === undefined) throw new Error(`${key} must be between ${lo} and ${hi}.`);
+                c[key] = value;
+            }
+            if (c.hit_rate_min !== undefined && c.hit_rate_max !== undefined && c.hit_rate_min > c.hit_rate_max) throw new Error('The hit-rate band\'s low end is above its high end.');
+            weights.consistency = c;
+        }
+        if (Array.isArray(update.ticketSizes)) {
+            const sizes = [...new Set(update.ticketSizes.map(Number).filter(n => n >= 4 && n <= 6))].sort();
+            if (!sizes.length) throw new Error('Pick ticket sizes from 4 to 6 legs.');
+            weights.tickets = { ...(weights.tickets || {}), sizes };
+        }
         writeJson(files.weights, weights);
         if (fs.existsSync(files.scrape)) await analyze();
         return snapshotState();
@@ -585,12 +607,15 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
 
     function track(slipId, stake) {
         const result = readJson(files.result, null);
-        const slip = result && result.slips.find(s => s.id === slipId);
+        // A power/flex entry, or a parlay ticket (paid at the legs' combined odds).
+        const ticket = result && (result.tickets || []).find(t => t.id === slipId);
+        const slip = result && (result.slips.find(s => s.id === slipId) || (ticket && { ...ticket, type: 'parlay', allHitProb: ticket.modelProb }));
         if (!slip) throw new Error('That entry is no longer in the latest results. Run the analysis again.');
         const legsById = new Map(result.legs.map(l => [l.id, l]));
         const data = history();
         const entry = {
             id: `e${Date.now().toString(36)}`, slipId, recordedAt: new Date().toISOString(), type: slip.type, size: slip.size,
+            ...(slip.type === 'parlay' && { decimal: slip.decimal, american: slip.american }),
             ev: slip.ev, allHitProb: slip.allHitProb, weightsVersion: result.weightsVersion,
             // What you actually staked (defaults to the Kelly stake), for the bankroll.
             stake: Number.isFinite(Number(stake)) && Number(stake) >= 0 ? Number(stake) : slip.stakeUnits || 0,

@@ -107,6 +107,102 @@ def percentile(values, q):
     return ordered[lo] + (ordered[hi] - ordered[lo]) * (pos - lo)
 
 
+# ---- matchup, role and volume signals ---------------------------------------
+# What Outlier shows around a prop besides the price: the opponent's rank against
+# the player's position, the player's usage rate, the game's pace, "potential"
+# volume (potential assists, rebound chances) and minutes. Each nudges the hit
+# chance by a small, capped amount (weights["insights"]); they're rough priors,
+# not fitted, so the market price and the player's own games still dominate.
+
+def insight_signals(leg, weights):
+    """(probability adjustment for this side, [reasons]) from leg["insights"]."""
+    cfg = weights.get("insights") or {}
+    info = leg.get("insights") or {}
+    if not info or not cfg:
+        return 0.0, []
+    sign = -1.0 if (leg.get("side") or "over").lower() == "under" else 1.0
+    league = (leg.get("league") or "").upper()
+    adjust, why = 0.0, []
+
+    rank = info.get("defenseRank")
+    teams = info.get("defenseTeams") or cfg.get("league_teams", {}).get(league) or 30
+    if isinstance(rank, (int, float)) and 1 <= rank <= teams:
+        share = cfg.get("soft_defense_share", 0.3)
+        pos = f" vs {info['position']}" if info.get("position") else ""
+        # Rank 1 = the defense that allows the least; the last rank allows the most.
+        if rank > teams * (1 - share):
+            adjust += sign * cfg.get("defense_adjust", 0.0)
+            why.append(f"soft matchup: defense ranks {int(rank)}/{teams}{pos}")
+        elif rank <= teams * share:
+            adjust -= sign * cfg.get("defense_adjust", 0.0)
+            why.append(f"tough matchup: defense ranks {int(rank)}/{teams}{pos}")
+
+    pace, line = info.get("pace"), cfg.get("pace_lines", {}).get(league)
+    if isinstance(pace, (int, float)) and line:
+        if pace >= line + 1.5:
+            adjust += sign * cfg.get("pace_adjust", 0.0)
+            why.append(f"fast pace ({pace:g} vs {line:g})")
+        elif pace <= line - 1.5:
+            adjust -= sign * cfg.get("pace_adjust", 0.0)
+            why.append(f"slow pace ({pace:g} vs {line:g})")
+
+    usage = info.get("usage")
+    group = market_group(leg, weights.get("correlation", {}))
+    if isinstance(usage, (int, float)) and group in cfg.get("usage_groups", []) and usage >= cfg.get("high_usage", 1):
+        adjust += sign * cfg.get("usage_adjust", 0.0)
+        why.append(f"high usage ({usage:.0%} USG)")
+
+    line_value = leg.get("line")
+    potential = info.get("potential") or {}
+    for stat, conversion in cfg.get("potential_conversion", {}).items():
+        value = potential.get(stat)
+        if not isinstance(value, (int, float)) or not isinstance(line_value, (int, float)) or line_value <= 0:
+            continue
+        if stat not in market_key(leg):
+            continue
+        projected = value * conversion
+        edge = projected / line_value - 1
+        if abs(edge) >= cfg.get("potential_edge", 1):
+            adjust += sign * cfg.get("potential_adjust", 0.0) * (1 if edge > 0 else -1)
+            why.append(f"potential {stat} {value:g} projects {projected:.1f} vs line {line_value:g}")
+        break
+
+    minutes = [m for m in (info.get("minutes") or []) if isinstance(m, (int, float))]
+    if len(minutes) >= 5:
+        shift = statistics.fmean(minutes[:3]) - statistics.fmean(minutes[3:])
+        if abs(shift) >= cfg.get("role_shift_minutes", 99):
+            adjust += sign * cfg.get("role_adjust", 0.0) * (1 if shift > 0 else -1)
+            why.append(f"role {'up' if shift > 0 else 'down'}: {shift:+.1f} minutes over the last 3")
+
+    cap = cfg.get("max_adjust", 0.05)
+    return max(-cap, min(cap, adjust)), why
+
+
+def rolling_windows(recent, line, side, windows):
+    """Average and hit rate over the last n games for each n (most recent first)."""
+    out = []
+    if line is None:
+        return out
+    for n in windows:
+        if len(recent) < n:
+            continue
+        games = recent[:n]
+        hit = sum(1 for v in games if (v < line if side == "under" else v > line))
+        out.append({"games": n, "avg": rnd(statistics.fmean(games), 2), "hitRate": rnd(hit / n)})
+    return out
+
+
+def baseline_verified(rolling, line, side, min_rate):
+    """Every window's average is on the right side of the line and hits often enough."""
+    if not rolling or line is None:
+        return None
+    for w in rolling:
+        right_side = w["avg"] < line if side == "under" else w["avg"] > line
+        if not right_side or w["hitRate"] < min_rate - 1e-9:
+            return False
+    return True
+
+
 # ---- one prop --------------------------------------------------------------
 
 def leg_metrics(leg, weights):
@@ -181,6 +277,18 @@ def leg_metrics(leg, weights):
         else:
             prob = fair
         prob *= 1 - weights.get("market_penalty", {}).get(market_key(leg), 0.0)
+    signal_adjust, signals = insight_signals(leg, weights)
+    if prob is not None and signal_adjust:
+        prob = min(0.97, max(0.03, prob + signal_adjust))
+
+    cons = weights.get("consistency") or {}
+    rolling = rolling_windows(recent, line, side, cons.get("windows", [3, 4, 5]))
+    info = leg.get("insights") or {}
+    minutes = [m for m in (info.get("minutes") or []) if isinstance(m, (int, float))][:5]
+    minutes_floor = min(minutes) if minutes else info.get("minutesAvg")
+    l10 = normalize_rate(rates.get("l10"))
+    if l10 is None and len(recent) >= 10 and line is not None:
+        l10 = hits(recent[:10]) / 10.0
 
     return {
         "consensus": consensus,
@@ -196,6 +304,12 @@ def leg_metrics(leg, weights):
         "p": rnd(prob),
         "fairSource": leg.get("marketFairFrom") if leg.get("marketFair") is not None else ("both sides" if opposite else "assumed vig") if fair is not None else None,
         "marketBooks": leg.get("marketBooks"),
+        "l10": rnd(l10),
+        "rolling": rolling,
+        "baselineVerified": baseline_verified(rolling, line, side, cons.get("hit_rate_min", 0.6)),
+        "minutesFloor": rnd(minutes_floor, 1) if isinstance(minutes_floor, (int, float)) else None,
+        "insightAdjust": rnd(signal_adjust),
+        "signals": signals,
     }
 
 
@@ -250,6 +364,49 @@ def rejections(leg, metrics, weights):
     if metrics["p"] is not None and metrics["p"] < f["min_leg_probability"] - 1e-9:
         reasons.append(f"estimated hit chance {metrics['p']:.0%} is under {f['min_leg_probability']:.0%}")
     return reasons
+
+
+def consistency_check(leg, metrics, weights):
+    """The -119 consistency profile: (reasons it fails, reasons it's only a variance leg).
+
+    Targets props priced near standard juice (-119 by default) whose recent hit
+    rate sits in the 60-75% band (a locked-in role or minutes floor the price
+    hasn't caught up with), with every rolling 3-5 game window clearing the line.
+    A prop that passes all of that but swings a lot (low floor, high volatility)
+    is a variance leg: tickets may carry one, never more.
+    """
+    c = weights["consistency"]
+    reasons, variance = [], []
+    if market_key(leg) in [m.lower() for m in weights.get("avoid_markets", [])]:
+        reasons.append("market on the avoid list (it kept missing)")
+    lo, hi = c["target_juice"] - c["juice_band"], c["target_juice"] + c["juice_band"]
+    if metrics["consensus"] is None:
+        reasons.append("no odds")
+    elif not (lo - 1e-9 <= metrics["juice"] <= hi + 1e-9):
+        reasons.append(f"price {fmt_price(metrics['consensus'])} is outside -{lo:g} to -{hi:g} (standard -{c['target_juice']:g} juice)")
+    rate = metrics.get("l10") if metrics.get("l10") is not None else metrics["l5"]
+    label = "L10" if metrics.get("l10") is not None else "L5"
+    if rate is None:
+        reasons.append("no recent hit rate")
+    elif not (c["hit_rate_min"] - 1e-9 <= rate <= c["hit_rate_max"] + 1e-9):
+        reasons.append(f"{label} {rate:.0%} is outside the {c['hit_rate_min']:.0%}-{c['hit_rate_max']:.0%} consistency band")
+    if metrics["baselineVerified"] is False:
+        reasons.append("rolling 3-5 game baseline doesn't clear the line in every window")
+    elif metrics["baselineVerified"] is None:
+        reasons.append("not enough recent games to check the 3-5 game baseline")
+    if metrics["minutesFloor"] is not None and metrics["minutesFloor"] < c["min_minutes"] - 1e-9:
+        reasons.append(f"minutes floor {metrics['minutesFloor']:g} is under {c['min_minutes']:g}")
+    if metrics["p"] is None or metrics["impliedProb"] is None:
+        reasons.append("no hit chance")
+    elif metrics["p"] < metrics["impliedProb"] + c["min_edge"] - 1e-9:
+        reasons.append(f"estimated hit chance {metrics['p']:.0%} isn't {c['min_edge']:.0%} above the price's {metrics['impliedProb']:.0%}")
+    # A 60-75% hitter's worst games dip under the line, so the floor bar here is
+    # looser than the sharp filter's: anchors may miss by a little, not a lot.
+    if metrics["floorMargin"] is not None and metrics["floorMargin"] < c["anchor_floor_margin"] - 1e-9:
+        variance.append(f"low floor ({metrics['floorMargin']:+.0%} vs line)")
+    if metrics["volatility"] is not None and metrics["volatility"] > c["anchor_max_volatility"] + 1e-9:
+        variance.append(f"high variance (volatility {metrics['volatility']:.2f})")
+    return reasons, variance
 
 
 def fmt_price(price):
@@ -385,6 +542,15 @@ def entry_payout(entry, weights):
     results = [l.get("result") for l in entry.get("legs", [])]
     if any(r not in ("hit", "miss", "push") for r in results):
         return None
+    if entry.get("type") == "parlay":
+        # A parlay pays the product of its legs' odds; one miss loses it, a push drops that leg.
+        if "miss" in results:
+            return 0.0
+        mult = 1.0
+        for leg in entry.get("legs", []):
+            if leg.get("result") == "hit" and leg.get("takenPrice") is not None:
+                mult *= decimal_odds(float(leg["takenPrice"]))
+        return mult
     size = sum(1 for r in results if r != "push")
     hits = sum(1 for r in results if r == "hit")
     table = weights["payouts"].get(entry.get("type"), {}).get(str(size))
@@ -519,6 +685,69 @@ def build_slips(legs, weights, bank=None):
     return slips, notes
 
 
+def decimal_odds(price):
+    return 1 + (price / 100.0 if price > 0 else 100.0 / -price)
+
+
+def american_from_decimal(dec):
+    return round((dec - 1) * 100) if dec >= 2 else round(-100 / (dec - 1))
+
+
+def build_tickets(anchors, variance, weights, bank=None):
+    """4-6 leg parlay tickets from verified high-floor legs plus at most a few
+    variance legs, ranked by expected value at the combined book odds."""
+    cfg = weights["tickets"]
+    slips_cfg = weights["slips"]
+    bank = bank or bankroll_state({}, weights)
+    pool = sorted(anchors, key=lambda l: leg_score(l["metrics"]), reverse=True)[: cfg["anchor_pool"]]
+    pool += sorted(variance, key=lambda l: l["metrics"]["p"] or 0, reverse=True)[: cfg["variance_pool"]]
+    tickets, notes = [], []
+    for size in cfg["sizes"]:
+        if len(pool) < size:
+            notes.append(f"{size}-leg ticket: only {len(pool)} leg(s) qualify.")
+            continue
+        ranked = []
+        for combo in itertools.combinations(pool, size):
+            if sum(1 for l in combo if l.get("tier") == "variance") > cfg["max_variance_legs"]:
+                continue
+            if not fits(combo, slips_cfg):
+                continue
+            dec = 1.0
+            for l in combo:
+                dec *= decimal_odds(l["metrics"]["consensus"])
+            dist, links = correlated_distribution(combo, weights)
+            all_hit = dist[-1]
+            ranked.append((all_hit * dec - 1, all_hit, dec, dist, links, combo))
+        ranked.sort(key=lambda r: (r[0], r[1]), reverse=True)
+        chosen = []
+        for ev, all_hit, dec, dist, links, combo in ranked:
+            ids = {l["id"] for l in combo}
+            if any(len(ids & c) > size // 2 for c in chosen):
+                continue
+            chosen.append(ids)
+            table = {str(size): dec}
+            tickets.append({
+                "id": f"ticket-{size}-{len(chosen)}",
+                "size": size,
+                "legs": [l["id"] for l in combo],
+                "anchors": sum(1 for l in combo if l.get("tier") != "variance"),
+                "varianceLegs": sum(1 for l in combo if l.get("tier") == "variance"),
+                "decimal": rnd(dec, 3),
+                "american": american_from_decimal(dec),
+                "impliedProb": rnd(1 / dec),
+                "modelProb": rnd(all_hit),
+                "ev": rnd(ev),
+                "correlations": links,
+                **stake_for(dist, table, weights, bank),
+            })
+            if len(chosen) >= cfg["tickets_per_size"]:
+                break
+        if not ranked:
+            notes.append(f"{size}-leg ticket: no mix of legs fits the one-per-player and same-game limits.")
+    tickets.sort(key=lambda t: (t["size"], -t["ev"]))
+    return tickets, notes
+
+
 def line_movement(leg, metrics, market_log):
     """Where this prop opened and how far its fair probability has moved since."""
     seen = (market_log or {}).get(leg["id"])
@@ -531,31 +760,44 @@ def line_movement(leg, metrics, market_log):
 
 def analyze(scrape, weights, history=None, market_log=None):
     props = scrape.get("props") or []
+    strategy = weights.get("strategy", "sharp")
     legs = []
     for i, raw in enumerate(props):
         leg = dict(raw)
         leg.setdefault("id", f"leg-{i + 1}")
         leg["metrics"] = leg_metrics(leg, weights)
         leg["metrics"].update(line_movement(leg, leg["metrics"], market_log))
-        leg["rejected"] = rejections(leg, leg["metrics"], weights)
+        if strategy == "consistency":
+            leg["rejected"], variance = consistency_check(leg, leg["metrics"], weights)
+            leg["tier"] = None if leg["rejected"] else "variance" if variance else "anchor"
+            leg["varianceReasons"] = variance
+        else:
+            leg["rejected"] = rejections(leg, leg["metrics"], weights)
+            leg["tier"] = None if leg["rejected"] else "anchor"
         legs.append(leg)
-    passed = [l for l in legs if not l["rejected"]]
+    passed = [l for l in legs if l["tier"] == "anchor"]
+    variance_legs = [l for l in legs if l["tier"] == "variance"]
     bank = bankroll_state(history or {}, weights)
     slips, notes = build_slips(passed, weights, bank)
+    tickets, ticket_notes = build_tickets(passed, variance_legs, weights, bank)
+    notes += ticket_notes
     if bank["drawdown"] >= weights["bankroll"]["drawdown_cut"]:
         notes.append(f"Bankroll is {bank['drawdown']:.0%} below its peak, so stakes are halved until it recovers.")
     if not props:
         notes.insert(0, "The scrape found no props. If the Outlier page shows some, save a page snapshot so the parser can be tuned to it.")
-    legs.sort(key=lambda l: (bool(l["rejected"]), -leg_score(l["metrics"])))
+    legs.sort(key=lambda l: (bool(l["rejected"]), l["tier"] == "variance", -leg_score(l["metrics"])))
     return {
         "generatedAt": now_iso(),
         "scrapedAt": scrape.get("scrapedAt"),
         "weightsVersion": weights.get("version", 1),
         "filters": weights["filters"],
-        "counts": {"props": len(legs), "passed": len(passed), "slips": len(slips)},
+        "strategy": strategy,
+        "consistency": weights.get("consistency"),
+        "counts": {"props": len(legs), "passed": len(passed), "variance": len(variance_legs), "slips": len(slips), "tickets": len(tickets)},
         "bankroll": {**weights["bankroll"], **bank},
         "legs": legs,
         "slips": slips,
+        "tickets": tickets,
         "notes": notes,
     }
 
