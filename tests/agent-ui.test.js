@@ -163,3 +163,46 @@ test('in sandbox mode, MCP servers that write or run on this computer are kept o
     assert.equal(dialogs.length, 1);
     assert.match(dialogs[0], /helper__deploy[\s\S]*outside the sandbox/);
 });
+
+test('agents start as a blank slate, and a new task clears what the old one left', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const workspace = makeWorkspace();
+    const backend = createMockBackend({ workspace });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const { page, errors } = await openPage(launched.browser, url, { steps: ['Here is the 4-leg parlay breakdown.'] });
+    page.on('dialog', dialog => dialog.accept());
+
+    // Built-in and newly created agents: no memory, no shared links, nothing project-specific.
+    const defaults = await page.evaluate(() => {
+        createNewAgent();
+        return agents.map(a => ({ memory: a.memory, sharedWith: a.sharedWith, cross: a.crossKnowledgeEnabled, devRole: a.devRole, text: `${a.role} ${a.instructions}` }));
+    });
+    assert.ok(defaults.every(a => a.memory === '' && !a.sharedWith.length && !a.cross), 'empty memory and no shared links');
+    assert.ok(defaults.every(a => !/godot|game|narrative|universe/i.test(a.text)), 'no pre-seeded project');
+    assert.equal(defaults.at(-1).devRole, 'general', 'a new agent is general-purpose');
+
+    // An unrelated task's prompt carries no engine rules and no empty memory lines.
+    await sendPrompt(page, 'Rank tonight\'s NBA player props for a 4-leg parlay');
+    await waitForChat(page, /parlay breakdown/);
+    const system = (await page.evaluate(() => window.__modelCalls))[0].system;
+    assert.doesNotMatch(system, /move_and_slide|Vector2/);
+    assert.doesNotMatch(system, /\[Memory\]:\s*$/m);
+
+    // Memory written for one task is gone after "New task (clear context)".
+    const after = await page.evaluate(() => {
+        agents[0].memory = 'Continuum Universe lore bible';
+        agents[0].crossKnowledgeEnabled = true;
+        agents[0].sharedWith = [agents[1].id];
+        const before = activeChatId;
+        startFreshTask();
+        return { memories: agents.map(a => a.memory), shared: agents[0].sharedWith, cross: agents[0].crossKnowledgeEnabled, newChat: activeChatId !== before,
+            messages: chatSessions.find(s => s.id === activeChatId).messages.length };
+    });
+    assert.ok(after.memories.every(m => m === ''));
+    assert.deepEqual(after.shared, []);
+    assert.equal(after.cross, false);
+    assert.ok(after.newChat, 'an empty chat opens');
+    assert.equal(after.messages, 1);
+    assert.deepEqual(errors, []);
+});

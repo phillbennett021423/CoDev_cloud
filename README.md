@@ -55,6 +55,10 @@ The **📈 Outlier** tab (when CoDev runs on your computer with `npm start` or `
 
 The parser doesn't depend on Outlier's markup, but if it misses props, **Save page snapshot** stores the page (HTML and the data it loaded) in the same folder so selectors can be added to `config.json` there. Agents can read the latest entries with the read-only `outlier_slips` tool. Automated reading may be against Outlier's terms; that's your call. The numbers are estimates, not guarantees.
 
+## Agents start blank
+
+Every agent, the three built in (Architect, Swarm, Self-Healing) and any you add, starts with empty memory, no shared-memory links and generic instructions: it takes its domain (code, data, research, betting analytics…) from your task, not from a project built into CoDev. New agents get the **General** role, which adapts to any task; the developer roles below are for work on a connected project. Engine-specific rules (Godot) are only added when the task is about that engine. When you switch to an unrelated task, **🧹 New task (clear context)** in the menu empties every agent's memory and shared-memory links, opens an empty chat and can unload the project files, so nothing from the old task carries over; **Clear** next to an agent's memory empties just that one.
+
 ## Autonomous developer workspace
 
 Every message is treated as a task on your project. You don't type file paths or paste code:
