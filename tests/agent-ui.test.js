@@ -233,16 +233,16 @@ test('scrolling up in the chat stops auto-scroll until you return to the bottom,
     // The user scrolls up: new messages no longer pull the feed down.
     await page.evaluate(() => { const feed = document.getElementById('chatFeed'); feed.scrollTop = 200; feed.dispatchEvent(new Event('scroll')); });
     await add();
-    let now = await state();
+    await page.waitForTimeout(200);   // let any pending scroll and resize callbacks run
+    const now = await state();
     assert.equal(now.top, 200, 'stays where the user is reading');
     assert.equal(now.jump, true, 'offers a way back to the latest');
 
     // Back at the bottom (by the button or by scrolling): auto-scroll resumes.
     await page.click('#chatJumpBtn');
     await add();
-    now = await state();
-    assert.equal(now.bottom, true);
-    assert.equal(now.jump, false);
+    // Scroll events arrive a frame later; wait for the feed to settle at the bottom.
+    await page.waitForFunction(() => chatAtBottom(document.getElementById('chatFeed')) && document.getElementById('chatJumpBtn').hidden, null, { timeout: 3000 });
 
     // Wheel turns: lines and pages become pixels, scaled to the page's size on screen.
     const deltas = await page.evaluate(() => {

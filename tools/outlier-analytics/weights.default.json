@@ -355,5 +355,24 @@
     "brutal_defense_share": 0.1,
     "miss_streak": 2,
     "miss_penalty": 0.03
+  },
+  "under": {
+    "enabled": true,
+    "min_signals": 2,
+    "min_edge": 0.02,
+    "total_margin": 4,
+    "lockdown_share": 0.2,
+    "chalk_juice": 150,
+    "public_pct": 0.7,
+    "chalk_gap": 0.03,
+    "return_min_usage": 0.1,
+    "return_sensitivity": 0.25,
+    "return_max_adjust": 0.03,
+    "returning_statuses": [
+      "returning",
+      "probable",
+      "available",
+      "active"
+    ]
   }
 }

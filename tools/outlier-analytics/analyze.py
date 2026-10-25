@@ -262,9 +262,9 @@ def sharp_divergence(leg, weights):
             "gap": rnd(gap), "orphaned": orphaned}
 
 
-def ruled_out(scrape, weights):
-    """Players ruled out, from the scrape's injury list and any added by hand,
-    with their usage when it is known."""
+def ruled_out(scrape, weights, statuses=("out", "o", "inactive", "ruled out", "suspended"), manual=True):
+    """Players ruled out (or, with other statuses, back in the lineup), from the
+    scrape's injury list and any added by hand, with their usage when it is known."""
     outs = {}
     usage_of, team_of = {}, {}
     for prop in scrape.get("props") or []:
@@ -273,12 +273,12 @@ def ruled_out(scrape, weights):
             usage_of[norm_name(prop["player"])] = usage
         if prop.get("team") and prop.get("player"):
             team_of[norm_name(prop["player"])] = prop["team"]
-    entries = list(scrape.get("injuries") or []) + list((weights.get("vacuum") or {}).get("manual_out") or [])
+    entries = list(scrape.get("injuries") or []) + (list((weights.get("vacuum") or {}).get("manual_out") or []) if manual else [])
     for entry in entries:
         if not isinstance(entry, dict) or not entry.get("player"):
             continue
         status = norm_name(entry.get("status") or "out")
-        if status not in ("out", "o", "inactive", "ruled out", "suspended"):
+        if status not in statuses:
             continue
         name = norm_name(entry["player"])
         usage = normalize_rate(entry.get("usage")) if entry.get("usage") is not None else usage_of.get(name)
@@ -347,6 +347,114 @@ def streak_decay(leg, weights):
             penalty = cfg.get("miss_penalty", 0.0)
             why.append(f"missed the last {n} games")
     return drop, penalty, why
+
+
+# ---- under value engine ------------------------------------------------------
+# A routing switch, not a second opinion: every prop the core strategy keeps stays
+# with it, and only the props it passes on are looked at from the under side.
+# There a prop becomes an "Under Value Leg" when enough under conditions line up
+# (a slow game, a lockdown defense, a teammate's usage coming back, public money
+# inflating the over) and the under price still leaves an edge. A prop is routed
+# to one side or neither, never both.
+
+def mirror_under(leg):
+    """The same prop seen from the under side, or None without an under price."""
+    if (leg.get("side") or "over").lower() == "under":
+        return dict(leg, mirrorOf=leg["id"])
+    if not prices_of(leg.get("oppositeOdds")):
+        return None
+    under = {k: v for k, v in leg.items() if k not in ("consensus", "bestPrice", "marketFair", "marketFairFrom", "metrics", "rejected", "tier", "varianceReasons")}
+    under.update({"id": f"{leg['id']}|under", "side": "under", "odds": leg.get("oppositeOdds") or [], "oppositeOdds": leg.get("odds") or [],
+                  "mirrorOf": leg["id"]})
+    if leg.get("marketFair") is not None:
+        under["marketFair"] = 1 - float(leg["marketFair"])
+        under["marketFairFrom"] = leg.get("marketFairFrom")
+    rates = {}
+    for key, value in (leg.get("hitRates") or {}).items():
+        rate = normalize_rate(value)
+        if rate is not None:
+            rates[key] = 1 - rate   # pushes aside, the under hits when the over misses
+    under["hitRates"] = rates
+    return under
+
+
+def under_signals(under, over_metrics, returning, weights):
+    """([reasons], probability adjustment) for the under side of a prop."""
+    cfg = weights.get("under") or {}
+    info = under.get("insights") or {}
+    league = (under.get("league") or "").upper()
+    reasons, adjust = [], 0.0
+    pace, pace_line = info.get("pace"), (weights.get("insights") or {}).get("pace_lines", {}).get(league)
+    total, total_line = under.get("gameTotal"), (weights.get("correlation") or {}).get("pace_totals", {}).get(league)
+    if isinstance(pace, (int, float)) and pace_line and pace <= pace_line - 1.5:
+        reasons.append(f"pace-down script (pace {pace:g} vs {pace_line:g})")
+    elif isinstance(total, (int, float)) and total_line and total <= total_line - cfg.get("total_margin", 4):
+        reasons.append(f"pace-down script (game total {total:g} vs {total_line:g})")
+    rank = info.get("defenseRank")
+    teams = info.get("defenseTeams") or (weights.get("insights") or {}).get("league_teams", {}).get(league) or 30
+    if isinstance(rank, (int, float)) and 1 <= rank <= teams * cfg.get("lockdown_share", 0.2):
+        reasons.append(f"lockdown defense (ranks {int(rank)}/{teams}{' vs ' + info['position'] if info.get('position') else ''})")
+    team, me = norm_name(under.get("team")), norm_name(under.get("player"))
+    back = [o for o in returning if norm_name(o["player"]) != me
+            and ((team and norm_name(o.get("team")) == team) or norm_name(o.get("teammateOf")) == me)]
+    if back and market_group(under, weights.get("correlation", {})) in (weights.get("vacuum") or {}).get("groups", []):
+        regained = min(0.6, sum(o["usage"] if isinstance(o.get("usage"), (int, float)) else (weights.get("vacuum") or {}).get("starter_usage", 0.22) for o in back))
+        if regained >= cfg.get("return_min_usage", 0.1) - 1e-9:
+            # The reverse of the vacuum: his teammates give back about that share of theirs.
+            adjust += min(cfg.get("return_max_adjust", 0.03), regained * cfg.get("return_sensitivity", 0.25))
+            reasons.append(f"usage coming back: {', '.join(o['player'] for o in back)} returns ({regained:.0%} usage)")
+    over_price = over_metrics.get("consensus") if over_metrics else None
+    public = normalize_rate(info.get("publicPct")) if info.get("publicPct") is not None else None
+    div = over_metrics.get("divergence") if over_metrics else None
+    if over_price is not None and juice(over_price) >= cfg.get("chalk_juice", 150) - 1e-9:
+        reasons.append(f"inflated chalk: the over is {fmt_price(over_price)}")
+    elif public is not None and public >= cfg.get("public_pct", 0.7) - 1e-9:
+        reasons.append(f"inflated chalk: {public:.0%} of the public on the over")
+    elif div and div.get("gap") is not None and div["gap"] <= -cfg.get("chalk_gap", 0.03) + 1e-9:
+        reasons.append(f"inflated chalk: sharp books price the over {abs(div['gap']):.0%} lower than {fmt_price(div['softPrice'])}")
+    return reasons, adjust
+
+
+def route_unders(legs, scrape, outs, weights):
+    """Under Value Legs for the props the core strategy didn't keep. Marks each
+    leg's route ("core", "under" or None) and returns the under legs."""
+    cfg = weights.get("under") or {}
+    for leg in legs:
+        leg["route"] = "core" if leg["tier"] else None
+    if not cfg.get("enabled"):
+        return []
+    returning = ruled_out(scrape, weights, statuses=tuple(norm_name(s) for s in cfg.get("returning_statuses", [])), manual=False)
+    out_names = {norm_name(o["player"]) for o in outs}
+    found = []
+    for leg in legs:
+        if leg["route"] == "core" or norm_name(leg.get("player")) in out_names:
+            continue
+        under = mirror_under(leg)
+        if not under:
+            continue
+        metrics = leg_metrics(under, weights, outs) if under["id"] != leg["id"] else dict(leg["metrics"])
+        reasons, adjust = under_signals(under, leg["metrics"] if under["id"] != leg["id"] else None, returning, weights)
+        if adjust and metrics["p"] is not None:
+            metrics["p"] = rnd(min(0.97, max(0.03, metrics["p"] + adjust)))
+        metrics["underSignals"] = reasons
+        under["metrics"] = metrics
+        problems = list(metrics.get("decay") or [])
+        if len(reasons) < cfg.get("min_signals", 2):
+            problems.append(f"{len(reasons)} under signal(s), needs {cfg.get('min_signals', 2)}")
+        if metrics["p"] is None or metrics["impliedProb"] is None:
+            problems.append("no under price")
+        elif metrics["p"] < metrics["impliedProb"] + cfg.get("min_edge", 0.02) - 1e-9:
+            problems.append(f"under hit chance {metrics['p']:.0%} isn't {cfg.get('min_edge', 0.02):.0%} above the price's {metrics['impliedProb']:.0%}")
+        if problems:
+            continue
+        under["tier"] = "under"
+        under["tag"] = "Under Value Leg"
+        under["rejected"] = []
+        leg["route"] = "under"
+        leg["underLeg"] = under["id"]
+        found.append(under)
+    found.sort(key=lambda l: -(l["metrics"]["p"] - l["metrics"]["impliedProb"]))
+    return found
 
 
 # ---- one prop --------------------------------------------------------------
@@ -967,6 +1075,7 @@ def analyze(scrape, weights, history=None, market_log=None):
         legs.append(leg)
     passed = [l for l in legs if l["tier"] == "anchor"]
     variance_legs = [l for l in legs if l["tier"] == "variance"]
+    under_legs = route_unders(legs, scrape, outs, weights)
     bank = bankroll_state(history or {}, weights)
     slips, notes = build_slips(passed, weights, bank)
     tickets, ticket_notes = build_tickets(passed, variance_legs, weights, bank)
@@ -984,7 +1093,8 @@ def analyze(scrape, weights, history=None, market_log=None):
         "strategy": strategy,
         "consistency": weights.get("consistency"),
         "counts": {"props": len(legs), "passed": len(passed), "variance": len(variance_legs), "slips": len(slips), "tickets": len(tickets),
-                   "orphaned": sum(1 for l in legs if (l["metrics"]["divergence"] or {}).get("orphaned"))},
+                   "orphaned": sum(1 for l in legs if (l["metrics"]["divergence"] or {}).get("orphaned")), "under": len(under_legs)},
+        "underLegs": under_legs,
         "ruledOut": outs,
         "bankroll": {**weights["bankroll"], **bank},
         "legs": legs,

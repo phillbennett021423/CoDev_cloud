@@ -295,13 +295,20 @@ test('orphaned lines, the usage vacuum and the game-script check reach the dashb
         oppositeOdds: i === 0 ? [{ book: 'pinnacle', price: 125 }] : [],
         hitRates: { l5: 0.8, l10: 0.7 }, recent: steady, insights: { defenseRank: 28, minutes: [35, 34, 36, 33, 35], usage: 0.24 }
     }));
+    // An over that keeps missing in a slow game against a lockdown defense: an under value leg.
+    props.push({ id: 'p5', player: 'F Cold', market: 'Points', line: 20.5, side: 'over', league: 'NBA', team: 'T5', game: 'G5',
+        odds: [{ book: 'fanduel', price: -119 }], oppositeOdds: [{ book: 'fanduel', price: -105 }], hitRates: { l5: 0.2, l10: 0.3 },
+        recent: [17, 18, 22, 16, 19, 17, 23, 18, 16, 19], insights: { pace: 95, defenseRank: 3, position: 'C', minutes: [33, 34, 33, 34, 33] } });
     fs.writeFileSync(pipeline.files.scrape, JSON.stringify({ scrapedAt: new Date().toISOString(), props }));
-    const state = await pipeline.setStrategy({ strategy: 'consistency', ruledOut: [{ player: 'Star Guy', team: 'T1', usage: '30' }, { player: '' }] });
+    await assert.rejects(pipeline.setStrategy({ under: { min_signals: 9 } }), /under min_signals/);
+    const state = await pipeline.setStrategy({ strategy: 'consistency', under: { enabled: true, min_signals: 2 }, ruledOut: [{ player: 'Star Guy', team: 'T1', usage: '30' }, { player: '' }] });
     assert.deepEqual(state.weights.vacuum.manual_out, [{ player: 'Star Guy', team: 'T1', usage: 30 }]);
     const legs = new Map(state.result.legs.map(l => [l.id, l]));
     assert.equal(legs.get('p0').metrics.divergence.orphaned, true);
     assert.deepEqual(legs.get('p1').metrics.vacuum.out, ['Star Guy']);
     assert.ok(state.result.tickets.every(x => Array.isArray(x.matrix) && x.script));
+    assert.deepEqual(state.result.underLegs.map(l => l.id), ['p5|under']);
+    assert.equal(legs.get('p5').route, 'under');
 
     const page = await launched.browser.newPage();
     const errors = [];
@@ -316,10 +323,59 @@ test('orphaned lines, the usage vacuum and the game-script check reach the dashb
         outs: document.querySelector('textarea[aria-label="Players ruled out"]').value
     }));
     assert.match(shown.text, /Orphaned lines \(1\)/);
+    assert.match(shown.text, /Under value legs \(1\)/);
+    assert.match(shown.text, /Under Value Leg/);
+    assert.match(shown.text, /lockdown defense/);
     assert.match(shown.text, /-145 vs -119 \(fanduel\)/);
     assert.match(shown.text, /vacuum \+/);
     assert.match(shown.text, /game script:/);
     assert.equal(shown.sharpBg, 'rgb(14, 165, 233)');
     assert.equal(shown.outs, 'Star Guy, T1, 30');
     assert.deepEqual(errors, []);
+});
+
+test('passive capture collects cards a virtualized board adds and removes, without touching the scroll', async t => {
+    const { createCapture } = require('../agents/outlier/capture');
+    const { parseText } = require('../agents/outlier/extract');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const context = await launched.browser.newContext();
+    const page = await context.newPage();
+    // A board that shows 3 rows at a time and swaps them as "you scroll".
+    await page.setContent(`<div id="board" style="height:200px;overflow:auto"><div style="height:2000px"><ul id="rows"></ul></div></div>
+        <script>
+            const players = ['Nikola Jokic','Jamal Murray','Aaron Gordon','Michael Porter','Russell Westbrook','Christian Braun','Peyton Watson','Julian Strawson','DeAndre Jordan'];
+            window.show = start => { document.getElementById('rows').innerHTML = players.slice(start, start + 3)
+                .map((p, i) => '<li><div>' + p + '</div><div>DEN @ LAL</div><div>Points</div><div>Over ' + (20.5 + i) + '</div><div>FanDuel -119</div></li>').join(''); };
+            show(0);
+            document.getElementById('board').scrollTop = 120;
+        </script>`);
+    const fresh = [];
+    const capture = createCapture({ getSession: () => ({ context }), parse: (text, url) => parseText(text, { url }), onProps: props => fresh.push(...props), intervalMs: 60000 });
+    await capture.start();
+    for (const start of [3, 6]) {
+        await page.evaluate(s => show(s), start);
+        await page.waitForTimeout(150);
+    }
+    // A price that changes inside a row still on screen is picked up too.
+    await page.evaluate(() => { document.querySelector('#rows li:last-child div:last-child').textContent = 'FanDuel -125'; });
+    await page.waitForTimeout(1000);
+    await capture.drain();
+    const status = capture.status();
+    assert.equal(status.on, true);
+    assert.equal(status.props, 9, 'every row that passed through, including the ones scrolled away');
+    assert.deepEqual(new Set(capture.props().map(p => p.player)).size, 9);
+    assert.ok(fresh.some(p => p.player === 'DeAndre Jordan' && p.odds[0].price === -125), 'the changed price');
+    assert.equal(await page.evaluate(() => document.getElementById('board').scrollTop), 120, 'scroll position untouched');
+    assert.equal(await page.evaluate(() => window.scrollY), 0);
+    // A page opened later gets the observer before its own scripts run.
+    const later = await context.newPage();
+    await later.goto(`data:text/html,${encodeURIComponent('<section><div>Bones Hyland</div><div>DEN @ LAL</div><div>Assists</div><div>Over 3.5</div><div>FanDuel -119</div></section>')}`);
+    await later.waitForTimeout(1000);
+    await capture.drain();
+    assert.ok(capture.props().some(p => p.player === 'Bones Hyland'));
+    capture.stop();
+    assert.equal(capture.status().on, false);
+    await assert.rejects(createCapture({ getSession: () => null, parse: () => null }).start(), /Open the Outlier browser/);
 });

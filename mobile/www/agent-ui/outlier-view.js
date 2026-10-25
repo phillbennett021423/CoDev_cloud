@@ -48,6 +48,7 @@ div.ov-why { font-size: 0.78rem; }
 .ov-odds { font-size: 1.15rem; font-weight: bold; color: var(--accent); }
 .ov-ticket { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-glow); }
 .ov-pill.sharp { background: var(--accent); color: var(--bg-dark); }
+.ov-pill.under { background: var(--accent-glow); color: var(--accent); border: 1px solid var(--accent); }
 .ov-pill.vac { background: rgba(168,85,247,0.15); color: #c084fc; }
 .ov-roll { font-family: monospace; white-space: nowrap; }
 .ov-mode { display: inline-flex; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
@@ -129,6 +130,20 @@ div.ov-why { font-size: 0.78rem; }
             // While the sign-in window is open, watch for it to close.
             clearTimeout(pollTimer);
             if (state && state.busy) pollTimer = setTimeout(load, 3000);
+            else if (state && state.capture && state.capture.on) pollTimer = setTimeout(watchCapture, 5000);
+        }
+
+        // While passive capture runs, pick up new props, but only redraw when something
+        // changed and you aren't typing in one of the view's fields.
+        async function watchCapture() {
+            let next;
+            try { next = await getJson("/outlier/state"); } catch { pollTimer = setTimeout(watchCapture, 5000); return; }
+            const changed = !state || !next.capture || next.capture.props !== (state.capture || {}).props || !next.capture.on
+                || (next.result && next.result.generatedAt) !== (state.result && state.result.generatedAt);
+            const typing = container.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+            if (changed && !typing) { state = next; render(); } else if (changed) state = { ...state, capture: next.capture };
+            clearTimeout(pollTimer);
+            if (next.capture && next.capture.on) pollTimer = setTimeout(watchCapture, 5000);
         }
 
         async function act(label, url, body = {}, { reload = true } = {}) {
@@ -176,6 +191,10 @@ div.ov-why { font-size: 0.78rem; }
                         const reply = await act("Reading the open page…", "/outlier/read-page", {}, { reload: false });
                         if (reply && reply.read) { info = `Read ${reply.read.props} prop(s) from the open page.`; render(); }
                     } }, "📄 Read this page") : null,
+                    state && state.liveSession ? el("button", { class: `ov-btn${state.capture && state.capture.on ? " primary" : ""}`, disabled: Boolean(working),
+                        title: "Collect props quietly while you scroll Outlier in the live view: nothing scrolls or clicks for you",
+                        onclick: () => act(state.capture && state.capture.on ? "Stopping capture…" : "Starting capture…", "/outlier/capture", { on: !(state.capture && state.capture.on) }) },
+                    state.capture && state.capture.on ? "⏺ Capturing" : "⏺ Passive capture") : null,
                     el("label", { class: "ov-status" }, "Auto ",
                         el("select", { class: "ov-select", onchange: e => setAuto(Number(e.target.value)) },
                             [0, 5, 10, 15, 30].map(m => el("option", { value: m, selected: m === auto }, m ? `every ${m} min` : "off"))))));
@@ -189,6 +208,8 @@ div.ov-why { font-size: 0.78rem; }
             return el("div", { class: "ov-status" }, signed,
                 el("span", { text: `Last scrape: ${when(state.scrapedAt)}` }),
                 state.result ? el("span", { text: `${state.result.strategy === "consistency" ? "Consistency (-119)" : "Sharp (-130)"}: ${state.result.counts.passed} of ${state.result.counts.props} props passed${state.result.counts.variance ? `, ${state.result.counts.variance} variance leg(s)` : ""}${state.result.counts.orphaned ? `, ${state.result.counts.orphaned} orphaned line(s)` : ""}` }) : null,
+                state.result && state.result.counts.under ? el("span", { text: `${state.result.counts.under} under value leg(s)` }) : null,
+                state.capture && (state.capture.on || state.capture.props) ? el("span", { class: state.capture.on ? "good" : "", text: `${state.capture.on ? "● Capturing" : "Capture off"}: ${state.capture.props} prop(s) in the scratchpad${state.capture.error ? ` (${state.capture.error})` : ""}` }) : null,
                 state.result && (state.result.ruledOut || []).length ? el("span", { text: `Ruled out: ${state.result.ruledOut.map(o => o.player).join(", ")}` }) : null,
                 state.busy === "signin" ? el("span", { text: "Sign-in window open: sign in, then close it." }) : null,
                 working ? el("span", { text: working }) : null);
@@ -227,6 +248,21 @@ div.ov-why { font-size: 0.78rem; }
                     const d = l.metrics.divergence;
                     return [el("td", { text: `${price(d.sharpPrice)} vs ${price(d.softPrice)}${d.softBook ? ` (${d.softBook})` : ""} · ${d.gap >= 0 ? "+" : ""}${pct(d.gap, 1)}` }), insightCells(l)[1]];
                 }));
+        }
+
+        // Props the core strategy passed on whose under side lines up (routing switch:
+        // a prop shows here or in the core picks, never both).
+        function underSection() {
+            const result = state && state.result;
+            const legs = (result && result.underLegs) || [];
+            if (!legs.length) return null;
+            return el("div", { class: "ov-section" },
+                el("h3", {}, `Under value legs (${legs.length}) `, el("span", { class: "ov-pill under", text: "under engine" })),
+                el("div", { class: "ov-why", text: "Only props the core strategy didn't keep are checked from the under side, so a prop is never an over pick and an under pick at once. Each needs enough under signals and an edge at the under price." }),
+                legRows(legs, ["Edge", "Why under"], l => [
+                    el("td", { text: `${l.metrics.p - l.metrics.impliedProb >= 0 ? "+" : ""}${pct(l.metrics.p - l.metrics.impliedProb, 1)}` }),
+                    el("td", {}, el("span", { class: "ov-pill under", text: l.tag || "Under Value Leg" }), el("div", { class: "ov-why", text: (l.metrics.underSignals || []).join("; ") }))
+                ]));
         }
 
         function slipsSection() {
@@ -389,6 +425,9 @@ div.ov-why { font-size: 0.78rem; }
             const juiceIn = numIn(c.target_juice, 1), bandIn = numIn(c.juice_band, 1, 52), loIn = numIn(Math.round(c.hit_rate_min * 100), 1, 52), hiIn = numIn(Math.round(c.hit_rate_max * 100), 1, 52), minIn = numIn(c.min_minutes, 1, 52);
             const ticketSizes = (w.tickets && w.tickets.sizes) || [4, 5, 6];
             const tBoxes = [4, 5, 6].map(n => [n, el("input", { type: "checkbox", checked: ticketSizes.includes(n) })]);
+            const u = { enabled: true, min_signals: 2, ...(w.under || {}) };
+            const underOn = el("input", { type: "checkbox", checked: u.enabled !== false });
+            const underSignals = numIn(u.min_signals, 1, 52);
             const outs = el("textarea", { "aria-label": "Players ruled out", placeholder: "Joel Embiid, PHI, 31" });
             outs.value = ((w.vacuum && w.vacuum.manual_out) || []).map(o => [o.player, o.team || "", o.usage ?? ""].join(", ").replace(/(, )+$/, "")).join("\n");
             const strategyBox = el("div", { class: "ov-form" },
@@ -397,6 +436,7 @@ div.ov-why { font-size: 0.78rem; }
                 el("label", {}, "Target juice -", juiceIn, " ± ", bandIn),
                 el("label", {}, "Hit-rate band ", loIn, " % to ", hiIn, " %  · minutes floor ", minIn),
                 el("label", {}, "Parlay tickets: ", tBoxes.map(([n, box]) => [box, ` ${n}-leg  `])),
+                el("label", {}, underOn, " Under value engine: tag props the strategy passed on when at least ", underSignals, " under signals line up (slow pace, lockdown defense, usage coming back, inflated chalk)"),
                 el("div", { class: "ov-why", text: "Ruled out (one per line: player, team, usage %). Their usage is shared out to teammates' scoring, playmaking and rebounding props; players the pages list as out are added on their own." }),
                 outs);
             return el("div", { class: "ov-section" },
@@ -416,6 +456,7 @@ div.ov-why { font-size: 0.78rem; }
                                 consistency: { target_juice: Number(juiceIn.value), juice_band: Number(bandIn.value), hit_rate_min: Number(loIn.value) / 100,
                                     hit_rate_max: Number(hiIn.value) / 100, min_minutes: Number(minIn.value) },
                                 ticketSizes: tBoxes.filter(([, box]) => box.checked).map(([n]) => n),
+                                under: { enabled: underOn.checked, min_signals: Number(underSignals.value) },
                                 ruledOut: outs.value.split("\n").map(line => line.split(",").map(x => x.trim())).filter(([player]) => player)
                                     .map(([player, team, usage]) => ({ player, team: team || null, usage: usage || null }))
                             }) }, "Save")))));
@@ -466,7 +507,7 @@ div.ov-why { font-size: 0.78rem; }
                 error ? el("div", { class: "ov-error", role: "alert", text: error }) : null,
                 info ? el("div", { class: "ov-note", role: "status", text: info }) : null,
                 (state && state.lastError && !error) ? el("div", { class: "ov-error", text: state.lastError }) : null,
-                ticketsSection(), orphanSection(), slipsSection(), trackedSection(), learningSection(), strategySection(), marketSection(), propsSection(), settingsSection()].filter(Boolean));
+                ticketsSection(), orphanSection(), underSection(), slipsSection(), trackedSection(), learningSection(), strategySection(), marketSection(), propsSection(), settingsSection()].filter(Boolean));
         }
 
         render();

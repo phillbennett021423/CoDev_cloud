@@ -75,6 +75,17 @@ Applies to both strategies:
 - An over against a defense in the stingiest 10% (rank 1–3 of 30) is dropped.
 - A player who missed the line in each of the last two games stays but loses 3 points of hit chance.
 
+## Under value engine
+
+This is a routing switch on top of the core strategy (`weights.under`). Props the core strategy keeps stay with it, and the under engine never looks at them. For every other prop, it looks at the under side: the opposite prices, the hit rates flipped, and the same recent games, matchup signals and decay checks read for an under. Four under signals count:
+
+- **pace-down script:** pace 1.5 or more below the league line, or the game total 4 or more under the league's pace total;
+- **lockdown defense:** the opponent is in the stingiest 20% against the player's position;
+- **usage coming back:** a teammate listed as returning or probable takes back his share of usage. The under's hit chance rises by `return_sensitivity` × that share, capped at 3 points;
+- **inflated chalk:** the over is -150 or heavier, 70%+ of the public is on it, or the sharp books price the over 3+ points below the soft book.
+
+A prop becomes an **Under Value Leg** with at least `min_signals` (2) signals and an under hit chance at least `min_edge` (2 points) above the under price's implied chance. Each prop's `route` is `core`, `under` or none, never two. Under legs are listed on their own and don't go on the over tickets.
+
 ## Market odds (free)
 
 `market_data.py` cross-references Outlier's numbers with the rest of the market, at no cost:
