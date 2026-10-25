@@ -140,6 +140,51 @@ test('the user opens and drives a browser while the agent works in a background 
     assert.equal(service.context({ 'codev/agentId': '@outlier' }).agentId, 'outlier');
 });
 
+test("agents' browsers keep their sign-ins between sessions until they are forgotten", async t => {
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const base = await startSite(t);
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-keep-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const start = opts => createBrowserService({ dataDir, profileRoot: path.join(dataDir, 'profiles'), passphrase: 'test', log: () => {}, ...opts });
+    const signedIn = async service => {
+        const page = await service.manager.workPage('agent-1');
+        await page.goto(`${base}/ok`);
+        return page.evaluate(() => ({ cookie: document.cookie, token: localStorage.getItem('token') }));
+    };
+
+    let service = start();
+    assert.equal(service.manager.keepsSignIns, true);
+    const page = await service.manager.workPage('agent-1');
+    await page.goto(`${base}/ok`);
+    await page.evaluate(() => { document.cookie = 'session=abc; max-age=86400; path=/'; localStorage.setItem('token', 'xyz'); });
+    await service.close();
+    assert.ok(fs.existsSync(path.join(dataDir, 'browser-profiles', 'agent-1')), 'the profile is kept in the app-data folder');
+
+    // A new CoDev run (a new service) opens the same agent's browser still signed in.
+    service = start();
+    assert.deepEqual(await signedIn(service), { cookie: 'session=abc', token: 'xyz' });
+    // Another agent doesn't see it.
+    const other = await service.manager.workPage('agent-2');
+    await other.goto(`${base}/ok`);
+    assert.equal(await other.evaluate(() => document.cookie), '');
+
+    // Forgetting closes that browser and deletes its profile.
+    assert.deepEqual(await service.manager.forgetSignIns('agent-1'), { forgotten: 1 });
+    assert.equal(service.manager.peek('agent-1'), null);
+    assert.deepEqual(await signedIn(service), { cookie: '', token: null });
+    await service.close();
+
+    // CODEV_BROWSER_KEEP_SIGNINS=0 (keepSignIns: false): temporary profiles, deleted on close.
+    service = start({ keepSignIns: false });
+    assert.equal(service.manager.keepsSignIns, false);
+    const temp = await service.manager.get('agent-3');
+    const dir = temp.dir;
+    await service.close();
+    assert.equal(fs.existsSync(dir), false);
+});
+
 test("Read this page parses whatever is open in the signed-in Outlier browser", async t => {
     if (!hasPython) return t.skip('Python 3 is not installed');
     const launched = await launchBrowser();

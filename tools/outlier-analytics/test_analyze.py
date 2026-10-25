@@ -294,6 +294,91 @@ class CommandLine(unittest.TestCase):
             self.assertTrue(os.path.exists(weights))
 
 
+
+class Intelligence(unittest.TestCase):
+    """Sharp divergence, game-script check, usage vacuum and streak decay."""
+
+    def setUp(self):
+        self.w = A.load_weights(None)
+        self.w["strategy"] = "consistency"
+
+    def test_orphaned_line_when_sharp_books_moved_past_the_soft_price(self):
+        leg = steady(1, odds=[{"book": "fanduel", "price": -119}, {"book": "Pinnacle", "price": -145}],
+                     oppositeOdds=[{"book": "pinnacle", "price": 125}])
+        div = A.sharp_divergence(leg, self.w)
+        self.assertEqual((div["sharpPrice"], div["softPrice"], div["softBook"]), (-145, -119, "fanduel"))
+        self.assertTrue(div["orphaned"])
+        self.assertGreater(div["gap"], 0)
+        # The sharp book at -125: not far enough apart to call it orphaned.
+        close = steady(2, odds=[{"book": "fanduel", "price": -119}, {"book": "pinnacle", "price": -125}])
+        self.assertFalse(A.sharp_divergence(close, self.w)["orphaned"])
+        # No sharp book quoting it: nothing to compare.
+        self.assertIsNone(A.sharp_divergence(steady(3), self.w))
+        result = A.analyze({"props": [leg, close]}, self.w)
+        self.assertEqual(result["counts"]["orphaned"], 1)
+
+    def test_tickets_skip_legs_that_work_against_each_other(self):
+        scorer = steady(1, game="G1", team="PHI", player="Tyrese Maxey")
+        passer_under = steady(2, game="G1", team="PHI", player="James Harden", market="Assists", side="under", recent=[3, 4, 2, 5, 3, 2, 4, 3, 2, 3], line=5.5)
+        matrix, clash = A.script_matrix([scorer, passer_under], self.w, self.w["tickets"]["min_pair_rho"])
+        self.assertTrue(clash)
+        self.assertLess(matrix[0]["rho"], 0)
+        passer_over = steady(3, game="G1", team="PHI", player="James Harden", market="Assists")
+        matrix, clash = A.script_matrix([scorer, passer_over], self.w, self.w["tickets"]["min_pair_rho"])
+        self.assertFalse(clash)
+        self.assertGreater(matrix[0]["rho"], 0)
+        props = [steady(i) for i in range(4, 8)] + [scorer, passer_under]
+        result = A.analyze({"props": props}, self.w)
+        for t in result["tickets"]:
+            self.assertFalse({"p1", "p2"} <= set(t["legs"]), "a ticket with both clashing legs")
+
+    def test_usage_vacuum_lifts_teammates_and_drops_the_player_who_is_out(self):
+        mate = steady(1, team="PHI", player="Tyrese Maxey", insights={**SOFT, "usage": 0.25})
+        rival = steady(2, team="BOS", player="Jayson Tatum")
+        star = steady(3, team="PHI", player="Joel Embiid", insights={**SOFT, "usage": 0.33})
+        base = A.analyze({"props": [mate, rival, star]}, self.w)
+        result = A.analyze({"props": [mate, rival, star], "injuries": [{"player": "Joel Embiid", "team": "PHI", "status": "Out"}]}, self.w)
+        legs = {l["id"]: l for l in result["legs"]}
+        before = {l["id"]: l for l in base["legs"]}
+        vac = legs["p1"]["metrics"]["vacuum"]
+        self.assertEqual(vac["out"], ["Joel Embiid"])
+        self.assertAlmostEqual(vac["vacated"], 0.33, places=3)   # his usage from his own prop card
+        self.assertAlmostEqual(vac["usageAfter"], round(0.25 / 0.67, 3), places=3)
+        self.assertGreater(legs["p1"]["metrics"]["p"], before["p1"]["metrics"]["p"])
+        self.assertEqual(legs["p2"]["metrics"]["p"], before["p2"]["metrics"]["p"])
+        self.assertIn("player is ruled out", legs["p3"]["rejected"])
+        self.assertEqual([o["player"] for o in result["ruledOut"]], ["Joel Embiid"])
+        # Questionable isn't out; a teammate named on the player's own card counts.
+        q = A.analyze({"props": [mate], "injuries": [{"player": "Joel Embiid", "team": "PHI", "status": "questionable"}]}, self.w)
+        self.assertIsNone(q["legs"][0]["metrics"]["vacuum"])
+        no_team = steady(4, team=None, player="Tyrese Maxey")
+        card = A.analyze({"props": [no_team], "injuries": [{"player": "Joel Embiid", "teammateOf": "Tyrese Maxey"}]}, self.w)
+        self.assertEqual(card["legs"][0]["metrics"]["vacuum"]["out"], ["Joel Embiid"])
+        # Players added by hand count too.
+        self.w["vacuum"]["manual_out"] = [{"player": "Joel Embiid", "team": "PHI", "usage": 31}]
+        manual = A.analyze({"props": [mate]}, self.w)
+        self.assertAlmostEqual(manual["legs"][0]["metrics"]["vacuum"]["vacated"], 0.31, places=3)
+
+    def test_streak_decay_drops_falling_minutes_and_brutal_matchups(self):
+        steady_leg = A.analyze({"props": [steady(1)]}, self.w)["legs"][0]
+        self.assertEqual(steady_leg["metrics"]["decay"], [])
+        benched = A.analyze({"props": [steady(2, insights={"minutes": [30, 31, 35, 36, 34]})]}, self.w)["legs"][0]
+        self.assertTrue(any("minutes down 13%" in r for r in benched["rejected"]), benched["rejected"])
+        wall = A.analyze({"props": [steady(3, insights={"defenseRank": 2, "minutes": [35, 34, 36, 33, 35]})]}, self.w)["legs"][0]
+        self.assertTrue(any("brutal matchup" in r for r in wall["rejected"]))
+        # A stingy defense helps an under: not dropped for it.
+        under = steady(4, side="under", recent=[17, 18, 19, 16, 20, 17, 22, 18, 23, 19], insights={"defenseRank": 2})
+        self.assertFalse(any("brutal" in r for r in A.analyze({"props": [under]}, self.w)["legs"][0]["rejected"]))
+        # Two straight misses: kept, but the hit chance comes down.
+        cold = A.analyze({"props": [steady(5, recent=[19, 18] + STEADY[2:])]}, self.w)["legs"][0]
+        warm = A.analyze({"props": [steady(5)]}, self.w)["legs"][0]
+        self.assertIn("missed the last 2 games", cold["metrics"]["signals"])
+        self.assertLess(cold["metrics"]["p"], warm["metrics"]["p"])
+        # The sharp strategy drops them too.
+        self.w["strategy"] = "sharp"
+        self.assertTrue(any("minutes down" in r for r in A.analyze({"props": [steady(2, insights={"minutes": [30, 31, 35, 36, 34]})]}, self.w)["legs"][0]["rejected"]))
+
+
 if __name__ == "__main__":
     unittest.main()
 

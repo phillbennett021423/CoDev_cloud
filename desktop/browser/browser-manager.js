@@ -1,9 +1,10 @@
 // Headless Chromium for the agents. Every agent gets its own browser: its own
-// user data folder (profile, cache, cookies, local storage), created in a
-// temporary folder when the agent first opens a page and deleted when the session
-// closes, so nothing one agent signs in to is visible to another. The one
-// exception is a browser given a kept profile with registerProfile (the Outlier
-// pipeline's), whose sign-ins carry over.
+// user data folder (profile, cache, cookies, local storage), so nothing one agent
+// signs in to is visible to another. With keepRoot, each agent's folder is kept
+// there (keepRoot/<agent id>) and its sign-ins carry over between sessions and
+// restarts; without it, the folder is temporary and deleted when the session
+// closes. A browser given a profile with registerProfile (the Outlier pipeline's)
+// always keeps it.
 // The browser comes from playwright-core. It uses, in order: CODEV_BROWSER_PATH,
 // Playwright's own Chromium (npx playwright install chromium), then the Edge or
 // Chrome already installed on this computer.
@@ -36,7 +37,7 @@ function isProcessAlive(pid) {
 
 // blockedOrigins: addresses agents' browsers must never load, like CoDev's own
 // server and helper, so a page can't drive CoDev's local endpoints.
-function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-browser-profiles'), blockedOrigins = [],
+function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-browser-profiles'), keepRoot = null, blockedOrigins = [],
     maxSessions = DEFAULT_MAX_SESSIONS, idleMs = DEFAULT_IDLE_MS, log = console.log, playwright = loadPlaywright() } = {}) {
     // This process's profiles live in their own folder; folders left by a CoDev
     // that crashed are removed when the next one starts.
@@ -134,7 +135,7 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
             log(`[Browser] ${maxSessions} browsers are open; closing ${oldest[0]}'s.`);
             await close(oldest[0]);
         }
-        const kept = profiles.get(agentId);
+        const kept = profiles.get(agentId) || keptDir(agentId);
         let dir;
         if (kept) {
             fs.mkdirSync(kept, { recursive: true });
@@ -259,6 +260,34 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
         return true;
     }
 
+    function keptDir(agentId) {
+        return keepRoot ? path.join(keepRoot, String(agentId).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 60) || 'default') : null;
+    }
+
+    // Deletes the kept sign-ins (cookies, local storage) of one agent's browser, or of
+    // every agent's; their open browsers close first. Registered profiles (Outlier's)
+    // have their own forget button and are left alone.
+    async function forgetSignIns(agentId = null) {
+        if (!keepRoot) return { forgotten: 0 };
+        let names = [];
+        try { names = fs.readdirSync(keepRoot); } catch { /* none kept yet */ }
+        const ids = agentId ? [String(agentId)] : [...new Set([...sessions.keys()])];
+        for (const id of ids) {
+            if (!profiles.has(id)) await close(id);
+        }
+        const targets = agentId ? [keptDir(agentId)] : names.map(n => path.join(keepRoot, n));
+        // Folders of browsers still open (e.g. Outlier's, if it lives here) stay.
+        const busy = new Set([...sessions.values()].map(s => s.dir));
+        let forgotten = 0;
+        for (const dir of targets) {
+            if (busy.has(dir) || !fs.existsSync(dir)) continue;
+            removeDir(dir);
+            forgotten++;
+        }
+        log(`[Browser] Forgot ${forgotten} kept browser sign-in profile(s).`);
+        return { forgotten };
+    }
+
     async function close(agentId) {
         const session = sessions.get(agentId);
         if (!session) return false;
@@ -288,7 +317,8 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
         profiles.set(String(agentId), dir);
     }
 
-    return { get, peek, workPage, readPage, handBack, pause, has: agentId => sessions.has(agentId), close, closeAll, list, status, isBlocked, events, registerProfile };
+    return { get, peek, workPage, readPage, handBack, pause, has: agentId => sessions.has(agentId), close, closeAll, list, status, isBlocked, events, registerProfile,
+        forgetSignIns, keepsSignIns: Boolean(keepRoot) };
 }
 
 module.exports = { createBrowserManager, BrowserUnavailableError };

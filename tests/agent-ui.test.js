@@ -206,3 +206,59 @@ test('agents start as a blank slate, and a new task clears what the old one left
     assert.equal(after.messages, 1);
     assert.deepEqual(errors, []);
 });
+
+test('scrolling up in the chat stops auto-scroll until you return to the bottom, and the live view wheel scrolls in page pixels', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const workspace = makeWorkspace();
+    const backend = createMockBackend({ workspace });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const { page, errors } = await openPage(launched.browser, url, { steps: ['ok'] });
+
+    const state = () => page.evaluate(() => {
+        const feed = document.getElementById('chatFeed');
+        return { top: Math.round(feed.scrollTop), bottom: chatAtBottom(feed), jump: !document.getElementById('chatJumpBtn').hidden };
+    });
+    const add = () => page.evaluate(() => {
+        chatSessions.find(s => s.id === activeChatId).messages.push({ sender: 'Architect', text: 'More analysis\n'.repeat(4) });
+        renderActiveChatFeed();
+    });
+    await page.evaluate(() => {
+        const session = chatSessions.find(s => s.id === activeChatId);
+        for (let i = 0; i < 40; i++) session.messages.push({ sender: i % 2 ? 'Architect' : 'You', text: `Message ${i}\n`.repeat(3) });
+        renderActiveChatFeed();
+    });
+    assert.equal((await state()).bottom, true, 'starts at the latest message');
+
+    // The user scrolls up: new messages no longer pull the feed down.
+    await page.evaluate(() => { const feed = document.getElementById('chatFeed'); feed.scrollTop = 200; feed.dispatchEvent(new Event('scroll')); });
+    await add();
+    let now = await state();
+    assert.equal(now.top, 200, 'stays where the user is reading');
+    assert.equal(now.jump, true, 'offers a way back to the latest');
+
+    // Back at the bottom (by the button or by scrolling): auto-scroll resumes.
+    await page.click('#chatJumpBtn');
+    await add();
+    now = await state();
+    assert.equal(now.bottom, true);
+    assert.equal(now.jump, false);
+
+    // Wheel turns: lines and pages become pixels, scaled to the page's size on screen.
+    const deltas = await page.evaluate(() => {
+        live.frame = { width: 1280, height: 800 };
+        const img = document.createElement('img');
+        img.style.cssText = 'position: fixed; left: 0; top: 0; width: 640px; height: 400px;';
+        document.body.append(img);
+        const out = [
+            liveWheelDelta({ deltaMode: 0, deltaX: 0, deltaY: 100 }, img),
+            liveWheelDelta({ deltaMode: 1, deltaX: 0, deltaY: 3 }, img),
+            liveWheelDelta({ deltaMode: 0, deltaX: -50, deltaY: 99999 }, img)
+        ];
+        img.remove();
+        live.frame = null;
+        return out;
+    });
+    assert.deepEqual(deltas, [{ deltaX: 0, deltaY: 200 }, { deltaX: 0, deltaY: 96 }, { deltaX: -100, deltaY: 2000 }]);
+    assert.deepEqual(errors, []);
+});

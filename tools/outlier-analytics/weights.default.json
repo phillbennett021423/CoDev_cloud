@@ -317,6 +317,43 @@
     "anchor_pool": 12,
     "variance_pool": 4,
     "max_variance_legs": 1,
-    "tickets_per_size": 2
+    "tickets_per_size": 2,
+    "min_pair_rho": -0.04,
+    "min_game_script": 0.0
+  },
+  "divergence": {
+    "sharp_books": [
+      "pinnacle",
+      "circa",
+      "betonline",
+      "bookmaker",
+      "lowvig",
+      "novig",
+      "prophetx",
+      "sporttrade"
+    ],
+    "soft_juice_max": 125,
+    "sharp_juice_min": 130,
+    "min_gap": 0.01,
+    "score_bonus": 0.02
+  },
+  "vacuum": {
+    "groups": [
+      "scoring",
+      "playmaking",
+      "rebounding"
+    ],
+    "starter_usage": 0.22,
+    "elasticity": 0.6,
+    "sensitivity": 0.25,
+    "max_adjust": 0.04,
+    "min_vacated": 0.1,
+    "manual_out": []
+  },
+  "decay": {
+    "minutes_drop": 0.1,
+    "brutal_defense_share": 0.1,
+    "miss_streak": 2,
+    "miss_penalty": 0.03
   }
 }

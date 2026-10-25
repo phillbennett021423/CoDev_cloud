@@ -47,6 +47,34 @@ When Outlier shows them, the parser reads defense rank vs the player's position 
 
 Every analysis also builds 4-, 5- and 6-leg parlay tickets (`weights.tickets`) from the high-floor legs, with at most one variance leg each. They follow the one-per-player and same-game limits and use the same-game correlations. Each ticket shows its combined odds (American and decimal), the book's implied chance against the model's chance that all legs hit, EV at those odds, and a Kelly stake. Tracking a ticket pays the product of the hit legs' odds: a push drops that leg, and one miss loses the ticket.
 
+## Orphaned lines (sharp book divergence)
+
+When a prop has prices from a sharp book (`weights.divergence.sharp_books`: Pinnacle, Circa, BetOnline, Bookmaker and others), the best soft price is compared with the sharp one. A line is **orphaned** when all three of these hold:
+
+- the soft price is -125 or lighter;
+- the sharp books are at -130 or heavier;
+- the sharp books' no-vig chance beats the soft price's implied chance by at least 1 point.
+
+The no-vig chance uses both sides when the sharp book shows both; otherwise it uses `model.assumed_vig`. A -130/+110 sharp market is roughly a fair price at -119 and isn't flagged. -140/+120 or heavier is. Orphaned lines get a small ranking bonus (`score_bonus`) and their own list in the view.
+
+## Game-script check on tickets
+
+Every same-game pair on a ticket gets a correlation from the rules in `weights.correlation`. A ticket with any pair below `tickets.min_pair_rho` (default 0, so any negative link) is skipped. That keeps legs that need opposite game scripts off one ticket, such as an over and an under that work against each other, or two teammates splitting the same shots. Each ticket lists its same-game links and says whether its legs reinforce each other.
+
+## Usage vacuum
+
+Players ruled out come from the page's injury notes ("Joel Embiid (PHI) - Out", "Teammate out: Joel Embiid") and from the list under **Strategy** (player, team, usage %). Usage on the floor adds up to 100%, so when players holding a share *v* sit, each teammate's usage grows by about *v* / (1 − *v*). A usage figure comes from the injured player's own card when it's there; otherwise it is `starter_usage` (22%).
+
+Only part of that growth turns into stats (`elasticity` 0.6). The hit chance of teammates' scoring, playmaking and rebounding props moves by `sensitivity` × that lift, capped at ±4 points (unders the other way). The player who is out is dropped. This is a rough model: real minutes and shots don't split evenly, so check the rotation news.
+
+## Streak decay
+
+Applies to both strategies:
+
+- A player whose last two games averaged 10% or more fewer minutes than the three before is dropped.
+- An over against a defense in the stingiest 10% (rank 1–3 of 30) is dropped.
+- A player who missed the line in each of the last two games stays but loses 3 points of hit chance.
+
 ## Market odds (free)
 
 `market_data.py` cross-references Outlier's numbers with the rest of the market, at no cost:

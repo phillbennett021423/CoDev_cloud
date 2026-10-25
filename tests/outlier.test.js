@@ -262,3 +262,64 @@ test('the -119 consistency strategy builds parlay tickets the dashboard shows an
     assert.match(shown.text, /parlay \+\d+/, 'the tracked ticket shows its odds');
     assert.deepEqual(errors, []);
 });
+
+test('injury reports are read from report lines and prop cards', () => {
+    const { injuries, parseCollected } = require('../agents/outlier/extract');
+    assert.deepEqual(injuries('Joel Embiid (PHI) - Out'), [{ player: 'Joel Embiid', team: 'PHI', status: 'out' }]);
+    assert.deepEqual(injuries('Out: Joel Embiid'), [{ player: 'Joel Embiid', team: null, status: 'out' }]);
+    assert.deepEqual(injuries('Over 24.5 Out'), []);
+    const parsed = parseCollected([{ kind: 'props', collected: {
+        injuries: ['Jaylen Brown (BOS) Questionable'],
+        cards: ['Tyrese Maxey\nPHI @ BOS\nPoints\nOver 24.5\nFanDuel -119\nTeammate out: Joel Embiid']
+    } }]);
+    assert.equal(parsed.props.length, 1);
+    assert.equal(parsed.props[0].injuries, undefined, 'the list moves to the scrape, off the prop');
+    assert.deepEqual(parsed.injuries, [
+        { player: 'Jaylen Brown', team: 'BOS', status: 'questionable' },
+        { player: 'Joel Embiid', status: 'out', teammateOf: 'Tyrese Maxey' }
+    ]);
+});
+
+test('orphaned lines, the usage vacuum and the game-script check reach the dashboard', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {} });
+    const steady = [24, 22, 19, 25, 23, 18, 26, 22, 17, 24];
+    const props = ['A Guard', 'B Wing', 'C Big', 'D Forward', 'E Shooter'].map((player, i) => ({
+        id: `p${i}`, player, market: 'Points', line: 20.5, side: 'over', league: 'NBA', team: `T${i}`, game: `G${i}`,
+        odds: [{ book: 'fanduel', price: -119 }, ...(i === 0 ? [{ book: 'pinnacle', price: -145 }] : [])],
+        oppositeOdds: i === 0 ? [{ book: 'pinnacle', price: 125 }] : [],
+        hitRates: { l5: 0.8, l10: 0.7 }, recent: steady, insights: { defenseRank: 28, minutes: [35, 34, 36, 33, 35], usage: 0.24 }
+    }));
+    fs.writeFileSync(pipeline.files.scrape, JSON.stringify({ scrapedAt: new Date().toISOString(), props }));
+    const state = await pipeline.setStrategy({ strategy: 'consistency', ruledOut: [{ player: 'Star Guy', team: 'T1', usage: '30' }, { player: '' }] });
+    assert.deepEqual(state.weights.vacuum.manual_out, [{ player: 'Star Guy', team: 'T1', usage: 30 }]);
+    const legs = new Map(state.result.legs.map(l => [l.id, l]));
+    assert.equal(legs.get('p0').metrics.divergence.orphaned, true);
+    assert.deepEqual(legs.get('p1').metrics.vacuum.out, ['Star Guy']);
+    assert.ok(state.result.tickets.every(x => Array.isArray(x.matrix) && x.script));
+
+    const page = await launched.browser.newPage();
+    const errors = [];
+    page.on('pageerror', err => errors.push(err.message));
+    await page.setContent('<style>:root{--bg-dark:#090d16;--bg-panel:#111827;--bg-card:#1f2937;--border-color:#374151;--accent:#0ea5e9;--accent-glow:rgba(14,165,233,.2);--text-main:#f3f4f6;--text-muted:#9ca3af;--success:#10b981;--danger:#ef4444;--warning:#f59e0b}</style><div id="v"></div>');
+    await page.addScriptTag({ path: path.join(__dirname, '..', 'mobile', 'www', 'agent-ui', 'outlier-view.js') });
+    await page.evaluate(s => window.CodevOutlierView.mount(document.getElementById('v'), { getJson: async () => s, postJson: async () => s }), pipeline.state());
+    await page.waitForSelector('.ov-pill.sharp');
+    const shown = await page.evaluate(() => ({
+        text: document.getElementById('v').innerText,
+        sharpBg: getComputedStyle(document.querySelector('.ov-pill.sharp')).backgroundColor,
+        outs: document.querySelector('textarea[aria-label="Players ruled out"]').value
+    }));
+    assert.match(shown.text, /Orphaned lines \(1\)/);
+    assert.match(shown.text, /-145 vs -119 \(fanduel\)/);
+    assert.match(shown.text, /vacuum \+/);
+    assert.match(shown.text, /game script:/);
+    assert.equal(shown.sharpBg, 'rgb(14, 165, 233)');
+    assert.equal(shown.outs, 'Star Guy, T1, 30');
+    assert.deepEqual(errors, []);
+});
