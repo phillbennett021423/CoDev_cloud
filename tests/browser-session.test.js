@@ -20,6 +20,8 @@ const hasPython = ['python3', 'python'].some(cmd => spawnSync(cmd, ['--version']
 const PARKED = '<html><head><title>example-odds.com</title></head><body><h1>example-odds.com</h1><p>This domain is for sale! Buy this domain today.</p></body></html>';
 
 test('typed text becomes an address, a shortcut or a search', () => {
+    assert.equal(resolveAddress('outlier.com').url, 'https://app.outlier.bet/login', 'outlier.com typed on its own means the betting app');
+    assert.equal(resolveAddress('https://outlier.com/careers').url, 'https://outlier.com/careers', 'a full address still opens that site');
     assert.deepEqual(resolveAddress('outlier'), { url: 'https://app.outlier.bet/login', how: 'shortcut' });
     assert.deepEqual(resolveAddress('ESPN'), { url: 'https://www.espn.com/', how: 'shortcut' });
     assert.deepEqual(resolveAddress('espn.com/nba/scoreboard'), { url: 'https://espn.com/nba/scoreboard', how: 'address' });

@@ -428,3 +428,47 @@ test('board JSON saved in the project folder is imported and audited, and every 
     assert.match((await service.callTool('outlier_import_board', { path: 'junk.json' })).content[0].text, /no props/);
     assert.throws(() => pipeline.setConfig({ boardDump: '/etc/passwd' }), /inside the project folder/);
 });
+
+test('the scrape scrolls a board that scrolls inside a panel and drops rows, reading every line, and agents can run it', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    // 30 rows, 4 on screen at a time, in a scrolling panel (the window itself never
+    // scrolls), and rows off screen are removed, like a virtualized board.
+    const first = ['Nikola', 'Jamal', 'Aaron', 'Michael', 'Russell', 'Christian'], last = ['Jokic', 'Murray', 'Gordon', 'Porter', 'Westbrook'];
+    const names = first.flatMap(f => last.map(l => `${f} ${l}`));   // 30 different players
+    const page = `<!doctype html><body style="margin:0;overflow:hidden"><div id="panel" style="height:240px;overflow-y:auto"><div id="spacer" style="position:relative;height:${30 * 60}px"></div></div>
+        <script>
+            const names = ${JSON.stringify(names)};
+            const panel = document.getElementById('panel'), spacer = document.getElementById('spacer');
+            const draw = () => {
+                const first = Math.floor(panel.scrollTop / 60);
+                spacer.innerHTML = names.slice(first, first + 4).map((n, k) => '<div style="position:absolute;top:' + (first + k) * 60 + 'px;height:60px"><div>' + n + '</div><div>DEN @ LAL</div><div>Points</div><div>Over ' + (20.5 + ((first + k) % 5)) + '</div><div>FanDuel -119</div></div>').join('');
+            };
+            panel.addEventListener('scroll', draw); draw();
+        </script></body>`;
+    const server = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(page); });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/board`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    // Written straight to the file: setConfig refuses this computer's own addresses.
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false }));
+
+    const service = createService({}, { pipeline });
+    const refused = await service.callTool('outlier_scan_board', { url: 'https://example.com/' });
+    assert.equal(refused.isError, true);
+    assert.match(refused.content[0].text, /only opens Outlier/);
+
+    const reply = await service.callTool('outlier_scan_board', {});
+    assert.equal(reply.isError, undefined, reply.content[0].text);
+    assert.match(reply.content[0].text, /^30 props/);
+    assert.match(reply.content[0].text, /Estimates, not guarantees/);
+    const scraped = JSON.parse(fs.readFileSync(pipeline.files.scrape, 'utf8'));
+    assert.deepEqual(scraped.props.map(p => p.player).sort(), [...names].sort(), 'every row, including the ones removed as it scrolled');
+});

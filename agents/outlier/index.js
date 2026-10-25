@@ -17,7 +17,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { collectPage, parseCollected, parseText, propId } = require('./extract');
 const { createCapture } = require('./capture');
-const { checkPage, advice, fixKnownAddress } = require('../../desktop/browser/page-check');
+const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
 // The signed-in browser's id in the shared browser service. Agents' ids never start with @.
 const SESSION = '@outlier';
@@ -33,7 +33,8 @@ const DEFAULT_CONFIG = {
     selectors: null,
     showBrowser: false,
     settleMs: 2500,
-    scrolls: 6,
+    // Most scroll steps per page; the scan stops sooner at the end of the board.
+    scrolls: 40,
     // Free market odds (market_data.py) and public odds-comparison pages read
     // with a fresh, signed-out browser, cross-referenced into each scrape.
     market: true,
@@ -273,8 +274,9 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         return { page: context.pages()[0] || await context.newPage(), done: () => context.close().catch(() => {}) };
     }
 
-    async function visitPages({ snapshot = false } = {}) {
-        const cfg = config();
+    // pages: scan these instead of the configured ones (an agent's outlier_scan_board).
+    async function visitPages({ snapshot = false, pages: only = null } = {}) {
+        const cfg = only ? { ...config(), pages: only } : config();
         const browser = await openForVisit(cfg);
         const pages = [];
         const saved = [];
@@ -291,20 +293,49 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 await gotoChecked(page, target.url, { pausable: browser.shared });
                 await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
                 await page.waitForTimeout(cfg.settleMs);
-                // Boards load more rows as they scroll.
+                // Boards load more rows as they scroll, and long ones remove the rows that
+                // scroll away, so the page is read after every step and the reads are
+                // combined. It stops at the end of the board: no scroll moved, or two steps
+                // in a row turned up nothing new.
+                const collected = await page.evaluate(collectPage, cfg.selectors || null);
+                collected.results = collected.results || [];
+                collected.injuries = collected.injuries || [];
+                const key = item => (typeof item === 'string' ? item : JSON.stringify(item));
+                const seen = new Set(['cards', 'tables', 'configured', 'results', 'injuries'].flatMap(f => (collected[f] || []).map(key)));
+                const addRead = read => {
+                    let fresh = 0;
+                    for (const field of ['cards', 'tables', 'configured', 'results', 'injuries']) {
+                        for (const item of read[field] || []) {
+                            if (seen.has(key(item))) continue;
+                            seen.add(key(item));
+                            collected[field].push(item);
+                            if (field === 'cards' || field === 'tables' || field === 'configured') fresh++;
+                        }
+                    }
+                    return fresh;
+                };
+                let quiet = 0;
                 for (let i = 0; i < cfg.scrolls; i++) {
                     const moved = await page.evaluate(() => {
+                        let any = false;
                         const before = window.scrollY;
                         window.scrollBy(0, window.innerHeight * 0.9);
+                        if (window.scrollY !== before) any = true;
+                        // Boards that scroll inside a panel instead of the window.
                         for (const el of document.querySelectorAll('*')) {
-                            if (el.scrollHeight > el.clientHeight + 50 && /(auto|scroll)/.test(getComputedStyle(el).overflowY)) el.scrollTop += el.clientHeight * 0.9;
+                            if (el.scrollHeight > el.clientHeight + 50 && /(auto|scroll)/.test(getComputedStyle(el).overflowY)) {
+                                const top = el.scrollTop;
+                                el.scrollTop += el.clientHeight * 0.9;
+                                if (el.scrollTop !== top) any = true;
+                            }
                         }
-                        return window.scrollY !== before;
+                        return any;
                     });
                     await page.waitForTimeout(600);
-                    if (!moved && i > 1) break;
+                    const fresh = addRead(await page.evaluate(collectPage, cfg.selectors || null));
+                    quiet = fresh ? 0 : quiet + 1;
+                    if (!moved || quiet >= 2) break;
                 }
-                const collected = await page.evaluate(collectPage, cfg.selectors || null);
                 collected.passwordField = await page.evaluate(() => Boolean(document.querySelector('input[type="password"]')));
                 page.off('response', onResponse);
                 if (looksSignedOut(page, collected)) {
@@ -727,10 +758,10 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         return snapshotState();
     }
 
-    async function scrape() {
+    async function scrape({ pages: only = null } = {}) {
         claim('scrape');
         try {
-            const { pages } = await visitPages();
+            const { pages } = await visitPages({ pages: only });
             const parsed = parseCollected(pages);
             writeJson(files.scrape, { scrapedAt: new Date().toISOString(), source: 'outlier', ...parsed });
             const settledNow = settleFromResults(parsed.results);
@@ -917,6 +948,17 @@ const safe = fn => async (req, res, body) => {
     try { sendJson(res, 200, await fn(body || {})); } catch (err) { sendJson(res, 400, { error: err.message }); }
 };
 
+// The audit as text for an agent: tickets with their odds, then under value legs.
+function auditText(result) {
+    if (!result) return 'No Outlier analysis yet.';
+    const legs = new Map(result.legs.map(l => [l.id, l]));
+    const leg = l => `  - ${l.player} ${l.side} ${l.line} ${l.market || ''} (${l.metrics.consensus}, p ${Math.round((l.metrics.p || 0) * 100)}%)`;
+    const tickets = (result.tickets || []).map(t => `${t.size}-leg ticket ${t.american > 0 ? '+' : ''}${t.american} (${t.decimal}x): book ${(t.impliedProb * 100).toFixed(1)}% vs model ${(t.modelProb * 100).toFixed(1)}%, EV ${(t.ev * 100).toFixed(1)}%\n`
+        + t.legs.map(id => leg(legs.get(id))).join('\n'));
+    const unders = (result.underLegs || []).map(u => `${leg(u)}: ${(u.metrics.underSignals || []).join('; ')}`);
+    return `${result.counts.props} props, ${result.counts.passed} passed (${result.strategy}).\n${tickets.join('\n') || 'No tickets.'}\nUnder value legs:\n${unders.join('\n') || '  none'}\n${result.notes.join('\n')}\nEstimates, not guarantees.`;
+}
+
 function createService(config = {}, { log = console.log, pipeline, services = {} } = {}) {
     const shared = (services.browser && services.browser.shared) || null;
     const workspace = config.workspace || {};
@@ -934,6 +976,13 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
             inputSchema: { type: 'object', properties: {
                 path: { type: 'string', description: 'The JSON file, relative to the project folder (e.g. "downloads/new folder/board.json").' }
             }, required: ['path'], additionalProperties: false }
+        }, {
+            name: 'outlier_scan_board',
+            description: 'Opens Outlier in the user\'s signed-in Outlier browser, scrolls the prop board to the end reading every line as it goes, and runs the full audit (-119 consistency filter, sharp-book comparison, correlation and usage checks, Under engine, 4-6 leg tickets). Uses the pages set in the Outlier tab, or one app.outlier.bet address you give. You never get the browser itself or its cookies. Returns the tickets and under legs.',
+            inputSchema: { type: 'object', properties: {
+                url: { type: 'string', description: 'An app.outlier.bet page to scan instead of the configured ones (optional).' },
+                kind: { type: 'string', enum: ['props', 'odds'], description: 'What that page shows (default props).' }
+            }, additionalProperties: false }
         }, {
             name: 'outlier_extract_page',
             description: 'Runs the Outlier DOM extraction on the page open in YOUR browser (open it first with browser_navigate) and returns the props it finds as JSON: player, market, line, side, odds by book, hit rates. With add_to_analysis true, they are added to the latest Outlier read and the entries are re-scored.',
@@ -954,16 +1003,25 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     return { content: [{ type: 'text', text: err.message }], isError: true };
                 }
             }
+            if (name === 'outlier_scan_board') {
+                try {
+                    let pages = null;
+                    if (args.url) {
+                        const url = new URL(resolveAddress(String(args.url)).url);
+                        // Only Outlier's own pages: the signed-in browser isn't a general-purpose one.
+                        if (!/(^|\.)outlier\.bet$/i.test(url.hostname)) throw new Error(`outlier_scan_board only opens Outlier (app.outlier.bet), not ${url.hostname}. Use your own browser tools for other sites.`);
+                        pages = [{ kind: args.kind === 'odds' ? 'odds' : 'props', url: url.href }];
+                    }
+                    await outlier.scrape({ pages });
+                    return { content: [{ type: 'text', text: auditText(outlier.state().result) }] };
+                } catch (err) {
+                    return { content: [{ type: 'text', text: err.message }], isError: true };
+                }
+            }
             if (name === 'outlier_import_board') {
                 try {
                     await outlier.importFile({ file: args.path });
-                    const result = outlier.state().result;
-                    const legs = new Map(result.legs.map(l => [l.id, l]));
-                    const leg = l => `  - ${l.player} ${l.side} ${l.line} ${l.market || ''} (${l.metrics.consensus}, p ${Math.round((l.metrics.p || 0) * 100)}%)`;
-                    const tickets = (result.tickets || []).map(t => `${t.size}-leg ticket ${t.american > 0 ? '+' : ''}${t.american} (${t.decimal}x): book ${(t.impliedProb * 100).toFixed(1)}% vs model ${(t.modelProb * 100).toFixed(1)}%, EV ${(t.ev * 100).toFixed(1)}%\n`
-                        + t.legs.map(id => leg(legs.get(id))).join('\n'));
-                    const unders = (result.underLegs || []).map(u => `${leg(u)}: ${(u.metrics.underSignals || []).join('; ')}`);
-                    return { content: [{ type: 'text', text: `${result.counts.props} props, ${result.counts.passed} passed (${result.strategy}).\n${tickets.join('\n') || 'No tickets.'}\nUnder value legs:\n${unders.join('\n') || '  none'}\n${result.notes.join('\n')}\nEstimates, not guarantees.` }] };
+                    return { content: [{ type: 'text', text: auditText(outlier.state().result) }] };
                 } catch (err) {
                     return { content: [{ type: 'text', text: err.message }], isError: true };
                 }

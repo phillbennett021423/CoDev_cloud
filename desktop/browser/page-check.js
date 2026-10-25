@@ -11,6 +11,10 @@ const SHORTCUTS = {
     'outlier login': 'https://app.outlier.bet/login',
     'outlierbet.com': 'https://app.outlier.bet/login',
     outlierbet: 'https://app.outlier.bet/login',
+    // Typed on its own, "outlier.com" means Outlier the betting app here (outlier.com is
+    // another company); a full https://outlier.com/... address still opens that site.
+    'outlier.com': 'https://app.outlier.bet/login',
+    'www.outlier.com': 'https://app.outlier.bet/login',
     espn: 'https://www.espn.com/',
     'the odds api': 'https://the-odds-api.com/',
     'odds api': 'https://the-odds-api.com/'
