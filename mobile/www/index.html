@@ -260,6 +260,7 @@
 
         .btn-save-agent { background: var(--success); color: var(--bg-dark); border: none; font-weight: bold; padding: 10px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: opacity 0.2s; }
         .btn-save-agent:hover { opacity: 0.9; }
+        .link-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 0.75rem; padding: 0 4px; text-decoration: underline; }
         .btn-danger { background: var(--danger); color: white; border: none; font-weight: bold; padding: 8px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
 
         /* Modal Settings Overlay */
@@ -534,6 +535,9 @@
                 <div class="menu-item" onclick="createNewChat()">
                     <span class="menu-icon">✏️</span> New chat
                 </div>
+                <div class="menu-item" onclick="startFreshTask()" title="Switching to an unrelated task: clear every agent's memory and shared-memory links and open an empty chat, so nothing from the old task carries over">
+                    <span class="menu-icon">🧹</span> New task (clear context)
+                </div>
                 <div class="menu-item active" id="menuAgentFlow" onclick="switchView('chat'); logConsoleActivity('Switched to Agent Flow mode.');">
                     <span class="menu-icon">💻</span> Agent Flow
                 </div>
@@ -728,7 +732,7 @@
                         <div style="font-size: 0.85rem; color: var(--text-muted);">
                             • Automated Code Refactoring<br>
                             • Daily Changelog Compilation<br>
-                            • Godot Bug Sweeper Routine
+                            • Bug Sweeper Routine
                         </div>
                     </div>
                 </div>
@@ -737,7 +741,7 @@
                     <h4 style="font-size: 0.9rem; margin-bottom: 8px;">CoDev Cloud Event Log</h4>
                     <div class="console-output" id="cloudLogOutput" style="height: 160px;">
                         [08:00:00] CoDev Cloud Node initialized successfully.<br>
-                        [08:00:15] Background routine 'Godot Bug Sweeper' verified 0 syntax issues.
+                        [08:00:15] Background routine 'Bug Sweeper' verified 0 syntax issues.
                     </div>
                 </div>
             </div>
@@ -764,6 +768,7 @@
             <div class="form-group">
                 <label>Developer Role (locked: sets the agent's persona and tools)</label>
                 <select id="editDevRole">
+                    <option value="general">General: adapts to any task or domain</option>
                     <option value="architect">Architect: plans and implements</option>
                     <option value="swarm">Swarm: builds on the team's changes</option>
                     <option value="self_healing">Self-Healing: runs, verifies and fixes</option>
@@ -778,8 +783,8 @@
                 <textarea id="editInstructions"></textarea>
             </div>
             <div class="form-group">
-                <label>Agent Memory / Context</label>
-                <textarea id="editMemory"></textarea>
+                <label>Agent Memory / Context <button type="button" class="link-btn" onclick="clearSelectedAgentMemory()" title="Empty this agent's memory">Clear</button></label>
+                <textarea id="editMemory" placeholder="Empty: the agent starts with no assumptions about your project. Add facts it should always know."></textarea>
             </div>
 
             <!-- Selective Cross-Agent Knowledge Toggles -->
@@ -1217,53 +1222,47 @@
             logConsoleActivity(`Saved edits to ${filename}.`);
         }
 
+        // A fresh, empty chat: nothing about any earlier task or project.
+        function newChatSession(id, title, isGroup = false, note = "New chat initialized.") {
+            return {
+                id,
+                title,
+                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                isGroup,
+                messages: [{ sender: "⚙️ System Co-Pilot", text: note }]
+            };
+        }
+
         let chatSessions = [
-            {
-                id: "chat_1",
-                title: "Godot 4 Physics & Wall Bounce",
-                timestamp: "06:40 AM",
-                isGroup: false,
-                messages: [
-                    { sender: "⚙️ System Co-Pilot", text: "Welcome to CoDev Studio Pro. Click '📁 Connect Local Folder' at the top right to link your real project files." }
-                ]
-            }
+            newChatSession("chat_1", "New Session #1", false, "Welcome to CoDev Studio Pro. Tell the agents what you're working on, in any domain. To work on files, click '📁 Connect Local Folder' at the top right.")
         ];
         let activeChatId = "chat_1";
 
-        let agents = [
-            {
-                id: "agent_1",
-                name: "Architect",
-                devRole: "architect",
-                role: "Autonomous Lead Developer",
-                instructions: "Prefer clean, modular code and complete, working solutions over sketches.",
-                memory: "Working on independent game projects and narrative universes. Prefers clean, modular code and comprehensive solutions.",
-                selectedForGroup: true,
-                crossKnowledgeEnabled: true,
-                sharedWith: ["agent_2", "agent_3"]
-            },
-            {
-                id: "agent_3",
-                name: "Swarm",
-                devRole: "swarm",
-                role: "Implementation Engineer",
-                instructions: "Pick up whatever the Architect left open: missing files, wiring, tests and docs.",
+        // AGENT FACTORY: every agent, built-in or new, starts as a blank slate: empty memory,
+        // no shared-memory links and generic instructions, so it takes its domain from the
+        // task in front of it instead of from a project baked in here.
+        const NEUTRAL_AGENT_INSTRUCTIONS = "Work out the domain and goal from the user's task and adapt to it. Don't assume a project, codebase or subject the user hasn't mentioned.";
+        function createAgentDefaults(overrides = {}) {
+            return {
+                id: "agent_" + Date.now(),
+                name: "Agent",
+                devRole: "general",
+                role: "General-Purpose Agent",
+                instructions: NEUTRAL_AGENT_INSTRUCTIONS,
                 memory: "",
                 selectedForGroup: true,
                 crossKnowledgeEnabled: false,
-                sharedWith: []
-            },
-            {
-                id: "agent_2",
-                name: "Self-Healing",
-                devRole: "self_healing",
-                role: "Verification & Repair",
-                instructions: "Watch especially for compiler errors, syntax bugs and Godot 4 API mismatches.",
-                memory: "Focused on bulletproof error checking.",
-                selectedForGroup: true,
-                crossKnowledgeEnabled: false,
-                sharedWith: []
-            }
+                sharedWith: [],
+                ...overrides
+            };
+        }
+
+        let agents = [
+            createAgentDefaults({ id: "agent_1", name: "Architect", devRole: "architect", role: "Lead Agent" }),
+            createAgentDefaults({ id: "agent_3", name: "Swarm", devRole: "swarm", role: "Implementation Agent",
+                instructions: `${NEUTRAL_AGENT_INSTRUCTIONS} Pick up whatever the agents before you left open.` }),
+            createAgentDefaults({ id: "agent_2", name: "Self-Healing", devRole: "self_healing", role: "Verification & Repair",
+                instructions: `${NEUTRAL_AGENT_INSTRUCTIONS} Check the other agents' work for errors and unverified claims.` })
         ];
 
         let selectedAgentId = "agent_1";
@@ -1485,22 +1484,51 @@
                 return;
             }
             const newId = "chat_" + Date.now();
-            const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             const isGroup = document.getElementById("isGroupChatCheckbox").checked;
-
-            chatSessions.unshift({
-                id: newId,
-                title: isGroup ? `Group Swarm #${chatSessions.length + 1}` : `New Session #${chatSessions.length + 1}`,
-                timestamp: timeStr,
-                isGroup: isGroup,
-                messages: [
-                    { sender: "⚙️ System Co-Pilot", text: isGroup ? "Group Swarm Chat initialized." : "New chat initialized." }
-                ]
-            });
+            chatSessions.unshift(newChatSession(newId, isGroup ? `Group Swarm #${chatSessions.length + 1}` : `New Session #${chatSessions.length + 1}`,
+                isGroup, isGroup ? "Group Swarm Chat initialized." : "New chat initialized."));
             activeChatId = newId;
             switchView('chat');
             renderChatList();
             logConsoleActivity("Created new chat session.");
+        }
+
+        // DYNAMIC TASK SWAPPING: moving to an unrelated task. Empties every agent's memory and
+        // shared-memory links, forgets which project files were in play, and opens an empty
+        // chat, so nothing from the old task reaches the new one. Agents' names, roles and
+        // your settings stay. Optionally unloads the project files too.
+        function clearAgentContext() {
+            agents.forEach(agent => {
+                agent.memory = "";
+                agent.sharedWith = [];
+                agent.crossKnowledgeEnabled = false;
+            });
+            recentWorkspaceFiles = [];
+        }
+
+        function startFreshTask() {
+            if (!confirm("Start a new task with a clean slate?\n\nEvery agent's memory and shared-memory links are emptied and an empty chat opens. Old chats stay in the list but aren't sent to the agents. Agents' names, roles and your settings are kept.")) return;
+            clearAgentContext();
+            const hasFiles = Object.keys(loadedProjectFiles).length > 0;
+            if (hasFiles && confirm(`Also unload the project files${connectedDirectoryHandle ? ` from "${connectedDirectoryHandle.name}"` : ""}, so agents don't read them for the new task?\n\nNothing is deleted; reconnect the folder any time.`)) {
+                loadedProjectFiles = {};
+                connectedDirectoryHandle = null;
+                activeSelectedFile = null;
+                renderProjectFiles();
+            }
+            if (chatSessions.length >= 30) chatSessions.pop();
+            createNewChat();
+            loadAgentIntoEditor();
+            renderAgentList();
+            logConsoleActivity("🧹 New task: agent memory and shared context cleared.");
+        }
+
+        function clearSelectedAgentMemory() {
+            const agent = agents.find(a => a.id === selectedAgentId);
+            if (!agent) return;
+            agent.memory = "";
+            document.getElementById("editMemory").value = "";
+            logConsoleActivity(`Cleared ${agent.name}'s memory.`);
         }
 
         function deleteChatSession(id) {
@@ -3679,9 +3707,11 @@
         function runCodevEnhancer() {
             const inputField = document.getElementById("userInput");
             if (!inputField.value.trim()) {
-                inputField.value = "Optimize the character controller script for Godot 4 with robust wall-bounce physics and smooth input mapping.";
+                inputField.focus();
+                alert("Type your request first; the Prompt Enhancer sharpens what you wrote.");
+                return;
             } else {
-                inputField.value = `[CoDev Enhanced Prompt]: ${inputField.value} - ensure maximum performance, modular C#/GDScript formatting, and strict API compliance.`;
+                inputField.value = `[CoDev Enhanced Prompt]: ${inputField.value} - be precise and complete, verify facts and APIs against sources, and state any assumptions.`;
             }
             switchView('chat');
             logConsoleActivity("CoDev Prompt Enhancer applied to active query.");
@@ -4305,18 +4335,9 @@
         }
 
         function createNewAgent() {
-            const newId = "agent_" + Date.now();
-            agents.push({
-                id: newId,
-                name: "Specialist #" + (agents.length + 1),
-                devRole: "swarm",
-                role: "Sub-System Expert",
-                instructions: "",
-                memory: "",
-                selectedForGroup: true,
-                crossKnowledgeEnabled: false,
-                sharedWith: []
-            });
+            const agent = createAgentDefaults({ name: "Agent #" + (agents.length + 1) });
+            const newId = agent.id;
+            agents.push(agent);
             selectAgent(newId);
             logConsoleActivity("Created new agent.");
             if (isMobileLayout()) openDrawer("editor");
@@ -4468,15 +4489,22 @@
             return (await groqChatMessage(body)).content || "";
         }
 
+        const GODOT_TASK_PATTERN = /\b(godot|gdscript|tscn|CharacterBody[23]D|move_and_slide)\b|\.gd\b/i;
+
         async function callAI(systemPrompt, userMessage, options = {}) {
             if (!activeProviderKey()) {
                 throw new Error(`No ${BACKEND_NAMES[currentBackend]} API key saved yet. Open ⚙️ Settings, pick a provider and paste its key (Anthropic keys start with sk-ant-).`);
             }
 
+            // Engine-specific rules only when the task is about that engine, so they don't steer unrelated work.
+            const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+            const godotRules = GODOT_TASK_PATTERN.test(`${systemPrompt}\n${userMessage}`) ? `
+- GODOT 4: CharacterBody3D.move_and_slide() takes ZERO arguments. It reads directly from built-in velocity and up_direction.
+- C# IN GODOT: Vector2 and Vector3 are structs, not records. Do NOT use record 'with' expressions. Construct new vectors or mutate component properties directly.` : "";
             const technicalGuardrails = `CRITICAL TECHNICAL & STRICT COMPLIANCE RULES:
-1. CURRENT DATE CONTEXT: Today is October 12, 2026. Donald Trump is the 47th President of the United States.
-2. GODOT 4 ENGINE RULES: CharacterBody3D.move_and_slide() takes ZERO arguments. It reads directly from built-in velocity and up_direction.
-3. C# VECTOR RULES: Godot Vector2 and Vector3 are structs, not records. Do NOT use record 'with' expressions. Construct new vectors or mutate component properties directly.
+1. CURRENT DATE: Today is ${today}. Donald Trump is the 47th President of the United States.
+2. CONTEXT: Work only from this conversation's task, the blocks it contains and your memory notes below. Don't bring in projects, stories or subjects the user hasn't mentioned.
+3. ENGINE-SPECIFIC RULES:${godotRules || " none for this task."}
 4. GROUNDING: Blocks marked [Workspace ...], [Web Search Snippets] or [Attached ...] in the user message are your sources of truth. For code syntax, API names, signatures, versions and technical facts, rely on them first; when they conflict with your memory, follow the sources.
 5. NO GUESSING: Never invent functions, classes, parameters, packages, versions, settings or URLs. If the sources and well-established knowledge don't confirm something, say plainly that you could not verify it instead of guessing.
 6. CITATIONS: When a statement relies on a web snippet, cite it inline as [n] using that snippet's number. Never cite a source that was not provided. Workspace files are cited by file name.
@@ -4518,6 +4546,10 @@
         // Every agent is locked into one of these roles. The role's prompt always goes
         // first and can't be edited away; an agent's own instructions only add to it.
         const DEV_ROLES = {
+            general: { label: "General", prompt: `ROLE: GENERAL-PURPOSE AGENT. You start with no assumptions about the user's project or field.
+- Work out what the task is and its domain (code, data analysis, research, writing, planning, betting analytics or anything else) from the user's message, and adapt your approach to it.
+- Use the tools when they help: search the web for facts you aren't sure of, read the connected files when the task is about them, and make changes with the write tools when asked.
+- Answer directly and completely, say what you verified and what you assumed, and ask only when the task is truly ambiguous.` },
             architect: { label: "Architect", prompt: `ROLE: ARCHITECT, the autonomous lead developer on the user's project. You are not a chat assistant: you do the work.
 - Plan briefly, then execute: locate the files the task touches, read what you need, make the edits with the write/edit tools, and run the code, tests or build when a command tool exists.
 - Design changes to fit the project's existing structure, naming and style.
@@ -4543,7 +4575,11 @@
         }
 
         function agentSystemPrompt(agent, workspaceNote, memory) {
-            return [DEV_ROLES[agentDevRole(agent)].prompt, AUTONOMY_RULES, workspaceNote,
+            const general = agentDevRole(agent) === "general";
+            // A general agent isn't told to treat every message as a coding job, or to nag about
+            // a missing project folder when the task may not need one.
+            if (general && /^\[Workspace status\] No project/.test(workspaceNote)) workspaceNote = "[Workspace status] No project folder is connected. That only matters if the task is about project files.";
+            return [DEV_ROLES[agentDevRole(agent)].prompt, general ? null : AUTONOMY_RULES, workspaceNote,
                 agent.instructions && `[Agent instructions] ${agent.instructions}`, memory].filter(Boolean).join("\n\n");
         }
 
@@ -5059,7 +5095,7 @@
                 return null;
             }
             logConsoleActivity("[Self-Healing Loop] Auditing the code in the reply for compiler traps and syntax bugs...");
-            return runAgentStep(session, healer, `Audit the code in these replies to "${task}" for syntax errors and API mismatches (like Godot 4 move_and_slide() taking arguments, or C# 'with' on Vector structs). Reply with the corrected code, or say it is clean. Don't change project files for this.`, { ...opts, notes: reports, title: a => `🛡️ ${a.name} (code audit)` });
+            return runAgentStep(session, healer, `Audit the code in these replies to "${task}" for syntax errors, API mismatches and claims the sources don't support. Reply with the corrected code, or say it is clean. Don't change project files for this.`, { ...opts, notes: reports, title: a => `🛡️ ${a.name} (code audit)` });
         }
 
         async function sendChatMessage() {
@@ -5103,13 +5139,14 @@
                 logConsoleActivity(`Selected agent not found; falling back to ${activeAgent.name}.`);
                 selectedAgentId = activeAgent.id;
             }
-            let collectiveMemory = `[Memory]: ${activeAgent.memory}`;
+            // Only memory someone actually wrote: an empty slate adds nothing to the prompt.
+            const memoryLine = (label, text) => (String(text || "").trim() ? `[${label}]: ${text.trim()}` : "");
+            let collectiveMemory = memoryLine("Memory", activeAgent.memory);
             if (activeAgent.crossKnowledgeEnabled && activeAgent.sharedWith.length > 0) {
                 activeAgent.sharedWith.forEach(targetId => {
                     const sharedAgent = agents.find(a => a.id === targetId);
-                    if (sharedAgent) {
-                        collectiveMemory += `\n[Shared Memory from ${sharedAgent.name}]: ${sharedAgent.memory}`;
-                    }
+                    const line = sharedAgent && memoryLine(`Shared Memory from ${sharedAgent.name}`, sharedAgent.memory);
+                    if (line) collectiveMemory += `${collectiveMemory ? "\n" : ""}${line}`;
                 });
             }
 
@@ -5165,7 +5202,7 @@
                 for (const agent of ordered) {
                     const notes = results.length ? "\n\n[Swarm progress]\n" + results.map(r => `${r.agent.name}${r.changes.length ? ` changed ${r.changes.join(", ")}` : " changed no files"}`
                         + `${r.commands.length ? `; ran ${r.commands.join("; ")}` : ""}.\nReport: ${r.response.slice(0, 2500)}`).join("\n\n") : "";
-                    results.push(await runAgentStep(session, agent, userText, { ...stepOptions, memory: `[Memory]: ${agent.memory}`, notes }));
+                    results.push(await runAgentStep(session, agent, userText, { ...stepOptions, memory: memoryLine("Memory", agent.memory), notes }));
                 }
                 // A self-healing agent in the swarm has already verified the work.
                 if (isSelfHeal && !ordered.some(a => agentDevRole(a) === "self_healing")) await runSelfHealingPass(session, results, userText, { ...stepOptions, memory: "" });
