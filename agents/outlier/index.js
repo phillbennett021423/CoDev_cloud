@@ -15,7 +15,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
-const { collectPage, parseCollected, propId } = require('./extract');
+const { collectPage, parseCollected, parseText, propId } = require('./extract');
+const { createCapture } = require('./capture');
 const { checkPage, advice, fixKnownAddress } = require('../../desktop/browser/page-check');
 
 // The signed-in browser's id in the shared browser service. Agents' ids never start with @.
@@ -357,13 +358,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         const pageKind = ['props', 'odds', 'slips', 'history'].includes(kind) ? kind : 'props';
         const parsed = parseCollected([{ kind: pageKind, url: page.url(), collected }]);
         if (!merge) return parsed;
-        const previous = readJson(files.scrape, null);
-        const byId = new Map(((previous && previous.props) || []).map(p => [p.id, p]));
-        for (const prop of parsed.props) byId.set(prop.id, prop);
-        const outs = new Map([...((previous && previous.injuries) || []), ...parsed.injuries].map(o => [o.player.toLowerCase(), o]));
-        writeJson(files.scrape, { scrapedAt: new Date().toISOString(), source: 'outlier', props: [...byId.values()], injuries: [...outs.values()],
-            results: [...((previous && previous.results) || []), ...parsed.results],
-            pages: [...((previous && previous.pages) || []), ...parsed.pages] });
+        mergeIntoScrape(parsed);
         const settledNow = settleFromResults(parsed.results);
         if (settledNow) await learn();
         const result = await analyze();
@@ -557,6 +552,18 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             })).filter(o => o.player);
             weights.vacuum = { ...(weights.vacuum || {}), manual_out: manual };
         }
+        // The under value engine: { enabled, min_signals (1-4), min_edge (0-0.3) }.
+        if (update.under) {
+            const u = { ...(weights.under || {}) };
+            if (update.under.enabled !== undefined) u.enabled = update.under.enabled === true;
+            for (const [key, lo, hi] of [['min_signals', 1, 4], ['min_edge', 0, 0.3]]) {
+                if (update.under[key] === undefined) continue;
+                const value = num(update.under[key], lo, hi);
+                if (value === undefined) throw new Error(`under ${key} must be between ${lo} and ${hi}.`);
+                u[key] = key === 'min_signals' ? Math.round(value) : value;
+            }
+            weights.under = u;
+        }
         if (Array.isArray(update.ticketSizes)) {
             const sizes = [...new Set(update.ticketSizes.map(Number).filter(n => n >= 4 && n <= 6))].sort();
             if (!sizes.length) throw new Error('Pick ticket sizes from 4 to 6 legs.');
@@ -564,6 +571,49 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         }
         writeJson(files.weights, weights);
         if (fs.existsSync(files.scrape)) await analyze();
+        return snapshotState();
+    }
+
+    // Adds props (and injuries, results, pages) to the latest read; a prop seen again replaces the old one.
+    function mergeIntoScrape({ props = [], injuries = [], results = [], pages = [] }) {
+        const previous = readJson(files.scrape, null);
+        const byId = new Map(((previous && previous.props) || []).map(p => [p.id, p]));
+        for (const prop of props) byId.set(prop.id, prop);
+        const outs = new Map([...((previous && previous.injuries) || []), ...injuries].map(o => [o.player.toLowerCase(), o]));
+        writeJson(files.scrape, { scrapedAt: new Date().toISOString(), source: 'outlier', props: [...byId.values()], injuries: [...outs.values()],
+            results: [...((previous && previous.results) || []), ...results],
+            pages: [...((previous && previous.pages) || []), ...pages] });
+    }
+
+    // Passive capture in the signed-in browser while the user scrolls it (capture.js).
+    // New props go to a scratchpad and into the latest read, re-scored at most every
+    // ANALYZE_EVERY_MS so a fast scroll doesn't start the analysis on every drain.
+    const ANALYZE_EVERY_MS = 15000;
+    let analyzeTimer = null;
+    let lastCaptureAnalyze = 0;
+    const capture = createCapture({
+        getSession: () => (shared ? shared.manager.peek(SESSION) : null),
+        parse: (text, url) => parseText(text, { url }),
+        log,
+        onProps: props => {
+            mergeIntoScrape({ props });
+            if (analyzeTimer) return;
+            const wait = Math.max(0, lastCaptureAnalyze + ANALYZE_EVERY_MS - Date.now());
+            analyzeTimer = setTimeout(async () => {
+                analyzeTimer = null;
+                lastCaptureAnalyze = Date.now();
+                if (state.busy) return;
+                try { recordPrices(await analyze()); } catch (err) { state.lastError = err.message; }
+            }, wait);
+            analyzeTimer.unref?.();
+        }
+    });
+
+    async function setCapture({ on, clear = false } = {}) {
+        if (!shared) throw new Error('Passive capture needs the browser service (playwright-core).');
+        if (clear) capture.clear();
+        if (on === true) await capture.start();
+        else if (on === false) capture.stop();
         return snapshotState();
     }
 
@@ -712,6 +762,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             lastError: state.lastError,
             scrapedAt: scrapeFile && scrapeFile.scrapedAt,
             pages: scrapeFile && scrapeFile.pages,
+            capture: capture.status(),
             result: readJson(files.result, null),
             history: history(),
             weights: readJson(files.weights, null),
@@ -728,6 +779,8 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     }
 
     async function close() {
+        capture.stop();
+        if (analyzeTimer) { clearTimeout(analyzeTimer); analyzeTimer = null; }
         await closeShared();
         if (state.signInContext) await state.signInContext.close().catch(() => {});
     }
@@ -737,7 +790,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         return { available: true, detail: state.busy ? `busy: ${state.busy}` : state.signedIn === false ? 'signed out of Outlier' : 'ready' };
     }
 
-    return { signIn, scrape, readOpenPage, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
+    return { signIn, scrape, readOpenPage, setCapture, capture, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
         state: snapshotState, status, close, files, settleFromResults };
 }
 
@@ -797,6 +850,8 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                 return { ...outlier.state(), read: { props: parsed.props.length, pages: parsed.pages } };
             }),
             'POST /outlier/scrape': safe(async () => { await outlier.scrape(); return outlier.state(); }),
+            // Passive capture while you scroll the Outlier browser: { on: true|false, clear }.
+            'POST /outlier/capture': safe(body => outlier.setCapture(body)),
             'POST /outlier/analyze': safe(async () => { await outlier.analyze(); return outlier.state(); }),
             'POST /outlier/snapshot': safe(() => outlier.snapshot()),
             'POST /outlier/config': safe(body => outlier.setConfig(body)),

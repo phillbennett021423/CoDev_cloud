@@ -58,6 +58,8 @@ The **📈 Outlier** tab (when CoDev runs on your computer with `npm start` or `
    - keeps legs that work against each other off the same ticket;
    - shares a ruled-out starter's usage out to his teammates' props (from the page's injury notes or a list you type in);
    - drops players whose minutes fell 10% or more over the last two games, or who face one of the stingiest defenses.
+7. **⏺ Passive capture** collects props while you scroll Outlier yourself in the live view. A MutationObserver in the page notes each prop card as it appears, including cards a long board removes once they scroll away. Every few seconds CoDev parses them into a scratchpad and the latest read, and re-scores at most every 15 seconds. It never scrolls, clicks or moves your view.
+8. The **Under value engine** looks at the props the strategy didn't keep from the under side. A prop is tagged an **Under Value Leg** when at least two under signals line up and the under price still leaves a 2-point edge. The signals are a slow game, a lockdown defense, a teammate's usage coming back, and an inflated public over. A prop is routed to the core picks or the under list, never both, and under legs stay off the over tickets.
 
 The parser doesn't depend on Outlier's markup, but if it misses props, **Save page snapshot** stores the page (HTML and the data it loaded) in the same folder so selectors can be added to `config.json` there. Agents can read the latest entries with the read-only `outlier_slips` tool. Automated reading may be against Outlier's terms; that's your call. The numbers are estimates, not guarantees.
 

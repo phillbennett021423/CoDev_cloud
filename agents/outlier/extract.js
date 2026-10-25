@@ -60,7 +60,7 @@ function collectPage(selectors) {
 
     // Injury report lines ("Joel Embiid (PHI) - Out", "Out: Joel Embiid"): short blocks
     // with an injury status and no price.
-    const STATUS = /\b(?:OUT|Out|Ruled Out|ruled out|Inactive|INACTIVE)\b/;
+    const STATUS = /\b(?:OUT|Out|Ruled Out|ruled out|Inactive|INACTIVE|Returning|RETURNING|Probable)\b/;
     out.injuries = [...document.body.querySelectorAll('div, li, tr, span, p')]
         .filter(el => { const t = text(el); return t.length > 0 && t.length <= 160 && STATUS.test(t) && !ODDS.test(t); })
         .filter((el, _, all) => !all.some(other => other !== el && el.contains(other)))
@@ -226,6 +226,9 @@ function insights(text) {
     if (minutesList) out.minutes = minutesList[1].split(/[\s,|/]+/).map(Number).filter(Number.isFinite);
     const minutesAvg = text.match(/\b(?:min|mins|minutes|mpg)\s*[:=]?\s*(\d{1,2}(?:\.\d+)?)\b(?!\s*[,|/]\s*\d)/i);
     if (minutesAvg && !minutesList) out.minutesAvg = num(minutesAvg[1]);
+    // Share of the public's bets on this side ("78% of bets", "Public 78%").
+    const pub = text.match(/(\d{1,3})\s*%\s*(?:of\s+)?(?:the\s+)?(?:public|bets|tickets|handle)\b/i) || text.match(/\bpublic(?:\s*(?:bets?|money|%))?\s*[:=]?\s*(\d{1,3})\s*%/i);
+    if (pub && num(pub[1]) <= 100) out.publicPct = num(pub[1]) / 100;
     return out;
 }
 
@@ -233,7 +236,7 @@ function insights(text) {
 // Joel Embiid"). team: the card's team, for a teammate named without one.
 const NAME = "([A-Z][A-Za-z.'\\-]+(?:\\s+[A-Z][A-Za-z.'\\-]+){1,3})";
 const INJURY_RES = [
-    new RegExp(`${NAME}\\s*(?:\\(([A-Z]{2,4})\\))?\\s*[-–:|]?\\s*\\(?(OUT|Out|Ruled Out|ruled out|Inactive|INACTIVE|Doubtful|Questionable|GTD)\\b`, 'g'),
+    new RegExp(`${NAME}\\s*(?:\\(([A-Z]{2,4})\\))?\\s*[-–:|]?\\s*\\(?(OUT|Out|Ruled Out|ruled out|Inactive|INACTIVE|Doubtful|Questionable|GTD|Probable|Returning|RETURNING)\\b`, 'g'),
     new RegExp(`\\b(?:teammates?\\s+)?(?:OUT|Out|out|Ruled out|ruled out|Inactive)\\s*[:\\-]\\s*${NAME}(?:\\s*\\(([A-Z]{2,4})\\))?`, 'g')
 ];
 function injuries(raw, team = null) {

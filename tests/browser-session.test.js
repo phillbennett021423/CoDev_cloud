@@ -216,6 +216,20 @@ test("Read this page parses whatever is open in the signed-in Outlier browser", 
     assert.equal(JSON.parse(reply.content[0].text).props.length, 4);
     const sneaky = await service.callTool('outlier_extract_page', {}, { agentId: '@outlier' });
     assert.equal(sneaky.isError, true, "an agent can't read the signed-in browser");
+
+    // Passive capture: props on the open page go to the scratchpad and the latest read
+    // while the user scrolls; the user's page and control stay theirs.
+    fs.rmSync(pipeline.files.scrape, { force: true });
+    assert.equal(typeof service.routes['POST /outlier/capture'], 'function');
+    const captured = await pipeline.setCapture({ on: true });
+    assert.equal(captured.capture.on, true);
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    await pipeline.capture.drain();
+    assert.equal(pipeline.state().capture.props, 4);
+    assert.equal(JSON.parse(fs.readFileSync(pipeline.files.scrape, 'utf8')).props.length, 4);
+    assert.equal(browser.manager.peek('@outlier').page.url(), `${base}/board`);
+    assert.equal((await pipeline.setCapture({ on: false, clear: true })).capture.props, 0);
+    await pipeline.close();
 });
 
 test("Outlier opens at its sign-in portal, and saved look-alike domains go back to it", () => {

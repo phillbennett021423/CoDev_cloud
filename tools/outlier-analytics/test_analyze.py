@@ -379,6 +379,79 @@ class Intelligence(unittest.TestCase):
         self.assertTrue(any("minutes down" in r for r in A.analyze({"props": [steady(2, insights={"minutes": [30, 31, 35, 36, 34]})]}, self.w)["legs"][0]["rejected"]))
 
 
+
+class UnderEngine(unittest.TestCase):
+    """The under value engine is a routing switch on the props the core strategy passes on."""
+
+    def setUp(self):
+        self.w = A.load_weights(None)
+        self.w["strategy"] = "consistency"
+        self.slow = {"pace": 95.0, "defenseRank": 3, "position": "C", "minutes": [33, 34, 33, 34, 33]}
+
+    def cold(self, i, **extra):
+        # An over that keeps missing (core drops it), with an under price.
+        extra.setdefault("insights", self.slow)
+        extra.setdefault("oppositeOdds", [{"book": "fanduel", "price": -105}])
+        leg = steady(i, recent=[17, 18, 22, 16, 19, 17, 23, 18, 16, 19], **extra)
+        leg["hitRates"] = {"l5": 0.2, "l10": 0.3}
+        return leg
+
+    def test_mirror_flips_the_prices_and_hit_rates(self):
+        under = A.mirror_under(self.cold(1))
+        self.assertEqual((under["id"], under["side"], under["mirrorOf"]), ("p1|under", "under", "p1"))
+        self.assertEqual(A.prices_of(under["odds"]), [-105])
+        self.assertAlmostEqual(under["hitRates"]["l10"], 0.7)
+        self.assertIsNone(A.mirror_under(steady(2)), "no under price, nothing to mirror")
+
+    def test_props_route_to_one_side_only(self):
+        # A slow game (an under signal), but the core keeps the over.
+        good_over = steady(1, insights={**SOFT, "pace": 95.0}, oppositeOdds=[{"book": "fanduel", "price": -105}])
+        result = A.analyze({"props": [good_over, self.cold(2), steady(3)]}, self.w)
+        legs = {l["id"]: l for l in result["legs"]}
+        self.assertEqual(legs["p2"]["route"], "under")
+        self.assertEqual(legs["p2"]["underLeg"], "p2|under")
+        under = result["underLegs"][0]
+        self.assertEqual((under["id"], under["tag"], under["tier"]), ("p2|under", "Under Value Leg", "under"))
+        self.assertTrue(any("pace-down" in r for r in under["metrics"]["underSignals"]))
+        self.assertTrue(any("lockdown" in r for r in under["metrics"]["underSignals"]))
+        self.assertGreaterEqual(under["metrics"]["p"], under["metrics"]["impliedProb"] + 0.02)
+        self.assertEqual(result["counts"]["under"], 1)
+        # A prop the core keeps never gets a second opinion from the under side.
+        self.assertEqual(legs["p1"]["tier"], "anchor")
+        self.assertEqual(legs["p1"]["route"], "core")
+        self.assertNotIn("p1|under", [u["id"] for u in result["underLegs"]])
+        self.w["under"]["min_signals"] = 1   # its one under signal would now be enough, but core has it
+        again = A.analyze({"props": [good_over]}, self.w)
+        self.assertEqual((again["legs"][0]["route"], again["underLegs"]), ("core", []))
+        self.w["under"]["min_signals"] = 2
+        for l in result["legs"]:
+            self.assertFalse(l["tier"] and l["route"] == "under")
+        # Under legs stay off the over tickets.
+        for t in result["tickets"]:
+            self.assertFalse(any(leg_id.endswith("|under") for leg_id in t["legs"]))
+
+    def test_needs_enough_signals_and_an_edge(self):
+        one = self.cold(1, insights={"pace": 95.0, "minutes": [33, 34, 33, 34, 33]})
+        self.assertEqual(A.analyze({"props": [one]}, self.w)["underLegs"], [])
+        self.w["under"]["min_signals"] = 1
+        self.assertEqual(len(A.analyze({"props": [one]}, self.w)["underLegs"]), 1)
+        # A short under price leaves no edge.
+        pricey = self.cold(2, oppositeOdds=[{"book": "fanduel", "price": -400}])
+        self.assertEqual(A.analyze({"props": [pricey]}, self.w)["underLegs"], [])
+        self.w["under"]["enabled"] = False
+        self.assertEqual(A.analyze({"props": [one]}, self.w)["underLegs"], [])
+
+    def test_usage_coming_back_and_inflated_chalk(self):
+        self.w["under"]["min_signals"] = 1
+        plain = {"minutes": [33, 34, 33, 34, 33]}
+        back = self.cold(1, team="PHI", player="Tyrese Maxey", insights=plain)
+        result = A.analyze({"props": [back], "injuries": [{"player": "Joel Embiid", "team": "PHI", "status": "returning", "usage": 0.3}]}, self.w)
+        self.assertTrue(any("usage coming back: Joel Embiid" in r for r in result["underLegs"][0]["metrics"]["underSignals"]))
+        chalk = self.cold(2, insights={**plain, "publicPct": 0.82})
+        why = A.analyze({"props": [chalk]}, self.w)["underLegs"][0]["metrics"]["underSignals"]
+        self.assertTrue(any("82% of the public" in r for r in why))
+
+
 if __name__ == "__main__":
     unittest.main()
 
