@@ -379,3 +379,52 @@ test('passive capture collects cards a virtualized board adds and removes, witho
     assert.equal(capture.status().on, false);
     await assert.rejects(createCapture({ getSession: () => null, parse: () => null }).start(), /Open the Outlier browser/);
 });
+
+test('board JSON saved in the project folder is imported and audited, and every analysis writes the board dump', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const { createService } = require('../agents/outlier');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-board-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir: path.join(root, 'data'), getWorkspace: () => path.join(root, 'project'), log: () => {} });
+    t.after(() => pipeline.close());
+    const service = createService({}, { pipeline });
+    const steady = [24, 22, 19, 25, 23, 18, 26, 22, 17, 24];
+    const props = ['A Guard', 'B Wing', 'C Big', 'D Forward', 'E Shooter', 'F Center'].map((player, i) => ({
+        player, market: 'Points', line: 20.5, side: 'over', league: 'NBA', team: `T${i}`, game: `G${i}`,
+        odds: [{ book: 'fanduel', price: -119 }], hitRates: { l5: 0.8, l10: 0.7 }, recent: steady,
+        insights: { defenseRank: 28, minutes: [35, 34, 36, 33, 35] }
+    }));
+    const folder = path.join(root, 'project', 'downloads', 'new folder');
+    const dump = path.join(folder, 'outlier_live_board_dump.json');
+    assert.ok(fs.existsSync(folder), 'the import folder is ready to drop files into');
+    await pipeline.setStrategy({ strategy: 'consistency' });
+
+    // Saved into the folder: picked up, audited, and the dump written next to it.
+    fs.writeFileSync(path.join(folder, 'tonight.json'), JSON.stringify({ props }));
+    const deadline = Date.now() + 15000;
+    while (!(pipeline.state().board.lastImport) && Date.now() < deadline) await new Promise(r => setTimeout(r, 200));
+    const state = pipeline.state();
+    assert.deepEqual([state.board.lastImport.file, state.board.lastImport.props], ['tonight.json', 6]);
+    assert.equal(state.result.counts.props, 6);
+    const written = JSON.parse(fs.readFileSync(dump, 'utf8'));
+    assert.equal(written.props.length, 6);
+    assert.ok(written.tickets.length > 0 && written.tickets.every(x => x.american && x.legs.length >= 4));
+    assert.equal(written.strategy, 'consistency');
+    // The dump itself isn't re-imported (no loop).
+    const runs = state.board.dump.at;
+    await new Promise(r => setTimeout(r, 1500));
+    assert.equal(pipeline.state().board.dump.at, runs);
+
+    // Agents run the same audit with a tool; paths outside the project are refused.
+    fs.writeFileSync(path.join(root, 'project', 'list.json'), JSON.stringify(props.slice(0, 5)));
+    const reply = await service.callTool('outlier_import_board', { path: 'list.json' });
+    assert.equal(reply.isError, undefined, reply.content[0].text);
+    assert.match(reply.content[0].text, /4-leg ticket [+-]\d+/);
+    assert.match(reply.content[0].text, /Estimates, not guarantees/);
+    const escape = await service.callTool('outlier_import_board', { path: '../secrets.json' });
+    assert.equal(escape.isError, true);
+    assert.match(escape.content[0].text, /inside the project folder/);
+    fs.writeFileSync(path.join(root, 'project', 'junk.json'), JSON.stringify({ hello: 1 }));
+    assert.match((await service.callTool('outlier_import_board', { path: 'junk.json' })).content[0].text, /no props/);
+    assert.throws(() => pipeline.setConfig({ boardDump: '/etc/passwd' }), /inside the project folder/);
+});

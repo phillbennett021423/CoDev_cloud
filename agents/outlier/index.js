@@ -37,7 +37,13 @@ const DEFAULT_CONFIG = {
     // Free market odds (market_data.py) and public odds-comparison pages read
     // with a fresh, signed-out browser, cross-referenced into each scrape.
     market: true,
-    publicBoards: []
+    publicBoards: [],
+    // Every analysis writes the board (props, injuries, tickets, under legs) to this
+    // file in the project folder ('' = off), and board JSON files saved in importDir
+    // are read in and analyzed as they appear. Both are relative to the project folder.
+    boardDump: 'downloads/new folder/outlier_live_board_dump.json',
+    importDir: 'downloads/new folder',
+    autoImport: true
 };
 const SIGN_IN_WAIT_MS = 10 * 60 * 1000;
 
@@ -112,8 +118,9 @@ function sameLeg(a, b) {
         && (!a.market || !b.market || norm(a.market) === norm(b.market));
 }
 
+// getWorkspace: the project folder (board dump and import folder live there), or ''.
 function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier'), playwright = loadPlaywright(), python, oddsApiKey = process.env.ODDS_API_KEY,
-    blockedPorts = [3000, Number(process.env.PORT) || 3000, 8787], shared = null, log = console.log } = {}) {
+    blockedPorts = [3000, Number(process.env.PORT) || 3000, 8787], shared = null, getWorkspace = () => '', log = console.log } = {}) {
     const files = {
         profile: path.join(dataDir, 'profile'),
         config: path.join(dataDir, 'config.json'),
@@ -152,7 +159,11 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         if (typeof update.showBrowser === 'boolean') next.showBrowser = update.showBrowser;
         if (typeof update.market === 'boolean') next.market = update.market;
         if (Array.isArray(update.publicBoards)) next.publicBoards = update.publicBoards.filter(Boolean).map(checkUrl);
+        if (typeof update.boardDump === 'string') next.boardDump = update.boardDump.trim() && inWorkspace(update.boardDump, { relative: true });
+        if (typeof update.importDir === 'string') next.importDir = update.importDir.trim() && inWorkspace(update.importDir, { relative: true });
+        if (typeof update.autoImport === 'boolean') next.autoImport = update.autoImport;
         writeJson(files.config, next);
+        watchImports();
         return next;
     }
 
@@ -465,10 +476,102 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         }
     }
 
+    // A path inside the project folder (relative to it), or an error for one that leaves it.
+    function inWorkspace(rel, { relative = false } = {}) {
+        const text = String(rel || '').trim().replace(/\\/g, '/');
+        if (!text || path.isAbsolute(text) || text.split('/').includes('..')) throw new Error(`Use a path inside the project folder: ${rel}`);
+        if (relative) return text;
+        const root = getWorkspace();
+        if (!root) return null;
+        return path.join(root, text);
+    }
+
     async function analyze() {
         await runPython(['analyze', '--input', files.scrape, '--weights', files.weights, '--out', files.result,
             '--history', files.history, '--market-log', files.marketLog], { python });
-        return readJson(files.result, null);
+        const result = readJson(files.result, null);
+        dumpBoard(result);
+        return result;
+    }
+
+    // The board as structured JSON in the project folder, for other tools and agents.
+    let lastDump = null;
+    function dumpBoard(result) {
+        const target = config().boardDump ? inWorkspace(config().boardDump) : null;
+        if (!target || !result) return null;
+        const scrapeFile = readJson(files.scrape, {});
+        try {
+            writeJson(target, {
+                exportedAt: new Date().toISOString(), source: 'outlier', scrapedAt: scrapeFile.scrapedAt || null,
+                props: scrapeFile.props || [], injuries: scrapeFile.injuries || [],
+                strategy: result.strategy, counts: result.counts,
+                legs: result.legs.map(l => ({ id: l.id, player: l.player, market: l.market, line: l.line, side: l.side, team: l.team, game: l.game,
+                    tier: l.tier, route: l.route, rejected: l.rejected, metrics: l.metrics })),
+                tickets: result.tickets, underLegs: result.underLegs, slips: result.slips, notes: result.notes,
+                note: 'Estimates from public prices and recent games, not guarantees.'
+            });
+            lastDump = { path: target, at: new Date().toISOString() };
+        } catch (err) {
+            log(`[Outlier] Couldn't write the board dump to ${target}: ${err.message}`);
+        }
+        return lastDump;
+    }
+
+    // Reads a board saved as JSON: CoDev's own dump or scrape ({ props }), a list of
+    // props, or what the page collector returns ({ cards, tables } or [{ collected }]).
+    // Its props join the latest read and everything is re-scored.
+    async function importBoard(file) {
+        const raw = readJson(file, undefined);
+        if (raw === undefined) throw new Error(`Couldn't read ${path.basename(file)} as JSON.`);
+        let parsed;
+        if (Array.isArray(raw) && raw.every(p => p && p.collected)) parsed = parseCollected(raw);
+        else if (raw && !Array.isArray(raw) && (raw.cards || raw.tables)) parsed = parseCollected([{ kind: 'props', url: raw.url, collected: raw }]);
+        else {
+            const list = Array.isArray(raw) ? raw : (raw && raw.props) || [];
+            const props = list.filter(p => p && typeof p.player === 'string' && Number.isFinite(Number(p.line)))
+                .map(p => ({ ...p, line: Number(p.line), side: p.side || 'over', odds: Array.isArray(p.odds) ? p.odds : [], id: p.id || propId(p) }));
+            parsed = { props, injuries: Array.isArray(raw && raw.injuries) ? raw.injuries : [], results: [], pages: [] };
+        }
+        if (!parsed.props.length) throw new Error(`${path.basename(file)} has no props CoDev can read (each needs a player and a line).`);
+        mergeIntoScrape(parsed);
+        const result = await analyze();
+        recordPrices(result);
+        state.lastRun = new Date().toISOString();
+        state.lastImport = { file: path.basename(file), props: parsed.props.length, at: state.lastRun };
+        log(`[Outlier] Imported ${parsed.props.length} prop(s) from ${path.basename(file)}.`);
+        return { props: parsed.props.length, result };
+    }
+
+    // Watches importDir: a board JSON saved there (not CoDev's own dump) is imported.
+    let importWatch = null;
+    const imported = new Map();   // file -> mtime already read
+    function watchImports() {
+        if (importWatch) { importWatch.close(); importWatch = null; }
+        const cfg = config();
+        const dir = cfg.autoImport && cfg.importDir ? inWorkspace(cfg.importDir) : null;
+        if (!dir) return;
+        try { fs.mkdirSync(dir, { recursive: true }); } catch { return; }
+        const dumpPath = cfg.boardDump ? path.resolve(inWorkspace(cfg.boardDump)) : '';
+        const timers = new Map();
+        const consider = name => {
+            if (!/\.json$/i.test(name)) return;
+            const file = path.join(dir, name);
+            if (path.resolve(file) === dumpPath) return;
+            clearTimeout(timers.get(file));
+            // Wait for the file to finish writing.
+            timers.set(file, setTimeout(async () => {
+                let mtime;
+                try { mtime = fs.statSync(file).mtimeMs; } catch { return; }
+                if (imported.get(file) === mtime) return;
+                imported.set(file, mtime);
+                if (state.busy) return;
+                try { await importBoard(file); } catch (err) { state.lastError = err.message; log(`[Outlier] ${err.message}`); }
+            }, 800));
+        };
+        try {
+            importWatch = fs.watch(dir, (event, name) => { if (name) consider(String(name)); });
+            importWatch.unref?.();
+        } catch (err) { log(`[Outlier] Can't watch ${dir}: ${err.message}`); }
     }
 
     // After each scrape: log every prop's price with the time, and move the
@@ -608,6 +711,13 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             analyzeTimer.unref?.();
         }
     });
+
+    async function importFile({ file } = {}) {
+        const target = inWorkspace(file);
+        if (!target) throw new Error('Connect a project folder first: board files are read from it.');
+        await importBoard(target);
+        return snapshotState();
+    }
 
     async function setCapture({ on, clear = false } = {}) {
         if (!shared) throw new Error('Passive capture needs the browser service (playwright-core).');
@@ -763,6 +873,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             scrapedAt: scrapeFile && scrapeFile.scrapedAt,
             pages: scrapeFile && scrapeFile.pages,
             capture: capture.status(),
+            board: { dump: lastDump, lastImport: state.lastImport || null, workspace: Boolean(getWorkspace()) },
             result: readJson(files.result, null),
             history: history(),
             weights: readJson(files.weights, null),
@@ -780,6 +891,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
 
     async function close() {
         capture.stop();
+        if (importWatch) { importWatch.close(); importWatch = null; }
         if (analyzeTimer) { clearTimeout(analyzeTimer); analyzeTimer = null; }
         await closeShared();
         if (state.signInContext) await state.signInContext.close().catch(() => {});
@@ -790,7 +902,8 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         return { available: true, detail: state.busy ? `busy: ${state.busy}` : state.signedIn === false ? 'signed out of Outlier' : 'ready' };
     }
 
-    return { signIn, scrape, readOpenPage, setCapture, capture, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
+    watchImports();
+    return { signIn, scrape, readOpenPage, setCapture, capture, importBoard, importFile, dumpBoard, watchImports, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
         state: snapshotState, status, close, files, settleFromResults };
 }
 
@@ -806,13 +919,21 @@ const safe = fn => async (req, res, body) => {
 
 function createService(config = {}, { log = console.log, pipeline, services = {} } = {}) {
     const shared = (services.browser && services.browser.shared) || null;
-    const outlier = pipeline || createOutlierPipeline({ log, shared, oddsApiKey: (config.keys && config.keys.oddsApi) || undefined });
+    const workspace = config.workspace || {};
+    const outlier = pipeline || createOutlierPipeline({ log, shared, oddsApiKey: (config.keys && config.keys.oddsApi) || undefined,
+        getWorkspace: () => workspace.root || workspace.projectDir || '' });
     return {
         name: 'outlier',
         tools: [{
             name: 'outlier_slips',
             description: 'The latest Outlier entries CoDev recommends (4- and 6-leg power/flex), with each leg\'s odds, L5 hit rate and estimated hit chance. Read-only; the user runs the scrape from the Outlier view.',
             inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+        }, {
+            name: 'outlier_import_board',
+            description: 'Reads an Outlier board saved as JSON in the project folder (a list of props, { props: [...] }, CoDev\'s own board dump, or the page collector\'s { cards, tables }), adds it to the Outlier analysis and runs the full audit: the -119 consistency filter, sharp-book (Pinnacle) comparison, correlation and usage checks, the Under engine and 4-6 leg tickets. Returns the tickets and under legs.',
+            inputSchema: { type: 'object', properties: {
+                path: { type: 'string', description: 'The JSON file, relative to the project folder (e.g. "downloads/new folder/board.json").' }
+            }, required: ['path'], additionalProperties: false }
         }, {
             name: 'outlier_extract_page',
             description: 'Runs the Outlier DOM extraction on the page open in YOUR browser (open it first with browser_navigate) and returns the props it finds as JSON: player, market, line, side, odds by book, hit rates. With add_to_analysis true, they are added to the latest Outlier read and the entries are re-scored.',
@@ -829,6 +950,20 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     const parsed = await outlier.readOpenPage({ agentId, kind: args.kind, merge: args.add_to_analysis === true });
                     const text = JSON.stringify({ props: parsed.props, results: parsed.results, pages: parsed.pages }, null, 1);
                     return { content: [{ type: 'text', text: text.length > 60000 ? `${text.slice(0, 60000)}\n… (cut)` : text }] };
+                } catch (err) {
+                    return { content: [{ type: 'text', text: err.message }], isError: true };
+                }
+            }
+            if (name === 'outlier_import_board') {
+                try {
+                    await outlier.importFile({ file: args.path });
+                    const result = outlier.state().result;
+                    const legs = new Map(result.legs.map(l => [l.id, l]));
+                    const leg = l => `  - ${l.player} ${l.side} ${l.line} ${l.market || ''} (${l.metrics.consensus}, p ${Math.round((l.metrics.p || 0) * 100)}%)`;
+                    const tickets = (result.tickets || []).map(t => `${t.size}-leg ticket ${t.american > 0 ? '+' : ''}${t.american} (${t.decimal}x): book ${(t.impliedProb * 100).toFixed(1)}% vs model ${(t.modelProb * 100).toFixed(1)}%, EV ${(t.ev * 100).toFixed(1)}%\n`
+                        + t.legs.map(id => leg(legs.get(id))).join('\n'));
+                    const unders = (result.underLegs || []).map(u => `${leg(u)}: ${(u.metrics.underSignals || []).join('; ')}`);
+                    return { content: [{ type: 'text', text: `${result.counts.props} props, ${result.counts.passed} passed (${result.strategy}).\n${tickets.join('\n') || 'No tickets.'}\nUnder value legs:\n${unders.join('\n') || '  none'}\n${result.notes.join('\n')}\nEstimates, not guarantees.` }] };
                 } catch (err) {
                     return { content: [{ type: 'text', text: err.message }], isError: true };
                 }
@@ -852,6 +987,8 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
             'POST /outlier/scrape': safe(async () => { await outlier.scrape(); return outlier.state(); }),
             // Passive capture while you scroll the Outlier browser: { on: true|false, clear }.
             'POST /outlier/capture': safe(body => outlier.setCapture(body)),
+            // A board JSON in the project folder: { file }.
+            'POST /outlier/import': safe(body => outlier.importFile(body)),
             'POST /outlier/analyze': safe(async () => { await outlier.analyze(); return outlier.state(); }),
             'POST /outlier/snapshot': safe(() => outlier.snapshot()),
             'POST /outlier/config': safe(body => outlier.setConfig(body)),

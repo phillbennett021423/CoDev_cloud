@@ -208,6 +208,8 @@ div.ov-why { font-size: 0.78rem; }
             return el("div", { class: "ov-status" }, signed,
                 el("span", { text: `Last scrape: ${when(state.scrapedAt)}` }),
                 state.result ? el("span", { text: `${state.result.strategy === "consistency" ? "Consistency (-119)" : "Sharp (-130)"}: ${state.result.counts.passed} of ${state.result.counts.props} props passed${state.result.counts.variance ? `, ${state.result.counts.variance} variance leg(s)` : ""}${state.result.counts.orphaned ? `, ${state.result.counts.orphaned} orphaned line(s)` : ""}` }) : null,
+                state.board && state.board.dump ? el("span", { text: `Board written to ${state.board.dump.path.split(/[\\/]/).slice(-2).join("/")}` }) : null,
+                state.board && state.board.lastImport ? el("span", { text: `Imported ${state.board.lastImport.props} prop(s) from ${state.board.lastImport.file}` }) : null,
                 state.result && state.result.counts.under ? el("span", { text: `${state.result.counts.under} under value leg(s)` }) : null,
                 state.capture && (state.capture.on || state.capture.props) ? el("span", { class: state.capture.on ? "good" : "", text: `${state.capture.on ? "● Capturing" : "Capture off"}: ${state.capture.props} prop(s) in the scratchpad${state.capture.error ? ` (${state.capture.error})` : ""}` }) : null,
                 state.result && (state.result.ruledOut || []).length ? el("span", { text: `Ruled out: ${state.result.ruledOut.map(o => o.player).join(", ")}` }) : null,
@@ -468,9 +470,15 @@ div.ov-why { font-size: 0.78rem; }
             pages.value = cfg.pages.map(p => `${p.kind} ${p.url}`).join("\n");
             const signIn = el("input", { type: "text", value: cfg.signInUrl || "", "aria-label": "Sign-in page" });
             const show = el("input", { type: "checkbox", checked: Boolean(cfg.showBrowser) });
+            const dump = el("input", { type: "text", value: cfg.boardDump || "", placeholder: "off", "aria-label": "Board dump file" });
+            const importDir = el("input", { type: "text", value: cfg.importDir || "", placeholder: "off", "aria-label": "Board import folder" });
+            const autoImport = el("input", { type: "checkbox", checked: cfg.autoImport !== false });
             const save = () => act("Saving…", "/outlier/config", {
                 signInUrl: signIn.value,
                 showBrowser: show.checked,
+                boardDump: dump.value,
+                importDir: importDir.value,
+                autoImport: autoImport.checked,
                 pages: pages.value.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
                     const [first, ...rest] = l.split(/\s+/);
                     return /^https?:/i.test(first) ? { kind: "props", url: first } : { kind: first.toLowerCase(), url: rest.join(" ") };
@@ -484,6 +492,9 @@ div.ov-why { font-size: 0.78rem; }
                         pages,
                         el("label", {}, "Sign-in page ", signIn),
                         el("label", {}, show, " Show the browser while reading (try this if Outlier blocks the hidden one)"),
+                        el("div", { class: "ov-why", text: "In the project folder: every analysis writes the board (props, tickets, under legs) as JSON to the dump file, and board JSON files saved in the import folder are analyzed as they appear. Leave a field empty to turn it off." }),
+                        el("label", {}, "Board dump file ", dump),
+                        el("label", {}, "Import folder ", importDir, " ", autoImport, " import automatically"),
                         el("div", { class: "ov-actions" },
                             el("button", { class: "ov-btn primary", disabled: Boolean(working), onclick: save }, "Save"),
                             el("button", { class: "ov-btn", disabled: Boolean(working), onclick: async () => {
