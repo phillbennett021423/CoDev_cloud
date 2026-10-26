@@ -4,6 +4,7 @@
 // cards: anything that looks like a pick (a prop card with a line and odds, a
 // More/Less or Over/Under button) or an entry (Submit, Place, Add to slip) is
 // never a click target.
+const { teamsNamed, teamTokens } = require('./teams');
 
 // Sport words -> the labels a sports app shows for them.
 const SPORTS = {
@@ -14,27 +15,10 @@ const SPORTS = {
     pga: ['PGA', 'Golf'], mma: ['MMA', 'UFC'], ufc: ['UFC', 'MMA'], esports: ['Esports', 'eSports'], lol: ['LoL', 'League of Legends'],
     cs: ['CS2', 'CS', 'Counter-Strike'], cs2: ['CS2', 'CS', 'Counter-Strike'], nascar: ['NASCAR']
 };
-// Outlier opens on its Positive EV tool; these are the names its regular props
-// board may go by, tried first whenever a sport or game is asked for.
-const PROPS_SECTIONS = ['Props', 'Player Props', 'Prop Search', 'Prop Research', 'Research', 'Projections', 'All Props'];
-
-// NBA team names and cities -> the abbreviation boards show ("Wizards" -> WAS).
-const NBA_TEAMS = {
-    ATL: ['hawks', 'atlanta'], BOS: ['celtics', 'boston'], BKN: ['nets', 'brooklyn'], CHA: ['hornets', 'charlotte'], CHI: ['bulls', 'chicago'],
-    CLE: ['cavaliers', 'cavs', 'cleveland'], DAL: ['mavericks', 'mavs', 'dallas'], DEN: ['nuggets', 'denver'], DET: ['pistons', 'detroit'],
-    GSW: ['warriors', 'golden state'], HOU: ['rockets', 'houston'], IND: ['pacers', 'indiana'], LAC: ['clippers'], LAL: ['lakers'],
-    MEM: ['grizzlies', 'memphis'], MIA: ['heat', 'miami'], MIL: ['bucks', 'milwaukee'], MIN: ['timberwolves', 'wolves', 'minnesota'],
-    NOP: ['pelicans', 'new orleans'], NYK: ['knicks', 'new york'], OKC: ['thunder', 'oklahoma city'], ORL: ['magic', 'orlando'],
-    PHI: ['76ers', 'sixers', 'philadelphia'], PHX: ['suns', 'phoenix'], POR: ['trail blazers', 'blazers', 'portland'], SAC: ['kings', 'sacramento'],
-    SAS: ['spurs', 'san antonio'], TOR: ['raptors', 'toronto'], UTA: ['jazz', 'utah'], WAS: ['wizards', 'washington']
-};
-// Other abbreviations boards use for the same teams.
-const ALSO = { BKN: ['BRK'], CHA: ['CHO'], GSW: ['GS'], NOP: ['NO'], NYK: ['NY'], PHX: ['PHO'], SAS: ['SA'], UTA: ['UTAH'], WAS: ['WSH'] };
-function teamsNamed(text) {
-    const lower = ` ${String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ')} `;
-    return Object.entries(NBA_TEAMS).filter(([abbr, names]) => names.some(n => lower.includes(` ${n} `)) || lower.includes(` ${abbr.toLowerCase()} `)).map(([abbr]) => abbr);
-}
-const teamTokens = abbr => [abbr, ...(ALSO[abbr] || []), ...NBA_TEAMS[abbr]];
+// Outlier opens on Insights/Trends, or on the last tool used (often +EV); its
+// regular player props board is "Props" (the Prop Finder). The other names are
+// fallbacks. Tried first whenever a sport or game is asked for.
+const PROPS_SECTIONS = ['Props', 'Prop Finder', 'Player Props', 'Prop Search', 'Prop Research', 'All Props'];
 
 const sportLabels = sport => {
     const text = String(sport || '').trim();
@@ -137,7 +121,7 @@ function listGames() {
 
 // game: "3pm", "8:30 PM", "Lakers", "LAL vs BOS", "Lakers 8pm". Picks the card
 // with that start time and, when teams are named, those teams.
-function pickGame(games, game) {
+function pickGame(games, game, sport) {
     const want = parseTime(game);
     const words = String(game || '').toLowerCase()
         .replace(/\b\d{1,2}(:\d{2})?\s*(a\.?m?\.?|p\.?m?\.?|o'?\s?clock)?/g, ' ')
@@ -146,9 +130,9 @@ function pickGame(games, game) {
         const at = parseTime(g.time);
         const text = g.text.toLowerCase();
         const timeOk = want == null || at === want;
-        const named = teamsNamed(game);
+        const { league, teams: named } = teamsNamed(game, sport);
         const hits = words.filter(w => text.includes(w)).length
-            + named.filter(abbr => teamTokens(abbr).some(t => new RegExp(`(^|[^a-z0-9])${t.toLowerCase()}($|[^a-z0-9])`).test(text))).length;
+            + named.filter(abbr => teamTokens(abbr, league).some(t => new RegExp(`(^|[^a-z0-9])${t.toLowerCase()}($|[^a-z0-9])`).test(text))).length;
         return { ...g, at, ok: timeOk && (words.length === 0 || hits > 0), hits };
     }).filter(g => g.ok);
     scored.sort((a, b) => b.hits - a.hits);
@@ -220,7 +204,7 @@ async function navigate(page, { section, sport, market, game } = {}, { settleMs 
     for (let i = 0; i < 10; i++) {
         const games = await page.evaluate(listGames);
         games.forEach(g => seen.set(`${g.time}|${g.text.slice(0, 60)}`, g));
-        const pick = pickGame(games, game);
+        const pick = pickGame(games, game, sport);
         if (pick) {
             const teams = gameTeams(pick.text);
             await page.click(`[data-codev-game="${pick.index}"]`, { timeout: 5000 }).catch(() => { /* a game header that isn't a link: the board is filtered by team instead */ });
@@ -246,7 +230,7 @@ async function navigate(page, { section, sport, market, game } = {}, { settleMs 
     }
     // No game card for it (a board of props without game cards): read the whole
     // board and keep that game's props by its teams.
-    const named = teamsNamed(game);
+    const named = teamsNamed(game, sport).teams;
     if (named.length === 2) {
         await page.evaluate(() => {
             window.scrollTo(0, 0);

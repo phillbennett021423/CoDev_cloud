@@ -490,7 +490,18 @@ test('a game asked for by time or team is found among Outlier\'s game cards', ()
     assert.equal(pickGame(games, 'LAL 8pm'), null, 'the time and the team must both match');
     assert.equal(pickGame(games, '11am'), null);
     assert.equal(pickGame(games, 'Celtics vs Knicks').index, 1, 'team names match the abbreviations on the card');
-    assert.deepEqual(require('../agents/outlier/navigate').teamsNamed('Wizards vs Hornets tomorrow'), ['CHA', 'WAS']);
+    const { teamsNamed } = require('../agents/outlier/teams');
+    assert.deepEqual(teamsNamed('Wizards vs Hornets tomorrow'), { league: 'nba', teams: ['CHA', 'WAS'] });
+    assert.deepEqual(teamsNamed('Chiefs at Bills'), { league: 'nfl', teams: ['BUF', 'KC'] });
+    assert.deepEqual(teamsNamed('Yankees vs Red Sox'), { league: 'mlb', teams: ['BOS', 'NYY'] });
+    assert.deepEqual(teamsNamed('Maple Leafs vs Canadiens'), { league: 'nhl', teams: ['MTL', 'TOR'] });
+    assert.deepEqual(teamsNamed('Liberty vs Aces'), { league: 'wnba', teams: ['LV', 'NY'] });
+    // The sport decides a name two leagues share: Panthers and Jets are NFL or NHL teams.
+    assert.deepEqual(teamsNamed('Panthers vs Jets', 'NFL'), { league: 'nfl', teams: ['CAR', 'NYJ'] });
+    assert.deepEqual(teamsNamed('Panthers vs Jets', 'NHL'), { league: 'nhl', teams: ['FLA', 'WPG'] });
+    assert.deepEqual(teamsNamed('the game that was on at MIN', 'NBA').teams, ['MIN'], 'abbreviations count only in capitals');
+    assert.equal(pickGame([{ index: 0, time: '7:00 PM', text: '7:00 PM KC @ BUF' }], 'Chiefs vs Bills', 'NFL').index, 0);
+    assert.match(require('../agents/outlier').OUTLIER_PRIMER, /Props \(the Prop Finder.*L5, L10, L20.*never \+EV/);
     assert.deepEqual(gameTeams('8:00 PM BOS @ NYK'), ['BOS', 'NYK']);
     assert.deepEqual(sportLabels('nba'), ['nba', 'NBA', 'Basketball']);
     assert.deepEqual(onlyGame([{ game: 'BOS-NYK' }, { game: 'DEN-LAL' }, {}], ['NYK', 'BOS']), [{ game: 'BOS-NYK' }, {}]);
@@ -518,13 +529,13 @@ test('an agent asks for NBA props for the 8pm game: the scan clicks the NBA tab 
     const page = `<!doctype html><body>
         <button onclick="fetch('/picked')">More</button>
         <header><a href="#" id="ev">Positive EV</a> <a href="#" id="props">Props</a></header>
-        <nav id="sports" hidden><button id="nba">NBA</button><button id="nfl">NFL</button><button id="wnba">WNBA</button></nav><main id="main">Positive EV: the best +EV bets right now</main>
+        <nav id="sports" hidden><button id="nba">NBA</button><button id="nfl">NFL</button><button id="bball">Basketball</button></nav><main id="main">Positive EV: the best +EV bets right now</main>
         <script>
             const boards = ${JSON.stringify(boards)};
             const main = document.getElementById('main');
             document.getElementById('props').onclick = () => { document.getElementById('sports').hidden = false; main.innerHTML = 'Pick a sport'; };
             document.getElementById('nfl').onclick = () => { main.innerHTML = 'No NFL games'; };
-            document.getElementById('wnba').onclick = () => { main.innerHTML = boards.all; };
+            document.getElementById('bball').onclick = () => { main.innerHTML = boards.all; };
             document.getElementById('nba').onclick = () => {
                 main.innerHTML = '<div id="games"><div class="g" data-b="early" style="cursor:pointer"><span>3:00 PM</span> <span>DEN @ LAL</span></div>'
                     + '<div class="g" data-b="late" style="cursor:pointer"><span>8:00 PM</span> <span>BOS @ NYK</span></div></div>';
@@ -562,9 +573,9 @@ test('an agent asks for NBA props for the 8pm game: the scan clicks the NBA tab 
     assert.match(noTab.content[0].text, /Tabs, links and buttons on that page: .*Positive EV \| Props \| NBA \| NFL/, 'the error says what the page does show');
 
     // Both teams named and no game cards: the whole board, kept to that game.
-    const teams = await service.callTool('outlier_scan_board', { sport: 'WNBA', game: 'Wizards vs Hornets' });
+    const teams = await service.callTool('outlier_scan_board', { sport: 'Basketball', game: 'Wizards vs Hornets' });
     assert.equal(teams.isError, undefined, teams.content[0].text);
-    assert.match(teams.content[0].text, /^Outlier > Props > WNBA > CHA vs WAS \(from the whole board\)\n4 props/);
+    assert.match(teams.content[0].text, /^Outlier > Props > Basketball > CHA vs WAS \(from the whole board\)\n4 props/);
     const kept = JSON.parse(fs.readFileSync(pipeline.files.scrape, 'utf8'));
     assert.deepEqual(kept.props.map(p => p.player).sort(), ['Bilal Coulibaly', 'Brandon Miller', 'Kyshawn George', 'LaMelo Ball']);
     assert.equal(picked, 0);

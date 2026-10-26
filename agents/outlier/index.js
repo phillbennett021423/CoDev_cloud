@@ -966,6 +966,14 @@ const safe = fn => async (req, res, body) => {
     try { sendJson(res, 200, await fn(body || {})); } catch (err) { sendJson(res, 400, { error: err.message }); }
 };
 
+// What an agent needs to know about Outlier to use the scan and read its results.
+const OUTLIER_PRIMER = 'About Outlier (outlier.bet, web app app.outlier.bet): a sports betting research app that compares player props and lines across sportsbooks and DFS apps (FanDuel, DraftKings, BetMGM, Caesars, PrizePicks, Underdog...). '
+    + 'Its sections: Insights/Trends (where it opens: picks with strong hit rates), Props (the Prop Finder: every player prop with its line, best odds and book, and hit rates), Games (each matchup with odds, insights, injuries), Popular, My Picks (the user\'s saved slip), and the Pro tools +EV (Positive EV), Arbitrage, Middle Bets and Boosts. '
+    + 'Sports: NBA, WNBA, NFL, NCAAF, MLB, NHL, NCAAB, soccer and more. '
+    + 'Reading a prop: player, stat (Points, Rebounds, Assists, PRA, Threes, Passing Yards, Strikeouts, Shots on Goal...), line (e.g. 22.5), side (Over/More/Higher or Under/Less/Lower), American odds (-119 means risk 119 to win 100, about 54% implied; +150 means win 150 on 100, 40%) and hit rates: how often he cleared this line in the last 5, 10 and 20 games (L5, L10, L20), head to head against this opponent (H2H) and this season, colored green (high), yellow, red (low). '
+    + 'The scan opens Props (never +EV), picks the sport, finds the game and reads every line; the audit then filters to the -119 consistency band, compares the sharp book (Pinnacle), checks correlation, injuries/usage and hit-streak decay, flags Under value legs and builds 4-6 leg tickets. '
+    + 'It only reads and clicks tabs, filters and game cards: it never adds picks to My Picks or a slip and never enters anything on Outlier, Underdog or Dabble.';
+
 // The audit as text for an agent: tickets with their odds, then under value legs.
 function auditText(result) {
     if (!result) return 'No Outlier analysis yet.';
@@ -996,7 +1004,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
             }, required: ['path'], additionalProperties: false }
         }, {
             name: 'outlier_scan_board',
-            description: 'Opens Outlier in the user\'s signed-in Outlier browser, goes to the sport, stat and game you name (e.g. sport "NBA", game "8pm" or "Lakers 3pm") by clicking Outlier\'s tabs and game cards, scrolls the board to the end reading every line, and runs the full audit (-119 consistency filter, sharp-book comparison, correlation and usage checks, Under engine, 4-6 leg tickets) on that game\'s props. Without sport or game it scans the pages set in the Outlier tab, or one app.outlier.bet address you give. It only reads and navigates: nothing is entered on Outlier, Underdog or Dabble. Give the user the ticket legs in your reply. You never get the browser itself or its cookies.',
+            description: 'Opens Outlier in the user\'s signed-in Outlier browser, goes to the sport, stat and game you name (e.g. sport "NBA", game "8pm" or "Lakers 3pm") by clicking Outlier\'s tabs and game cards, scrolls the board to the end reading every line, and runs the full audit (-119 consistency filter, sharp-book comparison, correlation and usage checks, Under engine, 4-6 leg tickets) on that game\'s props. Without sport or game it scans the pages set in the Outlier tab, or one app.outlier.bet address you give. It only reads and navigates: nothing is entered on Outlier, Underdog or Dabble. Give the user the ticket legs in your reply. You never get the browser itself or its cookies. If a tab isn\'t found, the error lists the tabs on the page: call again with the matching one as section or sport. ' + OUTLIER_PRIMER,
             inputSchema: { type: 'object', properties: {
                 section: { type: 'string', description: 'The Outlier tab to open first, by its name on the page (e.g. "Props"). Leave it out for the regular props board, never Positive EV.' },
                 sport: { type: 'string', description: 'The sport tab to open, e.g. "NBA", "NFL", "MLB", "NHL", "WNBA", "CBB".' },
@@ -1093,4 +1101,4 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
     };
 }
 
-module.exports = { createService, createOutlierPipeline, runPython, sameLeg, propId };
+module.exports = { createService, createOutlierPipeline, runPython, sameLeg, propId, OUTLIER_PRIMER };
