@@ -657,6 +657,52 @@ test('Outlier reopens on +EV behind a popup: the scan closes the popup, leaves +
     assert.deepEqual(hits, { accepted: 0, removed: 0 }, 'the popup was closed, not accepted, and the slip was left alone');
 });
 
+test('Outlier sends /, /props and every other address back to +EV: the scan goes to the sport\'s own board address (/NBA/props) and remembers it', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    const card = (name, line) => `<div><div>${name}</div><div>BOS @ NYK</div><div>Points</div><div>Over ${line}</div><div>FanDuel -119</div></div>`;
+    const board = ['Jayson Tatum', 'Jaylen Brown', 'Jalen Brunson', 'Josh Hart'].map((n, i) => card(n, 20.5 + i)).join('');
+    // The sport's board has no NBA tab and no Props link: it is reached by its address only.
+    const nbaProps = `<!doctype html><body><main id="main"><div class="g" style="cursor:pointer"><span>8:00 PM</span> <span>BOS @ NYK</span></div></main><script>
+        document.querySelector('.g').onclick = () => { document.getElementById('main').innerHTML = ${JSON.stringify(board)}; };</script></body>`;
+    const seen = [];
+    const server = http.createServer((req, res) => {
+        const at = req.url.split('?')[0];
+        seen.push(at);
+        res.writeHead(...(at === '/NBA/props' || at === '/pro/ev' ? [200, { 'Content-Type': 'text/html' }] : [302, { Location: '/pro/ev' }]));
+        if (at === '/NBA/props') return res.end(nbaProps);
+        if (at === '/pro/ev') return res.end('<!doctype html><body><nav><button>NBA Player Props</button><button>Pinnacle</button><button>Sharp Gamelines</button></nav><main>Positive EV</main></body>');
+        res.end();
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false }));
+    const service = createService({}, { pipeline });
+
+    const reply = await service.callTool('outlier_scan_board', { sport: 'NBA', game: '8pm' });
+    assert.equal(reply.isError, undefined, reply.content[0].text);
+    assert.match(reply.content[0].text, /8:00 PM BOS vs NYK\n4 props/);
+    assert.ok(seen.includes('/NBA/props'));
+    assert.ok(!seen.includes('/prop-finder'), 'the sport\'s own address is tried before the guesses');
+    // Asked for the "Props" section by name: the same board, not a strict tab click.
+    const named = await service.callTool('outlier_scan_board', { section: 'Props', sport: 'NBA', game: '8pm' });
+    assert.equal(named.isError, undefined, named.content[0].text);
+    assert.match(named.content[0].text, /8:00 PM BOS vs NYK\n4 props/);
+    // Kept on disk: a restart (a new install) starts on the board, not on +EV.
+    assert.equal(fs.readFileSync(pipeline.files.propsUrl, 'utf8'), url + 'NBA/props');
+    const again = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => again.close());
+    assert.equal(again.boardStart('NBA'), url + 'NBA/props');
+});
+
 test('a list of legs for tomorrow is researched in one visit: each player\'s card for that stat, Outlier\'s line against the user\'s, no trip back to +EV', async t => {
     if (!hasPython) return t.skip('Python 3 is not installed');
     const launched = await launchBrowser();

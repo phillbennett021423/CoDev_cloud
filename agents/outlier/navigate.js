@@ -282,6 +282,9 @@ function markPropsLink() {
 const onTools = page => { try { return /^\/pro(\/|$)/i.test(new URL(page.url()).pathname); } catch { return false; } };
 // Addresses tried for the props board when no tab or link leads there.
 const PROPS_PATHS = ['/props', '/prop-finder', '/player-props', '/'];
+// Outlier's own address for a sport's Props board: app.outlier.bet/NBA/props.
+const sportCode = sport => sportLabels(sport).find(l => /^[A-Z0-9]{2,6}$/.test(l)) || null;
+const sportPropsPath = sport => (sportCode(sport) ? `/${sportCode(sport)}/props` : null);
 
 // Clicks what's marked; when a popup is in the way, closes it and tries again,
 // then clicks the element itself.
@@ -348,12 +351,21 @@ async function navigate(page, { section, sport, market, game, player, day } = {}
         }
         return false;
     };
+    // "Props", "Prop Finder", "Player Props" asked as a section is the props board.
+    if (section && /\bprops?\b|prop finder/i.test(String(section))) section = null;
+    // On +EV (/pro/ev) with a sport: straight to that sport's board by its address.
+    const direct = sport && sportPropsPath(sport);
+    if (!section && direct && onTools(page)) {
+        await page.goto(new URL(page.url()).origin + direct, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+        await settle();
+        await page.evaluate(dismissOverlays).catch(() => 0);
+    }
     if (section) await clickLabel([String(section).trim()], `a "${section}" tab`);
     else if ((sport || game || player) && await toProps()) {
         if (onProps) onProps(page.url());
     } else if (sport || game || player) {
         const origin = new URL(page.url()).origin;
-        for (const where of PROPS_PATHS) {
+        for (const where of [...(direct ? [direct] : []), ...PROPS_PATHS]) {
             await page.goto(origin + where, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
             await settle();
             await page.evaluate(dismissOverlays).catch(() => 0);
@@ -363,8 +375,8 @@ async function navigate(page, { section, sport, market, game, player, day } = {}
         }
         if (!onTools(page) && onProps) onProps(page.url());
         if (onTools(page)) {
-            throw new Error(`Outlier stays on its ${new URL(page.url()).pathname} tool (+EV) and shows no way to the regular Props board from there. `
-                + 'Ask the user to open Props once in the Outlier window (📈 Outlier tab, live view), then ask again: Outlier reopens the last board used.');
+            throw new Error(`Outlier sent every address back to its ${new URL(page.url()).pathname} tool (+EV)${direct ? `, even ${direct}` : ''}. `
+                + 'Ask the user to check the Outlier tab is signed in, then ask again with the sport (e.g. NBA).');
         }
     }
     // Already on that sport's board (/NBA/props): its tab may not be shown there.
@@ -561,4 +573,4 @@ function onlyGame(props, teams) {
     return props.filter(p => !p.game || p.game === key);
 }
 
-module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, markPlayer, openPlayer, readDetails, dismissOverlays, markPropsLink, statWords, dayLabels, legSummary, keepLegs, onTools, normWords };
+module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, dismissOverlays, markPropsLink, statWords, dayLabels, legSummary, keepLegs, onTools, normWords };

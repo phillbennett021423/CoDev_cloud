@@ -17,7 +17,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { collectPage, parseCollected, parseText, propId } = require('./extract');
 const { createCapture } = require('./capture');
-const { navigate, onlyGame, openPlayer, readDetails, legSummary, keepLegs, statWords, onTools, normWords } = require('./navigate');
+const { navigate, onlyGame, openPlayer, readDetails, legSummary, keepLegs, statWords, onTools, normWords, sportPropsPath } = require('./navigate');
 const { OUTLIER_PRIMER, OUTLIER_GUIDE } = require('./guide');
 const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
@@ -130,6 +130,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     const files = {
         profile: path.join(dataDir, 'profile'),
         config: path.join(dataDir, 'config.json'),
+        propsUrl: path.join(dataDir, 'props-url.txt'),
         scrape: path.join(dataDir, 'latest-scrape.json'),
         result: path.join(dataDir, 'latest-result.json'),
         history: path.join(dataDir, 'history.json'),
@@ -150,7 +151,11 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // propsUrl: the props board's address once reached, where the next visit starts (Outlier
     // itself reopens on +EV). progress: what a long read is on, for the Outlier tab.
     const state = { busy: null, signedIn: null, lastError: null, lastRun: null, signInContext: null, propsUrl: null, progress: null };
-    const rememberProps = url => { state.propsUrl = url; };
+    // Kept on disk too, so a restart (a new install) doesn't start on +EV again.
+    const rememberProps = url => {
+        state.propsUrl = url;
+        try { fs.writeFileSync(files.propsUrl, url); } catch { /* the next visit finds it again */ }
+    };
     const blocked = new Set(blockedPorts.map(String));
     // shared: { manager, live } from the browser service, when it's running.
     if (shared) shared.manager.registerProfile(SESSION, files.profile);
@@ -824,7 +829,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         claim('research');
         try {
             const cfg = config();
-            const start = url || boardStart();
+            const start = url || boardStart(sport);
             const browser = await openForVisit(cfg);
             try {
                 const page = browser.page;
@@ -854,8 +859,20 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
 
     // Where a visit that navigates starts: the props board reached last time (so
     // Outlier's own reopen on +EV is skipped), else the configured props page.
-    function boardStart() {
-        return state.propsUrl || ((config().pages || []).find(p => p.kind === 'props') || {}).url || 'https://app.outlier.bet/';
+    // With a sport on Outlier itself, that sport's board by its address
+    // (app.outlier.bet/NBA/props), unless the remembered board is already that sport's.
+    function boardStart(sport = null) {
+        if (!state.propsUrl) {
+            try { state.propsUrl = fs.readFileSync(files.propsUrl, 'utf8').trim() || null; } catch { /* none yet */ }
+        }
+        const start = state.propsUrl || ((config().pages || []).find(p => p.kind === 'props') || {}).url || 'https://app.outlier.bet/';
+        const direct = sport && sportPropsPath(sport);
+        if (!direct) return start;
+        try {
+            const url = new URL(start);
+            if (!/(^|\.)outlier\.bet$/i.test(url.hostname)) return start;
+            return url.pathname.toLowerCase().startsWith(direct.toLowerCase()) ? start : url.origin + direct;
+        } catch { return start; }
     }
 
     // Opens the page for a visit that navigates: the start address, waits for it,
@@ -960,7 +977,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         const nav = { ...Object.fromEntries(Object.entries({ sport, game, day }).filter(([, v]) => v)), player: legs[0] && legs[0].player };
         let research = null;
         const run = await scrape({
-            pages: [{ kind: 'props', url: url || boardStart(), nav }], keep: legs,
+            pages: [{ kind: 'props', url: url || boardStart(sport), nav }], keep: legs,
             onPage: async (page, { collected }) => {
                 const boardProps = parseCollected([{ kind: 'props', url: page.url(), collected }]).props;
                 // The board without an open card's ?market=…&outcome=… in its address.
@@ -990,7 +1007,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             const browser = await openForVisit(cfg);
             try {
                 const page = browser.page;
-                await openAt(page, browser, boardStart(), cfg);
+                await openAt(page, browser, boardStart(sport), cfg);
                 const nav = await navigate(page, { section, sport, day }, { settleMs: cfg.settleMs });
                 const text = await readDetails(page, { scrolls: 10, maxChars: 10000 });
                 state.signedIn = true;
@@ -1253,7 +1270,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
             inputSchema: { type: 'object', properties: {}, additionalProperties: false }
         }, {
             name: 'outlier_import_board',
-            description: 'Reads an Outlier board saved as JSON in the project folder (a list of props, { props: [...] }, CoDev\'s own board dump, or the page collector\'s { cards, tables }), adds it to the Outlier analysis and runs the full audit: the -119 consistency filter, sharp-book (Pinnacle) comparison, correlation and usage checks, the Under engine and 4-6 leg tickets. Returns the tickets and under legs.',
+            description: 'Only when the user asks for a saved file by name; never in place of a live Outlier read (saved boards are old). Reads an Outlier board saved as JSON in the project folder (a list of props, { props: [...] }, CoDev\'s own board dump, or the page collector\'s { cards, tables }), adds it to the Outlier analysis and runs the full audit: the -119 consistency filter, sharp-book (Pinnacle) comparison, correlation and usage checks, the Under engine and 4-6 leg tickets. Returns the tickets and under legs.',
             inputSchema: { type: 'object', properties: {
                 path: { type: 'string', description: 'The JSON file, relative to the project folder (e.g. "downloads/new folder/board.json").' }
             }, required: ['path'], additionalProperties: false }
@@ -1343,7 +1360,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     const nav = Object.fromEntries(['section', 'sport', 'market', 'game', 'day'].filter(k => args[k] && String(args[k]).trim()).map(k => [k, String(args[k]).trim()]));
                     if (Object.keys(nav).length) {
                         // Navigation starts on one board: the address given, else the first configured props page.
-                        const start = pages ? pages[0] : { kind: 'props', url: outlier.boardStart ? outlier.boardStart() : 'https://app.outlier.bet/' };
+                        const start = pages ? pages[0] : { kind: 'props', url: outlier.boardStart ? outlier.boardStart(args.sport) : 'https://app.outlier.bet/' };
                         pages = [{ ...start, nav }];
                     }
                     const run = await outlier.scrape({ pages });
