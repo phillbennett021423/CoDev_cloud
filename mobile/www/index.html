@@ -2988,11 +2988,12 @@
             return `Exit code: ${data.exit_code}${data.timed_out ? " (timed out)" : ""}\n--- stdout ---\n${data.stdout || ""}\n--- stderr ---\n${data.stderr || ""}`;
         }
 
-        // What a running Outlier read is on, from the Outlier service's state (null when idle).
+        // What a running Outlier read is on (null when idle): the light /outlier/progress,
+        // not /outlier/state, which reads the whole saved board each time.
         async function outlierProgress() {
             try {
-                if (window.codevDesktop?.outlierRequest) return (await window.codevDesktop.outlierRequest({ method: "GET", path: "/outlier/state" })).body?.progress || null;
-                const r = await fetch("/outlier/state");
+                if (window.codevDesktop?.outlierRequest) return (await window.codevDesktop.outlierRequest({ method: "GET", path: "/outlier/progress" })).body?.progress || null;
+                const r = await fetch("/outlier/progress");
                 return r.ok ? (await r.json()).progress || null : null;
             } catch (err) { return null; }
         }

@@ -85,7 +85,23 @@ function createWindow() {
         crashLog('render-process-gone', `${details.reason} (exit code ${details.exitCode})`);
         if (details.reason !== 'clean-exit' && !win.isDestroyed()) setTimeout(() => { if (!win.isDestroyed()) win.webContents.reload(); }, 500);
     });
-    win.on('unresponsive', () => crashLog('unresponsive', `the window stopped responding (${memoryNow()})`));
+    // A window that stops answering is logged; if it is still stuck after 45 seconds,
+    // its page is restarted (render-process-gone reloads it) instead of staying frozen.
+    let stuck = null;
+    win.on('unresponsive', () => {
+        crashLog('unresponsive', `the window stopped responding (${memoryNow()})`);
+        if (stuck) return;
+        const since = Date.now();
+        stuck = setTimeout(() => {
+            stuck = null;
+            if (win.isDestroyed()) return;
+            crashLog('unresponsive', `still stuck after ${Math.round((Date.now() - since) / 1000)}s: restarting the page (${memoryNow()})`);
+            win.webContents.forcefullyCrashRenderer();
+        }, 45000);
+    });
+    win.on('responsive', () => {
+        if (stuck) { clearTimeout(stuck); stuck = null; crashLog('responsive', 'the window answers again'); }
+    });
     // The page's own errors, the first 50 a run, so a page crash comes with what led to it.
     let pageErrors = 0;
     win.webContents.on('console-message', ({ level, message, sourceId, lineNumber }) => {

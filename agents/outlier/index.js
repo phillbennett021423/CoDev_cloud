@@ -902,6 +902,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     const CARD_TTL_MS = 30 * 60 * 1000;
     // How many times Outlier may say 429 in one run before the cards stop (each one waited out).
     const MAX_429 = 6;
+    const CARD_DEADLINE_MS = 3 * 60 * 1000;
     const cards = new Map(Object.entries(readJson(files.cards, {})).filter(([, c]) => c && Date.now() - c.at < CARD_TTL_MS));
     const saveCards = () => {
         try { writeJson(files.cards, Object.fromEntries([...cards].filter(([, c]) => Date.now() - c.at < CARD_TTL_MS))); } catch { /* kept in memory */ }
@@ -974,7 +975,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 let found = [];
                 if (!place && canSearch) {
                     step('searching Outlier for him by name');
-                    searched = await searchPlayer(page, leg.player, { settleMs }).catch(() => null);
+                    searched = await withDeadline(searchPlayer(page, leg.player, { settleMs }), 30000, 'search').catch(() => null);
                     if (!searched) canSearch = false;
                     else {
                         const read = await page.evaluate(collectPage, config().selectors || null).catch(() => null);
@@ -992,7 +993,9 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 step(place ? 'jumping to his row on the board' : searched ? 'opening his card from the search' : 'looking for his row on the board');
                 last = Date.now();
                 opened++;
+                // One card at most CARD_DEADLINE_MS: a page that stops answering can't stall the run.
                 try {
+                    await withDeadline((async () => {
                     let label;
                     try {
                         label = await openPlayer(page, leg.player, { settleMs, stat: leg.stat, line: leg.line, place });
@@ -1034,6 +1037,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                         saveCards();
                         results.set(i, { ...read, found: place ? 'jumped to his row' : searched ? 'searched his name' : 'searched the board', searched: Boolean(searched), props: found });
                     }
+                    })(), CARD_DEADLINE_MS, 'his card took too long to read, so CoDev moved on');
                 } catch (err) {
                     results.set(i, { error: err.message.split(' (http')[0].split(' on that Outlier board')[0], searched: Boolean(searched), props: found });
                 }
@@ -1232,6 +1236,12 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         return { ok: true };
     }
 
+    // Only what a running read is on: the chat asks for this every second or two, so
+    // it must not read files (snapshotState reads the whole board and every report).
+    function progressState() {
+        return { busy: state.busy, progress: state.busy ? state.progress : null };
+    }
+
     function snapshotState() {
         const scrapeFile = readJson(files.scrape, null);
         return {
@@ -1276,7 +1286,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
 
     watchImports();
     return { signIn, scrape, research, researchList, readSection, boardStart, cardsFor, readOpenPage, setCapture, capture, importBoard, importFile, dumpBoard, watchImports, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
-        state: snapshotState, status, close, files, settleFromResults };
+        state: snapshotState, progress: progressState, status, close, files, settleFromResults };
 }
 
 function sendJson(res, status, payload) {
@@ -1395,7 +1405,12 @@ function cardBody(card, leg = {}, max = 3500) {
     return body;
 }
 
-// The ticket's simulated chance as text, or why it couldn't be run.
+// The promise's result, or an error after ms (the work itself is left to fail on its own).
+function withDeadline(promise, ms, what) {
+    let timer;
+    return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(what)), ms); })]).finally(() => clearTimeout(timer));
+}
+
 // The props Outlier lists for the leg's player (market and line), at most 12.
 function hisProps(leg, props) {
     const name = normWords(leg.player);
@@ -1420,6 +1435,7 @@ function didText(board, research, total) {
         'How to read each leg: the "Outlier" line is the board row (Outlier\'s line, odds, hit rates); "Card" and the lines under it are what his player card showed (game log at the user\'s line, alt lines, with/without, minutes and opportunity, every tab). "Projection", "Regression" and "Ticket simulation" are estimates worked out from those card numbers only.'].join('\n');
 }
 
+// The ticket's simulated chance as text, or why it couldn't be run.
 function ticketText(legs, cards) {
     const sim = simulateTicket(cards.map(c => (c && !c.error ? c : null)), legs);
     const pct = v => `${(v * 100).toFixed(1)}%`;
@@ -1707,6 +1723,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
         },
         routes: {
             'GET /outlier/state': (req, res) => sendJson(res, 200, outlier.state()),
+            'GET /outlier/progress': (req, res) => sendJson(res, 200, outlier.progress()),
             'POST /outlier/signin': safe(() => outlier.signIn()),
             // The page open in the live view right now (default the signed-in Outlier browser).
             'POST /outlier/read-page': safe(async body => {

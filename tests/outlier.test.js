@@ -868,7 +868,7 @@ test('a long board that only draws the rows on screen: each card opens by jumpin
     const service = createService({}, { pipeline });
     const legs = [5, 880].map(i => ({ player: rows[i].n, stat: 'Points', line: rows[i].l, side: 'Over' }));
     const progress = [];
-    const timer = setInterval(() => { const p = pipeline.state().progress; if (p && progress.at(-1) !== p) progress.push(p); }, 100);
+    const timer = setInterval(() => { const p = pipeline.progress().progress; if (p && progress.at(-1) !== p) progress.push(p); }, 100);
     const out = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
     clearInterval(timer);
     const text = out.content[0].text;
