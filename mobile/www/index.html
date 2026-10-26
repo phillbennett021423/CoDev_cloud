@@ -1419,21 +1419,31 @@
         function showOutlierView() {
             if (!window.CodevOutlierView) return;
             if (outlierView) return outlierView.refresh();
-            const getJson = async url => {
+            let getJson = async url => {
                 const response = await fetch(url);
                 const reply = await response.json().catch(() => ({ error: `CoDev's server returned HTTP ${response.status}` }));
                 if (!response.ok) throw new Error(reply.error || `HTTP ${response.status}`);
                 return reply;
             };
-            // Only CoDev's own server runs the pipeline (not the Windows app or Android yet).
-            const available = !window.codevDesktop && location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+            let post = postJson;
+            // The Windows app runs the pipeline itself; otherwise CoDev's own server does (not Android).
+            if (window.codevDesktop?.outlierRequest) {
+                const ask = async (method, path, body) => {
+                    const reply = await window.codevDesktop.outlierRequest({ method, path, body });
+                    if (reply.status >= 400) throw new Error(reply.body?.error || `HTTP ${reply.status}`);
+                    return reply.body;
+                };
+                getJson = url => ask("GET", url);
+                post = (url, body) => ask("POST", url, body);
+            }
+            const available = !!window.codevDesktop?.outlierRequest || (!window.codevDesktop && location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname));
             // openLive: the live view on the signed-in Outlier browser, to browse it yourself.
             // A browser that isn't open yet starts on Outlier's sign-in page (signed in, it goes on to the app).
             const openLive = id => {
                 live.outlier = id; live.picked = true; toggleLiveView(true); watchLiveAgent(id); renderLiveAgents();
                 liveControl({ op: "open", url: "https://app.outlier.bet/login" });
             };
-            outlierView = window.CodevOutlierView.mount(document.getElementById("view-outlier"), { postJson, getJson, available, openLive });
+            outlierView = window.CodevOutlierView.mount(document.getElementById("view-outlier"), { postJson: post, getJson, available, openLive });
         }
 
         function switchView(viewName) {
@@ -2337,7 +2347,9 @@
             const open = force ?? !panel.classList.contains("open");
             panel.classList.toggle("open", open);
             if (open && !live.stop) watchLiveAgent(live.agentId);
-            if (open && !live.outlier && !window.codevDesktop?.browserLive) {
+            if (open && !live.outlier && window.codevDesktop?.outlierRequest) {
+                window.codevDesktop.outlierRequest({ method: "GET", path: "/outlier/state" }).then(reply => { live.outlier = reply.body?.liveSession || ""; renderLiveAgents(); }).catch(() => {});
+            } else if (open && !live.outlier && !window.codevDesktop?.browserLive) {
                 fetch("/outlier/state").then(r => (r.ok ? r.json() : null)).then(state => { live.outlier = state?.liveSession || ""; renderLiveAgents(); }).catch(() => {});
             }
         }
@@ -3019,7 +3031,7 @@
             if (!OUTLIER_TASK.test(asked)) return "";
             const outlier = agentInfra.status?.services?.outlier;
             const why = window.codevDesktop
-                ? "The user is in the CoDev Windows app, which doesn't have the Outlier scan. Tell them to close this app, double-click start-codev.bat in their CoDev folder and use the Edge tab it opens at http://localhost:3000, sign in once from the 📈 Outlier tab there, and ask again."
+                ? "The user's copy of the CoDev Windows app doesn't have the Outlier scan. Tell them to install the latest CoDev Studio (github.com/phillbennett021423/CoDev_cloud/releases/latest), or double-click start-codev.bat in their CoDev folder and use the Edge tab it opens at http://localhost:3000, sign in once from the 📈 Outlier tab, and ask again."
                 : outlier && outlier.available === false
                     ? `CoDev's server couldn't start the Outlier service (${String(outlier.detail || "no reason given").slice(0, 200)}). Tell the user that, and to run npm install in their CoDev folder, restart start-codev.bat and ask again.`
                     : "This page isn't connected to CoDev's server, which runs the Outlier scan. Tell the user to start CoDev with start-codev.bat and use the tab it opens at http://localhost:3000, sign in once from the 📈 Outlier tab, and ask again.";

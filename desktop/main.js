@@ -8,6 +8,7 @@ const { createMcpTools } = require('./mcp-tools');
 const { createNodeMcpHub } = require('./mcp-hub');
 const { createSandbox } = require('./sandbox');
 const { createBrowserService } = require('./browser');
+const { createOutlierBridge } = require('./outlier-bridge');
 const { pathToFileURL } = require('url');
 
 const WWW = path.join(__dirname, 'www');
@@ -80,7 +81,11 @@ app.whenReady().then(() => {
     // Agents' headless browsers. Saved logins are encrypted with safeStorage (DPAPI
     // on Windows) in this app's user data folder; the page asks the user before any is used.
     const browserTools = createBrowserService({ dataDir: app.getPath('userData'), safeStorage, getProjectDir });
-    ipcMain.handle('codev:browser-mcp', (_event, message) => browserTools.handle(message));
+    // The Outlier pipeline: its agent tools ride along with the browser's, and the
+    // 📈 Outlier tab's requests come over their own channel.
+    const outlier = createOutlierBridge({ browser: browserTools, getProjectDir, log: line => console.log(line) });
+    ipcMain.handle('codev:browser-mcp', (_event, message) => (outlier ? outlier.handleMcp(message, browserTools.handle) : browserTools.handle(message)));
+    ipcMain.handle('codev:outlier-request', (_event, req) => (outlier ? outlier.request(req || {}) : { status: 404, body: { error: 'The Outlier pipeline isn\'t included in this build.' } }));
     // Live view: frames and inspector events go to the window that asked for them.
     const liveWatches = new Map(); // webContents id -> unsubscribe
     ipcMain.handle('codev:browser-live', async (event, req = {}) => {
@@ -111,7 +116,7 @@ app.whenReady().then(() => {
     });
     ipcMain.handle('codev:mcp-hub', (_event, req) => mcpHub.handle(req));
     // Stop the server processes the hub started.
-    app.on('before-quit', () => { mcpHub.close(); browserTools.close(); });
+    app.on('before-quit', () => { mcpHub.close(); if (outlier) outlier.close(); browserTools.close(); });
     ipcMain.handle('codev:mcp-pick-folder', async event => {
         const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
             title: 'Choose the project folder agents can work in',

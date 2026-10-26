@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     agentRequest: req => ipcRenderer.invoke('codev:agent-request', req),
     // Agents' headless browsers and the saved web logins (JSON-RPC, like mcp).
     browserMcp: message => ipcRenderer.invoke('codev:browser-mcp', message),
+    // The 📈 Outlier tab's requests, the routes server.js serves under /outlier/: ({ method, path, body }) -> { status, body }.
+    outlierRequest: req => ipcRenderer.invoke('codev:outlier-request', req),
     // Live view of those browsers: watch/unwatch/control, and the stream of frames and events.
     browserLive: req => ipcRenderer.invoke('codev:browser-live', req),
     onBrowserLive: callback => {
