@@ -293,5 +293,5 @@ test('an Outlier prompt goes straight to the Outlier scan, and says how to get i
     await sendPrompt(other.page, 'Make me a parlay using Outlier');
     await waitForChat(other.page, /start-codev\.bat/);
     const without = await other.page.evaluate(() => window.__modelCalls);
-    assert.match(without[0].system, /The Outlier scan isn't available in this copy of CoDev/);
+    assert.match(without[0].system, /The Outlier scan isn't available here\. .*start-codev\.bat/);
 });
