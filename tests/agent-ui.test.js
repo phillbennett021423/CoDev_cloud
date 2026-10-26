@@ -262,3 +262,36 @@ test('scrolling up in the chat stops auto-scroll until you return to the bottom,
     assert.deepEqual(deltas, [{ deltaX: 0, deltaY: 200 }, { deltaX: 0, deltaY: 96 }, { deltaX: -100, deltaY: 2000 }]);
     assert.deepEqual(errors, []);
 });
+
+test('an Outlier prompt goes straight to the Outlier scan, and says how to get it when this CoDev has none', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const backend = createMockBackend({ workspace: makeWorkspace(), agentTools: {
+        outlier_scan_board: (box, args) => `Outlier > ${args.sport} > 8:00 PM BOS vs NYK\n4 props, 4 passed.`
+    } });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const { page, errors } = await openPage(launched.browser, url, {
+        steps: [[{ name: 'outlier_scan_board', arguments: { sport: 'NBA', game: '8pm' } }], 'Here is your 4-leg ticket.']
+    });
+    page.on('dialog', dialog => dialog.accept());
+    await sendPrompt(page, 'Go to Outlier and build me a 4-leg NBA ticket for the 8pm game');
+    await waitForChat(page, /Here is your 4-leg ticket\./);
+    const calls = await page.evaluate(() => window.__modelCalls);
+    assert.ok(calls[0].tools.includes('outlier_scan_board'), `tools offered: ${calls[0].tools.join(', ')}`);
+    assert.match(calls[0].system, /call outlier_scan_board first/);
+    assert.match(calls[0].system, /Don't search the project files for Outlier/);
+    const scan = backend.log.find(entry => entry.tool === 'outlier_scan_board');
+    assert.deepEqual(scan && scan.args, { sport: 'NBA', game: '8pm' });
+    assert.ok(scan.agentId, 'the call carries the agent');
+    assert.deepEqual(errors, []);
+
+    // A CoDev without the Outlier pipeline (the Windows app, an old server).
+    const plain = createMockBackend({ workspace: makeWorkspace() });
+    const plainUrl = await plain.listen();
+    t.after(() => plain.close());
+    const other = await openPage(launched.browser, plainUrl, { steps: ['Start CoDev with start-codev.bat.'] });
+    await sendPrompt(other.page, 'Make me a parlay using Outlier');
+    await waitForChat(other.page, /start-codev\.bat/);
+    const without = await other.page.evaluate(() => window.__modelCalls);
+    assert.match(without[0].system, /The Outlier scan isn't available in this copy of CoDev/);
+});
