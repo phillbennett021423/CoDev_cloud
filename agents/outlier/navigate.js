@@ -14,6 +14,28 @@ const SPORTS = {
     pga: ['PGA', 'Golf'], mma: ['MMA', 'UFC'], ufc: ['UFC', 'MMA'], esports: ['Esports', 'eSports'], lol: ['LoL', 'League of Legends'],
     cs: ['CS2', 'CS', 'Counter-Strike'], cs2: ['CS2', 'CS', 'Counter-Strike'], nascar: ['NASCAR']
 };
+// Outlier opens on its Positive EV tool; these are the names its regular props
+// board may go by, tried first whenever a sport or game is asked for.
+const PROPS_SECTIONS = ['Props', 'Player Props', 'Prop Search', 'Prop Research', 'Research', 'Projections', 'All Props'];
+
+// NBA team names and cities -> the abbreviation boards show ("Wizards" -> WAS).
+const NBA_TEAMS = {
+    ATL: ['hawks', 'atlanta'], BOS: ['celtics', 'boston'], BKN: ['nets', 'brooklyn'], CHA: ['hornets', 'charlotte'], CHI: ['bulls', 'chicago'],
+    CLE: ['cavaliers', 'cavs', 'cleveland'], DAL: ['mavericks', 'mavs', 'dallas'], DEN: ['nuggets', 'denver'], DET: ['pistons', 'detroit'],
+    GSW: ['warriors', 'golden state'], HOU: ['rockets', 'houston'], IND: ['pacers', 'indiana'], LAC: ['clippers'], LAL: ['lakers'],
+    MEM: ['grizzlies', 'memphis'], MIA: ['heat', 'miami'], MIL: ['bucks', 'milwaukee'], MIN: ['timberwolves', 'wolves', 'minnesota'],
+    NOP: ['pelicans', 'new orleans'], NYK: ['knicks', 'new york'], OKC: ['thunder', 'oklahoma city'], ORL: ['magic', 'orlando'],
+    PHI: ['76ers', 'sixers', 'philadelphia'], PHX: ['suns', 'phoenix'], POR: ['trail blazers', 'blazers', 'portland'], SAC: ['kings', 'sacramento'],
+    SAS: ['spurs', 'san antonio'], TOR: ['raptors', 'toronto'], UTA: ['jazz', 'utah'], WAS: ['wizards', 'washington']
+};
+// Other abbreviations boards use for the same teams.
+const ALSO = { BKN: ['BRK'], CHA: ['CHO'], GSW: ['GS'], NOP: ['NO'], NYK: ['NY'], PHX: ['PHO'], SAS: ['SA'], UTA: ['UTAH'], WAS: ['WSH'] };
+function teamsNamed(text) {
+    const lower = ` ${String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ')} `;
+    return Object.entries(NBA_TEAMS).filter(([abbr, names]) => names.some(n => lower.includes(` ${n} `)) || lower.includes(` ${abbr.toLowerCase()} `)).map(([abbr]) => abbr);
+}
+const teamTokens = abbr => [abbr, ...(ALSO[abbr] || []), ...NBA_TEAMS[abbr]];
+
 const sportLabels = sport => {
     const text = String(sport || '').trim();
     if (!text) return [];
@@ -124,28 +146,73 @@ function pickGame(games, game) {
         const at = parseTime(g.time);
         const text = g.text.toLowerCase();
         const timeOk = want == null || at === want;
-        const hits = words.filter(w => text.includes(w)).length;
+        const named = teamsNamed(game);
+        const hits = words.filter(w => text.includes(w)).length
+            + named.filter(abbr => teamTokens(abbr).some(t => new RegExp(`(^|[^a-z0-9])${t.toLowerCase()}($|[^a-z0-9])`).test(text))).length;
         return { ...g, at, ok: timeOk && (words.length === 0 || hits > 0), hits };
     }).filter(g => g.ok);
     scored.sort((a, b) => b.hits - a.hits);
     return scored[0] || null;
 }
 
-// Clicks through Outlier on page: sport, then market, then game. Scrolls to find
+// Runs inside the page: the short labels of what can be clicked (tabs, links,
+// buttons, dropdown options), so an error can say what Outlier does show.
+function listLabels() {
+    const out = new Set();
+    for (const el of document.querySelectorAll('a, button, [role="tab"], [role="button"], [role="link"], [role="menuitem"], option')) {
+        const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text && text.length <= 30) out.add(text);
+        if (out.size >= 60) break;
+    }
+    return [...out];
+}
+
+// Runs inside the page: picks the dropdown option named one of labels (a league
+// or stat picker), or returns null.
+function chooseOption(labels) {
+    const wanted = labels.map(l => l.toLowerCase());
+    for (const select of document.querySelectorAll('select')) {
+        const option = [...select.options].find(o => wanted.includes(o.text.trim().toLowerCase()));
+        if (!option) continue;
+        select.value = option.value;
+        select.dispatchEvent(new Event('input', { bubbles: true }));
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        return option.text.trim();
+    }
+    return null;
+}
+
+// Clicks through Outlier on page: the props board, sport, then market, then game. Scrolls to find
 // a game further down. Returns { steps, game, teams } or throws with what it saw.
-async function navigate(page, { sport, market, game } = {}, { settleMs = 1500 } = {}) {
+async function navigate(page, { section, sport, market, game } = {}, { settleMs = 1500 } = {}) {
     const steps = [];
     const settle = async () => {
         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
         await page.waitForTimeout(settleMs);
     };
-    const clickLabel = async (labels, what) => {
+    // optional: carry on when it isn't there instead of failing.
+    const clickLabel = async (labels, what, { optional = false } = {}) => {
         const found = await page.evaluate(markByLabel, labels);
-        if (!found) throw new Error(`Couldn't find ${what} on Outlier (looked for ${labels.join(', ')}). Ask the user what Outlier calls it.`);
-        await page.click('[data-codev-nav="1"]', { timeout: 5000 });
+        if (found) {
+            await page.click('[data-codev-nav="1"]', { timeout: 5000 });
+        } else {
+            const chosen = await page.evaluate(chooseOption, labels);
+            if (!chosen) {
+                if (optional) return;
+                const shown = await page.evaluate(listLabels).catch(() => []);
+                throw new Error(`Couldn't find ${what} on Outlier (looked for ${labels.join(', ')}) on ${page.url()}. `
+                    + (shown.length ? `Tabs, links and buttons on that page: ${shown.join(' | ')}. ` : '')
+                    + 'Ask the user which of these is the one, then call outlier_scan_board again with it.');
+            }
+            steps.push(chosen);
+            return settle();
+        }
         steps.push(found);
         await settle();
     };
+    // Off the Positive EV tool and onto the regular props board.
+    if (section) await clickLabel([String(section).trim()], `a "${section}" tab`);
+    else if (sport || game) await clickLabel(PROPS_SECTIONS, 'the props board', { optional: true });
     if (sport) await clickLabel(sportLabels(sport), `a "${sport}" tab`);
     if (market) await clickLabel([String(market).trim()], `a "${market}" filter`);
     if (!game) return { steps, game: null, teams: null };
@@ -177,6 +244,17 @@ async function navigate(page, { sport, market, game } = {}, { settleMs = 1500 } 
         if (!moved) break;
         await page.waitForTimeout(500);
     }
+    // No game card for it (a board of props without game cards): read the whole
+    // board and keep that game's props by its teams.
+    const named = teamsNamed(game);
+    if (named.length === 2) {
+        await page.evaluate(() => {
+            window.scrollTo(0, 0);
+            for (const el of document.querySelectorAll('*')) if (el.scrollTop) el.scrollTop = 0;
+        });
+        steps.push(`${named.join(' vs ')} (from the whole board)`);
+        return { steps, game: named.join(' vs '), teams: named };
+    }
     const shown = [...seen.values()].map(g => `${parseTime(g.time) != null ? clock(parseTime(g.time)) : g.time}: ${g.text.slice(0, 80)}`);
     const want = parseTime(game);
     throw new Error(`Couldn't find the ${want != null ? clock(want) : `"${game}"`} game on Outlier${steps.length ? ` (${steps.join(' > ')})` : ''}. `
@@ -191,4 +269,4 @@ function onlyGame(props, teams) {
     return props.filter(p => !p.game || p.game === key);
 }
 
-module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, onlyGame, markByLabel, listGames, clock };
+module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS };

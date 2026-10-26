@@ -998,8 +998,9 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
             name: 'outlier_scan_board',
             description: 'Opens Outlier in the user\'s signed-in Outlier browser, goes to the sport, stat and game you name (e.g. sport "NBA", game "8pm" or "Lakers 3pm") by clicking Outlier\'s tabs and game cards, scrolls the board to the end reading every line, and runs the full audit (-119 consistency filter, sharp-book comparison, correlation and usage checks, Under engine, 4-6 leg tickets) on that game\'s props. Without sport or game it scans the pages set in the Outlier tab, or one app.outlier.bet address you give. It only reads and navigates: nothing is entered on Outlier, Underdog or Dabble. Give the user the ticket legs in your reply. You never get the browser itself or its cookies.',
             inputSchema: { type: 'object', properties: {
+                section: { type: 'string', description: 'The Outlier tab to open first, by its name on the page (e.g. "Props"). Leave it out for the regular props board, never Positive EV.' },
                 sport: { type: 'string', description: 'The sport tab to open, e.g. "NBA", "NFL", "MLB", "NHL", "WNBA", "CBB".' },
-                game: { type: 'string', description: 'The game by start time and/or team as the user said it, e.g. "3pm", "8:30 PM", "Lakers", "LAL vs BOS 8pm". Times are the user\'s local time.' },
+                game: { type: 'string', description: 'The game by start time and/or teams as the user said it, e.g. "3pm", "8:30 PM", "Wizards vs Hornets", "LAL vs BOS 8pm". Times are the user\'s local time. With both teams named, a board without game cards is read whole and kept to that game.' },
                 market: { type: 'string', description: 'A stat filter to click, e.g. "Points", "Rebounds" (optional).' },
                 url: { type: 'string', description: 'An app.outlier.bet page to start from instead of the configured one (optional).' },
                 kind: { type: 'string', enum: ['props', 'odds'], description: 'What that page shows (default props).' }
@@ -1033,7 +1034,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                         if (!/(^|\.)outlier\.bet$/i.test(url.hostname)) throw new Error(`outlier_scan_board only opens Outlier (app.outlier.bet), not ${url.hostname}. Use your own browser tools for other sites.`);
                         pages = [{ kind: args.kind === 'odds' ? 'odds' : 'props', url: url.href }];
                     }
-                    const nav = Object.fromEntries(['sport', 'market', 'game'].filter(k => args[k] && String(args[k]).trim()).map(k => [k, String(args[k]).trim()]));
+                    const nav = Object.fromEntries(['section', 'sport', 'market', 'game'].filter(k => args[k] && String(args[k]).trim()).map(k => [k, String(args[k]).trim()]));
                     if (Object.keys(nav).length) {
                         // Navigation starts on one board: the address given, else the first configured props page.
                         const start = pages ? pages[0] : ((outlier.state().config || {}).pages || []).find(p => p.kind === 'props') || { kind: 'props', url: 'https://app.outlier.bet/' };
