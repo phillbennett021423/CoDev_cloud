@@ -880,7 +880,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // paceMs between cards and backs off when Outlier answers 429 (too many
     // requests), stopping the cards after a third one.
     // restore(): brings the board back if a card replaced it (twice at most).
-    async function researchLegs(page, legs, { boardProps = [], settleMs = 1500, maxCards = 12, paceMs = 3500, backoffMs = [20000, 45000], restore = null } = {}) {
+    async function researchLegs(page, legs, { boardProps = [], settleMs = 1500, maxCards = 12, paceMs = 6000, backoffMs = [30000, 60000], restore = null } = {}) {
         let restores = 0;
         const results = new Map();
         let limited = 0;
@@ -963,14 +963,15 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             pages: [{ kind: 'props', url: url || boardStart(), nav }], keep: legs,
             onPage: async (page, { collected }) => {
                 const boardProps = parseCollected([{ kind: 'props', url: page.url(), collected }]).props;
-                const board = page.url();
+                // The board without an open card's ?market=…&outcome=… in its address.
+                const board = (() => { const u = new URL(page.url()); ['market', 'outcome', 'split'].forEach(k => u.searchParams.delete(k)); return u.href; })();
                 const restore = async () => {
                     await page.goto(board, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
                     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
                     await navigate(page, nav, { settleMs: config().settleMs });
                 };
                 const cfg = config();
-                // cardPaceMs: the wait between player cards (default 3.5s), set lower only in tests.
+                // cardPaceMs: the wait between player cards (default 6s), set lower only in tests.
                 research = await researchLegs(page, legs, { boardProps, settleMs: cfg.settleMs, maxCards, restore,
                     ...(Number.isFinite(cfg.cardPaceMs) ? { paceMs: cfg.cardPaceMs } : {}),
                     ...(Array.isArray(cfg.backoffMs) ? { backoffMs: cfg.backoffMs } : {}) });
@@ -1165,29 +1166,49 @@ const safe = fn => async (req, res, body) => {
     try { sendJson(res, 200, await fn(body || {})); } catch (err) { sendJson(res, 400, { error: err.message }); }
 };
 
-// A listed leg against the board: Outlier's line and price for that player and
-// stat, and whether the user's line is easier or harder than it.
-// props: the board as read (its rows' hit rates).
-function lineNote(leg, boardLegs, props = []) {
+const isUnder = side => /^(u|under|less|lower)/i.test(String(side || ''));
+const RATE_ORDER = ['l5', 'l10', 'l15', 'l20', 'h2h', 'season', 'last'];
+
+// A listed leg against the board as read: the row for that player and stat at the
+// user's line (else the nearest line, never an alt line far off it), its price
+// and its hit rates turned to the user's side (an Under's rate is 1 - the Over's).
+function matchLeg(leg, props = []) {
     const name = normWords(leg.player);
     const words = statWords(leg.stat);
-    const his = boardLegs.filter(l => normWords(l.player) === name && (!words.length || words.some(w => ` ${normWords(l.market)} `.includes(` ${w} `))));
+    const his = props.filter(p => normWords(p.player) === name && Number.isFinite(Number(p.line))
+        && (!words.length || words.some(w => ` ${normWords(p.market)} `.includes(` ${w} `))));
     if (!his.length) return null;
-    const side = /^(u|under|less|lower)/i.test(String(leg.side || '')) ? 'under' : 'over';
-    const board = his.find(l => /^(u|under|less|lower)/i.test(String(l.side || '')) === (side === 'under')) || his[0];
     const mine = Number(leg.line);
-    const theirs = Number(board.line);
-    let diff = '';
-    if (Number.isFinite(mine) && Number.isFinite(theirs) && mine !== theirs) {
-        const easier = side === 'over' ? mine < theirs : mine > theirs;
-        diff = `, your ${mine} is ${Math.abs(theirs - mine)} ${easier ? 'easier' : 'harder'}`;
-    }
-    const m = board.metrics || {};
-    // The board row's own hit rates (L5, L10, L20, H2H, seasons), read with the board.
-    const row = props.find(p => normWords(p.player) === normWords(board.player) && p.line === board.line && normWords(p.market) === normWords(board.market)) || {};
-    const rates = Object.entries(row.hitRates || {}).filter(([, v]) => Number.isFinite(v)).map(([k, v]) => `${k.toUpperCase()} ${Math.round(v * 100)}%`);
-    const hit = rates.length ? `, hit ${rates.slice(0, 6).join(' ')}` : m.l5 != null ? `, L5 ${Math.round(m.l5 * 100)}%` : '';
-    return `Outlier ${board.side || ''} ${board.line} ${board.market || ''} ${m.consensus || ''}${hit}${diff}${board.rejected ? ' (failed the audit)' : ''}`.replace(/\s+/g, ' ');
+    const under = isUnder(leg.side);
+    const gap = p => (Number.isFinite(mine) ? Math.abs(Number(p.line) - mine) : 0);
+    const row = [...his].sort((x, y) => gap(x) - gap(y) || (isUnder(x.side) === under ? 0 : 1) - (isUnder(y.side) === under ? 0 : 1)
+        || Object.keys(y.hitRates || {}).length - Object.keys(x.hitRates || {}).length)[0];
+    const flip = isUnder(row.side) !== under;
+    const rates = {};
+    for (const [k, v] of Object.entries(row.hitRates || {})) if (Number.isFinite(v)) rates[k] = flip ? 1 - v : v;
+    const prices = (row.odds || []).map(o => o.price).filter(Number.isFinite);
+    return { row, rates, sameLine: !Number.isFinite(mine) || Number(row.line) === mine, gap: gap(row),
+        easier: Number.isFinite(mine) && (under ? mine > Number(row.line) : mine < Number(row.line)), price: prices.length ? Math.max(...prices) : row.consensus };
+}
+
+// One leg's board line for the agent.
+function legLine(leg, match) {
+    if (!match) return null;
+    const { row, rates, sameLine, gap, easier, price } = match;
+    const shown = RATE_ORDER.filter(k => rates[k] != null).map(k => `${k === 'last' ? 'last season' : k.toUpperCase()} ${Math.round(rates[k] * 100)}%`);
+    const at = `Outlier ${row.line} ${row.market || leg.stat || ''}${price != null ? ` (${row.side || ''} ${price > 0 ? '+' : ''}${price})` : ''}`.replace(/\s+/g, ' ');
+    const where = sameLine ? 'on your line' : `for Outlier's ${row.line}: your ${leg.line} is ${gap} ${easier ? 'easier' : 'harder'}`;
+    return `${at}: ${shown.length ? `${shown.join(' · ')} ${where}` : `no hit rates shown (${where})`}`;
+}
+
+// How good a leg looks on Outlier's numbers: the mean of its hit rates on the
+// user's side, a little lower when the rates are for a harder line.
+function legScore(match) {
+    if (!match) return null;
+    const vals = RATE_ORDER.map(k => match.rates[k]).filter(v => v != null);
+    if (!vals.length) return null;
+    const mean = vals.reduce((a, v) => a + v, 0) / vals.length;
+    return match.sameLine ? mean : match.easier ? mean + 0.02 : mean - 0.05 * match.gap;
 }
 
 // Problems a slip built from these legs could have: one player twice, opposite
@@ -1272,8 +1293,8 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     side: { type: 'string', description: 'Over/Higher/More or Under/Lower/Less (optional).' }
                 }, required: ['player'], additionalProperties: false } },
                 sport: { type: 'string', description: 'The sport tab, e.g. "NBA".' },
-                game: { type: 'string', description: 'The game by teams and/or start time, e.g. "Wizards vs Hornets", "7pm".' },
-                day: { type: 'string', description: '"today", "tomorrow" or a weekday, when the game isn\'t today (optional).' },
+                game: { type: 'string', description: 'The game by teams and/or start time, e.g. "Wizards vs Hornets", "7pm". Only when the user named one: leave it out for a list that may span games, and the sport\'s whole board is read.' },
+                day: { type: 'string', description: '"today", "tomorrow" or a weekday, when the games aren\'t today (optional).' },
                 url: { type: 'string', description: 'An app.outlier.bet page to start from (optional).' }
             }, required: ['legs'], additionalProperties: false }
         }, {
@@ -1361,27 +1382,36 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     const { steps, research } = await outlier.researchList({ url, ...nav, legs });
                     const result = outlier.state().result;
                     const audit = auditText(result);
-                    const boardLegs = (result && result.legs) || [];
                     let props = [];
                     try { props = JSON.parse(fs.readFileSync(outlier.files.scrape, 'utf8')).props || []; } catch { /* no board read */ }
+                    const matches = legs.map(l => matchLeg(l, props));
                     const lines = legs.map((l, i) => {
-                        const head = `${i + 1}. ${l.player}${l.side ? ` ${l.side}` : ''}${l.line != null ? ` ${l.line}` : ''}${l.stat ? ` ${l.stat}` : ''}`;
-                        const board = lineNote(l, boardLegs, props);
+                        const head = `${i + 1}. ${l.player} ${l.side || 'Over'}${l.line != null ? ` ${l.line}` : ''}${l.stat ? ` ${l.stat}` : ''}`;
+                        const board = legLine(l, matches[i]);
                         const card = research.results.get(i);
-                        if (!board && !card) return `${head}: not on Outlier's board for this game`;
+                        if (!board && !card) return `${head}: no ${l.stat || ''} prop for him on Outlier's board${nav.game ? ' for this game' : ''} (can't be checked on Outlier)`.replace(/\s+\(/, ' (');
                         if (!card) return `${head}\n   ${board}`;
                         if (card.error) return `${head}${board ? `\n   ${board}` : ''}\n   (card not read: ${card.error})`;
-                        return `${head}${/another stat/.test(card.opened) ? ' (no prop for this stat on Outlier: his card for another stat was read)' : ''}\n   ${board ? `${board}\n   ` : ''}${card.summary}${card.cached ? ' (read earlier)' : ''}`;
+                        return `${head}${/another stat/.test(card.opened) ? ' (no prop for this stat on Outlier: his card for another stat was read)' : ''}\n   ${board ? `${board}\n   ` : ''}Card: ${card.summary}${card.cached ? ' (read earlier)' : ''}`;
                     });
-                    const read = { steps, results: [...research.results.values()] };
-                    const found = legs.filter((l, i) => lineNote(l, boardLegs, props) || (research.results.get(i) && !research.results.get(i).error)).length;
-                    const notes = [research.limited ? 'Outlier asked CoDev to slow down (429), so some cards were left unread: the board rows above still have their hit rates.' : '',
+                    const read = { steps };
+                    const found = legs.filter((l, i) => matches[i] || (research.results.get(i) && !research.results.get(i).error)).length;
+                    // A leg whose board row showed no hit rates is scored on its card's.
+                    const cardScore = i => {
+                        const card = research.results.get(i);
+                        const vals = card && card.summary ? [...card.summary.matchAll(/\b(?:L\d+|H2H|Season|20\d\d)\D{0,3}(\d{1,3})%/gi)].map(m => Number(m[1]) / 100) : [];
+                        return vals.length && !/another stat/.test(card.opened || '') ? vals.reduce((a, v) => a + v, 0) / vals.length : null;
+                    };
+                    const ranked = legs.map((l, i) => ({ l, i, score: legScore(matches[i]) ?? cardScore(i) })).filter(x => x.score != null).sort((x, y) => y.score - x.score);
+                    const best = ranked.slice(0, 8).map(x => `${x.i + 1}. ${x.l.player} ${x.l.side || 'Over'} ${x.l.line ?? ''} ${x.l.stat || ''}: ${Math.round(x.score * 100)}%`.replace(/\s+/g, ' '));
+                    const notes = [research.limited ? 'Outlier asked CoDev to slow down (429), so some cards were left unread: every leg above still has its board row and hit rates.' : '',
                         research.skipped ? `${research.skipped} leg(s) got the board row only (cards are capped to spare Outlier).` : ''].filter(Boolean);
                     const checks = legChecks(legs);
-                    const text = `Outlier > ${read.steps.join(' > ')}\nFound ${found} of ${legs.length} legs on Outlier.\n${lines.join('\n')}\n${notes.map(n => `${n}\n`).join('')}`
+                    const text = `Outlier > ${read.steps.join(' > ')}\nFound ${found} of ${legs.length} legs on Outlier. Hit rates are Outlier's, turned to the user's side.\n${lines.join('\n')}\n${notes.map(n => `${n}\n`).join('')}`
+                        + (best.length ? `Best on Outlier's hit rates (average of L5, L10, L20, H2H, seasons on the user's side):\n${best.join('\n')}\n` : '')
                         + (checks.length ? `Checks:\n${checks.map(c => `- ${c}`).join('\n')}\n` : '')
-                        + `Audit of these legs:\n${audit}\n`
-                        + 'Build the slip only from these legs: favor green hit rates across several windows on the user\'s own line, a weak opponent rank, steady minutes, no injury doubt and an easier line than Outlier\'s; give one reason per leg. Estimates, not guarantees.';
+                        + `For reference only, CoDev's sportsbook audit (the -119 juice strategy for sportsbooks; a DFS leg doesn't need to pass it):\n${audit}\n`
+                        + 'Build the slip from the best legs above: hit rates high across several windows on the user\'s line, then the card\'s matchup rank, minutes and injuries. Trust Outlier\'s rosters and teams over your own memory (players get traded); lines on a card like "@ MIN" are past games in the log. A leg with no Outlier prop can\'t be checked: say so, don\'t guess. Give one reason per leg. Estimates, not guarantees.';
                     return { content: [{ type: 'text', text }] };
                 } catch (err) {
                     return { content: [{ type: 'text', text: err.message }], isError: true };
@@ -1449,4 +1479,4 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
     };
 }
 
-module.exports = { createService, createOutlierPipeline, runPython, sameLeg, propId, OUTLIER_PRIMER, OUTLIER_GUIDE };
+module.exports = { createService, createOutlierPipeline, runPython, sameLeg, propId, OUTLIER_PRIMER, OUTLIER_GUIDE, matchLeg };

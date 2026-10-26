@@ -711,12 +711,14 @@ test('a list of legs for tomorrow is researched in one visit: each player\'s car
     assert.equal(reply.isError, undefined, reply.content[0].text);
     const text = reply.content[0].text;
     assert.match(text, /^Outlier > Props > NBA > Tomorrow > 7:00 PM WAS vs CHA\nFound 3 of 4 legs on Outlier\./);
-    assert.match(text, /1\. Bilal Coulibaly Over 3\.5 Rebounds\n {3}Outlier over 4\.5 Rebounds -119, your 3\.5 is 1 easier.*\n {3}Hit L5 90%, L10 70% \| Matchup: CHA rank vs SF: 28th \| Injuries: Mark Williams OUT \| Usage: Minutes 31\.2/, 'his rebounds card, not his points one');
-    assert.match(text, /2\. LaMelo Ball Higher 16\.5 Points\n {3}Outlier over 16\.5 Points -119.*\n {3}Hit L5 40%/);
-    assert.match(text, /3\. Michael Jordan 30\.5 Points: not on Outlier's board for this game/);
+    assert.match(text, /1\. Bilal Coulibaly Over 3\.5 Rebounds\n {3}Outlier 4\.5 Rebounds \(over -119\): no hit rates shown \(for Outlier's 4\.5: your 3\.5 is 1 easier\)\n {3}Card: Hit L5 90%, L10 70% \| Matchup: CHA rank vs SF: 28th \| Injuries: Mark Williams OUT \| Usage: Minutes 31\.2/, 'his rebounds card, not his points one');
+    assert.match(text, /Best on Outlier's hit rates.*\n1\. Bilal Coulibaly Over 3\.5 Rebounds: 80%\n2\. LaMelo Ball Higher 16\.5 Points: 55%/, 'legs are ranked, on the card\'s hit rates when the board row shows none');
+    assert.match(text, /For reference only, CoDev's sportsbook audit/);
+    assert.match(text, /2\. LaMelo Ball Higher 16\.5 Points\n {3}Outlier 16\.5 Points \(over -119\): no hit rates shown \(on your line\)\n {3}Card: Hit L5 40%/);
+    assert.match(text, /3\. Michael Jordan Over 30\.5 Points: no Points prop for him on Outlier's board for this game \(can't be checked on Outlier\)/);
     assert.match(text, /4\. LaMelo Ball Under 30\.5 Pts\+Rebs\+Asts \(no prop for this stat on Outlier/);
     assert.match(text, /Checks:\n- LaMelo Ball is on legs 2, 4: an Over and an Under on him work against each other/);
-    assert.match(text, /Audit of these legs:\n\d+ props/);
+    assert.match(text, /a DFS leg doesn't need to pass it\):\n\d+ props/);
     const audited = JSON.parse(fs.readFileSync(pipeline.files.scrape, 'utf8'));
     assert.deepEqual([...new Set(audited.props.map(p => p.player))].sort(), ['Bilal Coulibaly', 'LaMelo Ball'], 'only the listed players are audited');
     assert.equal(hits.ev, 1, 'Outlier\'s +EV start page was opened once, then the Props board was remembered');
@@ -777,7 +779,8 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
 
     const first = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
     assert.equal(first.isError, undefined, first.content[0].text);
-    assert.match(first.content[0].text, /1\. Jayson Tatum Over 20\.5 Points\n {3}Outlier over 20\.5 Points -119, hit L5 80% L10 70%.*\n {3}Hit L5 60%, L10 70%, H2H 50% \| Usage: Minutes 34\.0/);
+    assert.match(first.content[0].text, /1\. Jayson Tatum Over 20\.5 Points\n {3}Outlier 20\.5 Points \(over -119\): L5 80% · L10 70% on your line\n {3}Card: Hit L5 60%, L10 70%, H2H 50% \| Usage: Minutes 34\.0/);
+    assert.match(first.content[0].text, /Best on Outlier's hit rates.*\n1\. Jayson Tatum Over 20\.5 Points: 75%\n2\. Jaylen Brown Over 21\.5 Points: 70%/);
     assert.equal(hits.board, 1, 'the board was loaded once for all three legs');
     assert.equal(hits.card, 3);
 
@@ -792,7 +795,36 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     const slowed = await service.callTool('outlier_research_list', { sport: 'NBA', legs: [...more, { player: 'Jayson Tatum', stat: 'Points', line: 20.5 }] });
     assert.equal(slowed.isError, undefined, slowed.content[0].text);
     assert.match(slowed.content[0].text, /Outlier asked CoDev to slow down \(429\)/);
-    assert.match(slowed.content[0].text, /1\. Josh Hart Over 23\.5 Points\n {3}Outlier over 23\.5 Points -119, hit L5 50% L10 70%.*\n {3}\(card not read: Outlier said too many requests\)/, 'the board row still gives every leg its hit rates');
+    assert.match(slowed.content[0].text, /1\. Josh Hart Over 23\.5 Points\n {3}Outlier 23\.5 Points \(over -119\): L5 50% · L10 70% on your line\n {3}\(card not read: Outlier said too many requests\)/, 'the board row still gives every leg its hit rates');
     assert.doesNotMatch(slowed.content[0].text, /Too many requests/, 'an empty card is not passed on as research');
     assert.ok(hits.card <= 3 + 3, 'no more than one card per strike before stopping');
+});
+
+test('a grid board\'s bare hit-rate cells get their column labels, and a leg is matched at its own line, not an alt line', async t => {
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const { collectPage, parseCollected } = require('../agents/outlier/extract');
+    const year = new Date().getFullYear() - (new Date().getMonth() < 6 ? 1 : 0);
+    const page = await launched.browser.newPage();
+    // Like Outlier's Props board: labels only in the header, rows of bare percentages lined up under them.
+    const cell = 'width:70px;flex:none';
+    const row = (name, stat, line, odds, rates) => `<div style="display:flex"><span style="${cell};width:160px">${name}</span><span style="${cell}">${stat}</span><span style="${cell}">Over ${line}</span><span style="${cell}">${odds}</span>${rates.map(r => `<span style="${cell}">${r}%</span>`).join('')}</div>`;
+    await page.setContent(`<div style="display:flex"><span style="${cell};width:160px">Player</span><span style="${cell}">Prop</span><span style="${cell}">Line</span><span style="${cell}">Odds</span>`
+        + ['L5', 'L10', 'L20', 'H2H', String(year), String(year - 1)].map(l => `<span style="${cell}">${l} ↑↓</span>`).join('') + '</div>'
+        + row('Trae Young', 'Assists', 0.5, '-2000', [100, 100, 100, 100, 100, 100])
+        + row('Trae Young', 'Assists', 9.5, '-119', [80, 70, 65, 50, 60, 55])
+        + row('Trae Young', 'Assists', 10.5, '+120', [40, 50, 45, 50, 48, 44]));
+    const collected = await page.evaluate(collectPage, null);
+    const { props } = parseCollected([{ kind: 'props', url: 'https://app.outlier.bet/NBA/props', collected }]);
+    const main = props.find(p => p.line === 9.5);
+    assert.deepEqual(main.hitRates, { l5: 0.8, l10: 0.7, l20: 0.65, h2h: 0.5, season: 0.6, last: 0.55 });
+    const { matchLeg } = require('../agents/outlier');
+    const match = matchLeg({ player: 'Trae Young', stat: 'Assists', line: 9.5, side: 'Over' }, props);
+    assert.equal(match.row.line, 9.5, 'the 9.5 row, not the 0.5 alt line at -2000');
+    assert.equal(match.sameLine, true);
+    const under = matchLeg({ player: 'Trae Young', stat: 'Assists', line: 9.5, side: 'Under' }, props);
+    assert.equal(Math.round(under.rates.l5 * 100), 20, 'an Under reads the Over row\'s rate turned around');
+    const between = matchLeg({ player: 'Trae Young', stat: 'Assists', line: 10, side: 'Over' }, props);
+    assert.ok([9.5, 10.5].includes(between.row.line));
 });

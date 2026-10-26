@@ -42,6 +42,36 @@ function collectPage(selectors) {
         if (headers.length && rows.length) out.tables.push({ headers, rows });
     }
 
+    // A board laid out as a grid (Outlier's Props board): the hit-rate labels (L5,
+    // L10, H2H, 2026...) are only in the header, each row has bare "90%" cells. Each
+    // cell gets its column's label by lining up with the header across the page.
+    const LABEL = /^(L5|L10|L15|L20|L25|L30|H2H|SZN|Season|20\d\d)$/i;
+    const leaves = [...document.body.querySelectorAll('*')].filter(el => !el.children.length);
+    const heads = leaves.map(el => ({ el, label: text(el).replace(/[^A-Za-z0-9]/g, ''), r: el.getBoundingClientRect() }))
+        .filter(h => LABEL.test(h.label) && h.r.width > 0);
+    const byRow = new Map();
+    for (const h of heads) {
+        const key = Math.round(h.r.top / 8);
+        if (!byRow.has(key)) byRow.set(key, []);
+        byRow.get(key).push(h);
+    }
+    const header = [...byRow.values()].sort((a, b) => b.length - a.length)[0] || [];
+    const cellRates = new Map();
+    if (header.length >= 3) {
+        const mid = r => r.left + r.width / 2;
+        for (const el of leaves) {
+            if (!/^\d{1,3}(\.\d+)?\s?%$/.test(text(el))) continue;
+            const r = el.getBoundingClientRect();
+            if (!r.width || r.top <= header[0].r.top) continue;
+            const near = header.map(h => ({ h, d: Math.abs(mid(h.r) - mid(r)) })).sort((a, b) => a.d - b.d)[0];
+            if (near && near.d <= Math.max(40, near.h.r.width)) cellRates.set(el, `${near.h.label}: ${text(el)}`);
+        }
+    }
+    const withRates = el => {
+        const rates = [...el.querySelectorAll('*')].filter(c => cellRates.has(c)).map(c => cellRates.get(c));
+        return rates.length ? `${text(el)} | hit rates: ${rates.join(' · ')}` : text(el);
+    };
+
     // The smallest elements holding both a stat line (o24.5, Over 24.5, More 24.5)
     // and an American price: each is one prop card or board row.
     const ODDS = /(^|[\s(])[+\-−]\d{3,4}(?=$|[\s)])/;
@@ -55,7 +85,7 @@ function collectPage(selectors) {
     for (const el of candidates) {
         let inner = false;
         for (const other of el.querySelectorAll('*')) { if (set.has(other)) { inner = true; break; } }
-        if (!inner) out.cards.push(text(el));
+        if (!inner) out.cards.push(withRates(el));
     }
 
     // Injury report lines ("Joel Embiid (PHI) - Out", "Out: Joel Embiid"): short blocks
@@ -106,7 +136,9 @@ function sideOf(word) {
 
 function rateKey(label) {
     const l = String(label).toLowerCase();
-    if (/^20\d\d$/.test(l) || l === 'szn') return 'season';
+    // "2026" is this season, "2025" last season (boards show both side by side).
+    if (/^20\d\d$/.test(l)) return Number(l) >= new Date().getFullYear() - (new Date().getMonth() < 6 ? 1 : 0) ? 'season' : 'last';
+    if (l === 'szn') return 'season';
     return l;
 }
 
