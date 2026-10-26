@@ -18,7 +18,7 @@ const { spawn } = require('child_process');
 const { collectPage, parseCollected, parseText, propId } = require('./extract');
 const { createCapture } = require('./capture');
 const { projectLeg, regressionFlag, gameContext, simulateTicket } = require('./forecast');
-const { navigate, onlyGame, openPlayer, readDetails, readCardTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf } = require('./navigate');
+const { navigate, onlyGame, openPlayer, readDetails, readCardTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, periodOf, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf, searchPlayer, clearSearch } = require('./navigate');
 const { OUTLIER_PRIMER, OUTLIER_GUIDE } = require('./guide');
 const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
@@ -900,11 +900,14 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // Kept on disk too: after a crash or restart, asking again picks up the cards
     // already read instead of opening every one again.
     const CARD_TTL_MS = 30 * 60 * 1000;
+    // How many times Outlier may say 429 in one run before the cards stop (each one waited out).
+    const MAX_429 = 6;
     const cards = new Map(Object.entries(readJson(files.cards, {})).filter(([, c]) => c && Date.now() - c.at < CARD_TTL_MS));
     const saveCards = () => {
         try { writeJson(files.cards, Object.fromEntries([...cards].filter(([, c]) => Date.now() - c.at < CARD_TTL_MS))); } catch { /* kept in memory */ }
     };
-    const cardKey = leg => `${normWords(leg.player)}|${statWords(leg.stat)[0] || ''}`;
+    // A 1st-quarter leg's card is another than the full game's.
+    const cardKey = leg => `${normWords(leg.player)}|${periodOf(leg.stat) ? `${periodOf(leg.stat)} ` : ''}${statWords(leg.stat)[0] || ''}`;
     // The cards read lately for these legs, counted at each leg's own line (null when unread).
     const cardsFor = legs => legs.map(leg => {
         const c = cards.get(cardKey(leg));
@@ -917,7 +920,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // paceMs between cards and backs off when Outlier answers 429 (too many
     // requests), stopping the cards after a third one.
     // restore(): brings the board back if a card replaced it (twice at most).
-    async function researchLegs(page, legs, { boardProps = [], places = [], settleMs = 1500, maxCards = 12, paceMs = 8000, backoffMs = [30000, 60000, 90000], restore = null } = {}) {
+    async function researchLegs(page, legs, { boardProps = [], places = [], settleMs = 1500, maxCards = 12, paceMs = 8000, backoffMs = [30000, 60000, 120000, 180000], restore = null } = {}) {
         let restores = 0;
         const results = new Map();
         let limited = 0;
@@ -931,30 +934,62 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 const his = keepLegs(onBoard, [leg]);
                 return Math.max(0, ...his.map(p => Math.max(p.hitRates && p.hitRates.l10 || 0, p.hitRates && p.hitRates.l5 || 0)));
             };
-            const order = legs.map((leg, i) => ({ leg, i, rate: rate(leg), shown: keepLegs(onBoard, [leg]).length > 0 || !boardProps.length }))
-                .filter(x => x.shown).sort((x, y) => y.rate - x.rate);
+            // The legs whose own market (stat and quarter or half) is on the board first; a
+            // leg shown only for another stat comes after, and not once Outlier says 429.
+            // Every leg gets looked up: one whose market isn't on the board is searched
+            // for by name (Outlier's search box) before it is called missing.
+            const order = legs.map((leg, i) => {
+                const his = keepLegs(onBoard, [leg]);
+                return { leg, i, rate: rate(leg), shown: his.length > 0, own: !boardProps.length || his.some(p => sameMarket(p.market, leg.stat)) };
+            }).sort((x, y) => (y.own - x.own) || (y.shown - x.shown) || (y.rate - x.rate));
+            let canSearch = true;
+            // Each 429 doubles the pause between cards (up to 30s), so the run slows down
+            // and keeps going instead of being cut off.
+            let pace = paceMs;
             let opened = 0;
             let last = 0;
-            for (const { leg, i } of order) {
+            for (const { leg, i, own, shown } of order) {
                 const cached = cards.get(cardKey(leg));
                 if (cached && Date.now() - cached.at < CARD_TTL_MS) { results.set(i, { ...cached, atLine: hitsAtLine(cached.games, leg.line, leg.side), cached: true }); continue; }
                 if (opened >= maxCards) break;
-                if (limited >= 4) break;
+                if (limited >= MAX_429) break;
                 // Pace the cards, and wait out a 429 before the next one.
-                const wait = Math.max(0, paceMs - (Date.now() - last));
+                const wait = Math.max(0, pace - (Date.now() - last));
                 if (wait) await page.waitForTimeout(wait);
                 if (seen429) {
                     limited++;
                     seen429 = 0;
-                    if (limited >= 4) break;
+                    pace = Math.min(30000, pace * 2);
+                    if (limited >= MAX_429) break;
                     state.progress = `Outlier asked to slow down: waiting ${Math.round(backoffMs[Math.min(limited - 1, backoffMs.length - 1)] / 1000)}s`;
                     log(`[Outlier] ${state.progress}`);
                     await page.waitForTimeout(backoffMs[Math.min(limited - 1, backoffMs.length - 1)]);
                 }
                 const cardName = `Card ${opened + 1} of ${Math.min(order.length, maxCards)}: ${leg.player}${leg.stat ? ` ${leg.stat}` : ''}`;
                 const step = what => { state.progress = `${cardName}, ${what}`; log(`[Outlier] ${state.progress}`); };
-                const place = placeOf(places, leg.player);
-                step(place ? 'jumping to his row on the board' : 'looking for his row on the board');
+                let place = own ? placeOf(places, leg.player) : null;
+                // His props found by searching his name, for matching the exact prop and
+                // for saying which ones Outlier has when the user's isn't there.
+                let searched = null;
+                let found = [];
+                if (!place && canSearch) {
+                    step('searching Outlier for him by name');
+                    searched = await searchPlayer(page, leg.player, { settleMs }).catch(() => null);
+                    if (!searched) canSearch = false;
+                    else {
+                        const read = await page.evaluate(collectPage, config().selectors || null).catch(() => null);
+                        const name = normWords(leg.player);
+                        found = read ? parseCollected([{ kind: 'props', url: page.url(), collected: read }]).props.filter(p => normWords(p.player) === name) : [];
+                    }
+                }
+                // Not on the board and nothing when searched: nothing to open.
+                if (!place && !shown && !found.length) {
+                    if (searched) await clearSearch(page);
+                    results.set(i, { error: searched ? 'searched Outlier for him: no props listed' : 'not on Outlier\'s board', searched: Boolean(searched), props: [] });
+                    continue;
+                }
+                if (!own && limited) { if (searched) await clearSearch(page); results.set(i, { error: 'his card was left for later (Outlier said 429)', searched: Boolean(searched), props: found }); continue; }
+                step(place ? 'jumping to his row on the board' : searched ? 'opening his card from the search' : 'looking for his row on the board');
                 last = Date.now();
                 opened++;
                 try {
@@ -997,17 +1032,19 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                             games, atLine: hitsAtLine(games, leg.line, leg.side), alt, without };
                         cards.set(cardKey(leg), read);
                         saveCards();
-                        results.set(i, { ...read, found: place ? 'jumped to his row' : 'searched the board' });
+                        results.set(i, { ...read, found: place ? 'jumped to his row' : searched ? 'searched his name' : 'searched the board', searched: Boolean(searched), props: found });
                     }
                 } catch (err) {
-                    results.set(i, { error: err.message.split(' (http')[0].split(' on that Outlier board')[0] });
+                    results.set(i, { error: err.message.split(' (http')[0].split(' on that Outlier board')[0], searched: Boolean(searched), props: found });
                 }
                 // Close the card where the board stays (a panel or the same page with
                 // ?market=…): Escape, never a reload or a trip back through history.
                 await page.keyboard.press('Escape').catch(() => {});
                 await page.waitForTimeout(400);
+                if (searched) await clearSearch(page);
             }
-            return { results, limited: limited > 0, host, skipped: Math.max(0, order.length - opened - [...results.values()].filter(r => r.cached).length) };
+            const unread = order.filter(({ leg, i }) => !results.has(i) && !cards.has(cardKey(leg))).length;
+            return { results, limited: limited > 0, host, unread, skipped: Math.max(0, order.length - opened - [...results.values()].filter(r => r.cached).length) };
         } finally {
             page.off('response', on429);
         }
@@ -1359,6 +1396,13 @@ function cardBody(card, leg = {}, max = 3500) {
 }
 
 // The ticket's simulated chance as text, or why it couldn't be run.
+// The props Outlier lists for the leg's player (market and line), at most 12.
+function hisProps(leg, props) {
+    const name = normWords(leg.player);
+    const seen = [...new Set(props.filter(p => normWords(p.player) === name && p.market).map(p => `${p.market}${Number.isFinite(Number(p.line)) ? ` ${p.line}` : ''}`))];
+    return seen.length ? seen.slice(0, 12).join(', ') + (seen.length > 12 ? ` and ${seen.length - 12} more` : '') : '';
+}
+
 // What CoDev did on Outlier for a list, in plain words, and how to read what follows,
 // so the agent (and the user) knows where each number came from.
 function didText(board, research, total) {
@@ -1367,10 +1411,11 @@ function didText(board, research, total) {
     const opened = cards.filter(c => !c.cached && !c.error);
     const jumped = opened.filter(c => c.found === 'jumped to his row').length;
     const failed = cards.filter(c => c.error).length;
+    const searched = cards.filter(c => c.searched).length;
     const boardLine = board
         ? `- Board: read ${board.screens} screen(s), ${board.rows.toLocaleString('en-US')} rows, in ${board.seconds}s; ${board.legsSeen} of ${total} legs seen on it.`
         : '- Board: reused the board CoDev read a few minutes ago.';
-    const cardLine = `- Player cards: ${opened.length} opened${opened.length ? ` (${jumped} by jumping to the row the board read saw, ${opened.length - jumped} by searching the board)` : ''}, ${reused} reused from the last 30 minutes, ${failed} couldn't be read${research.skipped ? `, ${research.skipped} left for later (capped)` : ''}.`;
+    const cardLine = `- Player cards: ${opened.length} opened${opened.length ? ` (${jumped} by jumping to the row the board read saw, ${opened.filter(c => c.found === 'searched his name').length} from a search of his name, ${opened.filter(c => c.found === 'searched the board').length} by scrolling the board)` : ''}, ${reused} reused from the last 30 minutes, ${failed} not read (each says why)${research.unread ? `, ${research.unread} left for the next call` : ''}.${searched ? ` ${searched} player(s) whose prop wasn't on the board were looked up by name in Outlier's search.` : ''}`;
     return ['What CoDev did on Outlier:', boardLine, cardLine,
         'How to read each leg: the "Outlier" line is the board row (Outlier\'s line, odds, hit rates); "Card" and the lines under it are what his player card showed (game log at the user\'s line, alt lines, with/without, minutes and opportunity, every tab). "Projection", "Regression" and "Ticket simulation" are estimates worked out from those card numbers only.'].join('\n');
 }
@@ -1576,15 +1621,21 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     const audit = auditText(result);
                     let props = [];
                     try { props = JSON.parse(fs.readFileSync(outlier.files.scrape, 'utf8')).props || []; } catch { /* no board read */ }
-                    const matches = legs.map(l => matchLeg(l, props));
+                    // The board's rows plus the ones found by searching each player's name.
+                    const rowsFor = i => props.concat((research.results.get(i) || {}).props || []);
+                    const matches = legs.map((l, i) => matchLeg(l, rowsFor(i)));
                     const lines = legs.map((l, i) => {
                         const head = `${i + 1}. ${l.player} ${l.side || 'Over'}${l.line != null ? ` ${l.line}` : ''}${l.stat ? ` ${l.stat}` : ''}`;
                         const board = legLine(l, matches[i]);
                         const card = research.results.get(i);
-                        if (!board && !card) return `${head}: no ${l.stat || ''} prop for him on Outlier's board${nav.game ? ' for this game' : ''} (can't be checked on Outlier)`.replace(/\s+\(/, ' (');
+                        // What Outlier does list for him, so a missing leg shows what was checked.
+                        const his = hisProps(l, rowsFor(i));
+                        const missing = `${head}: no ${l.stat || ''} prop at this part of the game for him on Outlier${nav.game ? ' for this game' : ''}`.replace(/\s+/g, ' ')
+                            + ` (${card && card.searched ? 'searched his name on Outlier' : 'read the whole board'}${his ? `; Outlier lists for him: ${his}` : '; Outlier lists no props for him'}). Can't be checked on Outlier.`;
+                        if (!board && (!card || (card.error && !card.summary))) return missing;
                         if (!card) return `${head}\n   ${board}`;
                         if (card.error) return `${head}${board ? `\n   ${board}` : ''}\n   (card not read: ${card.error})`;
-                        return `${head}${/another stat/.test(card.opened) ? ' (no prop for this stat on Outlier: his card for another stat was read)' : ''}\n   ${board ? `${board}\n   ` : ''}Card: ${card.summary}${card.cached ? ' (read earlier)' : ''}`
+                        return `${head}${/another stat/.test(card.opened) ? ` (no prop for this stat at this part of the game on Outlier${card.searched ? ' after searching his name' : ''}${his ? `; Outlier lists for him: ${his}` : ''}; his card for another stat was read)` : ''}\n   ${board ? `${board}\n   ` : ''}Card: ${card.summary}${card.cached ? ' (read earlier)' : ''}`
                             + cardBody(card, l);
                     });
                     const read = { steps };
@@ -1605,8 +1656,8 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                         return { l, i, score: base == null ? null : base + opportunityShift(l, card && card.numbers) };
                     }).filter(x => x.score != null).sort((x, y) => y.score - x.score);
                     const best = ranked.slice(0, 8).map(x => `${x.i + 1}. ${x.l.player} ${x.l.side || 'Over'} ${x.l.line ?? ''} ${x.l.stat || ''}: ${Math.round(x.score * 100)}%`.replace(/\s+/g, ' '));
-                    const notes = [research.limited ? 'Outlier asked CoDev to slow down (429), so some cards were left unread: every leg above still has its board row and hit rates.' : '',
-                        research.skipped ? `${research.skipped} leg(s) got the board row only (cards are capped to spare Outlier).` : ''].filter(Boolean);
+                    const notes = [research.limited ? 'Outlier asked CoDev to slow down (429): CoDev waited it out and slowed down between cards.' : '',
+                        research.unread ? `${research.unread} leg(s) on the board still have their card unread${research.limited ? ' (Outlier kept saying 429)' : ' (cards are read 12 at a time to spare Outlier)'}. To finish, call outlier_research_list again with the same legs: it keeps the board and every card already read and opens only the rest.` : ''].filter(Boolean);
                     const top = ranked.slice(0, 4);
                     const ticket = top.length >= 2 ? ticketText(top.map(x => x.l), top.map(x => research.results.get(x.i) || null)) : '';
                     const checks = legChecks(legs);

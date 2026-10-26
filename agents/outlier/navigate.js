@@ -38,40 +38,74 @@ const STATS = {
     'fg made': ['fg made', 'fgm', 'field goals made'], 'free throws made': ['free throws made', 'ftm'],
     '3pt attempted': ['3pt attempted', '3pa', '3 pointers attempted', 'three pointers attempted'],
     fantasy: ['fantasy points', 'fantasy score', 'fantasy'], 'double double': ['double double'],
-    'passing yards': ['passing yards', 'pass yds'], 'rushing yards': ['rushing yards', 'rush yds'], 'receiving yards': ['receiving yards', 'rec yds'],
+    'passing yards': ['passing yards', 'pass yds', 'pass yards', 'passing yds'], 'rushing yards': ['rushing yards', 'rush yds', 'rush yards', 'rushing yds'],
+    'receiving yards': ['receiving yards', 'rec yds', 'rec yards', 'receiving yds'],
+    'rush rec yards': ['rush rec yards', 'rush rec yds', 'rushing receiving yards', 'rushing and receiving yards', 'rush and rec yds'],
+    'pass rush yards': ['pass rush yards', 'pass rush yds', 'passing rushing yards', 'passing and rushing yards'],
+    'rush attempts': ['rush attempts', 'rushing attempts', 'carries', 'rush att'], 'pass attempts': ['pass attempts', 'passing attempts', 'pass att'],
+    completions: ['completions', 'pass completions', 'passing completions'], 'passing tds': ['passing tds', 'passing touchdowns', 'pass tds', 'pass td'],
+    interceptions: ['interceptions', 'interceptions thrown', 'ints'], sacks: ['sacks'], 'tackles assists': ['tackles assists', 'tackles and assists', 'tackles ast'],
+    'longest reception': ['longest reception', 'long reception'], 'longest rush': ['longest rush', 'long rush'],
     receptions: ['receptions', 'rec'], strikeouts: ['strikeouts', 'ks', 'pitcher strikeouts'], 'total bases': ['total bases', 'tb'],
     hits: ['hits'], 'shots on goal': ['shots on goal', 'sog', 'shots']
 };
 const normWords = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
 // "Pts+Rebs+Asts" -> every way a board might write it.
+// A quarter, half, period or first innings of a market ("1st Quarter Receiving
+// Yards", "1H Rush Yds"), by its usual names; null for the full game.
+const PERIODS = {
+    q1: ['1st quarter', 'first quarter', '1q', 'q1', '1st qtr', '1qtr'], q2: ['2nd quarter', 'second quarter', '2q', 'q2', '2nd qtr', '2qtr'],
+    q3: ['3rd quarter', 'third quarter', '3q', 'q3', '3rd qtr', '3qtr'], q4: ['4th quarter', 'fourth quarter', '4q', 'q4', '4th qtr', '4qtr'],
+    h1: ['1st half', 'first half', '1h', 'h1', '1st 1 2'], h2: ['2nd half', 'second half', '2h', 'h2', '2nd 1 2'],
+    p1: ['1st period', 'first period', 'p1'], p2: ['2nd period', 'second period', 'p2'], p3: ['3rd period', 'third period', 'p3'],
+    f5: ['first 5 innings', '1st 5 innings', 'first five innings', 'f5'], f3: ['first 3 innings', '1st 3 innings', 'f3']
+};
+const PERIOD = /\b(1st|2nd|3rd|4th|first|second|third|fourth) (quarter|half|period|inning|innings|5|3 minutes)\b|\b(1q|2q|3q|4q|1h|2h|q1|q2|q3|q4|h1|h2|f5)\b|\bquarter\b|\bhalf\b/;
+function periodOf(text) {
+    const t = ` ${normWords(text)} `;
+    const hit = Object.entries(PERIODS).find(([, names]) => names.some(n => t.includes(` ${n} `)));
+    return hit ? hit[0] : PERIOD.test(t) ? 'other' : null;
+}
+// The market without its period: "1st Quarter Receiving Yards" -> "receiving yards".
+function withoutPeriod(text) {
+    let t = ` ${normWords(text)} `;
+    for (const n of Object.values(PERIODS).flat().sort((a, b) => b.length - a.length)) t = t.split(` ${n} `).join(' ');
+    return t.replace(/\b(quarter|half|period|qtr)\b/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// A stat's words, without its period (the period is matched on its own).
 function statWords(stat) {
-    const key = normWords(stat);
+    const key = withoutPeriod(stat);
     if (!key) return [];
     const entry = Object.entries(STATS).find(([name, words]) => name === key || words.includes(key));
     return entry ? [...new Set([entry[0], ...entry[1]])] : [key];
 }
 
-// A board market is this leg's stat for the full game: its words are there, it isn't
-// a quarter or half ("1st Quarter Points"), and it isn't a combo or another stat that
-// holds them ("Pts+Rebs+Asts", "Fantasy Points") unless the leg is that combo.
-const PERIOD = /\b(1st|2nd|3rd|4th|first|second|third|fourth) (quarter|half|period|inning|innings|5|3 minutes)\b|\b(1q|2q|3q|4q|1h|2h|q1|q2|q3|q4|h1|h2|f5)\b|\bquarter\b|\bhalf\b/;
-// The words of the markets that hold this stat's words but aren't it (quarters, halves,
+// The names of the stat's own period, which its card must show (none for the full game).
+const periodWords = stat => PERIODS[periodOf(stat)] || [];
+
+// The words of the markets that hold this stat's words but aren't it (other periods,
 // combos, fantasy), for telling a card apart in the page.
 function avoidWords(stat) {
     const words = statWords(stat);
     if (!words.length) return [];
     const mine = new Set(words.flatMap(w => w.split(' ')));
     const other = Object.values(STATS).flat().filter(o => o.length >= 3 && !words.includes(o) && o.split(' ').some(t => !mine.has(t)) && o.split(' ').some(t => mine.has(t)));
-    const period = PERIOD.test(` ${normWords(stat)} `) ? [] : ['1st quarter', '1st half', 'first quarter', 'first half', '1q', '1h', 'quarter', 'half'];
+    const own = periodOf(stat);
+    const period = Object.entries(PERIODS).filter(([k]) => k !== own).flatMap(([, names]) => names).concat(own ? [] : ['quarter', 'half']);
     return [...new Set([...other, ...period])];
 }
 
+// A board market is this leg's stat for the same part of the game: its words are
+// there, its quarter or half is the leg's ("1st Quarter Receiving Yards" for a 1Q
+// leg, none for a full-game one), and it isn't a combo or another stat that holds
+// them ("Pts+Rebs+Asts", "Fantasy Points") unless the leg is that combo.
 function sameMarket(market, stat) {
     const words = statWords(stat);
     if (!words.length) return true;
-    const m = ` ${normWords(market)} `;
+    if (periodOf(market) !== periodOf(stat)) return false;
+    const m = ` ${withoutPeriod(market)} `;
     if (!words.some(w => m.includes(` ${w} `))) return false;
-    if (PERIOD.test(m) && !PERIOD.test(` ${normWords(stat)} `)) return false;
     const mine = new Set(words.flatMap(w => w.split(' ')));
     for (const [, others] of Object.entries(STATS)) {
         for (const o of others) {
@@ -494,7 +528,7 @@ async function navigate(page, { section, sport, market, game, player, day } = {}
 // add button around it.
 // stats/line: the leg's stat words and line; with them, the name on that stat's
 // prop card wins (best.stat true), else any card of his.
-function markPlayer({ name, stats = [], line = null, avoid = [] }) {
+function markPlayer({ name, stats = [], line = null, avoid = [], need = [] }) {
     document.querySelectorAll('[data-codev-player]').forEach(el => el.removeAttribute('data-codev-player'));
     const norm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
     const full = norm(name);
@@ -520,7 +554,8 @@ function markPlayer({ name, stats = [], line = null, avoid = [] }) {
         for (let up = el.parentElement; up && up !== document.body && (up.innerText || '').length <= 400 && props(up.innerText || '') <= 2; up = up.parentElement) card = up;
         const cardText = ` ${norm(card.innerText)} `;
         // A quarter, half or combo market ("1st Quarter Points", "Pts+Rebs+Asts") isn't the stat.
-        const stat = stats.some(w => cardText.includes(` ${w} `)) && !avoid.some(w => cardText.includes(` ${w} `));
+        // A quarter or half leg needs its period on the card ("1st Quarter").
+        const stat = stats.some(w => cardText.includes(` ${w} `)) && !avoid.some(w => cardText.includes(` ${w} `)) && (!need.length || need.some(w => cardText.includes(` ${w} `)));
         const score = (stat ? 2 : 0) + (line != null && cardText.includes(` ${norm(String(line))} `) ? 1 : 0);
         if (!best || score > best.score || (score === best.score && text.length < best.text.length)) best = { el, text, score, stat };
     }
@@ -543,12 +578,52 @@ function readLines() {
     return out;
 }
 
+// Runs inside the page: marks Outlier's player search box (data-codev-search) and
+// returns its label, or null. Only a field labelled for searching; never one in a
+// pick slip, a login or a payment form.
+function markSearchBox() {
+    document.querySelectorAll('[data-codev-search]').forEach(el => el.removeAttribute('data-codev-search'));
+    const NEVER = /\b(promo|code|amount|stake|wager|entry|email|password|card number|deposit|withdraw|pick|slip|bet)\b/i;
+    const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+    for (const el of document.querySelectorAll('input, [role="searchbox"], [role="combobox"]')) {
+        if (!visible(el) || el.disabled || el.readOnly || /^(password|email|number|tel|checkbox|radio|hidden|submit|button)$/i.test(el.type || '')) continue;
+        const label = [el.getAttribute('placeholder'), el.getAttribute('aria-label'), el.getAttribute('name'), el.id].filter(Boolean).join(' ');
+        if (!(el.type === 'search' || el.getAttribute('role') === 'searchbox' || /search|find|player/i.test(label))) continue;
+        if (NEVER.test(label) || el.closest('[class*="slip" i], [id*="slip" i], [class*="checkout" i], [class*="login" i]')) continue;
+        el.setAttribute('data-codev-search', '1');
+        return label || 'search';
+    }
+    return null;
+}
+
+// Types the player's name into Outlier's search box (never presses Enter, never
+// clicks a result) so the board shows only his props. Returns the box's label, or
+// null when the page has no search box.
+async function searchPlayer(page, player, { settleMs = 800 } = {}) {
+    const box = await page.evaluate(markSearchBox).catch(() => null);
+    if (!box) return null;
+    const field = page.locator('[data-codev-search="1"]').first();
+    await field.fill('');
+    await field.fill(String(player));
+    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+    await settleAfterScroll(page, Math.max(600, settleMs));
+    return box;
+}
+
+// Empties the search box again, so the whole board is back.
+async function clearSearch(page) {
+    const field = page.locator('[data-codev-search="1"]').first();
+    if (!await field.count().catch(() => 0)) return;
+    await field.fill('').catch(() => {});
+    await settleAfterScroll(page);
+}
+
 // Opens the player's Market Details / player card from the board on page,
 // scrolling down to find the name. Returns the label clicked or throws.
 // stat/line: open his card for that stat (a "Rebounds" leg opens the rebounds
 // prop, not the points one) when the board shows it, else any card of his.
 async function openPlayer(page, player, { settleMs = 1500, stat = null, line = null, place = null } = {}) {
-    const hints = { stats: statWords(stat), line: line == null ? null : String(line), avoid: avoidWords(stat) };
+    const hints = { stats: statWords(stat), line: line == null ? null : String(line), avoid: avoidWords(stat), need: periodWords(stat) };
     const toTop = () => page.evaluate(() => { window.scrollTo(0, 0); for (const el of document.querySelectorAll('*')) if (el.scrollTop) el.scrollTop = 0; });
     const open = async label => {
         await clickPast(page, '[data-codev-player="1"]');
@@ -963,4 +1038,4 @@ function onlyGame(props, teams) {
     return props.filter(p => !p.game || p.game === key);
 }
 
-module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords, scrollStep, scrollPlace, scrollToPlace, settleAfterScroll, placeOf };
+module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords, periodOf, withoutPeriod, scrollStep, scrollPlace, scrollToPlace, settleAfterScroll, placeOf, markSearchBox, searchPlayer, clearSearch };
