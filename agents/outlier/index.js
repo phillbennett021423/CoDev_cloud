@@ -17,7 +17,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { collectPage, parseCollected, parseText, propId } = require('./extract');
 const { createCapture } = require('./capture');
-const { navigate, onlyGame, openPlayer, readDetails, readCardTabs, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, sportPropsPath } = require('./navigate');
+const { navigate, onlyGame, openPlayer, readDetails, readCardTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, sportPropsPath } = require('./navigate');
 const { OUTLIER_PRIMER, OUTLIER_GUIDE } = require('./guide');
 const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
@@ -847,10 +847,13 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 if (player) steps.push(await openPlayer(page, player, { settleMs: cfg.settleMs }));
                 const text = await readDetails(page);
                 // A player's card: each of its tabs too (Supporting Stats, Game Log, Splits...).
+                const games = player ? await readBars(page).catch(() => []) : [];
                 const tabs = player ? await readCardTabs(page, { settleMs: Math.min(cfg.settleMs, 1200), known: text }) : [];
+                const without = player ? await readWithout(page, { player, text: [text, ...tabs.map(t => t.text)].join('\n'), settleMs: Math.min(cfg.settleMs, 1200), known: text }).catch(() => []) : [];
                 const opportunity = player ? opportunityLine(cardNumbers([text, ...tabs.map(t => t.text)].join('\n'))) : '';
                 state.signedIn = true;
-                return { steps, url: page.url(), text: [opportunity ? `Minutes & opportunity: ${opportunity}` : '', text, ...tabs.map(t => `${t.tab}:\n${t.text}`)].filter(Boolean).join('\n\n') };
+                const log = games.length ? `Game log (oldest first): ${games.map(g => `${g.date ? `${g.date} ` : ''}${g.opp ? `${g.opp} ` : ''}${g.value}${Number.isFinite(g.minutes) ? ` (${g.minutes} min)` : ''}`).join(', ')}` : '';
+                return { steps, url: page.url(), text: [log, opportunity ? `Minutes & opportunity: ${opportunity}` : '', text, ...tabs.map(t => `${t.tab}:\n${t.text}`), ...without.map(w => `Without ${w.without}:\n${w.text}`)].filter(Boolean).join('\n\n') };
             } finally {
                 await browser.done();
             }
@@ -958,12 +961,21 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     // Everything the card offers: each of its tabs (Supporting Stats,
                     // Game Log, Splits, Matchup, Injuries, Odds Movement...) read in turn,
                     // paced, and no more of them once Outlier says 429.
-                    const tabs = emptied ? [] : await readCardTabs(page, { settleMs: Math.max(1500, Math.min(settleMs, 2500)), known: text, stop: () => seen429 > 0 });
-                    const all = [text, ...tabs.map(t => t.text)].join('\n');
+                    const pace = Math.max(1500, Math.min(settleMs, 2500));
+                    // The game-by-game bars (hovered, never clicked) and the alt lines,
+                    // both against the user's line, then the tabs, then the split
+                    // without a teammate who is out (it changes the whole card, so last).
+                    const games = emptied ? [] : await readBars(page).catch(() => []);
+                    const alt = emptied || seen429 ? null : await readAltLines(page, { line: leg.line, side: leg.side, settleMs: pace, known: text }).catch(() => null);
+                    const tabs = emptied ? [] : await readCardTabs(page, { settleMs: pace, known: text, stop: () => seen429 > 0 });
+                    const tabText = tabs.map(t => t.text).join('\n');
+                    const without = emptied || seen429 ? [] : await readWithout(page, { player: leg.player, text: `${text}\n${tabText}`, settleMs: pace, known: `${text}\n${tabText}` }).catch(() => []);
+                    const all = [text, tabText].join('\n');
                     if (emptied) {
                         results.set(i, { error: 'Outlier said too many requests' });
                     } else {
-                        const read = { at: Date.now(), opened: label, summary: legSummary(all), text, tabs, numbers: cardNumbers(all) };
+                        const read = { at: Date.now(), opened: label, summary: legSummary(all), text, tabs, numbers: cardNumbers(all),
+                            games, atLine: hitsAtLine(games, leg.line, leg.side), alt, without };
                         cards.set(cardKey(leg), read);
                         results.set(i, read);
                     }
@@ -1271,7 +1283,16 @@ function opportunityShift(leg, numbers) {
 function cardBody(card, max = 3500) {
     const flat = t => String(t || '').split('\n').map(l => l.trim()).filter(Boolean).join(' · ');
     const opp = opportunityLine(card.numbers);
-    let body = opp ? `\n   Minutes & opportunity: ${opp}` : '';
+    let body = '';
+    if (card.atLine) {
+        const a = card.atLine;
+        const mins = (card.games || []).slice(-10).map(g => g.minutes).filter(Number.isFinite);
+        body += `\n   Game log at your line (${a.side} ${a.line}): L5 ${a.l5[0]}/${a.l5[1]} · L10 ${a.l10[0]}/${a.l10[1]} · ${a.all[0]} of ${a.all[1]} games`
+            + `; last games ${(card.games || []).slice(-10).map(g => `${g.value}${g.opp ? ` ${g.opp}` : ''}`).join(', ')}${mins.length ? `; minutes ${mins.join(', ')}` : ''}`;
+    }
+    if (card.alt && (card.alt.row || card.alt.text)) body += `\n   Alt lines: ${card.alt.row ? `at your line ${flat(card.alt.row)}` : flat(card.alt.text).slice(0, 400)}`;
+    for (const w of card.without || []) body += `\n   Without ${w.without}: ${flat(w.text).slice(0, 600)}`;
+    if (opp) body += `\n   Minutes & opportunity: ${opp}`;
     let room = max;
     const add = (label, t) => {
         const text = flat(t);
@@ -1479,8 +1500,11 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     };
                     // Then a little lower when his minutes or chances are falling, higher when rising.
                     const ranked = legs.map((l, i) => {
-                        const base = legScore(matches[i]) ?? cardScore(i);
                         const card = research.results.get(i);
+                        // The game log counted at the user's own line beats Outlier's rates for a moved line.
+                        const own = card && card.atLine && card.atLine.all[1] >= 5 && !/another stat/.test(card.opened || '')
+                            ? [card.atLine.l5, card.atLine.l10, card.atLine.all].filter(([, n]) => n).map(([h, n]) => h / n) : null;
+                        const base = own && (!matches[i] || !matches[i].sameLine) ? own.reduce((a, v) => a + v, 0) / own.length : legScore(matches[i]) ?? cardScore(i);
                         return { l, i, score: base == null ? null : base + opportunityShift(l, card && card.numbers) };
                     }).filter(x => x.score != null).sort((x, y) => y.score - x.score);
                     const best = ranked.slice(0, 8).map(x => `${x.i + 1}. ${x.l.player} ${x.l.side || 'Over'} ${x.l.line ?? ''} ${x.l.stat || ''}: ${Math.round(x.score * 100)}%`.replace(/\s+/g, ' '));
@@ -1488,10 +1512,10 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                         research.skipped ? `${research.skipped} leg(s) got the board row only (cards are capped to spare Outlier).` : ''].filter(Boolean);
                     const checks = legChecks(legs);
                     const text = `Outlier > ${read.steps.join(' > ')}\nFound ${found} of ${legs.length} legs on Outlier. Hit rates are Outlier's, turned to the user's side.\n${lines.join('\n')}\n${notes.map(n => `${n}\n`).join('')}`
-                        + (best.length ? `Best on Outlier's hit rates (average of L5, L10, L20, H2H, seasons on the user's side, moved a little for minutes and opportunity trends):\n${best.join('\n')}\n` : '')
+                        + (best.length ? `Best on Outlier's hit rates (average of L5, L10, L20, H2H, seasons on the user's side, counted from the game log at the user's line when Outlier's line moved, then moved a little for minutes and opportunity trends):\n${best.join('\n')}\n` : '')
                         + (checks.length ? `Checks:\n${checks.map(c => `- ${c}`).join('\n')}\n` : '')
                         + `For reference only, CoDev's sportsbook audit (the -119 juice strategy for sportsbooks; a DFS leg doesn't need to pass it):\n${audit}\n`
-                        + 'Build the slip from the best legs above: hit rates high across several windows on the user\'s line, then everything on the card: minutes and opportunity (shot attempts, usage, potential assists, rebound chances, targets) steady or rising, the matchup rank, splits, injuries around him, line movement and public betting. Trust Outlier\'s rosters and teams over your own memory (players get traded); lines on a card like "@ MIN" are past games in the log. Lines move between apps and over the day: when Outlier\'s line differs from the user\'s, recount the hit rate at the user\'s line from the card\'s game log when it shows one. A leg with no Outlier prop can\'t be checked: say so, don\'t guess. Always give the user the 4 best legs that Outlier did check (more if they asked for 4-6), ranked, with one reason per leg from Outlier\'s numbers and any weak spot; list the legs that couldn\'t be checked after them. Don\'t withhold the ticket because some legs couldn\'t be checked or a card was left unread: their board rows and hit rates count. Estimates, not guarantees.';
+                        + 'Build the slip from the best legs above: hit rates high across several windows on the user\'s line, then everything on the card: minutes and opportunity (shot attempts, usage, potential assists, rebound chances, targets) steady or rising, the matchup rank, splits, injuries around him, line movement and public betting. Trust Outlier\'s rosters and teams over your own memory (players get traded); lines on a card like "@ MIN" are past games in the log. Lines move between apps and over the day: when Outlier\'s line differs from the user\'s, use the "Game log at your line" counts (or the alt lines row) instead of Outlier\'s rates for its own line. When a teammate is out, weigh the "Without" split. A leg with no Outlier prop can\'t be checked: say so, don\'t guess. Always give the user the 4 best legs that Outlier did check (more if they asked for 4-6), ranked, with one reason per leg from Outlier\'s numbers and any weak spot; list the legs that couldn\'t be checked after them. Don\'t withhold the ticket because some legs couldn\'t be checked or a card was left unread: their board rows and hit rates count. Estimates, not guarantees.';
                     return { content: [{ type: 'text', text }] };
                 } catch (err) {
                     return { content: [{ type: 'text', text: err.message }], isError: true };

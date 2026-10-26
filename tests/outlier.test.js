@@ -868,8 +868,23 @@ test('each card is read whole: every tab on it, minutes and opportunity by windo
             const name = e.target.textContent;
             const panel = document.createElement('div');
             panel.setAttribute('role', 'dialog');
-            panel.innerHTML = '<h2>' + name + '</h2><p>L5 60% L10 70%</p><div role="tablist"><button role="tab">Supporting Stats</button><button role="tab">Game Log</button><button role="tab">Odds Movement</button></div>'
+            // One bar per game: Tatum's carry a title, Brown's show a tooltip on hover.
+            const values = name === 'Jayson Tatum' ? [18, 25, 30, 22, 19, 27, 24, 31, 17, 26] : [20, 23, 25, 22, 19, 24, 26, 18, 27, 23];
+            const bars = values.map((v, i) => name === 'Jayson Tatum'
+                ? '<div class="bar" style="display:inline-block;width:12px;height:' + v * 2 + 'px;background:#0a0;margin:1px" title="Oct ' + (i + 1) + ' vs MIA ' + v + ' PTS 3' + (i % 4) + ' MIN"></div>'
+                : '<div class="bar" data-v="' + v + '" style="display:inline-block;width:12px;height:' + v * 2 + 'px;background:#0a0;margin:1px"></div>').join('');
+            panel.innerHTML = '<h2>' + name + '</h2><p>L5 60% L10 70%</p><div class="chart">' + bars + '</div><div role="tooltip" id="tip" style="display:none"></div>'
+                + '<p>Injuries: Al Horford OUT</p><button id="alt">Alt Lines</button><div id="alts" hidden>18+ 95% | 21+ 75% | 22+ 70% | 25+ 40%</div>'
+                + '<button id="ww">With/Without</button><div role="tablist"><button role="tab">Supporting Stats</button><button role="tab">Game Log</button><button role="tab">Odds Movement</button></div>'
                 + '<button onclick="fetch(\\'/picked\\')">Add to My Picks</button><section id="body">Overview</section>';
+            panel.querySelectorAll('.bar[data-v]').forEach(b => { b.onmouseenter = () => { const tip = panel.querySelector('#tip'); tip.textContent = 'vs PHI ' + b.dataset.v + ' PTS 34 MIN'; tip.style.display = 'block'; }; });
+            panel.querySelector('#alt').onclick = () => { const a = panel.querySelector('#alts'); a.hidden = !a.hidden; };
+            panel.querySelector('#ww').onclick = () => {
+                const menu = document.createElement('ul');
+                menu.innerHTML = '<li role="option">Al Horford</li><li role="option">Derrick White</li>';
+                menu.querySelector('li').onclick = () => { menu.remove(); panel.querySelector('#body').innerHTML = 'Without Al Horford: L10 90% (9 games)'; };
+                document.body.appendChild(menu);
+            };
             const tabs = { 'Supporting Stats': stats[name].replace(/\\n/g, '<br>'), 'Game Log': '@ MIA 31 pts<br>vs PHI 18 pts', 'Odds Movement': 'Opened 20.5, now 21.5' };
             panel.querySelectorAll('[role=tab]').forEach(b => { b.onclick = () => { panel.querySelector('#body').innerHTML = tabs[b.textContent]; }; });
             document.body.appendChild(panel);
@@ -897,8 +912,13 @@ test('each card is read whole: every tab on it, minutes and opportunity by windo
     const reply = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
     assert.equal(reply.isError, undefined, reply.content[0].text);
     const text = reply.content[0].text;
-    assert.match(text, /1\. Jayson Tatum Over 20\.5 Points\n.*\n {3}Card: .*\n {3}Minutes & opportunity: Minutes L5 30\.1 · L10 32 · 2026 34\.2 \(12% lower lately\); FG attempts L5 15\.2 · L10 16 · 2026 17\.8 \(15% lower lately\)/);
+    assert.match(text, /1\. Jayson Tatum Over 20\.5 Points\n.*\n {3}Card: .*\n(?: {3}.*\n)*? {3}Minutes & opportunity: Minutes L5 30\.1 · L10 32 · 2026 34\.2 \(12% lower lately\); FG attempts L5 15\.2 · L10 16 · 2026 17\.8 \(15% lower lately\)/);
     assert.match(text, /On the card: Jayson Tatum · L5 60% L10 70%/);
+    // Game log from the bars at the user's line: Tatum Over 20.5 from titles, Brown Over 21.5 from hover tooltips.
+    assert.match(text, /Game log at your line \(Over 20\.5\): L5 4\/5 · L10 7\/10 · 7 of 10 games; last games 18 MIA, 25 MIA, 30 MIA, 22 MIA, 19 MIA, 27 MIA, 24 MIA, 31 MIA, 17 MIA, 26 MIA; minutes 30, 31, 32, 33, 30, 31, 32, 33, 30, 31/);
+    assert.match(text, /Game log at your line \(Over 21\.5\): L5 4\/5 · L10 7\/10 · 7 of 10 games; last games 20 PHI/);
+    assert.match(text, /Alt lines: at your line 18\+ 95% \| 21\+ 75% \| 22\+ 70% \| 25\+ 40%/);
+    assert.match(text, /Without Al Horford: Without Al Horford: L10 90% \(9 games\)/);
     assert.match(text, /Tab Game Log: @ MIA 31 pts · vs PHI 18 pts/);
     assert.match(text, /Tab Odds Movement: Opened 20\.5, now 21\.5/);
     // Tatum's 74% drops 8 points for his falling minutes and shots: Brown's steady 70% leads.
