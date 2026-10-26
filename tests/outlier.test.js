@@ -868,8 +868,23 @@ test('each card is read whole: every tab on it, minutes and opportunity by windo
             const name = e.target.textContent;
             const panel = document.createElement('div');
             panel.setAttribute('role', 'dialog');
-            panel.innerHTML = '<h2>' + name + '</h2><p>L5 60% L10 70%</p><div role="tablist"><button role="tab">Supporting Stats</button><button role="tab">Game Log</button><button role="tab">Odds Movement</button></div>'
+            // One bar per game: Tatum's carry a title, Brown's show a tooltip on hover.
+            const values = name === 'Jayson Tatum' ? [18, 25, 30, 22, 19, 27, 24, 31, 17, 26] : [20, 23, 25, 22, 19, 24, 26, 18, 27, 23];
+            const bars = values.map((v, i) => name === 'Jayson Tatum'
+                ? '<div class="bar" style="display:inline-block;width:12px;height:' + v * 2 + 'px;background:#0a0;margin:1px" title="Oct ' + (i + 1) + ' vs MIA ' + v + ' PTS 3' + (i % 4) + ' MIN"></div>'
+                : '<div class="bar" data-v="' + v + '" style="display:inline-block;width:12px;height:' + v * 2 + 'px;background:#0a0;margin:1px"></div>').join('');
+            panel.innerHTML = '<h2>' + name + '</h2><p>L5 60% L10 70%</p><div class="chart">' + bars + '</div><div role="tooltip" id="tip" style="display:none"></div>'
+                + '<p>Injuries: Al Horford OUT</p><button id="alt">Alt Lines</button><div id="alts" hidden>18+ 95% | 21+ 75% | 22+ 70% | 25+ 40%</div>'
+                + '<button id="ww">With/Without</button><div role="tablist"><button role="tab">Supporting Stats</button><button role="tab">Game Log</button><button role="tab">Odds Movement</button></div>'
                 + '<button onclick="fetch(\\'/picked\\')">Add to My Picks</button><section id="body">Overview</section>';
+            panel.querySelectorAll('.bar[data-v]').forEach(b => { b.onmouseenter = () => { const tip = panel.querySelector('#tip'); tip.textContent = 'vs PHI ' + b.dataset.v + ' PTS 34 MIN'; tip.style.display = 'block'; }; });
+            panel.querySelector('#alt').onclick = () => { const a = panel.querySelector('#alts'); a.hidden = !a.hidden; };
+            panel.querySelector('#ww').onclick = () => {
+                const menu = document.createElement('ul');
+                menu.innerHTML = '<li role="option">Al Horford</li><li role="option">Derrick White</li>';
+                menu.querySelector('li').onclick = () => { menu.remove(); panel.querySelector('#body').innerHTML = 'Without Al Horford: L10 90% (9 games)'; };
+                document.body.appendChild(menu);
+            };
             const tabs = { 'Supporting Stats': stats[name].replace(/\\n/g, '<br>'), 'Game Log': '@ MIA 31 pts<br>vs PHI 18 pts', 'Odds Movement': 'Opened 20.5, now 21.5' };
             panel.querySelectorAll('[role=tab]').forEach(b => { b.onclick = () => { panel.querySelector('#body').innerHTML = tabs[b.textContent]; }; });
             document.body.appendChild(panel);
@@ -897,8 +912,21 @@ test('each card is read whole: every tab on it, minutes and opportunity by windo
     const reply = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
     assert.equal(reply.isError, undefined, reply.content[0].text);
     const text = reply.content[0].text;
-    assert.match(text, /1\. Jayson Tatum Over 20\.5 Points\n.*\n {3}Card: .*\n {3}Minutes & opportunity: Minutes L5 30\.1 · L10 32 · 2026 34\.2 \(12% lower lately\); FG attempts L5 15\.2 · L10 16 · 2026 17\.8 \(15% lower lately\)/);
+    assert.match(text, /1\. Jayson Tatum Over 20\.5 Points\n.*\n {3}Card: .*\n(?: {3}.*\n)*? {3}Minutes & opportunity: Minutes L5 30\.1 · L10 32 · 2026 34\.2 \(12% lower lately\); FG attempts L5 15\.2 · L10 16 · 2026 17\.8 \(15% lower lately\)/);
     assert.match(text, /On the card: Jayson Tatum · L5 60% L10 70%/);
+    // Game log from the bars at the user's line: Tatum Over 20.5 from titles, Brown Over 21.5 from hover tooltips.
+    assert.match(text, /Game log at your line \(Over 20\.5\): L5 4\/5 · L10 7\/10 · 7 of 10 games; last games 18 MIA, 25 MIA, 30 MIA, 22 MIA, 19 MIA, 27 MIA, 24 MIA, 31 MIA, 17 MIA, 26 MIA; minutes 30, 31, 32, 33, 30, 31, 32, 33, 30, 31/);
+    assert.match(text, /Game log at your line \(Over 21\.5\): L5 4\/5 · L10 7\/10 · 7 of 10 games; last games 20 PHI/);
+    assert.match(text, /Alt lines: at your line 18\+ 95% \| 21\+ 75% \| 22\+ 70% \| 25\+ 40%/);
+    assert.match(text, /Without Al Horford: Without Al Horford: L10 90% \(9 games\)/);
+    // Forward-looking lines from the card's own numbers, labelled as estimates.
+    assert.match(text, /Projection \(estimate\): [\d.]+ = [\d.]+ per minute \(median of his last 10 games\) x 30\.1 minutes \(the card's L5 minutes\); [+-][\d.]+ against your 20\.5/);
+    assert.match(text, /For the top 2 above: Ticket simulation \(estimate, 10,000 runs from each leg's own games at the user's line\): all 2 hit in [\d.]+% of runs; 44\.4% if the legs were unrelated\. Leg chances: Jaylen Brown 66\.7% \(7 of 10 games\), Jayson Tatum 66\.7% \(7 of 10 games\)\. No shared game dates/);
+    const sim = await service.callTool('outlier_simulate_ticket', { legs: [legs[0], legs[1]] });
+    assert.equal(sim.isError, undefined, sim.content[0].text);
+    assert.match(sim.content[0].text, /all 2 hit in [\d.]+% of runs; 44\.4% if the legs were unrelated/);
+    const unread = await service.callTool('outlier_simulate_ticket', { legs: [legs[0], { player: 'Josh Hart', stat: 'Points', line: 10.5 }] });
+    assert.match(unread.content[0].text, /Ticket simulation not run: no game log at the line from Outlier's chart for Josh Hart/);
     assert.match(text, /Tab Game Log: @ MIA 31 pts · vs PHI 18 pts/);
     assert.match(text, /Tab Odds Movement: Opened 20\.5, now 21\.5/);
     // Tatum's 74% drops 8 points for his falling minutes and shots: Brown's steady 70% leads.
@@ -951,4 +979,27 @@ test('a leg matches its full-game stat, not a quarter, combo or far-off alt line
     assert.equal(miller.easier, true, 'the line moved to 24: the user\'s 23.5 is easier');
     assert.equal(matchLeg({ player: 'Anthony Davis', stat: 'Rebounds', line: 11.5 }, props), null, 'a 0.5 line is another market, not his 11.5');
     assert.equal(matchLeg({ player: 'Naz Reid', stat: 'Blocks + Steals', line: 1.5 }, props).row.market, 'Blocks + Steals');
+});
+
+test('forecasts come only from the card\'s numbers: projection, regression, game lines, and a seeded ticket simulation with correlation', () => {
+    const f = require('../agents/outlier/forecast');
+    const card = (vals, line, side = 'Over', dated = true) => ({
+        games: vals.map((v, i) => ({ value: v, minutes: 30 + (i % 3), date: dated ? `d${i}` : null })),
+        atLine: { all: [vals.filter(v => (side === 'Under' ? v < line : v > line)).length, vals.length] },
+        numbers: { Minutes: { values: [31, 31, 32], windows: ['L5', 'L10', '2026'] } }
+    });
+    assert.equal(f.projectLeg({ games: [{ value: 20, minutes: 30 }] }, { line: 20 }), null, 'too few games: no projection');
+    const a = card([20, 25, 22, 28, 30, 18, 26, 24, 29, 31], 22.5);
+    assert.deepEqual(f.projectLeg(a, { line: 22.5 }), { projection: 25.9, perMin: 0.84, expMin: 31, gamesUsed: 10, minutesFrom: "the card's L5 minutes", diff: 3.4 });
+    const b = card([8, 10, 9, 12, 13, 7, 11, 10, 12, 14], 9.5);
+    const together = f.simulateTicket([a, b], [{ side: 'Over' }, { side: 'Over' }]);
+    assert.ok(together.joint > together.independent + 0.1, 'two Overs that rise together hit together more often');
+    assert.deepEqual(f.simulateTicket([a, b], [{ side: 'Over' }, { side: 'Over' }]), together, 'seeded: the same answer every time');
+    const apart = f.simulateTicket([a, card([8, 10, 9, 12, 13, 7, 11, 10, 12, 14], 9.5, 'Under')], [{ side: 'Over' }, { side: 'Under' }]);
+    assert.ok(apart.joint < apart.independent, 'an Over and an Under on numbers that rise together rarely both hit');
+    assert.equal(f.simulateTicket([a, { games: [], atLine: { all: [2, 3] } }], []), null, 'a leg with under 5 games: no simulation');
+    assert.match(f.regressionFlag(card([30, 31, 29, 32, 30, 22, 21, 20, 23, 22], 25), { side: 'Over' }, () => 0), /cold lately .* steady volume/);
+    assert.equal(f.regressionFlag({ games: a.games, numbers: {} }, { side: 'Over' }, () => 0), null, 'no volume numbers: no flag');
+    assert.deepEqual(f.gameContext('WAS @ CHA\nO/U 231.5 · CHA -3.5'), { total: 231.5, spread: 'CHA -3.5' });
+    assert.equal(f.gameContext('FGA +2 · Total 18'), null, 'not a spread or a game total');
 });

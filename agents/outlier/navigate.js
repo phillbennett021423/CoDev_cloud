@@ -628,6 +628,187 @@ async function readCardTabs(page, { settleMs = 800, max = 6, maxChars = 4000, kn
     return tabs;
 }
 
+// ---- The card's game-by-game bars, alt lines and "without teammate" split ----
+
+// Runs inside the page: the open card's bar chart (one bar per game, oldest on the
+// left), marked data-codev-bar from 0. Returns each bar's own label (aria-label,
+// title, an SVG <title>, a tooltip attribute or a number printed on it), '' when
+// the value only shows on hover.
+function markBars() {
+    document.querySelectorAll('[data-codev-bar]').forEach(el => el.removeAttribute('data-codev-bar'));
+    const root = document.querySelector('[role="dialog"], [aria-modal="true"]') || document.body;
+    const visible = el => { const r = el.getBoundingClientRect(); return r.width >= 3 && r.width <= 80 && r.height >= 2 && r.height <= 400; };
+    const cands = [...root.querySelectorAll('svg rect, svg path, [class*="bar" i], [data-testid*="bar" i]')]
+        .filter(el => visible(el) && !el.closest('header, nav, aside, [role="tablist"]'));
+    // The chart: the largest group of like-sized marks that share a parent (or grandparent).
+    const groups = new Map();
+    for (const el of cands) {
+        for (const key of [el.parentElement, el.parentElement && el.parentElement.parentElement]) {
+            if (!key) continue;
+            if (!groups.has(key)) groups.set(key, new Set());
+            groups.get(key).add(el);
+        }
+    }
+    let best = [];
+    for (const set of groups.values()) {
+        const g = [...set];
+        if (g.length < 5) continue;
+        const widths = g.map(el => el.getBoundingClientRect().width).sort((a, b) => a - b);
+        const mid = widths[Math.floor(widths.length / 2)];
+        const alike = g.filter(el => Math.abs(el.getBoundingClientRect().width - mid) <= mid * 0.3 + 1);
+        // One bar per game: a mark inside another mark of the group counts once.
+        const bars = alike.filter(el => !alike.some(o => o !== el && o.contains(el)));
+        if (bars.length > best.length) best = bars;
+    }
+    if (best.length < 5) return [];
+    best.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+    return best.slice(-30).map((el, i) => {
+        el.setAttribute('data-codev-bar', String(i));
+        const title = el.querySelector && el.querySelector('title');
+        const own = ['aria-label', 'title', 'data-tip', 'data-tooltip', 'data-tooltip-content', 'data-title'].map(a => el.getAttribute(a)).find(Boolean)
+            || (title && title.textContent) || (/\d/.test(el.textContent || '') && (el.textContent || '').length < 60 ? el.textContent : '');
+        return String(own || '').replace(/\s+/g, ' ').trim();
+    });
+}
+
+// Runs inside the page: the text of a tooltip or popover on screen.
+function readTooltip() {
+    const shown = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'; };
+    return [...document.querySelectorAll('[role="tooltip"], [class*="tooltip" i], [class*="popover" i], [data-radix-popper-content-wrapper]')]
+        .filter(shown).map(el => el.innerText || '').join(' ').replace(/\s+/g, ' ').trim();
+}
+
+// One bar's text ("Oct 24 @ MIA · 28 PTS · 36 MIN") -> { value, opp, minutes, date, text }.
+function parseBar(text) {
+    let t = String(text || '');
+    // A hit-rate box ("L10 70%") is not a game.
+    if (!t || /%/.test(t)) return null;
+    const date = (t.match(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2}\b/i) || [])[0] || null;
+    const opp = (t.match(/(?:vs\.?|@)\s*([A-Z]{2,4})\b/) || [])[1] || null;
+    const min = t.match(/(\d{1,2}(?:\.\d)?)\s*(?:min|mins|minutes)\b|\bmin(?:utes)?\s*:?\s*(\d{1,2}(?:\.\d)?)/i);
+    const minutes = min ? Number(min[1] || min[2]) : null;
+    t = t.replace(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g, ' ').replace(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2}\b/gi, ' ')
+        .replace(/(\d{1,2}(?:\.\d)?)\s*(?:min|mins|minutes)\b|\bmin(?:utes)?\s*:?\s*\d{1,2}(?:\.\d)?/gi, ' ').replace(/\b20\d\d\b/g, ' ').replace(/[+\-−]\d{3,4}\b/g, ' ');
+    const num = t.match(/-?\d+(?:\.\d+)?/);
+    if (!num) return null;
+    return { value: Number(num[0]), opp, minutes, date, text: String(text).slice(0, 80) };
+}
+
+// Each game's value on the open card's chart: labels where the bars carry them,
+// else the tooltip each bar shows on hover (hovering only, never a click).
+async function readBars(page, { max = 20 } = {}) {
+    const labels = await page.evaluate(markBars).catch(() => []);
+    const games = [];
+    const from = Math.max(0, labels.length - max);
+    for (let i = from; i < labels.length; i++) {
+        let text = labels[i];
+        if (!text || !/\d/.test(text)) {
+            const ok = await page.hover(`[data-codev-bar="${i}"]`, { force: true, timeout: 1500 }).then(() => true).catch(() => false);
+            if (!ok) continue;
+            await page.waitForTimeout(150);
+            text = await page.evaluate(readTooltip).catch(() => '');
+        }
+        const bar = parseBar(text);
+        if (bar) games.push(bar);
+    }
+    await page.mouse.move(0, 0).catch(() => {});
+    return games;
+}
+
+// How often the games on the chart beat the user's line: { line, side, l5, l10, all }
+// as [hits, games] pairs, most recent games last.
+function hitsAtLine(games, line, side) {
+    const at = Number(line);
+    if (!Array.isArray(games) || !games.length || !Number.isFinite(at)) return null;
+    const under = /^(u|under|less|lower)/i.test(String(side || ''));
+    const hit = g => (under ? g.value < at : g.value > at);
+    const count = list => [list.filter(hit).length, list.length];
+    return { line: at, side: under ? 'Under' : 'Over', l5: count(games.slice(-5)), l10: count(games.slice(-10)), all: count(games) };
+}
+
+// Runs inside the page: marks the first visible control (button, switch, tab,
+// checkbox, option, list item) whose label matches, never a pick, bet or slip one,
+// never in a header, nav or the slip. Returns its label or null.
+function markControl({ source, scope = 'card' }) {
+    const re = new RegExp(source, 'i');
+    const bad = /pick|slip|bet ?now|place|remove|entry|parlay|follow|share|submit|confirm|deposit/i;
+    document.querySelectorAll('[data-codev-ctl]').forEach(el => el.removeAttribute('data-codev-ctl'));
+    const dialog = document.querySelector('[role="dialog"], [aria-modal="true"]');
+    const root = scope === 'card' && dialog ? dialog : document.body;
+    const els = root.querySelectorAll('button, [role="button"], [role="switch"], [role="tab"], [role="checkbox"], [role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="radio"], li, label, input[type="checkbox"]');
+    for (const el of els) {
+        const label = (el.innerText || el.textContent || el.getAttribute('aria-label') || (el.labels && el.labels[0] && el.labels[0].innerText) || '').replace(/\s+/g, ' ').trim();
+        if (!label || label.length > 40 || !re.test(label) || bad.test(label)) continue;
+        if (el.closest('header, nav, aside, [class*="slip" i], [class*="mypick" i], [class*="my-pick" i]')) continue;
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        el.setAttribute('data-codev-ctl', '1');
+        return label;
+    }
+    return null;
+}
+
+async function clickControl(page, source, settleMs, scope = 'card') {
+    const label = await page.evaluate(markControl, { source, scope }).catch(() => null);
+    if (!label) return null;
+    const ok = await page.click('[data-codev-ctl="1"]', { timeout: 3000 }).then(() => true).catch(() => false);
+    if (!ok) return null;
+    await page.waitForTimeout(settleMs);
+    return label;
+}
+
+// The card's alt lines: the switch turned on, its text read, the row for the
+// user's line picked out ("24+ 60%" for an Over 23.5), and the switch turned back.
+const ALT_SWITCH = '^(alt(ernate)?( lines?)?|show alt(ernate)? lines?|alt(ernate)? lines? toggle)$';
+async function readAltLines(page, { line, side, settleMs = 1500, known = '' } = {}) {
+    const label = await clickControl(page, ALT_SWITCH, settleMs);
+    if (!label) return null;
+    const seen = new Set(String(known).split('\n'));
+    const text = await readDetails(page, { scrolls: 2, maxChars: 3000 });
+    const fresh = text.split('\n').filter(l => !seen.has(l));
+    await clickControl(page, ALT_SWITCH, Math.min(settleMs, 800));
+    const at = Number(line);
+    let row = null;
+    if (Number.isFinite(at)) {
+        const under = /^(u|under|less|lower)/i.test(String(side || ''));
+        const keys = [String(at), `${under ? Math.floor(at) : Math.ceil(at)}+`, `${Math.ceil(at)}+`];
+        row = text.split('\n').find(l => /%/.test(l) && keys.some(k => new RegExp(`(^|[^\\d.])${k.replace(/[.+]/g, m => `\\${m}`)}(?![\\d.])`).test(l))) || null;
+    }
+    return { row, text: fresh.join('\n').slice(0, 1500) };
+}
+
+// Teammates the card lists as out (or doubtful): "Mark Williams OUT".
+function injuredTeammates(text, player) {
+    const me = normWords(player);
+    const out = [];
+    for (const m of String(text || '').matchAll(/([A-Z][A-Za-z'.-]+(?: [A-Z][A-Za-z'.-]+){1,3})\s*[-–:(]?\s*(OUT|Out|Doubtful|DOUBTFUL)\b/g)) {
+        const name = m[1].replace(/^(Injuries|Injury|Status)\s+/, '').trim();
+        if (name.split(' ').length < 2 || normWords(name) === me || out.includes(name)) continue;
+        out.push(name);
+    }
+    return out.slice(0, 3);
+}
+
+// The card's "without teammate" split for a teammate who is out: the With/Without
+// control opened, his name picked, the card read again.
+const WITHOUT_CONTROL = '^(with ?\\/ ?without|without|with or without|teammates?|on ?\\/ ?off|without teammate|player (on|off))$';
+async function readWithout(page, { player, text, settleMs = 1500, known = '' } = {}) {
+    const names = injuredTeammates(text, player);
+    if (!names.length) return [];
+    const splits = [];
+    for (const name of names) {
+        const opened = await clickControl(page, WITHOUT_CONTROL, Math.min(settleMs, 800));
+        if (!opened) break;
+        const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const picked = await clickControl(page, `\\b${esc}\\b(?!.*\\b(out|doubtful|questionable|probable)\\b)`, settleMs, 'page');
+        if (!picked) { await page.keyboard.press('Escape').catch(() => {}); continue; }
+        const seen = new Set(String(known).split('\n'));
+        const fresh = (await readDetails(page, { scrolls: 2, maxChars: 3000 })).split('\n').filter(l => !seen.has(l));
+        splits.push({ without: name, text: fresh.join('\n').slice(0, 1200) });
+    }
+    return splits;
+}
+
 // Minutes and opportunity (shot attempts, 3PT attempts, usage, touches, potential
 // assists, rebound chances, targets...) from a card's text, by window when the card
 // labels its columns: { Minutes: { values: [30.1, 32, 34.2], windows: ['L5', 'L10', '2026'] } }.
@@ -729,4 +910,4 @@ function onlyGame(props, teams) {
     return props.filter(p => !p.game || p.game === key);
 }
 
-module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords };
+module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords };
