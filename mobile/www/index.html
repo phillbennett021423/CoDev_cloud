@@ -3086,6 +3086,8 @@
                         if (ctx.onStep) ctx.onStep(step);
                         try { result = await tool.run(args, ctx); } catch (err) { result = `Tool failed: ${err.message}`; }
                         trackToolEffect(ctx, tool.name, args, String(result));
+                        // A short note of each step stays with the reply, so a follow-up can ask about it.
+                        if (ctx.toolLog) ctx.toolLog.push(`${step} → ${String(result).replace(/\s+/g, " ").slice(0, MAX_HISTORY_TOOL_CHARS)}`);
                     }
                     // A researched list of legs is one line each: let a long list through whole.
                     const limit = call.function?.name === "outlier_research_list" ? MAX_TOOL_RESULT_CHARS * 6 : MAX_TOOL_RESULT_CHARS;
@@ -4643,6 +4645,49 @@
 
         const GODOT_TASK_PATTERN = /\b(godot|gdscript|tscn|CharacterBody[23]D|move_and_slide)\b|\.gd\b/i;
 
+        // CONVERSATION HISTORY
+        // Each turn sends the chat's earlier messages too, so a follow-up ("why did that
+        // fail?", "try the other one") reaches the model with what was said and done
+        // before. The newest turns are kept first, inside a character budget, and each
+        // reply carries a short note of the tool steps it took and what they returned.
+        const MAX_HISTORY_CHARS = 16000;
+        const MAX_HISTORY_MESSAGE_CHARS = 4000;
+        const MAX_HISTORY_TOOL_CHARS = 300;
+        const MAX_HISTORY_TOOL_STEPS = 12;
+
+        function historyEntry(msg) {
+            const sender = String(msg.sender || "");
+            // Welcome notes, search banners and "working" placeholders aren't part of the conversation.
+            if (!msg.text || /^(⚙️|🔎)/.test(sender) || /\(Working\.\.\.\)$/.test(sender)) return null;
+            const clip = text => text.length > MAX_HISTORY_MESSAGE_CHARS ? text.slice(0, MAX_HISTORY_MESSAGE_CHARS) + " …[cut]" : text;
+            if (sender.startsWith("👤")) {
+                const files = (msg.attachments || []).map(a => a.name).join(", ");
+                return { role: "user", content: clip(String(msg.text)) + (files ? `\n[Attached then: ${files}]` : "") };
+            }
+            let text = `[${sender.replace(/^\S+\s+/, "")}] ${clip(String(msg.text))}`;
+            if (msg.toolLog?.length) text += "\n[Tool steps in that turn]\n" + msg.toolLog.join("\n");
+            return { role: "assistant", content: text };
+        }
+
+        // The session's messages as model turns: user and assistant alternate, starting
+        // with a user turn, newest last, within MAX_HISTORY_CHARS.
+        function chatHistoryForModel(session) {
+            const turns = [];
+            let used = 0;
+            for (const msg of (session?.messages || []).slice().reverse()) {
+                const entry = historyEntry(msg);
+                if (!entry) continue;
+                if (used + entry.content.length > MAX_HISTORY_CHARS) break;
+                used += entry.content.length;
+                const next = turns[0];
+                // Several agents answering one prompt become one assistant turn.
+                if (next && next.role === entry.role) next.content = entry.content + "\n\n" + next.content;
+                else turns.unshift(entry);
+            }
+            while (turns.length && turns[0].role !== "user") turns.shift();
+            return turns;
+        }
+
         async function callAI(systemPrompt, userMessage, options = {}) {
             if (!activeProviderKey()) {
                 throw new Error(`No ${BACKEND_NAMES[currentBackend]} API key saved yet. Open ⚙️ Settings, pick a provider and paste its key (Anthropic keys start with sk-ant-).`);
@@ -4664,9 +4709,12 @@
             
             const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}`;
             const images = options.images || [];
+            const history = options.history || [];
+            if (history.length) logConsoleActivity(`[Chat] Sending ${history.length} earlier message(s) as context.`);
 
             if (images.length === 0) {
-                const messages = [{ role: "system", content: fullSystemPrompt }, { role: "user", content: userMessage }];
+                const messages = [{ role: "system", content: fullSystemPrompt }, ...history, { role: "user", content: userMessage }];
+                const baseLength = messages.length;
                 if (options.tools) {
                     try {
                         return await runToolLoop(messages, options.tools);
@@ -4674,7 +4722,7 @@
                         // A malformed tool call shouldn't cost the user their answer.
                         if (!/tool|function/i.test(err.message)) throw err;
                         logConsoleActivity(`[Tool] Tool loop failed (${err.message}); answering without tools.`);
-                        messages.length = 2;
+                        messages.length = baseLength;
                     }
                 }
                 return groqChat({ model: TEXT_MODEL, temperature: 0.0, messages });
@@ -4686,6 +4734,7 @@
                 temperature: 0.0,
                 messages: [
                     { role: "system", content: fullSystemPrompt },
+                    ...history,
                     { role: "user", content: [
                         { type: "text", text: userMessage },
                         ...images.map(url => ({ type: "image_url", image_url: { url } }))
@@ -5182,6 +5231,7 @@
                 sources: webSources.slice(),
                 changes: [],
                 commands: [],
+                toolLog: [],
                 onStep: step => {
                     setAgentState(agent.id, "active");
                     placeholder.text = step;
@@ -5202,6 +5252,8 @@
                 const at = session.messages.indexOf(placeholder);
                 if (at >= 0) session.messages.splice(at, 1);
                 appendMessageToSession(session, sender, text, null, sources);
+                const reply = session.messages[session.messages.length - 1];
+                if (reply && tools.toolLog.length) reply.toolLog = tools.toolLog.slice(-MAX_HISTORY_TOOL_STEPS);
             };
             try {
                 // Sandbox mode: this agent's container on the task's shared staging copy.
@@ -5276,11 +5328,13 @@
             });
             if (attachments.length) logConsoleActivity(`Sending ${attachments.length} attachment(s) with ${aiOptions.images.length} image(s).`);
 
+            const session = chatSessions.find(s => s.id === activeChatId);
+            // Earlier turns of this chat, taken before this message joins it.
+            aiOptions.history = chatHistoryForModel(session);
             appendMessageToActiveSession("👤 You", userText, attachments.map(a => ({ name: a.name, kind: a.kind, thumb: a.thumb })));
             inputField.value = "";
             clearAttachments();
 
-            const session = chatSessions.find(s => s.id === activeChatId);
             if (session) session.isGroup = isGroup;
 
             let activeAgent = agents.find(a => a.id === selectedAgentId) || agents[0];
