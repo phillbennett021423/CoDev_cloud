@@ -3024,7 +3024,8 @@
             if (tools.some(t => t.name === "outlier_scan_board")) {
                 return "[Outlier] Outlier (outlier.bet) is a sports betting research app at https://app.outlier.bet: its Props board lists every player prop with its line, odds by book and hit rates (L5, L10, L20, H2H, season); clicking a prop opens its Market Details (hit rate chart, supporting stats, opponent rank against the position, injuries, odds movement, public bet splits), and the Games tab has each game's lines, injuries and public money. outlier_guide explains every section and what each number means. CoDev keeps the user's own signed-in Outlier browser. "
                     + "For any request about Outlier, props, parlays or tickets, call outlier_scan_board first, with sport, game and market taken from the request (e.g. sport \"NBA\", game \"8pm\"). "
-                    + "To build a ticket: read outlier_guide once, scan the board, then check the legs you like with outlier_research (player and game) for injuries, matchup, usage and line movement before you answer. "
+                    + "When the user gives a list of props (from Dabble, Underdog, PrizePicks...), call outlier_research_list once with every leg (player, stat, line, side), the sport, the game and the day (\"tomorrow\"), and build the 4-6 leg slip only from those legs, one reason per leg. "
+                    + "Without a list: scan the board with outlier_scan_board, then check the legs you like with outlier_research. outlier_read_section reads Insights, Popular, Games or Injuries for ideas and context. The Outlier guide below says what every section is for. "
                     + "Don't search the project files for Outlier, don't ask the user for a URL or a login, and don't open Outlier in your own browser: outlier_scan_board already uses the signed-in one. "
                     + "It opens Outlier's regular props board, not Positive EV, even when Outlier reopens on +EV (/pro/ev). Never pass a +EV tab such as \"NBA Player Props\", \"Pinnacle\" or \"Sharp Gamelines\" as section. If it can't find a tab, its error lists the tabs on the page: pick the matching one (or ask the user) and call it again with that name as section or sport. "
                     + "If it says Outlier asked to sign in, tell the user to click 🔑 Sign in to Outlier in the 📈 Outlier tab, then ask again. "
@@ -3058,7 +3059,14 @@
                     .filter(s => s.status === "connected" && s.instructions).map(s => `[MCP server "${s.name}" instructions] ${s.instructions.slice(0, 1500)}`) : [];
                 if (instructions.length) messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + instructions.join("\n\n") };
             }
-            const outlierNote = outlierToolNote(tools, messages);
+            let outlierNote = outlierToolNote(tools, messages);
+            // An Outlier request gets the whole Outlier guide up front, so the agent knows
+            // every section and what it's for before its first call.
+            const guideTool = tools.find(t => t.name === "outlier_guide");
+            const askedText = messages.filter(m => m.role === "user").map(m => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
+            if (outlierNote && guideTool && OUTLIER_TASK.test(askedText)) {
+                try { outlierNote += "\n\n[Outlier guide]\n" + String(await guideTool.run({}, ctx)).slice(0, 16000); } catch (err) { /* the note alone */ }
+            }
             if (outlierNote && messages[0]?.role === "system") messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + outlierNote };
             for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
                 const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" });
@@ -3079,7 +3087,9 @@
                         try { result = await tool.run(args, ctx); } catch (err) { result = `Tool failed: ${err.message}`; }
                         trackToolEffect(ctx, tool.name, args, String(result));
                     }
-                    messages.push({ role: "tool", tool_call_id: call.id, name: call.function?.name || "unknown", content: String(result).slice(0, MAX_TOOL_RESULT_CHARS) });
+                    // A researched list of legs is one line each: let a long list through whole.
+                    const limit = call.function?.name === "outlier_research_list" ? MAX_TOOL_RESULT_CHARS * 3 : MAX_TOOL_RESULT_CHARS;
+                    messages.push({ role: "tool", tool_call_id: call.id, name: call.function?.name || "unknown", content: String(result).slice(0, limit) });
                 }
             }
             // Out of rounds: ask for the answer with what was gathered.

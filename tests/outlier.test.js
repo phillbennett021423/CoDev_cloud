@@ -656,3 +656,77 @@ test('Outlier reopens on +EV behind a popup: the scan closes the popup, leaves +
     assert.match(reply.content[0].text, /^Outlier > Props > NBA > 8:00 PM BOS vs NYK\n4 props/);
     assert.deepEqual(hits, { accepted: 0, removed: 0 }, 'the popup was closed, not accepted, and the slip was left alone');
 });
+
+test('a list of legs for tomorrow is researched in one visit: each player\'s card for that stat, Outlier\'s line against the user\'s, no trip back to +EV', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    const players = ['Bilal Coulibaly', 'Kyshawn George', 'LaMelo Ball', 'Brandon Miller'];
+    const card = (name, stat, line) => `<div class="c"><div class="pn" data-stat="${stat}" style="cursor:pointer">${name}</div><div>WAS @ CHA</div><div>${stat}</div><div>Over ${line}</div><div>FanDuel -119</div></div>`;
+    const board = players.map((n, i) => card(n, 'Points', 14.5 + i)).join('') + players.map((n, i) => card(n, 'Rebounds', 4.5 + i)).join('');
+    const props = `<!doctype html><body><header><a href="/props">Props</a> <a href="/insights">Insights</a> <a href="/popular">Popular</a></header>
+        <nav><button id="nba">NBA</button></nav><div id="days" hidden><button id="today">Today</button><button id="tmrw">Tomorrow</button></div><main id="main">Pick a sport</main>
+        <script>
+            const main = document.getElementById('main');
+            document.getElementById('nba').onclick = () => { document.getElementById('days').hidden = false; main.innerHTML = '<div class="g" style="cursor:pointer"><span>8:00 PM</span> <span>BOS @ NYK</span></div>'; bind(); };
+            document.getElementById('today').onclick = () => { main.innerHTML = '<div class="g" style="cursor:pointer"><span>8:00 PM</span> <span>BOS @ NYK</span></div>'; bind(); };
+            document.getElementById('tmrw').onclick = () => { main.innerHTML = '<div class="g" style="cursor:pointer"><span>7:00 PM</span> <span>WAS @ CHA</span></div>'; bind(); };
+            function bind() { main.querySelectorAll('.g').forEach(g => { g.onclick = () => { main.innerHTML = g.textContent.includes('WAS') ? ${JSON.stringify(board)} : 'BOS board'; }; }); }
+            // A card replaces the board, like a page of its own.
+            main.addEventListener('click', e => {
+                if (!e.target.classList.contains('pn')) return;
+                const stat = e.target.dataset.stat;
+                main.innerHTML = '<div role="dialog"><h2>' + e.target.textContent + ' ' + stat + '</h2><p>L5 ' + (stat === 'Rebounds' ? '90%' : '40%') + ' L10 70%</p>'
+                    + '<p>CHA rank vs SF: 28th</p><p>Mark Williams OUT</p><p>Minutes 31.2</p><button onclick="fetch(\\'/picked\\')">Add to My Picks</button></div>';
+            });
+        </script></body>`;
+    const hits = { start: 0, ev: 0, picked: 0 };
+    const server = http.createServer((req, res) => {
+        const at = req.url.split('?')[0];
+        if (at === '/picked') { hits.picked++; return res.end(); }
+        if (at === '/') { hits.start++; res.writeHead(302, { Location: '/pro/ev' }); return res.end(); }
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        if (at === '/pro/ev') { hits.ev++; return res.end('<!doctype html><body><button>NBA Player Props</button><button>Pinnacle</button><main>Positive EV</main></body>'); }
+        if (at === '/popular') return res.end('<!doctype html><body><h2>Most Researched</h2><p>LaMelo Ball Over 22.5 Points: 1,204 researching</p></body>');
+        res.end(props);
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false }));
+    const service = createService({}, { pipeline });
+
+    const reply = await service.callTool('outlier_research_list', { sport: 'NBA', game: 'Wizards vs Hornets', day: 'tomorrow', legs: [
+        { player: 'Bilal Coulibaly', stat: 'Rebounds', line: 3.5, side: 'Over' },
+        { player: 'LaMelo Ball', stat: 'Points', line: 16.5, side: 'Higher' },
+        { player: 'Michael Jordan', stat: 'Points', line: 30.5 },
+        { player: 'LaMelo Ball', stat: 'Pts+Rebs+Asts', line: 30.5, side: 'Under' }
+    ] });
+    assert.equal(reply.isError, undefined, reply.content[0].text);
+    const text = reply.content[0].text;
+    assert.match(text, /^Outlier > Props > NBA > Tomorrow > 7:00 PM WAS vs CHA\nResearched 3 of 4 legs\./);
+    assert.match(text, /1\. Bilal Coulibaly Over 3\.5 Rebounds\n {3}Outlier over 4\.5 Rebounds -119, your 3\.5 is 1 easier.*\n {3}Hit L5 90%, L10 70% \| Matchup: CHA rank vs SF: 28th \| Injuries: Mark Williams OUT \| Usage: Minutes 31\.2/, 'his rebounds card, not his points one');
+    assert.match(text, /2\. LaMelo Ball Higher 16\.5 Points\n {3}Outlier over 16\.5 Points -119.*\n {3}Hit L5 40%/);
+    assert.match(text, /3\. Michael Jordan 30\.5 Points: not found on Outlier/);
+    assert.match(text, /4\. LaMelo Ball Under 30\.5 Pts\+Rebs\+Asts \(no prop for this stat on Outlier/);
+    assert.match(text, /Checks:\n- LaMelo Ball is on legs 2, 4: an Over and an Under on him work against each other/);
+    assert.match(text, /Audit of these legs:\n\d+ props/);
+    const audited = JSON.parse(fs.readFileSync(pipeline.files.scrape, 'utf8'));
+    assert.deepEqual([...new Set(audited.props.map(p => p.player))].sort(), ['Bilal Coulibaly', 'LaMelo Ball'], 'only the listed players are audited');
+    assert.equal(hits.ev, 1, 'Outlier\'s +EV start page was opened once, then the Props board was remembered');
+    assert.equal(hits.picked, 0, 'nothing was added to My Picks');
+
+    const popular = await service.callTool('outlier_read_section', { section: 'Popular' });
+    assert.equal(popular.isError, undefined, popular.content[0].text);
+    assert.match(popular.content[0].text, /^Outlier > Popular\n.*\n\nMost Researched\nLaMelo Ball Over 22\.5 Points: 1,204 researching/);
+    assert.equal(hits.ev, 1);
+    const ev = await service.callTool('outlier_read_section', { section: '+EV' });
+    assert.equal(ev.isError, true);
+    assert.match(ev.content[0].text, /Pro tools/);
+});

@@ -17,7 +17,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { collectPage, parseCollected, parseText, propId } = require('./extract');
 const { createCapture } = require('./capture');
-const { navigate, onlyGame, openPlayer, readDetails } = require('./navigate');
+const { navigate, onlyGame, openPlayer, readDetails, legSummary, keepLegs, statWords, onTools, normWords } = require('./navigate');
 const { OUTLIER_PRIMER, OUTLIER_GUIDE } = require('./guide');
 const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
@@ -147,7 +147,10 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     };
     // busy: what the one browser is doing ('signin' | 'scrape' | 'snapshot'); the
     // profile can't be open twice. signedIn: what the last visit found (null = unknown).
-    const state = { busy: null, signedIn: null, lastError: null, lastRun: null, signInContext: null };
+    // propsUrl: the props board's address once reached, where the next visit starts (Outlier
+    // itself reopens on +EV). progress: what a long read is on, for the Outlier tab.
+    const state = { busy: null, signedIn: null, lastError: null, lastRun: null, signInContext: null, propsUrl: null, progress: null };
+    const rememberProps = url => { state.propsUrl = url; };
     const blocked = new Set(blockedPorts.map(String));
     // shared: { manager, live } from the browser service, when it's running.
     if (shared) shared.manager.registerProfile(SESSION, files.profile);
@@ -304,7 +307,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 if (target.nav) {
                     const signedOut = await page.evaluate(() => Boolean(document.querySelector('input[type="password"]')));
                     if (looksSignedOut(page, { passwordField: signedOut })) signInNeeded(page, browser);
-                    nav = await navigate(page, target.nav, { settleMs: cfg.settleMs });
+                    nav = await navigate(page, target.nav, { settleMs: cfg.settleMs, onProps: rememberProps });
                 }
                 // Boards load more rows as they scroll, and long ones remove the rows that
                 // scroll away, so the page is read after every step and the reads are
@@ -774,7 +777,8 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         return snapshotState();
     }
 
-    async function scrape({ pages: only = null } = {}) {
+    // keep: legs the user listed ({ player, stat }): only those props are audited.
+    async function scrape({ pages: only = null, keep = null } = {}) {
         claim('scrape');
         try {
             const { pages } = await visitPages({ pages: only });
@@ -782,6 +786,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             // One game asked for: only its props go into the tickets.
             const nav = pages.find(p => p.nav);
             if (nav && nav.nav.teams) parsed.props = onlyGame(parsed.props, nav.nav.teams);
+            if (keep) parsed.props = keepLegs(parsed.props, keep);
             writeJson(files.scrape, { scrapedAt: new Date().toISOString(), source: 'outlier', ...parsed });
             const settledNow = settleFromResults(parsed.results);
             if (settledNow) await learn();
@@ -815,7 +820,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         claim('research');
         try {
             const cfg = config();
-            const start = url || ((cfg.pages || []).find(p => p.kind === 'props') || {}).url || 'https://app.outlier.bet/';
+            const start = url || boardStart();
             const browser = await openForVisit(cfg);
             try {
                 const page = browser.page;
@@ -826,12 +831,115 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 if (looksSignedOut(page, { passwordField: signedOut })) signInNeeded(page, browser);
                 // Without a player it's the game's own page, on the Games tab.
                 const nav = await navigate(page, { section: section || (player || !game ? undefined : 'Games'), sport, market, game, player },
-                    { settleMs: cfg.settleMs });
+                    { settleMs: cfg.settleMs, onProps: rememberProps });
                 const steps = [...nav.steps];
                 if (player) steps.push(await openPlayer(page, player, { settleMs: cfg.settleMs }));
                 const text = await readDetails(page);
                 state.signedIn = true;
                 return { steps, url: page.url(), text };
+            } finally {
+                await browser.done();
+            }
+        } catch (err) {
+            state.lastError = err.message;
+            throw err;
+        } finally {
+            state.busy = null;
+        }
+    }
+
+    // Where a visit that navigates starts: the props board reached last time (so
+    // Outlier's own reopen on +EV is skipped), else the configured props page.
+    function boardStart() {
+        return state.propsUrl || ((config().pages || []).find(p => p.kind === 'props') || {}).url || 'https://app.outlier.bet/';
+    }
+
+    // Opens the page for a visit that navigates: the start address, waits for it,
+    // stops at a sign-in page.
+    async function openAt(page, browser, url, cfg) {
+        await gotoChecked(page, url, { pausable: browser.shared });
+        await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+        await page.waitForTimeout(cfg.settleMs);
+        const signedOut = await page.evaluate(() => Boolean(document.querySelector('input[type="password"]')));
+        if (looksSignedOut(page, { passwordField: signedOut })) signInNeeded(page, browser);
+    }
+
+    // Every leg on a list ({ player, stat, line, side }) researched in one visit:
+    // the game's board is reached once, then each player's card for that stat is
+    // opened, read down to one line, and the board is come back to (back, or the
+    // board's address, never Outlier's start page).
+    async function researchList({ url = null, sport, game, day, legs = [] } = {}) {
+        claim('research');
+        try {
+            const cfg = config();
+            const browser = await openForVisit(cfg);
+            const results = [];
+            let steps = [];
+            try {
+                const page = browser.page;
+                const where = { sport, game, day, player: legs[0] && legs[0].player };
+                const reach = async from => {
+                    await openAt(page, browser, from, cfg);
+                    const nav = await navigate(page, where, { settleMs: cfg.settleMs, onProps: rememberProps });
+                    return { steps: nav.steps, board: page.url() };
+                };
+                state.progress = 'Opening the board';
+                let { steps: first, board } = await reach(url || boardStart());
+                steps = first;
+                for (const [i, leg] of legs.entries()) {
+                    state.progress = `Leg ${i + 1} of ${legs.length}: ${leg.player}${leg.stat ? ` ${leg.stat}` : ''}`;
+                    log(`[Outlier] ${state.progress}`);
+                    try {
+                        let opened;
+                        try {
+                            opened = await openPlayer(page, leg.player, { settleMs: cfg.settleMs, stat: leg.stat, line: leg.line });
+                        } catch (err) {
+                            // The last card replaced the board: the board again, from its address.
+                            if (i === 0) throw err;
+                            ({ board } = await reach(board && !onTools(page) ? board : boardStart()));
+                            opened = await openPlayer(page, leg.player, { settleMs: cfg.settleMs, stat: leg.stat, line: leg.line });
+                        }
+                        const text = await readDetails(page, { scrolls: 6, maxChars: 8000 });
+                        results.push({ leg, opened, summary: legSummary(text) });
+                    } catch (err) {
+                        results.push({ leg, error: err.message.split(' (http')[0].split(' on that Outlier board')[0] });
+                    }
+                    // Back to the board: close the card, or go back a page.
+                    await page.keyboard.press('Escape').catch(() => {});
+                    if (page.url() !== board) {
+                        await page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+                        await page.waitForTimeout(cfg.settleMs);
+                    }
+                    await page.evaluate(() => { window.scrollTo(0, 0); for (const el of document.querySelectorAll('*')) if (el.scrollTop) el.scrollTop = 0; }).catch(() => {});
+                }
+                state.signedIn = true;
+            } finally {
+                await browser.done();
+            }
+            return { steps, results };
+        } catch (err) {
+            state.lastError = err.message;
+            throw err;
+        } finally {
+            state.busy = null;
+            state.progress = null;
+        }
+    }
+
+    // One of Outlier's sections (Insights, Trends, Popular, Games, Injuries...) for
+    // a sport, read as text: the tab by its name, the sport, then the page to its end.
+    async function readSection({ section, sport, day } = {}) {
+        claim('research');
+        try {
+            const cfg = config();
+            const browser = await openForVisit(cfg);
+            try {
+                const page = browser.page;
+                await openAt(page, browser, boardStart(), cfg);
+                const nav = await navigate(page, { section, sport, day }, { settleMs: cfg.settleMs });
+                const text = await readDetails(page, { scrolls: 10, maxChars: 10000 });
+                state.signedIn = true;
+                return { steps: nav.steps, url: page.url(), text };
             } finally {
                 await browser.done();
             }
@@ -950,6 +1058,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         const scrapeFile = readJson(files.scrape, null);
         return {
             busy: state.busy,
+            progress: state.busy ? state.progress : null,
             signedIn: state.signedIn,
             // The live view's id for the signed-in browser (null without the browser service).
             liveSession: shared ? SESSION : null,
@@ -988,7 +1097,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     }
 
     watchImports();
-    return { signIn, scrape, research, readOpenPage, setCapture, capture, importBoard, importFile, dumpBoard, watchImports, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
+    return { signIn, scrape, research, researchList, readSection, boardStart, readOpenPage, setCapture, capture, importBoard, importFile, dumpBoard, watchImports, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
         state: snapshotState, status, close, files, settleFromResults };
 }
 
@@ -1001,6 +1110,45 @@ function sendJson(res, status, payload) {
 const safe = fn => async (req, res, body) => {
     try { sendJson(res, 200, await fn(body || {})); } catch (err) { sendJson(res, 400, { error: err.message }); }
 };
+
+// A listed leg against the board: Outlier's line and price for that player and
+// stat, and whether the user's line is easier or harder than it.
+function lineNote(leg, boardLegs) {
+    const name = normWords(leg.player);
+    const words = statWords(leg.stat);
+    const his = boardLegs.filter(l => normWords(l.player) === name && (!words.length || words.some(w => ` ${normWords(l.market)} `.includes(` ${w} `))));
+    if (!his.length) return null;
+    const side = /^(u|under|less|lower)/i.test(String(leg.side || '')) ? 'under' : 'over';
+    const board = his.find(l => /^(u|under|less|lower)/i.test(String(l.side || '')) === (side === 'under')) || his[0];
+    const mine = Number(leg.line);
+    const theirs = Number(board.line);
+    let diff = '';
+    if (Number.isFinite(mine) && Number.isFinite(theirs) && mine !== theirs) {
+        const easier = side === 'over' ? mine < theirs : mine > theirs;
+        diff = `, your ${mine} is ${Math.abs(theirs - mine)} ${easier ? 'easier' : 'harder'}`;
+    }
+    const m = board.metrics || {};
+    const hit = m.l5 != null ? `, L5 ${Math.round(m.l5 * 100)}%` : '';
+    return `Outlier ${board.side || ''} ${board.line} ${board.market || ''} ${m.consensus || ''}${hit}${diff}${board.rejected ? ' (failed the audit)' : ''}`.replace(/\s+/g, ' ');
+}
+
+// Problems a slip built from these legs could have: one player twice, opposite
+// sides on stats that move together.
+function legChecks(legs) {
+    const out = [];
+    const byPlayer = new Map();
+    legs.forEach((leg, i) => {
+        const key = normWords(leg.player);
+        if (!byPlayer.has(key)) byPlayer.set(key, []);
+        byPlayer.get(key).push(i + 1);
+    });
+    for (const [, at] of byPlayer) {
+        if (at.length < 2) continue;
+        const sides = new Set(at.map(n => (/^(u|under|less|lower)/i.test(String(legs[n - 1].side || '')) ? 'under' : 'over')));
+        out.push(`${legs[at[0] - 1].player} is on legs ${at.join(', ')}${sides.size > 1 ? ': an Over and an Under on him work against each other' : ': one slip should hold only one of them (they rise and fall together)'}`);
+    }
+    return out;
+}
 
 // The audit as text for an agent: tickets with their odds, then under value legs.
 function auditText(result) {
@@ -1038,11 +1186,13 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                 sport: { type: 'string', description: 'The sport tab to open, e.g. "NBA", "NFL", "MLB", "NHL", "WNBA", "CBB".' },
                 game: { type: 'string', description: 'The game by start time and/or teams as the user said it, e.g. "3pm", "8:30 PM", "Wizards vs Hornets", "LAL vs BOS 8pm". Times are the user\'s local time. With both teams named, a board without game cards is read whole and kept to that game.' },
                 market: { type: 'string', description: 'A stat filter to click, e.g. "Points", "Rebounds" (optional).' },
+                day: { type: 'string', description: '"today", "tomorrow" or a weekday, when the game isn\'t today (optional).' },
                 url: { type: 'string', description: 'An app.outlier.bet page to start from instead of the configured one (optional).' },
                 kind: { type: 'string', enum: ['props', 'odds'], description: 'What that page shows (default props).' }
             }, additionalProperties: false }
         }, {
             name: 'outlier_research',
+            annotations: { readOnlyHint: true },
             description: 'Opens one player\'s Market Details / player card on Outlier in the user\'s signed-in browser (the Props board, sport, game, then the player\'s name) and returns everything on it as text: the hit rate chart and splits, Supporting Stats (minutes, shots, targets, target share...), the opponent\'s rank against that position, injuries, Odds Movement and public bet/money splits. Without a player it opens the game\'s page on the Games tab: spread, total, moneyline, injuries, line movement and public splits. Use it to check the legs of a ticket after outlier_scan_board (see outlier_guide for what each number means). It only reads and clicks tabs, game cards and the player\'s name; nothing is added to My Picks or a slip.',
             inputSchema: { type: 'object', properties: {
                 player: { type: 'string', description: 'The player, e.g. "LeBron James". Leave out for the game\'s page.' },
@@ -1053,7 +1203,33 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                 url: { type: 'string', description: 'An app.outlier.bet page to start from (optional).' }
             }, additionalProperties: false }
         }, {
+            name: 'outlier_research_list',
+            annotations: { readOnlyHint: true },
+            description: 'Researches a whole list of props (e.g. 20-40 legs from Dabble, Underdog or PrizePicks for one game) on Outlier in ONE visit, in the user\'s signed-in browser. It goes to the Props board once (leaving +EV), the sport, the day ("tomorrow") and the game, then opens each player\'s card for that leg\'s stat and reads it down to one line: hit rates (L5, L10, L20, H2H, season), the opponent\'s rank against him, injuries, minutes/usage and line movement. Also for each leg: Outlier\'s line and price versus the user\'s line (easier or harder), and the audit (-119 consistency, sharp-book check, correlation, Under engine) run on only these legs, with 4-6 leg tickets. Use it whenever the user gives a list of props to research or build a slip from; don\'t call outlier_research once per leg. Only reads and clicks tabs, game cards and player names.',
+            inputSchema: { type: 'object', properties: {
+                legs: { type: 'array', description: 'Every leg the user listed, as written.', items: { type: 'object', properties: {
+                    player: { type: 'string', description: 'e.g. "LeBron James".' },
+                    stat: { type: 'string', description: 'e.g. "Points", "Rebounds", "Pts+Rebs+Asts", "3-Pointers Made".' },
+                    line: { type: 'number', description: 'The user\'s line, e.g. 24.5.' },
+                    side: { type: 'string', description: 'Over/Higher/More or Under/Lower/Less (optional).' }
+                }, required: ['player'], additionalProperties: false } },
+                sport: { type: 'string', description: 'The sport tab, e.g. "NBA".' },
+                game: { type: 'string', description: 'The game by teams and/or start time, e.g. "Wizards vs Hornets", "7pm".' },
+                day: { type: 'string', description: '"today", "tomorrow" or a weekday, when the game isn\'t today (optional).' },
+                url: { type: 'string', description: 'An app.outlier.bet page to start from (optional).' }
+            }, required: ['legs'], additionalProperties: false }
+        }, {
+            name: 'outlier_read_section',
+            annotations: { readOnlyHint: true },
+            description: 'Opens one of Outlier\'s sections by its name and reads it as text: "Insights" or "Trends" (trending props and lines with strong hit rates), "Popular" (what Outlier users research and add most), "Games" (each game\'s spread, total, moneyline), "Injuries", or another tab named on the page; optionally for one sport and day. Use it for ideas and context beside a list or a board scan. Never use it for +EV, Arbitrage, Middles or Boosts when building a prop ticket.',
+            inputSchema: { type: 'object', properties: {
+                section: { type: 'string', description: 'The section\'s name, e.g. "Insights", "Popular", "Games".' },
+                sport: { type: 'string', description: 'The sport tab, e.g. "NBA" (optional).' },
+                day: { type: 'string', description: '"today", "tomorrow" or a weekday (optional).' }
+            }, required: ['section'], additionalProperties: false }
+        }, {
             name: 'outlier_guide',
+            annotations: { readOnlyHint: true },
             description: 'The full guide to Outlier: every section and tool (Insights, Props/Prop Finder with its filters and sorts, Games, Market Details, Popular, My Picks, +EV, Arbitrage, Middles, Boosts), what each number and color means (odds, implied probability, hit rates, opposition rank, line movement, public bet vs money), when to look at each one while building a ticket, and the research checklist by sport and stat. Read it before researching or building a ticket from Outlier.',
             inputSchema: { type: 'object', properties: {}, additionalProperties: false }
         }, {
@@ -1085,10 +1261,10 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                         if (!/(^|\.)outlier\.bet$/i.test(url.hostname)) throw new Error(`outlier_scan_board only opens Outlier (app.outlier.bet), not ${url.hostname}. Use your own browser tools for other sites.`);
                         pages = [{ kind: args.kind === 'odds' ? 'odds' : 'props', url: url.href }];
                     }
-                    const nav = Object.fromEntries(['section', 'sport', 'market', 'game'].filter(k => args[k] && String(args[k]).trim()).map(k => [k, String(args[k]).trim()]));
+                    const nav = Object.fromEntries(['section', 'sport', 'market', 'game', 'day'].filter(k => args[k] && String(args[k]).trim()).map(k => [k, String(args[k]).trim()]));
                     if (Object.keys(nav).length) {
                         // Navigation starts on one board: the address given, else the first configured props page.
-                        const start = pages ? pages[0] : ((outlier.state().config || {}).pages || []).find(p => p.kind === 'props') || { kind: 'props', url: 'https://app.outlier.bet/' };
+                        const start = pages ? pages[0] : { kind: 'props', url: outlier.boardStart ? outlier.boardStart() : 'https://app.outlier.bet/' };
                         pages = [{ ...start, nav }];
                     }
                     const run = await outlier.scrape({ pages });
@@ -1099,6 +1275,57 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                 }
             }
             if (name === 'outlier_guide') return { content: [{ type: 'text', text: OUTLIER_GUIDE }] };
+            if (name === 'outlier_read_section') {
+                try {
+                    if (!args.section || !String(args.section).trim()) throw new Error('Name the section, e.g. "Insights".');
+                    if (/(\+?ev|positive ev|arbitrage|middle|boost)/i.test(String(args.section))) throw new Error(`${args.section} is one of Outlier's Pro tools, not part of building a prop ticket. Use outlier_scan_board or outlier_research_list for props.`);
+                    const read = await outlier.readSection({ section: String(args.section).trim(), sport: args.sport, day: args.day });
+                    return { content: [{ type: 'text', text: `Outlier > ${read.steps.join(' > ')}\n${read.url}\n\n${read.text}` }] };
+                } catch (err) {
+                    return { content: [{ type: 'text', text: err.message }], isError: true };
+                }
+            }
+            if (name === 'outlier_research_list') {
+                try {
+                    const legs = (Array.isArray(args.legs) ? args.legs : []).filter(l => l && String(l.player || '').trim())
+                        .map(l => ({ player: String(l.player).trim(), stat: l.stat ? String(l.stat).trim() : null, line: l.line == null || l.line === '' ? null : Number(l.line), side: l.side ? String(l.side).trim() : null }));
+                    if (!legs.length) throw new Error('Give the legs: [{ player, stat, line, side }].');
+                    let url = null;
+                    if (args.url) {
+                        const parsed = new URL(resolveAddress(String(args.url)).url);
+                        if (!/(^|\.)outlier\.bet$/i.test(parsed.hostname)) throw new Error(`outlier_research_list only opens Outlier (app.outlier.bet), not ${parsed.hostname}.`);
+                        url = parsed.href;
+                    }
+                    const day = args.day || (/\btomorrow\b/i.test(String(args.game || '')) ? 'tomorrow' : null);
+                    const nav = Object.fromEntries(Object.entries({ sport: args.sport, game: args.game, day }).filter(([, v]) => v && String(v).trim()).map(([k, v]) => [k, String(v).trim()]));
+                    // The audit on just these legs, from one read of the board.
+                    let audit = '';
+                    try {
+                        await outlier.scrape({ pages: [{ kind: 'props', url: url || outlier.boardStart(), nav: { ...nav, player: legs[0].player } }], keep: legs });
+                        audit = auditText(outlier.state().result);
+                    } catch (err) {
+                        audit = `The audit couldn't run: ${err.message}`;
+                    }
+                    const boardLegs = ((outlier.state().result || {}).legs) || [];
+                    const read = await outlier.researchList({ url, ...nav, legs });
+                    const lines = read.results.map((r, i) => {
+                        const l = r.leg;
+                        const head = `${i + 1}. ${l.player}${l.side ? ` ${l.side}` : ''}${l.line != null ? ` ${l.line}` : ''}${l.stat ? ` ${l.stat}` : ''}`;
+                        const board = lineNote(l, boardLegs);
+                        if (r.error) return `${head}: not found on Outlier (${r.error})${board ? `\n   ${board}` : ''}`;
+                        return `${head}${/another stat/.test(r.opened) ? ' (no prop for this stat on Outlier: his card for another stat was read)' : ''}\n   ${board ? `${board}\n   ` : ''}${r.summary}`;
+                    });
+                    const found = read.results.filter(r => !r.error).length;
+                    const checks = legChecks(legs);
+                    const text = `Outlier > ${read.steps.join(' > ')}\nResearched ${found} of ${legs.length} legs.\n${lines.join('\n')}\n`
+                        + (checks.length ? `Checks:\n${checks.map(c => `- ${c}`).join('\n')}\n` : '')
+                        + `Audit of these legs:\n${audit}\n`
+                        + 'Build the slip only from these legs: favor green hit rates across several windows on the user\'s own line, a weak opponent rank, steady minutes, no injury doubt and an easier line than Outlier\'s; give one reason per leg. Estimates, not guarantees.';
+                    return { content: [{ type: 'text', text }] };
+                } catch (err) {
+                    return { content: [{ type: 'text', text: err.message }], isError: true };
+                }
+            }
             if (name === 'outlier_research') {
                 try {
                     let url = null;
