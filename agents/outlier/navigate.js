@@ -51,6 +51,37 @@ function statWords(stat) {
     return entry ? [...new Set([entry[0], ...entry[1]])] : [key];
 }
 
+// A board market is this leg's stat for the full game: its words are there, it isn't
+// a quarter or half ("1st Quarter Points"), and it isn't a combo or another stat that
+// holds them ("Pts+Rebs+Asts", "Fantasy Points") unless the leg is that combo.
+const PERIOD = /\b(1st|2nd|3rd|4th|first|second|third|fourth) (quarter|half|period|inning|innings|5|3 minutes)\b|\b(1q|2q|3q|4q|1h|2h|q1|q2|q3|q4|h1|h2|f5)\b|\bquarter\b|\bhalf\b/;
+// The words of the markets that hold this stat's words but aren't it (quarters, halves,
+// combos, fantasy), for telling a card apart in the page.
+function avoidWords(stat) {
+    const words = statWords(stat);
+    if (!words.length) return [];
+    const mine = new Set(words.flatMap(w => w.split(' ')));
+    const other = Object.values(STATS).flat().filter(o => o.length >= 3 && !words.includes(o) && o.split(' ').some(t => !mine.has(t)) && o.split(' ').some(t => mine.has(t)));
+    const period = PERIOD.test(` ${normWords(stat)} `) ? [] : ['1st quarter', '1st half', 'first quarter', 'first half', '1q', '1h', 'quarter', 'half'];
+    return [...new Set([...other, ...period])];
+}
+
+function sameMarket(market, stat) {
+    const words = statWords(stat);
+    if (!words.length) return true;
+    const m = ` ${normWords(market)} `;
+    if (!words.some(w => m.includes(` ${w} `))) return false;
+    if (PERIOD.test(m) && !PERIOD.test(` ${normWords(stat)} `)) return false;
+    const mine = new Set(words.flatMap(w => w.split(' ')));
+    for (const [, others] of Object.entries(STATS)) {
+        for (const o of others) {
+            if (o.length < 3 || words.includes(o)) continue;
+            if (m.includes(` ${o} `) && o.split(' ').some(t => !mine.has(t))) return false;
+        }
+    }
+    return true;
+}
+
 // "tomorrow", "today", "Monday" -> the labels a date picker shows for that day.
 function dayLabels(day, now = new Date()) {
     const text = String(day || '').toLowerCase();
@@ -423,7 +454,7 @@ async function navigate(page, { section, sport, market, game, player, day } = {}
 // add button around it.
 // stats/line: the leg's stat words and line; with them, the name on that stat's
 // prop card wins (best.stat true), else any card of his.
-function markPlayer({ name, stats = [], line = null }) {
+function markPlayer({ name, stats = [], line = null, avoid = [] }) {
     document.querySelectorAll('[data-codev-player]').forEach(el => el.removeAttribute('data-codev-player'));
     const norm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
     const full = norm(name);
@@ -448,7 +479,8 @@ function markPlayer({ name, stats = [], line = null }) {
         let card = el;
         for (let up = el.parentElement; up && up !== document.body && (up.innerText || '').length <= 400 && props(up.innerText || '') <= 2; up = up.parentElement) card = up;
         const cardText = ` ${norm(card.innerText)} `;
-        const stat = stats.some(w => cardText.includes(` ${w} `));
+        // A quarter, half or combo market ("1st Quarter Points", "Pts+Rebs+Asts") isn't the stat.
+        const stat = stats.some(w => cardText.includes(` ${w} `)) && !avoid.some(w => cardText.includes(` ${w} `));
         const score = (stat ? 2 : 0) + (line != null && cardText.includes(` ${norm(String(line))} `) ? 1 : 0);
         if (!best || score > best.score || (score === best.score && text.length < best.text.length)) best = { el, text, score, stat };
     }
@@ -476,7 +508,7 @@ function readLines() {
 // stat/line: open his card for that stat (a "Rebounds" leg opens the rebounds
 // prop, not the points one) when the board shows it, else any card of his.
 async function openPlayer(page, player, { settleMs = 1500, stat = null, line = null } = {}) {
-    const hints = { stats: statWords(stat), line: line == null ? null : String(line) };
+    const hints = { stats: statWords(stat), line: line == null ? null : String(line), avoid: avoidWords(stat) };
     const toTop = () => page.evaluate(() => { window.scrollTo(0, 0); for (const el of document.querySelectorAll('*')) if (el.scrollTop) el.scrollTop = 0; });
     const open = async label => {
         await clickPast(page, '[data-codev-player="1"]');
@@ -576,17 +608,19 @@ function markCardTabs(source) {
 
 // Clicks each of the open card's tabs in turn and reads what it shows. Lines
 // already in `known` (the card as it opened) are left out of each tab's text.
-async function readCardTabs(page, { settleMs = 800, max = 6, maxChars = 4000, known = '' } = {}) {
+async function readCardTabs(page, { settleMs = 800, max = 6, maxChars = 4000, known = '', stop = () => false } = {}) {
     const seen = new Set(String(known).split('\n'));
     const labels = (await page.evaluate(markCardTabs, CARD_TABS.source).catch(() => [])).slice(0, max);
     const tabs = [];
     for (const label of labels) {
+        if (stop()) break;
         // The card re-renders on each click: marked again, the tab found by its label.
         const marked = await page.evaluate(markCardTabs, CARD_TABS.source).catch(() => []);
         if (!marked.includes(label)) continue;
         const ok = await page.click(`[data-codev-tab="${label.replace(/"/g, '\\"')}"]`, { timeout: 3000 }).then(() => true).catch(() => false);
         if (!ok) continue;
         await page.waitForTimeout(settleMs);
+        if (stop()) break;
         const fresh = (await readDetails(page, { scrolls: 3, maxChars })).split('\n').filter(l => !seen.has(l));
         fresh.forEach(l => seen.add(l));
         if (fresh.length) tabs.push({ tab: label, text: fresh.join('\n') });
@@ -681,7 +715,7 @@ function keepLegs(props, legs) {
         if (!name) continue;
         const his = props.filter(p => normWords(p.player) === name || normWords(p.player).endsWith(` ${name.split(' ').slice(-1)[0]}`) && normWords(p.player)[0] === name[0]);
         const words = statWords(leg.stat);
-        const forStat = words.length ? his.filter(p => words.some(w => ` ${normWords(p.market)} `.includes(` ${w} `))) : [];
+        const forStat = words.length ? his.filter(p => sameMarket(p.market, leg.stat)) : [];
         (forStat.length ? forStat : his).forEach(p => kept.add(p));
     }
     return props.filter(p => kept.has(p));
@@ -695,4 +729,4 @@ function onlyGame(props, teams) {
     return props.filter(p => !p.game || p.game === key);
 }
 
-module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, dayLabels, legSummary, keepLegs, onTools, normWords };
+module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords };

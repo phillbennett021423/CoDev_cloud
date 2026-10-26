@@ -757,7 +757,7 @@ test('a list of legs for tomorrow is researched in one visit: each player\'s car
     assert.equal(reply.isError, undefined, reply.content[0].text);
     const text = reply.content[0].text;
     assert.match(text, /^Outlier > Props > NBA > Tomorrow > 7:00 PM WAS vs CHA\nFound 3 of 4 legs on Outlier\./);
-    assert.match(text, /1\. Bilal Coulibaly Over 3\.5 Rebounds\n {3}Outlier 4\.5 Rebounds \(over -119\): no hit rates shown \(for Outlier's 4\.5: your 3\.5 is 1 easier\)\n {3}Card: Hit L5 90%, L10 70% \| Matchup: CHA rank vs SF: 28th \| Injuries: Mark Williams OUT \| Usage: Minutes 31\.2/, 'his rebounds card, not his points one');
+    assert.match(text, /1\. Bilal Coulibaly Over 3\.5 Rebounds\n {3}Outlier 4\.5 Rebounds \(over -119\): no hit rates shown \(for Outlier's 4\.5 \(the line moved; your 3\.5 is 1 easier\)\)\n {3}Card: Hit L5 90%, L10 70% \| Matchup: CHA rank vs SF: 28th \| Injuries: Mark Williams OUT \| Usage: Minutes 31\.2/, 'his rebounds card, not his points one');
     assert.match(text, /Best on Outlier's hit rates.*\n1\. Bilal Coulibaly Over 3\.5 Rebounds: 80%\n2\. LaMelo Ball Higher 16\.5 Points: 55%/, 'legs are ranked, on the card\'s hit rates when the board row shows none');
     assert.match(text, /For reference only, CoDev's sportsbook audit/);
     assert.match(text, /2\. LaMelo Ball Higher 16\.5 Points\n {3}Outlier 16\.5 Points \(over -119\): no hit rates shown \(on your line\)\n {3}Card: Hit L5 40%/);
@@ -933,4 +933,22 @@ test('a grid board\'s bare hit-rate cells get their column labels, and a leg is 
     assert.equal(Math.round(under.rates.l5 * 100), 20, 'an Under reads the Over row\'s rate turned around');
     const between = matchLeg({ player: 'Trae Young', stat: 'Assists', line: 10, side: 'Over' }, props);
     assert.ok([9.5, 10.5].includes(between.row.line));
+});
+
+test('a leg matches its full-game stat, not a quarter, combo or far-off alt line, and a moved line still matches', () => {
+    const { matchLeg } = require('../agents/outlier');
+    const row = (player, market, line, l10) => ({ player, market, line, side: 'Over', hitRates: { l10 }, odds: [] });
+    const props = [
+        row('Trae Young', '1st Quarter Assists', 0.5, 0.9), row('Trae Young', 'Assists', 10.5, 0.5),
+        row('Brandon Miller', 'Pts+Rebs+Asts', 33.5, 0.6), row('Brandon Miller', 'Points', 24, 0.55),
+        row('Anthony Davis', 'Rebounds', 0.5, 1), row('Naz Reid', 'Blocks + Steals', 1.5, 0.4), row('Naz Reid', 'Blocks', 0.5, 0.7)
+    ];
+    const trae = matchLeg({ player: 'Trae Young', stat: 'Assists', line: 9.5, side: 'Over' }, props);
+    assert.equal(trae.row.market, 'Assists', 'not the 1st quarter line');
+    const miller = matchLeg({ player: 'Brandon Miller', stat: 'Points', line: 23.5, side: 'Over' }, props);
+    assert.equal(miller.row.market, 'Points', 'not Pts+Rebs+Asts');
+    assert.equal(miller.sameLine, false);
+    assert.equal(miller.easier, true, 'the line moved to 24: the user\'s 23.5 is easier');
+    assert.equal(matchLeg({ player: 'Anthony Davis', stat: 'Rebounds', line: 11.5 }, props), null, 'a 0.5 line is another market, not his 11.5');
+    assert.equal(matchLeg({ player: 'Naz Reid', stat: 'Blocks + Steals', line: 1.5 }, props).row.market, 'Blocks + Steals');
 });
