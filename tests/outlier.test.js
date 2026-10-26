@@ -834,6 +834,12 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     const again = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
     assert.match(again.content[0].text, /Minutes 34\.0 \(read earlier\)/);
     assert.equal(hits.card, 3);
+    assert.equal(hits.board, 1, 'every leg read a minute ago: Outlier isn\'t opened again');
+    // After a crash or restart (a new pipeline on the same folder), the cards are still there.
+    const restarted = createService({}, { pipeline: createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] }) });
+    const resumed = await restarted.callTool('outlier_research_list', { sport: 'NBA', legs });
+    assert.match(resumed.content[0].text, /Minutes 34\.0 \(read earlier\)/);
+    assert.equal(hits.card, 3, 'no card opened again after the restart');
 
     // Outlier says 429 to every card: CoDev backs off, then stops opening cards.
     limit = true;

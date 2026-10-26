@@ -21,6 +21,21 @@ protocol.registerSchemesAsPrivileged([
 // Only DuckDuckGo's HTML results page, the same one the Android app uses.
 const ALLOWED_HTTP = /^https:\/\/html\.duckduckgo\.com\/html\/\?/;
 
+// A crash log in the app's user data folder (CoDev-crash.log), so an error in the
+// main process is written down instead of closing the app, and the cause can be
+// found afterwards.
+function crashLog(kind, detail) {
+    try {
+        const file = path.join(app.getPath('userData'), 'CoDev-crash.log');
+        // Kept short: the newest entries, up to about 200 KB.
+        let old = '';
+        try { old = fs.readFileSync(file, 'utf8').slice(-200000); } catch { /* first entry */ }
+        fs.writeFileSync(file, `${old}[${new Date().toISOString()}] ${kind}: ${detail && detail.stack ? detail.stack : String(detail)}\n`);
+    } catch { /* nothing more to do */ }
+}
+process.on('uncaughtException', err => { crashLog('uncaughtException', err); console.error(err); });
+process.on('unhandledRejection', err => { crashLog('unhandledRejection', err); console.error(err); });
+
 function createWindow() {
     const win = new BrowserWindow({
         width: 1280,
@@ -39,6 +54,13 @@ function createWindow() {
     win.webContents.on('will-navigate', (event, url) => {
         if (!url.startsWith('app://codev/')) { event.preventDefault(); if (/^https?:\/\//.test(url)) shell.openExternal(url); }
     });
+    // The page died (out of memory, a renderer crash) or froze: logged, and reloaded,
+    // so it comes back with the chats it saved instead of a closed window.
+    win.webContents.on('render-process-gone', (_event, details) => {
+        crashLog('render-process-gone', `${details.reason} (exit code ${details.exitCode})`);
+        if (details.reason !== 'clean-exit' && !win.isDestroyed()) setTimeout(() => { if (!win.isDestroyed()) win.webContents.reload(); }, 500);
+    });
+    win.on('unresponsive', () => crashLog('unresponsive', 'the window stopped responding'));
     win.loadURL('app://codev/index.html');
 }
 
@@ -157,6 +179,9 @@ app.whenReady().then(() => {
         return { status: response.status, audio: response.status === 200 ? new Uint8Array(await response.arrayBuffer()) : null };
     });
 
+    app.on('child-process-gone', (_event, details) => {
+        if (details.reason !== 'clean-exit' && details.reason !== 'killed') crashLog('child-process-gone', `${details.type} ${details.reason} (exit code ${details.exitCode})`);
+    });
     createWindow();
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
