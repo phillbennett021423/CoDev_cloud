@@ -60,6 +60,8 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
     const backlogs = new Map();   // agentId -> recent inspector events
     const casts = new Map();      // agentId -> { page, cdp }
     const stateListeners = new Set();
+    // A browser someone is watching doesn't close for being idle.
+    manager.holdOpen(agentId => (watchers.get(agentId) || new Set()).size > 0);
 
     function send(agentId, event) {
         for (const listener of watchers.get(agentId) || []) {
@@ -200,6 +202,8 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
     }
 
     function setControl(session, userControl) {
+        // Once the user has driven it, it's their browser too (browser-manager.js isUsers).
+        if (userControl) session.userOwned = true;
         if (session.userControl === userControl) return;
         session.userControl = userControl;
         if (!userControl) manager.handBack(session);
@@ -209,6 +213,7 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
     }
 
     // The user's own input. Any input takes control from the agent until "release".
+    // "close" is the user closing the browser; only they close one they've used.
     // "open" and "navigate" also start the browser when it isn't open yet, so the
     // user can browse in an agent's browser (or the Outlier one) before the agent
     // does, and the agent picks up on that same page when it's handed back.
@@ -216,6 +221,7 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
         const id = String(agentId || '');
         const { op } = req;
         let session = manager.peek(id);
+        if (op === 'close') { if (session) await manager.close(id); return { ok: true }; }
         const fresh = !session;
         if (!session && (op === 'open' || op === 'navigate') && id) session = await manager.get(id);
         // "open" with a url: go there only if this just opened the browser (else keep the user's page).

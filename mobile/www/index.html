@@ -503,6 +503,7 @@
             <button type="button" onclick="liveControl({ op: 'reload' })" title="Reload">⟳</button>
             <input type="text" id="liveUrl" placeholder="Address or search" autocomplete="off" onkeydown="if (event.key === 'Enter') liveControl({ op: 'navigate', url: this.value })">
             <button type="button" id="liveTakeoverBtn" onclick="toggleLiveTakeover()" title="Pause the agent and use its browser yourself">✋ Take over</button>
+            <button type="button" onclick="closeLiveBrowser()" title="Close this browser. A browser you've used stays open until you close it here, even when no agent is using it.">⏻ Close browser</button>
             <button type="button" onclick="forgetBrowserSignIns()" title="Sign-ins in the agents' browsers are kept between sessions. This deletes this agent's (cookies, local storage); Outlier's has its own button in the Outlier tab.">🧹 Forget sign-ins</button>
             <button type="button" onclick="toggleLiveView(false)" title="Close">✕</button>
         </div>
@@ -2625,6 +2626,11 @@
         // (so typing works on phones, whose keyboard only opens for a text box), and text typed
         // into it is sent as text, while named keys (Enter, Backspace, arrows, shortcuts) go as keys.
         // Agents' browsers keep their sign-ins between sessions; this clears the shown agent's.
+        function closeLiveBrowser() {
+            if (!live.sessions.some(s => s.agentId === live.agentId)) { logConsoleActivity("[Live] That browser isn't open."); return; }
+            liveControl({ op: "close" });
+        }
+
         async function forgetBrowserSignIns() {
             const agentId = live.agentId;
             if (!agentId) { logConsoleActivity("[Live] Pick an agent's browser first."); return; }

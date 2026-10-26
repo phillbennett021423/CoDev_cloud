@@ -207,6 +207,8 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
     async function closeBrowser(_args, ctx) {
         const session = manager.peek(ctx.agentId);
         if (session && session.paused) return failure('Your browser is paused for the user in the live view. Leave it open; the user hands it back when they\'re done.');
+        // The user has used this browser, so it's theirs too: it stays open for them.
+        if (session && manager.isUsers(session)) return text('The user has used this browser in the live view, so it stays open for them. You are done with it; nothing more to close.');
         return text(await manager.close(ctx.agentId) ? 'Closed your browser; its profile and cookies were deleted.' : 'Your browser was not open.');
     }
 
@@ -348,7 +350,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
               full_page: { type: 'boolean', description: 'Capture the whole scrollable page, not just the visible part.' },
               save_as: { type: 'string', description: 'Save it in the project folder at this path (like screenshots/home.png); omit to keep it in CoDev\'s screenshots folder.' } } } },
         { name: 'browser_close', run: closeBrowser, annotations: { readOnlyHint: false },
-          description: 'Close your browser and delete its temporary profile and cookies. Do it when a web task is finished.',
+          description: 'Close your browser when a web task is finished. A browser the user has opened or used in the live view stays open for them.',
           inputSchema: { type: 'object', properties: {} } },
         { name: 'browser_list_credentials', run: listCredentials, annotations: { readOnlyHint: true },
           description: "List the user's saved web logins and saved sessions: names, sites and user names only, never passwords.",

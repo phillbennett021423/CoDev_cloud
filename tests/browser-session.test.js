@@ -142,6 +142,56 @@ test('the user opens and drives a browser while the agent works in a background 
     assert.equal(service.context({ 'codev/agentId': '@outlier' }).agentId, 'outlier');
 });
 
+test('a browser the user has used stays open until the user closes it', async t => {
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const base = await startSite(t);
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-owned-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const { createBrowserManager } = require('../desktop/browser/browser-manager');
+    const { createLiveView } = require('../desktop/browser/live-view');
+    const manager = createBrowserManager({ profileRoot: path.join(dataDir, 'profiles'), maxSessions: 1, idleMs: -1, log: () => {} });
+    t.after(() => manager.closeAll());
+    const live = createLiveView({ manager, isBlockedUrl: () => false, log: () => {} });
+    const service = createBrowserService({ dataDir, profileRoot: path.join(dataDir, 'profiles2'), passphrase: 'test', log: () => {} });
+    t.after(() => service.close());
+
+    // An agent's browser nobody has used or watched still closes when idle.
+    await manager.get('agent-1');
+    manager.sweepIdle();
+    assert.equal(manager.peek('agent-1'), null);
+
+    // The user opens one in the live view, hands it back and walks away: it stays open.
+    await live.control('agent-1', { op: 'navigate', url: `${base}/ok` });
+    await live.control('agent-1', { op: 'release' });
+    assert.equal(manager.list()[0].userOwned, true);
+    manager.sweepIdle();
+    assert.ok(manager.peek('agent-1'), 'no idle close');
+    // Another agent needing a browser past the limit doesn't take it away either.
+    await manager.get('agent-2');
+    assert.ok(manager.peek('agent-1'), 'not closed to make room');
+    assert.ok(manager.peek('agent-2'));
+    // Watching alone keeps an idle browser open.
+    const stop = live.subscribe('agent-2', () => {});
+    manager.sweepIdle();
+    assert.ok(manager.peek('agent-2'), 'watched, so kept');
+    stop();
+    manager.sweepIdle();
+    assert.equal(manager.peek('agent-2'), null, 'closes once nobody watches or used it');
+
+    // The agent saying it's done leaves the user's browser open.
+    const ctx = service.context({ 'codev/agentId': 'agent-3' });
+    await service.live.control('agent-3', { op: 'navigate', url: `${base}/ok` });
+    const done = await service.callTool('browser_close', {}, ctx);
+    assert.equal(done.isError, false);
+    assert.match(done.content[0].text, /stays open for them/);
+    assert.ok(service.manager.peek('agent-3'));
+    // The user's own close button closes it.
+    assert.deepEqual(await service.live.control('agent-3', { op: 'close' }), { ok: true });
+    assert.equal(service.manager.peek('agent-3'), null);
+});
+
 test("agents' browsers keep their sign-ins between sessions until they are forgotten", async t => {
     const launched = await launchBrowser();
     if (launched.skip) return t.skip(launched.skip);
