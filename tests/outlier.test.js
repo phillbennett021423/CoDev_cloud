@@ -513,7 +513,7 @@ test('an agent asks for NBA props for the 8pm game: the scan clicks the NBA tab 
     if (launched.skip) return t.skip(launched.skip);
     await launched.browser.close();
     const { createService } = require('../agents/outlier');
-    const card = (name, game, line) => `<div><div>${name}</div><div>${game}</div><div>Points</div><div>Over ${line}</div><div>FanDuel -119</div></div>`;
+    const card = (name, game, line) => `<div><div class="pn" style="cursor:pointer">${name}</div><div>${game}</div><div>Points</div><div>Over ${line}</div><div>FanDuel -119</div></div>`;
     const boards = {
         early: ['Nikola Jokic', 'Jamal Murray', 'LeBron James', 'Austin Reaves'].map((n, i) => card(n, 'DEN @ LAL', 20.5 + i)).join(''),
         late: ['Jayson Tatum', 'Jaylen Brown', 'Jalen Brunson', 'Josh Hart'].map((n, i) => card(n, 'BOS @ NYK', 20.5 + i)).join('')
@@ -529,14 +529,28 @@ test('an agent asks for NBA props for the 8pm game: the scan clicks the NBA tab 
     const page = `<!doctype html><body>
         <button onclick="fetch('/picked')">More</button>
         <header><a href="#" id="ev">Positive EV</a> <a href="#" id="props">Props</a></header>
-        <nav id="sports" hidden><button id="nba">NBA</button><button id="nfl">NFL</button><button id="bball">Basketball</button></nav><main id="main">Positive EV: the best +EV bets right now</main>
+        <nav id="sports" hidden><button id="nba">NBA</button><button id="nfl">NFL</button><button id="bball">Basketball</button></nav><a href="#" id="games">Games</a><main id="main">Positive EV: the best +EV bets right now</main>
         <script>
             const boards = ${JSON.stringify(boards)};
             const main = document.getElementById('main');
-            document.getElementById('props').onclick = () => { document.getElementById('sports').hidden = false; main.innerHTML = 'Pick a sport'; };
+            let tab = 'props';
+            document.getElementById('props').onclick = () => { tab = 'props'; document.getElementById('sports').hidden = false; main.innerHTML = 'Pick a sport'; };
+            document.getElementById('games').onclick = () => { tab = 'games'; document.getElementById('sports').hidden = false; main.innerHTML = 'Pick a sport'; };
             document.getElementById('nfl').onclick = () => { main.innerHTML = 'No NFL games'; };
             document.getElementById('bball').onclick = () => { main.innerHTML = boards.all; };
+            // A player's name opens his Market Details with its own add-to-picks button.
+            main.addEventListener('click', e => {
+                if (!e.target.classList.contains('pn')) return;
+                main.innerHTML = '<div role="dialog"><h2>' + e.target.textContent + ' Points Over 22.5</h2><h3>Hit Rate</h3><p>L5 80% L10 70% H2H 67%</p>'
+                    + '<h3>Supporting Stats</h3><p>Minutes 36.1 FGA 19.4</p><h3>Matchup</h3><p>NYK rank vs SF: 27th</p><h3>Injuries</h3><p>Kristaps Porzingis OUT</p>'
+                    + '<h3>Odds Movement</h3><p>FanDuel -105 to -119</p><button onclick="fetch(\\'/picked\\')">Add to My Picks</button></div>';
+            });
             document.getElementById('nba').onclick = () => {
+                if (tab === 'games') {
+                    main.innerHTML = '<div class="gg" style="cursor:pointer"><span>8:00 PM</span> <span>BOS @ NYK</span> <span>BOS -3.5 -110</span></div>';
+                    main.querySelector('.gg').onclick = () => { main.innerHTML = '<h2>BOS @ NYK</h2><p>Spread BOS -3.5 -110 Total 221.5</p><h3>Injuries</h3><p>Mitchell Robinson OUT</p><h3>Line Movement and Public Bet splits</h3><p>Public Bet 62% BOS Public Money 71% BOS</p>'; };
+                    return;
+                }
                 main.innerHTML = '<div id="games"><div class="g" data-b="early" style="cursor:pointer"><span>3:00 PM</span> <span>DEN @ LAL</span></div>'
                     + '<div class="g" data-b="late" style="cursor:pointer"><span>8:00 PM</span> <span>BOS @ NYK</span></div></div>';
                 document.querySelectorAll('.g').forEach(g => { g.onclick = () => { main.innerHTML = boards[g.dataset.b]; }; });
@@ -579,4 +593,66 @@ test('an agent asks for NBA props for the 8pm game: the scan clicks the NBA tab 
     const kept = JSON.parse(fs.readFileSync(pipeline.files.scrape, 'utf8'));
     assert.deepEqual(kept.props.map(p => p.player).sort(), ['Bilal Coulibaly', 'Brandon Miller', 'Kyshawn George', 'LaMelo Ball']);
     assert.equal(picked, 0);
+
+    // One leg's Market Details: board, game, then the player's name.
+    const details = await service.callTool('outlier_research', { sport: 'NBA', game: '8pm', player: 'Jayson Tatum' });
+    assert.equal(details.isError, undefined, details.content[0].text);
+    assert.match(details.content[0].text, /^Outlier > Props > NBA > 8:00 PM BOS vs NYK > Jayson Tatum\n/);
+    assert.match(details.content[0].text, /Hit Rate\nL5 80% L10 70% H2H 67%\nSupporting Stats\nMinutes 36\.1.*\nMatchup\nNYK rank vs SF: 27th\nInjuries\nKristaps Porzingis OUT\nOdds Movement/s);
+    // A game's own page, from the Games tab, where the cards show their odds.
+    const gamePage = await service.callTool('outlier_research', { sport: 'NBA', game: 'Celtics vs Knicks' });
+    assert.equal(gamePage.isError, undefined, gamePage.content[0].text);
+    assert.match(gamePage.content[0].text, /^Outlier > Games > NBA > 8:00 PM BOS vs NYK\n/);
+    assert.match(gamePage.content[0].text, /Public Bet 62% BOS Public Money 71% BOS/);
+    const nobody = await service.callTool('outlier_research', { sport: 'NBA', game: '8pm', player: 'Michael Jordan' });
+    assert.equal(nobody.isError, true);
+    assert.match(nobody.content[0].text, /Couldn't find Michael Jordan/);
+    assert.equal(picked, 0, 'nothing was added to My Picks');
+    assert.match((await service.callTool('outlier_guide', {})).content[0].text, /Market Details.*Odds Movement.*When to use each one/s);
+});
+
+test('Outlier reopens on +EV behind a popup: the scan closes the popup, leaves +EV for the Props board and never touches the slip', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    const card = (name, line) => `<div><div>${name}</div><div>BOS @ NYK</div><div>Points</div><div>Over ${line}</div><div>FanDuel -119</div></div>`;
+    const board = ['Jayson Tatum', 'Jaylen Brown', 'Jalen Brunson', 'Josh Hart'].map((n, i) => card(n, 20.5 + i)).join('');
+    // A popup covering the page, and a fixed slip whose × would remove a pick.
+    const popup = `<div style="position:fixed;inset:0;background:#0008;z-index:9"><div role="dialog">Try Pro free <button onclick="fetch('/accepted')">Start trial</button> <button onclick="this.closest('div[style]').remove()">Not now</button></div></div>`;
+    const slip = `<aside style="position:fixed;right:0;bottom:0;width:120px">My Picks: Tatum Over 20.5 <button onclick="fetch('/removed')">×</button></aside>`;
+    const pages = {
+        // +EV: its own tabs, no Props tab or link.
+        '/pro/ev': `<!doctype html><body>${popup}${slip}<nav><button>NBA Player Props</button><button>NFL Player Props</button><button>Pinnacle</button></nav><main>Positive EV</main></body>`,
+        '/props': `<!doctype html><body>${popup}${slip}<nav><button id="nba">NBA</button></nav><main id="main">Pick a sport</main><script>
+            document.getElementById('nba').onclick = () => {
+                const main = document.getElementById('main');
+                main.innerHTML = '<div class="g" style="cursor:pointer"><span>8:00 PM</span> <span>BOS @ NYK</span></div>';
+                main.querySelector('.g').onclick = () => { main.innerHTML = ${JSON.stringify(board)}; };
+            };</script></body>`
+    };
+    const hits = { accepted: 0, removed: 0 };
+    const server = http.createServer((req, res) => {
+        const at = req.url.split('?')[0];
+        if (at === '/accepted' || at === '/removed') { hits[at.slice(1)]++; return res.end(); }
+        // Outlier reopens the last tool used.
+        if (!pages[at]) { res.writeHead(302, { Location: '/pro/ev' }); return res.end(); }
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(pages[at]);
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false }));
+    const service = createService({}, { pipeline });
+
+    const reply = await service.callTool('outlier_scan_board', { sport: 'NBA', game: '8pm' });
+    assert.equal(reply.isError, undefined, reply.content[0].text);
+    assert.match(reply.content[0].text, /^Outlier > Props > NBA > 8:00 PM BOS vs NYK\n4 props/);
+    assert.deepEqual(hits, { accepted: 0, removed: 0 }, 'the popup was closed, not accepted, and the slip was left alone');
 });

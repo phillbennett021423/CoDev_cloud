@@ -55,6 +55,22 @@ function gameTeams(text) {
     return m ? [m[1], m[2]] : null;
 }
 
+// Runs inside the page: scrolls the window and any scrolling panel down a
+// screen. False when nothing moved (the end).
+const scrollStep = () => {
+    const before = window.scrollY;
+    window.scrollBy(0, window.innerHeight * 0.9);
+    let any = window.scrollY !== before;
+    for (const el of document.querySelectorAll('*')) {
+        if (el.scrollHeight > el.clientHeight + 50 && /(auto|scroll)/.test(getComputedStyle(el).overflowY)) {
+            const top = el.scrollTop;
+            el.scrollTop += el.clientHeight * 0.9;
+            if (el.scrollTop !== top) any = true;
+        }
+    }
+    return any;
+};
+
 // Runs inside the page: marks the best clickable element whose own label is one of
 // labels (a tab, chip or menu item, not a block of text that mentions it) with
 // data-codev-nav and returns its label, or null.
@@ -66,8 +82,9 @@ function markByLabel(labels) {
     const clickable = el => el.matches('a, button, [role="tab"], [role="button"], [role="link"], [role="menuitem"], [role="option"], label, [onclick]')
         || getComputedStyle(el).cursor === 'pointer';
     let best = null;
-    for (const el of document.querySelectorAll('a, button, [role], li, span, div, label, p')) {
-        const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+    for (const el of document.querySelectorAll('a, button, [role], li, span, div, label, p, [aria-label], [title]')) {
+        // Icon-only tabs are named by aria-label or title.
+        const text = ((el.innerText || '').trim() || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
         if (!text || text.length > 40 || !visible(el)) continue;
         // "NBA", "NBA 42" (a count of props) or "🏀 NBA".
         const label = text.replace(/^[^\p{L}\p{N}]+/u, '').replace(/\s*\(?\d+\)?$/, '').trim().toLowerCase();
@@ -85,8 +102,9 @@ function markByLabel(labels) {
 
 // Runs inside the page: every game card that shows a start time, marked with
 // data-codev-game="i". A card is the largest box around the time that still holds
-// only one time; prop cards (a line and odds) and pick buttons are left out.
-function listGames() {
+// only one time; prop cards (a line and odds) and pick buttons are left out, except
+// on the Games tab (withOdds), where every game card shows its spread and odds.
+function listGames(withOdds = false) {
     document.querySelectorAll('[data-codev-game]').forEach(el => el.removeAttribute('data-codev-game'));
     const TIME = /\b\d{1,2}(?::\d{2})\s*(?:[ap]\.?m?\.?)?(?![\d:])|\b\d{1,2}\s*[ap]\.?m\.?(?![a-z])/i;
     const ODDS = /(^|[\s(])[+\-−]\d{3,4}(?=$|[\s)])/;
@@ -109,7 +127,7 @@ function listGames() {
             card = up;
         }
         const cardText = text(card);
-        if (seen.has(card) || (ODDS.test(cardText) && LINE.test(cardText)) || NEVER.test(cardText)) continue;
+        if (seen.has(card) || (!withOdds && ODDS.test(cardText) && LINE.test(cardText)) || NEVER.test(cardText)) continue;
         seen.add(card);
         let target = leaf;
         for (let up = leaf; up && up !== card.parentElement; up = up.parentElement) if (clickable(up)) { target = up; break; }
@@ -166,9 +184,72 @@ function chooseOption(labels) {
     return null;
 }
 
+// Runs inside the page: closes popups and banners that cover the page (a promo,
+// a tour, a cookie notice) by their close button. Only buttons that close: never
+// one that accepts, continues or starts anything.
+function dismissOverlays() {
+    const CLOSE = /^(×|✕|✖|x|close|dismiss|not now|no thanks|maybe later|got it|skip|skip tour)$/i;
+    // A dialog or a fixed banner, but never the bet slip or My Picks, where × removes a pick.
+    const SLIP = /\b(slip|my picks|parlay|wager|stake|entry|entries|to win|payout)\b/i;
+    const covering = el => {
+        for (let up = el; up && up !== document.body; up = up.parentElement) {
+            const style = getComputedStyle(up);
+            if (up.matches('[role="dialog"], [aria-modal="true"], [role="alertdialog"]') || style.position === 'fixed' || style.position === 'sticky') {
+                return !SLIP.test(up.innerText || '');
+            }
+        }
+        return false;
+    };
+    let closed = 0;
+    for (const el of document.querySelectorAll('button, [role="button"], a, [aria-label]')) {
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const name = ((el.innerText || '').trim() || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+        if (!CLOSE.test(name) || !covering(el)) continue;
+        el.click();
+        closed++;
+    }
+    return closed;
+}
+
+// Runs inside the page: marks a link to the regular props board (an address with
+// "prop" in it, never one of the /pro/ tools like +EV) with data-codev-nav.
+function markPropsLink() {
+    document.querySelectorAll('[data-codev-nav]').forEach(el => el.removeAttribute('data-codev-nav'));
+    let best = null;
+    for (const a of document.querySelectorAll('a[href]')) {
+        let url;
+        try { url = new URL(a.href, location.href); } catch { continue; }
+        if (url.origin !== location.origin || !/prop/i.test(url.pathname) || /^\/pro(\/|$)/i.test(url.pathname)) continue;
+        if (!best || url.pathname.length < best.path.length) best = { a, path: url.pathname };
+    }
+    if (!best) return null;
+    best.a.setAttribute('data-codev-nav', '1');
+    return best.path;
+}
+
+// Outlier's tools live under /pro/ (/pro/ev is Positive EV) and it reopens the last
+// one used, where the regular menu isn't shown.
+const onTools = page => { try { return /^\/pro(\/|$)/i.test(new URL(page.url()).pathname); } catch { return false; } };
+// Addresses tried for the props board when no tab or link leads there.
+const PROPS_PATHS = ['/props', '/prop-finder', '/player-props', '/'];
+
+// Clicks what's marked; when a popup is in the way, closes it and tries again,
+// then clicks the element itself.
+async function clickPast(page, selector) {
+    try { return await page.click(selector, { timeout: 5000 }); } catch { /* covered: close what covers it */ }
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.evaluate(dismissOverlays).catch(() => 0);
+    await page.waitForTimeout(300);
+    try { return await page.click(selector, { timeout: 3000 }); } catch { /* still covered */ }
+    const clicked = await page.evaluate(sel => { const el = document.querySelector(sel); if (el) el.click(); return Boolean(el); }, selector);
+    if (!clicked) throw new Error(`The element to click (${selector}) is gone.`);
+}
+
 // Clicks through Outlier on page: the props board, sport, then market, then game. Scrolls to find
 // a game further down. Returns { steps, game, teams } or throws with what it saw.
-async function navigate(page, { section, sport, market, game } = {}, { settleMs = 1500 } = {}) {
+// player: a player's card is opened next (openPlayer), so the props board is wanted.
+async function navigate(page, { section, sport, market, game, player } = {}, { settleMs = 1500 } = {}) {
     const steps = [];
     const settle = async () => {
         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
@@ -178,7 +259,7 @@ async function navigate(page, { section, sport, market, game } = {}, { settleMs 
     const clickLabel = async (labels, what, { optional = false } = {}) => {
         const found = await page.evaluate(markByLabel, labels);
         if (found) {
-            await page.click('[data-codev-nav="1"]', { timeout: 5000 });
+            await clickPast(page, '[data-codev-nav="1"]');
         } else {
             const chosen = await page.evaluate(chooseOption, labels);
             if (!chosen) {
@@ -194,38 +275,57 @@ async function navigate(page, { section, sport, market, game } = {}, { settleMs 
         steps.push(found);
         await settle();
     };
-    // Off the Positive EV tool and onto the regular props board.
+    // Popups first: they cover the tabs.
+    await page.keyboard.press('Escape').catch(() => {});
+    if (await page.evaluate(dismissOverlays).catch(() => 0)) await page.waitForTimeout(300);
+    // Off the Positive EV tool and onto the regular props board: its tab, else a
+    // link to it, else its address (from +EV, where the menu isn't shown).
+    const toProps = async () => {
+        const before = steps.length;
+        await clickLabel(PROPS_SECTIONS, 'the props board', { optional: true });
+        if (steps.length > before) {
+            if (!onTools(page)) return true;
+            steps.pop();
+        }
+        if (await page.evaluate(markPropsLink)) {
+            await clickPast(page, '[data-codev-nav="1"]');
+            await settle();
+            if (!onTools(page)) { steps.push('Props'); return true; }
+        }
+        return false;
+    };
     if (section) await clickLabel([String(section).trim()], `a "${section}" tab`);
-    else if (sport || game) await clickLabel(PROPS_SECTIONS, 'the props board', { optional: true });
+    else if ((sport || game || player) && !await toProps()) {
+        const origin = new URL(page.url()).origin;
+        for (const where of PROPS_PATHS) {
+            await page.goto(origin + where, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+            await settle();
+            await page.evaluate(dismissOverlays).catch(() => 0);
+            if (onTools(page)) continue;
+            if (await toProps()) break;
+            if (where !== '/' && /prop/i.test(new URL(page.url()).pathname)) { steps.push('Props'); break; }
+        }
+        if (onTools(page)) {
+            throw new Error(`Outlier stays on its ${new URL(page.url()).pathname} tool (+EV) and shows no way to the regular Props board from there. `
+                + 'Ask the user to open Props once in the Outlier window (📈 Outlier tab, live view), then ask again: Outlier reopens the last board used.');
+        }
+    }
     if (sport) await clickLabel(sportLabels(sport), `a "${sport}" tab`);
     if (market) await clickLabel([String(market).trim()], `a "${market}" filter`);
     if (!game) return { steps, game: null, teams: null };
     const seen = new Map();
     for (let i = 0; i < 10; i++) {
-        const games = await page.evaluate(listGames);
+        const games = await page.evaluate(listGames, /^games?$/i.test(String(section || '').trim()));
         games.forEach(g => seen.set(`${g.time}|${g.text.slice(0, 60)}`, g));
         const pick = pickGame(games, game, sport);
         if (pick) {
             const teams = gameTeams(pick.text);
-            await page.click(`[data-codev-game="${pick.index}"]`, { timeout: 5000 }).catch(() => { /* a game header that isn't a link: the board is filtered by team instead */ });
+            await clickPast(page, `[data-codev-game="${pick.index}"]`).catch(() => { /* a game header that isn't a link: the board is filtered by team instead */ });
             steps.push(`${pick.at != null ? clock(pick.at) : pick.time}${teams ? ` ${teams.join(' vs ')}` : ''}`);
             await settle();
             return { steps, game: pick.text, teams };
         }
-        const moved = await page.evaluate(() => {
-            const before = window.scrollY;
-            window.scrollBy(0, window.innerHeight * 0.9);
-            let any = window.scrollY !== before;
-            for (const el of document.querySelectorAll('*')) {
-                if (el.scrollHeight > el.clientHeight + 50 && /(auto|scroll)/.test(getComputedStyle(el).overflowY)) {
-                    const top = el.scrollTop;
-                    el.scrollTop += el.clientHeight * 0.9;
-                    if (el.scrollTop !== top) any = true;
-                }
-            }
-            return any;
-        });
-        if (!moved) break;
+        if (!await page.evaluate(scrollStep)) break;
         await page.waitForTimeout(500);
     }
     // No game card for it (a board of props without game cards): read the whole
@@ -245,6 +345,84 @@ async function navigate(page, { section, sport, market, game } = {}, { settleMs 
         + (shown.length ? `Games shown:\n${shown.slice(0, 20).join('\n')}` : 'No game times were shown on that page.'));
 }
 
+// Runs inside the page: marks the visible text naming the player ("LeBron James",
+// "L. James") with data-codev-player and returns it, or null. The name itself is
+// the click target (it opens Market Details / the player card), never a pick or
+// add button around it.
+function markPlayer(name) {
+    document.querySelectorAll('[data-codev-player]').forEach(el => el.removeAttribute('data-codev-player'));
+    const norm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+    const full = norm(name);
+    const parts = full.split(' ');
+    const short = parts.length > 1 ? `${parts[0][0]} ${parts.slice(1).join(' ')}` : null;
+    const NEVER = /\b(submit|place|enter|confirm|add|pick|slip|deposit|withdraw|remove|delete|more|less|over|under|higher|lower)\b/i;
+    const ENTRY = /\b(submit|place|enter|confirm|add|pick|slip|deposit|withdraw|remove|delete)\b/i;
+    const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+    let best = null;
+    for (const el of document.querySelectorAll('body *')) {
+        const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+        if (!text || text.length > 60 || !visible(el)) continue;
+        const own = ` ${norm(text)} `;
+        if (!own.includes(` ${full} `) && !(short && own.includes(` ${short} `))) continue;
+        if (NEVER.test(text)) continue;
+        // A prop card that opens on click shows Over/Under itself; one that adds a pick doesn't open.
+        const button = el.closest('button, [role="button"]');
+        if (button && ENTRY.test(`${button.innerText || ''} ${button.getAttribute('aria-label') || ''}`)) continue;
+        if (!best || text.length < best.text.length) best = { el, text };
+    }
+    if (!best) return null;
+    best.el.setAttribute('data-codev-player', '1');
+    return best.text;
+}
+
+// Runs inside the page: the readable lines on screen (the page and any open
+// panel or dialog), for reading a player card or game page.
+function readLines() {
+    const out = [];
+    const roots = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"]')];
+    for (const root of roots.length ? roots : [document.body]) {
+        for (const line of (root.innerText || '').split('\n')) {
+            const text = line.replace(/\s+/g, ' ').trim();
+            if (text) out.push(text);
+        }
+    }
+    return out;
+}
+
+// Opens the player's Market Details / player card from the board on page,
+// scrolling down to find the name. Returns the label clicked or throws.
+async function openPlayer(page, player, { settleMs = 1500 } = {}) {
+    for (let i = 0; i < 15; i++) {
+        const found = await page.evaluate(markPlayer, String(player));
+        if (found) {
+            await clickPast(page, '[data-codev-player="1"]');
+            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+            await page.waitForTimeout(settleMs);
+            return found;
+        }
+        if (!await page.evaluate(scrollStep)) break;
+        await page.waitForTimeout(500);
+    }
+    throw new Error(`Couldn't find ${player} on that Outlier board (${page.url()}). Check the name's spelling, or give the sport, game and stat so the board shows his props.`);
+}
+
+// Reads every line of the open player card or game page, scrolling to its end.
+async function readDetails(page, { scrolls = 12, maxChars = 12000 } = {}) {
+    const lines = [];
+    const seen = new Set();
+    for (let i = 0; i <= scrolls; i++) {
+        for (const line of await page.evaluate(readLines)) {
+            if (seen.has(line)) continue;
+            seen.add(line);
+            lines.push(line);
+        }
+        if (i === scrolls || !await page.evaluate(scrollStep)) break;
+        await page.waitForTimeout(600);
+    }
+    const text = lines.join('\n');
+    return text.length > maxChars ? `${text.slice(0, maxChars)}\n… (cut)` : text;
+}
+
 // Keeps only props from the chosen game when the game names its teams; props
 // that don't say which game they're in stay.
 function onlyGame(props, teams) {
@@ -253,4 +431,4 @@ function onlyGame(props, teams) {
     return props.filter(p => !p.game || p.game === key);
 }
 
-module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS };
+module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, markPlayer, openPlayer, readDetails, dismissOverlays, markPropsLink };
