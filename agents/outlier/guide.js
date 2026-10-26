@@ -43,7 +43,7 @@ Sports: NBA, WNBA, NFL, NCAAF (CFB), MLB, NHL, NCAAB (CBB), soccer.
 
 ## CoDev's Outlier tools
 
-- **outlier_research_list**: a list of legs (from Dabble, Underdog, PrizePicks): every leg researched in one visit, Outlier's line versus the user's, the audit on just those legs. Use it whenever the user gives a list.
+- **outlier_research_list**: a list of legs (from Dabble, Underdog, PrizePicks): every leg researched in one visit, Outlier's line versus the user's, everything on each player's card and its tabs (Supporting Stats, Game Log, Splits, Matchup, Injuries, Odds Movement), minutes and opportunity trends, the audit on just those legs. Use it whenever the user gives a list.
 - **outlier_scan_board**: one game's whole Props board read and audited into 4-6 leg tickets.
 - **outlier_research**: one player's card, or one game's page.
 - **outlier_read_section**: Insights, Popular, Games or Injuries as text.
