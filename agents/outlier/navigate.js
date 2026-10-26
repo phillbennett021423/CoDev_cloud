@@ -82,8 +82,9 @@ function markByLabel(labels) {
     const clickable = el => el.matches('a, button, [role="tab"], [role="button"], [role="link"], [role="menuitem"], [role="option"], label, [onclick]')
         || getComputedStyle(el).cursor === 'pointer';
     let best = null;
-    for (const el of document.querySelectorAll('a, button, [role], li, span, div, label, p')) {
-        const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+    for (const el of document.querySelectorAll('a, button, [role], li, span, div, label, p, [aria-label], [title]')) {
+        // Icon-only tabs are named by aria-label or title.
+        const text = ((el.innerText || '').trim() || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
         if (!text || text.length > 40 || !visible(el)) continue;
         // "NBA", "NBA 42" (a count of props) or "🏀 NBA".
         const label = text.replace(/^[^\p{L}\p{N}]+/u, '').replace(/\s*\(?\d+\)?$/, '').trim().toLowerCase();
@@ -183,6 +184,68 @@ function chooseOption(labels) {
     return null;
 }
 
+// Runs inside the page: closes popups and banners that cover the page (a promo,
+// a tour, a cookie notice) by their close button. Only buttons that close: never
+// one that accepts, continues or starts anything.
+function dismissOverlays() {
+    const CLOSE = /^(×|✕|✖|x|close|dismiss|not now|no thanks|maybe later|got it|skip|skip tour)$/i;
+    // A dialog or a fixed banner, but never the bet slip or My Picks, where × removes a pick.
+    const SLIP = /\b(slip|my picks|parlay|wager|stake|entry|entries|to win|payout)\b/i;
+    const covering = el => {
+        for (let up = el; up && up !== document.body; up = up.parentElement) {
+            const style = getComputedStyle(up);
+            if (up.matches('[role="dialog"], [aria-modal="true"], [role="alertdialog"]') || style.position === 'fixed' || style.position === 'sticky') {
+                return !SLIP.test(up.innerText || '');
+            }
+        }
+        return false;
+    };
+    let closed = 0;
+    for (const el of document.querySelectorAll('button, [role="button"], a, [aria-label]')) {
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const name = ((el.innerText || '').trim() || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+        if (!CLOSE.test(name) || !covering(el)) continue;
+        el.click();
+        closed++;
+    }
+    return closed;
+}
+
+// Runs inside the page: marks a link to the regular props board (an address with
+// "prop" in it, never one of the /pro/ tools like +EV) with data-codev-nav.
+function markPropsLink() {
+    document.querySelectorAll('[data-codev-nav]').forEach(el => el.removeAttribute('data-codev-nav'));
+    let best = null;
+    for (const a of document.querySelectorAll('a[href]')) {
+        let url;
+        try { url = new URL(a.href, location.href); } catch { continue; }
+        if (url.origin !== location.origin || !/prop/i.test(url.pathname) || /^\/pro(\/|$)/i.test(url.pathname)) continue;
+        if (!best || url.pathname.length < best.path.length) best = { a, path: url.pathname };
+    }
+    if (!best) return null;
+    best.a.setAttribute('data-codev-nav', '1');
+    return best.path;
+}
+
+// Outlier's tools live under /pro/ (/pro/ev is Positive EV) and it reopens the last
+// one used, where the regular menu isn't shown.
+const onTools = page => { try { return /^\/pro(\/|$)/i.test(new URL(page.url()).pathname); } catch { return false; } };
+// Addresses tried for the props board when no tab or link leads there.
+const PROPS_PATHS = ['/props', '/prop-finder', '/player-props', '/'];
+
+// Clicks what's marked; when a popup is in the way, closes it and tries again,
+// then clicks the element itself.
+async function clickPast(page, selector) {
+    try { return await page.click(selector, { timeout: 5000 }); } catch { /* covered: close what covers it */ }
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.evaluate(dismissOverlays).catch(() => 0);
+    await page.waitForTimeout(300);
+    try { return await page.click(selector, { timeout: 3000 }); } catch { /* still covered */ }
+    const clicked = await page.evaluate(sel => { const el = document.querySelector(sel); if (el) el.click(); return Boolean(el); }, selector);
+    if (!clicked) throw new Error(`The element to click (${selector}) is gone.`);
+}
+
 // Clicks through Outlier on page: the props board, sport, then market, then game. Scrolls to find
 // a game further down. Returns { steps, game, teams } or throws with what it saw.
 // player: a player's card is opened next (openPlayer), so the props board is wanted.
@@ -196,7 +259,7 @@ async function navigate(page, { section, sport, market, game, player } = {}, { s
     const clickLabel = async (labels, what, { optional = false } = {}) => {
         const found = await page.evaluate(markByLabel, labels);
         if (found) {
-            await page.click('[data-codev-nav="1"]', { timeout: 5000 });
+            await clickPast(page, '[data-codev-nav="1"]');
         } else {
             const chosen = await page.evaluate(chooseOption, labels);
             if (!chosen) {
@@ -212,9 +275,41 @@ async function navigate(page, { section, sport, market, game, player } = {}, { s
         steps.push(found);
         await settle();
     };
-    // Off the Positive EV tool and onto the regular props board.
+    // Popups first: they cover the tabs.
+    await page.keyboard.press('Escape').catch(() => {});
+    if (await page.evaluate(dismissOverlays).catch(() => 0)) await page.waitForTimeout(300);
+    // Off the Positive EV tool and onto the regular props board: its tab, else a
+    // link to it, else its address (from +EV, where the menu isn't shown).
+    const toProps = async () => {
+        const before = steps.length;
+        await clickLabel(PROPS_SECTIONS, 'the props board', { optional: true });
+        if (steps.length > before) {
+            if (!onTools(page)) return true;
+            steps.pop();
+        }
+        if (await page.evaluate(markPropsLink)) {
+            await clickPast(page, '[data-codev-nav="1"]');
+            await settle();
+            if (!onTools(page)) { steps.push('Props'); return true; }
+        }
+        return false;
+    };
     if (section) await clickLabel([String(section).trim()], `a "${section}" tab`);
-    else if (sport || game || player) await clickLabel(PROPS_SECTIONS, 'the props board', { optional: true });
+    else if ((sport || game || player) && !await toProps()) {
+        const origin = new URL(page.url()).origin;
+        for (const where of PROPS_PATHS) {
+            await page.goto(origin + where, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+            await settle();
+            await page.evaluate(dismissOverlays).catch(() => 0);
+            if (onTools(page)) continue;
+            if (await toProps()) break;
+            if (where !== '/' && /prop/i.test(new URL(page.url()).pathname)) { steps.push('Props'); break; }
+        }
+        if (onTools(page)) {
+            throw new Error(`Outlier stays on its ${new URL(page.url()).pathname} tool (+EV) and shows no way to the regular Props board from there. `
+                + 'Ask the user to open Props once in the Outlier window (📈 Outlier tab, live view), then ask again: Outlier reopens the last board used.');
+        }
+    }
     if (sport) await clickLabel(sportLabels(sport), `a "${sport}" tab`);
     if (market) await clickLabel([String(market).trim()], `a "${market}" filter`);
     if (!game) return { steps, game: null, teams: null };
@@ -225,7 +320,7 @@ async function navigate(page, { section, sport, market, game, player } = {}, { s
         const pick = pickGame(games, game, sport);
         if (pick) {
             const teams = gameTeams(pick.text);
-            await page.click(`[data-codev-game="${pick.index}"]`, { timeout: 5000 }).catch(() => { /* a game header that isn't a link: the board is filtered by team instead */ });
+            await clickPast(page, `[data-codev-game="${pick.index}"]`).catch(() => { /* a game header that isn't a link: the board is filtered by team instead */ });
             steps.push(`${pick.at != null ? clock(pick.at) : pick.time}${teams ? ` ${teams.join(' vs ')}` : ''}`);
             await settle();
             return { steps, game: pick.text, teams };
@@ -300,7 +395,7 @@ async function openPlayer(page, player, { settleMs = 1500 } = {}) {
     for (let i = 0; i < 15; i++) {
         const found = await page.evaluate(markPlayer, String(player));
         if (found) {
-            await page.click('[data-codev-player="1"]', { timeout: 5000 });
+            await clickPast(page, '[data-codev-player="1"]');
             await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
             await page.waitForTimeout(settleMs);
             return found;
@@ -336,4 +431,4 @@ function onlyGame(props, teams) {
     return props.filter(p => !p.game || p.game === key);
 }
 
-module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, markPlayer, openPlayer, readDetails };
+module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, markPlayer, openPlayer, readDetails, dismissOverlays, markPropsLink };

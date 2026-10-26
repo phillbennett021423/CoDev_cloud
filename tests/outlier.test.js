@@ -610,3 +610,49 @@ test('an agent asks for NBA props for the 8pm game: the scan clicks the NBA tab 
     assert.equal(picked, 0, 'nothing was added to My Picks');
     assert.match((await service.callTool('outlier_guide', {})).content[0].text, /Market Details.*Odds Movement.*When to use each one/s);
 });
+
+test('Outlier reopens on +EV behind a popup: the scan closes the popup, leaves +EV for the Props board and never touches the slip', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    const card = (name, line) => `<div><div>${name}</div><div>BOS @ NYK</div><div>Points</div><div>Over ${line}</div><div>FanDuel -119</div></div>`;
+    const board = ['Jayson Tatum', 'Jaylen Brown', 'Jalen Brunson', 'Josh Hart'].map((n, i) => card(n, 20.5 + i)).join('');
+    // A popup covering the page, and a fixed slip whose × would remove a pick.
+    const popup = `<div style="position:fixed;inset:0;background:#0008;z-index:9"><div role="dialog">Try Pro free <button onclick="fetch('/accepted')">Start trial</button> <button onclick="this.closest('div[style]').remove()">Not now</button></div></div>`;
+    const slip = `<aside style="position:fixed;right:0;bottom:0;width:120px">My Picks: Tatum Over 20.5 <button onclick="fetch('/removed')">×</button></aside>`;
+    const pages = {
+        // +EV: its own tabs, no Props tab or link.
+        '/pro/ev': `<!doctype html><body>${popup}${slip}<nav><button>NBA Player Props</button><button>NFL Player Props</button><button>Pinnacle</button></nav><main>Positive EV</main></body>`,
+        '/props': `<!doctype html><body>${popup}${slip}<nav><button id="nba">NBA</button></nav><main id="main">Pick a sport</main><script>
+            document.getElementById('nba').onclick = () => {
+                const main = document.getElementById('main');
+                main.innerHTML = '<div class="g" style="cursor:pointer"><span>8:00 PM</span> <span>BOS @ NYK</span></div>';
+                main.querySelector('.g').onclick = () => { main.innerHTML = ${JSON.stringify(board)}; };
+            };</script></body>`
+    };
+    const hits = { accepted: 0, removed: 0 };
+    const server = http.createServer((req, res) => {
+        const at = req.url.split('?')[0];
+        if (at === '/accepted' || at === '/removed') { hits[at.slice(1)]++; return res.end(); }
+        // Outlier reopens the last tool used.
+        if (!pages[at]) { res.writeHead(302, { Location: '/pro/ev' }); return res.end(); }
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(pages[at]);
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false }));
+    const service = createService({}, { pipeline });
+
+    const reply = await service.callTool('outlier_scan_board', { sport: 'NBA', game: '8pm' });
+    assert.equal(reply.isError, undefined, reply.content[0].text);
+    assert.match(reply.content[0].text, /^Outlier > Props > NBA > 8:00 PM BOS vs NYK\n4 props/);
+    assert.deepEqual(hits, { accepted: 0, removed: 0 }, 'the popup was closed, not accepted, and the slip was left alone');
+});
