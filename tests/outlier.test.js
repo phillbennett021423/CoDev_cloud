@@ -472,3 +472,82 @@ test('the scrape scrolls a board that scrolls inside a panel and drops rows, rea
     const scraped = JSON.parse(fs.readFileSync(pipeline.files.scrape, 'utf8'));
     assert.deepEqual(scraped.props.map(p => p.player).sort(), [...names].sort(), 'every row, including the ones removed as it scrolled');
 });
+
+test('a game asked for by time or team is found among Outlier\'s game cards', () => {
+    const { parseTime, pickGame, gameTeams, sportLabels, onlyGame } = require('../agents/outlier/navigate');
+    assert.equal(parseTime('3pm'), 15 * 60);
+    assert.equal(parseTime('the 8 p.m. game'), 20 * 60);
+    assert.equal(parseTime('7:30 PM'), 19 * 60 + 30);
+    assert.equal(parseTime("3 o'clock"), 15 * 60);
+    assert.equal(parseTime('20:00'), 20 * 60);
+    assert.equal(parseTime('12:00 AM'), 0);
+    assert.equal(parseTime('Lakers'), null);
+    assert.equal(parseTime('LeBron 25.5'), null);
+    const games = [{ index: 0, time: '3:00 PM', text: '3:00 PM DEN @ LAL' }, { index: 1, time: '8:00 PM', text: '8:00 PM BOS @ NYK' }];
+    assert.equal(pickGame(games, '8pm').index, 1);
+    assert.equal(pickGame(games, 'the 3 o\'clock game').index, 0);
+    assert.equal(pickGame(games, 'nyk').index, 1);
+    assert.equal(pickGame(games, 'LAL 8pm'), null, 'the time and the team must both match');
+    assert.equal(pickGame(games, '11am'), null);
+    assert.deepEqual(gameTeams('8:00 PM BOS @ NYK'), ['BOS', 'NYK']);
+    assert.deepEqual(sportLabels('nba'), ['nba', 'NBA', 'Basketball']);
+    assert.deepEqual(onlyGame([{ game: 'BOS-NYK' }, { game: 'DEN-LAL' }, {}], ['NYK', 'BOS']), [{ game: 'BOS-NYK' }, {}]);
+});
+
+test('an agent asks for NBA props for the 8pm game: the scan clicks the NBA tab and that game, never a pick, and audits only that game', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    const card = (name, game, line) => `<div><div>${name}</div><div>${game}</div><div>Points</div><div>Over ${line}</div><div>FanDuel -119</div></div>`;
+    const boards = {
+        early: ['Nikola Jokic', 'Jamal Murray', 'LeBron James', 'Austin Reaves'].map((n, i) => card(n, 'DEN @ LAL', 20.5 + i)).join(''),
+        late: ['Jayson Tatum', 'Jaylen Brown', 'Jalen Brunson', 'Josh Hart'].map((n, i) => card(n, 'BOS @ NYK', 20.5 + i)).join('')
+            + card('Aaron Gordon', 'DEN @ LAL', 14.5)   // another game's prop left on the board
+    };
+    // A stand-in app: sport tabs, then game cards, then the chosen game's board.
+    // The pick button reports to the server if it is ever clicked.
+    let picked = 0;
+    const page = `<!doctype html><body>
+        <button onclick="fetch('/picked')">More</button>
+        <nav><button id="nba">NBA</button><button id="nfl">NFL</button></nav><main id="main">Pick a sport</main>
+        <script>
+            const boards = ${JSON.stringify(boards)};
+            const main = document.getElementById('main');
+            document.getElementById('nfl').onclick = () => { main.innerHTML = 'No NFL games'; };
+            document.getElementById('nba').onclick = () => {
+                main.innerHTML = '<div id="games"><div class="g" data-b="early" style="cursor:pointer"><span>3:00 PM</span> <span>DEN @ LAL</span></div>'
+                    + '<div class="g" data-b="late" style="cursor:pointer"><span>8:00 PM</span> <span>BOS @ NYK</span></div></div>';
+                document.querySelectorAll('.g').forEach(g => { g.onclick = () => { main.innerHTML = boards[g.dataset.b]; }; });
+            };
+        </script></body>`;
+    const server = http.createServer((req, res) => {
+        if (req.url === '/picked') picked++;
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(page);
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false }));
+    const service = createService({}, { pipeline });
+
+    const reply = await service.callTool('outlier_scan_board', { sport: 'NBA', game: '8pm' });
+    assert.equal(reply.isError, undefined, reply.content[0].text);
+    assert.match(reply.content[0].text, /^Outlier > NBA > 8:00 PM BOS vs NYK\n4 props/);
+    const scraped = JSON.parse(fs.readFileSync(pipeline.files.scrape, 'utf8'));
+    assert.deepEqual(scraped.props.map(p => p.player).sort(), ['Jalen Brunson', 'Jaylen Brown', 'Jayson Tatum', 'Josh Hart']);
+    assert.equal(picked, 0, 'the pick button was never clicked');
+
+    const missing = await service.callTool('outlier_scan_board', { sport: 'NBA', game: '11am' });
+    assert.equal(missing.isError, true);
+    assert.match(missing.content[0].text, /Couldn't find the 11:00 AM game on Outlier \(NBA\)\. Games shown:\n3:00 PM: 3:00 PM DEN @ LAL\n8:00 PM: 8:00 PM BOS @ NYK/);
+    const noTab = await service.callTool('outlier_scan_board', { sport: 'NHL', game: '8pm' });
+    assert.equal(noTab.isError, true);
+    assert.match(noTab.content[0].text, /Couldn't find a "NHL" tab/);
+});

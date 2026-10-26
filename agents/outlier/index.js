@@ -17,6 +17,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { collectPage, parseCollected, parseText, propId } = require('./extract');
 const { createCapture } = require('./capture');
+const { navigate, onlyGame } = require('./navigate');
 const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
 // The signed-in browser's id in the shared browser service. Agents' ids never start with @.
@@ -293,6 +294,14 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 await gotoChecked(page, target.url, { pausable: browser.shared });
                 await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
                 await page.waitForTimeout(cfg.settleMs);
+                // An agent asked for a sport, stat or game: click there first (tabs,
+                // filters and game cards only, never a pick).
+                let nav = null;
+                if (target.nav) {
+                    const signedOut = await page.evaluate(() => Boolean(document.querySelector('input[type="password"]')));
+                    if (looksSignedOut(page, { passwordField: signedOut })) signInNeeded(page, browser);
+                    nav = await navigate(page, target.nav, { settleMs: cfg.settleMs });
+                }
                 // Boards load more rows as they scroll, and long ones remove the rows that
                 // scroll away, so the page is read after every step and the reads are
                 // combined. It stops at the end of the board: no scroll moved, or two steps
@@ -338,17 +347,9 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 }
                 collected.passwordField = await page.evaluate(() => Boolean(document.querySelector('input[type="password"]')));
                 page.off('response', onResponse);
-                if (looksSignedOut(page, collected)) {
-                    state.signedIn = false;
-                    // Redirected to sign in: leave that page open in the live view to sign in there.
-                    if (browser.shared && shared.manager.pause(SESSION, page, 'Outlier asked to sign in.')) {
-                        page.__codevKeep = true;
-                        throw new Error('Outlier asked to sign in. The Outlier browser is paused on the sign-in page in the live view (🖥️ Browse): sign in there, then run the scrape again.');
-                    }
-                    throw new Error('Outlier asked to sign in. Click "Sign in to Outlier", sign in once in the window that opens, then close it.');
-                }
+                if (looksSignedOut(page, collected)) signInNeeded(page, browser);
                 state.signedIn = true;
-                pages.push({ kind: target.kind, url: target.url, collected });
+                pages.push({ kind: target.kind, url: target.url, collected, nav });
                 if (snapshot) {
                     fs.mkdirSync(files.snapshots, { recursive: true });
                     const base = path.join(files.snapshots, `${new Date().toISOString().replace(/[:.]/g, '-')}-${target.kind}`);
@@ -361,6 +362,17 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             await browser.done();
         }
         return { pages, saved };
+    }
+
+    // Throws: Outlier sent the scan to its sign-in page.
+    function signInNeeded(page, browser) {
+        state.signedIn = false;
+        // Redirected to sign in: leave that page open in the live view to sign in there.
+        if (browser.shared && shared.manager.pause(SESSION, page, 'Outlier asked to sign in.')) {
+            page.__codevKeep = true;
+            throw new Error('Outlier asked to sign in. The Outlier browser is paused on the sign-in page in the live view (🖥️ Browse): sign in there, then run the scrape again.');
+        }
+        throw new Error('Outlier asked to sign in. Click "Sign in to Outlier", sign in once in the window that opens, then close it.');
     }
 
     // Opens url and fails with a plain reason when it's a dead link or a parked
@@ -763,6 +775,9 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         try {
             const { pages } = await visitPages({ pages: only });
             const parsed = parseCollected(pages);
+            // One game asked for: only its props go into the tickets.
+            const nav = pages.find(p => p.nav);
+            if (nav && nav.nav.teams) parsed.props = onlyGame(parsed.props, nav.nav.teams);
             writeJson(files.scrape, { scrapedAt: new Date().toISOString(), source: 'outlier', ...parsed });
             const settledNow = settleFromResults(parsed.results);
             if (settledNow) await learn();
@@ -780,7 +795,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             recordPrices(result);
             state.lastRun = new Date().toISOString();
             log(`[Outlier] Read ${parsed.props.length} prop(s) from ${pages.length} page(s); ${result ? result.counts.slips : 0} entr(ies) recommended.`);
-            return { ok: true, pages: parsed.pages, settled: settledNow };
+            return { ok: true, pages: parsed.pages, settled: settledNow, navigated: nav ? nav.nav.steps : null };
         } catch (err) {
             state.lastError = err.message;
             throw err;
@@ -978,9 +993,12 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
             }, required: ['path'], additionalProperties: false }
         }, {
             name: 'outlier_scan_board',
-            description: 'Opens Outlier in the user\'s signed-in Outlier browser, scrolls the prop board to the end reading every line as it goes, and runs the full audit (-119 consistency filter, sharp-book comparison, correlation and usage checks, Under engine, 4-6 leg tickets). Uses the pages set in the Outlier tab, or one app.outlier.bet address you give. You never get the browser itself or its cookies. Returns the tickets and under legs.',
+            description: 'Opens Outlier in the user\'s signed-in Outlier browser, goes to the sport, stat and game you name (e.g. sport "NBA", game "8pm" or "Lakers 3pm") by clicking Outlier\'s tabs and game cards, scrolls the board to the end reading every line, and runs the full audit (-119 consistency filter, sharp-book comparison, correlation and usage checks, Under engine, 4-6 leg tickets) on that game\'s props. Without sport or game it scans the pages set in the Outlier tab, or one app.outlier.bet address you give. It only reads and navigates: nothing is entered on Outlier, Underdog or Dabble. Give the user the ticket legs in your reply. You never get the browser itself or its cookies.',
             inputSchema: { type: 'object', properties: {
-                url: { type: 'string', description: 'An app.outlier.bet page to scan instead of the configured ones (optional).' },
+                sport: { type: 'string', description: 'The sport tab to open, e.g. "NBA", "NFL", "MLB", "NHL", "WNBA", "CBB".' },
+                game: { type: 'string', description: 'The game by start time and/or team as the user said it, e.g. "3pm", "8:30 PM", "Lakers", "LAL vs BOS 8pm". Times are the user\'s local time.' },
+                market: { type: 'string', description: 'A stat filter to click, e.g. "Points", "Rebounds" (optional).' },
+                url: { type: 'string', description: 'An app.outlier.bet page to start from instead of the configured one (optional).' },
                 kind: { type: 'string', enum: ['props', 'odds'], description: 'What that page shows (default props).' }
             }, additionalProperties: false }
         }, {
@@ -1012,8 +1030,15 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                         if (!/(^|\.)outlier\.bet$/i.test(url.hostname)) throw new Error(`outlier_scan_board only opens Outlier (app.outlier.bet), not ${url.hostname}. Use your own browser tools for other sites.`);
                         pages = [{ kind: args.kind === 'odds' ? 'odds' : 'props', url: url.href }];
                     }
-                    await outlier.scrape({ pages });
-                    return { content: [{ type: 'text', text: auditText(outlier.state().result) }] };
+                    const nav = Object.fromEntries(['sport', 'market', 'game'].filter(k => args[k] && String(args[k]).trim()).map(k => [k, String(args[k]).trim()]));
+                    if (Object.keys(nav).length) {
+                        // Navigation starts on one board: the address given, else the first configured props page.
+                        const start = pages ? pages[0] : ((outlier.state().config || {}).pages || []).find(p => p.kind === 'props') || { kind: 'props', url: 'https://app.outlier.bet/' };
+                        pages = [{ ...start, nav }];
+                    }
+                    const run = await outlier.scrape({ pages });
+                    const where = run && run.navigated && run.navigated.length ? `Outlier > ${run.navigated.join(' > ')}\n` : '';
+                    return { content: [{ type: 'text', text: where + auditText(outlier.state().result) }] };
                 } catch (err) {
                     return { content: [{ type: 'text', text: err.message }], isError: true };
                 }
