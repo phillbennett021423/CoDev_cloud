@@ -3021,7 +3021,7 @@
         const OUTLIER_TASK = /\b(outlier|parl[ae]ys?|parley|tickets?|props?|underdog|dabble|prizepicks)\b/i;
         function outlierToolNote(tools, messages) {
             if (tools.some(t => t.name === "outlier_scan_board")) {
-                return "[Outlier] Outlier is the sports props site at https://app.outlier.bet, and CoDev keeps the user's own signed-in Outlier browser. "
+                return "[Outlier] Outlier (outlier.bet) is a sports betting research app at https://app.outlier.bet: its Props board lists every player prop with its line, odds by book and hit rates (L5, L10, L20, H2H, season); the outlier_scan_board description explains its layout and how to read a prop. CoDev keeps the user's own signed-in Outlier browser. "
                     + "For any request about Outlier, props, parlays or tickets, call outlier_scan_board first, with sport, game and market taken from the request (e.g. sport \"NBA\", game \"8pm\"). "
                     + "Don't search the project files for Outlier, don't ask the user for a URL or a login, and don't open Outlier in your own browser: outlier_scan_board already uses the signed-in one. "
                     + "It opens Outlier's regular props board, not Positive EV. If it can't find a tab, its error lists the tabs on the page: pick the matching one (or ask the user) and call it again with that name as section or sport. "
