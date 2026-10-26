@@ -5,6 +5,8 @@
 // restarts; without it, the folder is temporary and deleted when the session
 // closes. A browser given a profile with registerProfile (the Outlier pipeline's)
 // always keeps it.
+// A browser the user has used in the live view is theirs: it stays open until they
+// close it (no idle close, never closed to make room, and browser_close leaves it).
 // The browser comes from playwright-core. It uses, in order: CODEV_BROWSER_PATH,
 // Playwright's own Chromium (npx playwright install chromium), then the Edge or
 // Chrome already installed on this computer.
@@ -56,8 +58,15 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
     // 'open' (session), 'page' (session, when the agent's working page changes) and
     // 'close' (agentId), for the live view.
     const events = new EventEmitter();
+    // Checks (agentId -> true) that keep a browser from closing when idle, like the
+    // live view while someone watches it. See holdOpen.
+    const holds = [];
     let launchChoice = null;
     let sweepTimer = null;
+
+    // The user opened it, drove it or was handed it on a pause: only they close it.
+    const isUsers = session => Boolean(session.userOwned || session.paused);
+    const isHeld = session => isUsers(session) || holds.some(held => held(session.agentId));
 
     function isLoopback(host) {
         return host === 'localhost' || host === '[::1]' || host === '::1' || /^127\./.test(host) || host === '0.0.0.0';
@@ -119,8 +128,8 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
     function sweepIdle() {
         const now = Date.now();
         for (const [agentId, session] of sessions) {
-            // A browser paused for the user stays open until they deal with it.
-            if (!session.paused && now - session.lastUsed > idleMs) {
+            // A browser the user has used, or is watching, stays open.
+            if (!isHeld(session) && now - session.lastUsed > idleMs) {
                 log(`[Browser] Closing ${agentId}'s browser after ${Math.round(idleMs / 60000)} idle minutes.`);
                 close(agentId);
             }
@@ -130,10 +139,14 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
 
     async function open(agentId) {
         if (sessions.size >= maxSessions) {
-            const byAge = [...sessions.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed);
-            const oldest = byAge.find(([id]) => !profiles.has(id)) || byAge[0];
-            log(`[Browser] ${maxSessions} browsers are open; closing ${oldest[0]}'s.`);
-            await close(oldest[0]);
+            // Never the user's browsers or a signed-in registered one; if every open
+            // browser is one of those, one more opens instead.
+            const oldest = [...sessions.entries()].filter(([id, s]) => !profiles.has(id) && !isHeld(s))
+                .sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
+            if (oldest) {
+                log(`[Browser] ${maxSessions} browsers are open; closing ${oldest[0]}'s.`);
+                await close(oldest[0]);
+            } else log(`[Browser] ${maxSessions} browsers are open and in use; opening one more for ${agentId}.`);
         }
         const kept = profiles.get(agentId) || keptDir(agentId);
         let dir;
@@ -158,7 +171,7 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
         // live view; the agent then works in agentPage, a background tab of the same
         // browser (same cookies and sign-ins), and never touches the user's tab.
         const session = { agentId, dir, kept: Boolean(kept), context, page: context.pages()[0] || await context.newPage(), agentPage: null,
-            openingAgentPage: false, lastUsed: Date.now(), startedAt: Date.now(), userControl: false };
+            openingAgentPage: false, lastUsed: Date.now(), startedAt: Date.now(), userControl: false, userOwned: false };
         // A link that opens a new tab becomes the page whoever clicked it is working on.
         context.on('page', page => {
             if (session.openingAgentPage) return;
@@ -305,7 +318,8 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
 
     function list() {
         return [...sessions.values()].map(s => ({ agentId: s.agentId, url: s.page && !s.page.isClosed() ? s.page.url() : null,
-            startedAt: new Date(s.startedAt).toISOString(), idleSeconds: Math.round((Date.now() - s.lastUsed) / 1000), userControl: s.userControl }));
+            startedAt: new Date(s.startedAt).toISOString(), idleSeconds: Math.round((Date.now() - s.lastUsed) / 1000), userControl: s.userControl,
+            userOwned: isUsers(s) }));
     }
 
     // An open session, without starting one or counting as the agent's use.
@@ -317,8 +331,13 @@ function createBrowserManager({ profileRoot = path.join(os.tmpdir(), 'codev-brow
         profiles.set(String(agentId), dir);
     }
 
+    // check(agentId) -> true keeps that browser from closing when idle.
+    function holdOpen(check) {
+        holds.push(check);
+    }
+
     return { get, peek, workPage, readPage, handBack, pause, has: agentId => sessions.has(agentId), close, closeAll, list, status, isBlocked, events, registerProfile,
-        forgetSignIns, keepsSignIns: Boolean(keepRoot) };
+        holdOpen, isUsers, sweepIdle, forgetSignIns, keepsSignIns: Boolean(keepRoot) };
 }
 
 module.exports = { createBrowserManager, BrowserUnavailableError };
