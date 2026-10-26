@@ -3017,8 +3017,13 @@
             }
             const asked = messages.filter(m => m.role === "user").map(m => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
             if (!OUTLIER_TASK.test(asked)) return "";
-            return "[Outlier] The Outlier scan isn't available in this copy of CoDev: it runs on CoDev's server. If the request is about Outlier, don't search the project files for it; "
-                + "tell the user to start CoDev with start-codev.bat (it opens http://localhost:3000), sign in once from the 📈 Outlier tab, and ask again.";
+            const outlier = agentInfra.status?.services?.outlier;
+            const why = window.codevDesktop
+                ? "The user is in the CoDev Windows app, which doesn't have the Outlier scan. Tell them to close this app, double-click start-codev.bat in their CoDev folder and use the Edge tab it opens at http://localhost:3000, sign in once from the 📈 Outlier tab there, and ask again."
+                : outlier && outlier.available === false
+                    ? `CoDev's server couldn't start the Outlier service (${String(outlier.detail || "no reason given").slice(0, 200)}). Tell the user that, and to run npm install in their CoDev folder, restart start-codev.bat and ask again.`
+                    : "This page isn't connected to CoDev's server, which runs the Outlier scan. Tell the user to start CoDev with start-codev.bat and use the tab it opens at http://localhost:3000, sign in once from the 📈 Outlier tab, and ask again.";
+            return `[Outlier] The Outlier scan isn't available here. If the request is about Outlier, don't search the project files for it. ${why}`;
         }
 
         // Runs the model ↔ tool loop until the model answers in plain text.
