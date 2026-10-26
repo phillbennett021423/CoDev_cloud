@@ -133,20 +133,60 @@ function gameTeams(text) {
 }
 
 // Runs inside the page: scrolls the window and any scrolling panel down a
-// screen. False when nothing moved (the end).
+// screen. False when nothing moved (the end). The board's scrolling panel is
+// found once and marked (data-codev-scroller), so a step doesn't check every
+// element on a page of thousands; with a card open, its own panel is looked for.
 const scrollStep = () => {
     const before = window.scrollY;
     window.scrollBy(0, window.innerHeight * 0.9);
     let any = window.scrollY !== before;
-    for (const el of document.querySelectorAll('*')) {
-        if (el.scrollHeight > el.clientHeight + 50 && /(auto|scroll)/.test(getComputedStyle(el).overflowY)) {
-            const top = el.scrollTop;
-            el.scrollTop += el.clientHeight * 0.9;
-            if (el.scrollTop !== top) any = true;
-        }
+    const scrolls = el => el.scrollHeight > el.clientHeight + 50 && /(auto|scroll)/.test(getComputedStyle(el).overflowY);
+    const dialog = document.querySelector('[role="dialog"], [aria-modal="true"]');
+    let panels = dialog ? [] : [...document.querySelectorAll('[data-codev-scroller]')].filter(scrolls);
+    if (!panels.length) {
+        panels = [...document.querySelectorAll('*')].filter(scrolls);
+        if (!dialog) panels.forEach(el => el.setAttribute('data-codev-scroller', '1'));
+    }
+    for (const el of panels) {
+        const top = el.scrollTop;
+        el.scrollTop += el.clientHeight * 0.9;
+        if (el.scrollTop !== top) any = true;
     }
     return any;
 };
+
+// Runs inside the page: where the board is scrolled to (the window and each marked
+// panel), so a row seen there can be found again by jumping straight back.
+const scrollPlace = () => ({ y: window.scrollY, tops: [...document.querySelectorAll('[data-codev-scroller]')].map(el => el.scrollTop) });
+
+// Runs inside the page: back to a place scrollPlace noted, back screens above it.
+const scrollToPlace = ([place, back]) => {
+    window.scrollTo(0, Math.max(0, place.y - back * window.innerHeight * 0.9));
+    [...document.querySelectorAll('[data-codev-scroller]')].forEach((el, i) => {
+        if (place.tops[i] != null) el.scrollTop = Math.max(0, place.tops[i] - back * el.clientHeight * 0.9);
+    });
+};
+
+// After a scroll: waits until the new rows have been drawn (the page stops changing
+// for a moment), at most maxMs, instead of a fixed pause every step.
+async function settleAfterScroll(page, maxMs = 600) {
+    await page.evaluate(max => new Promise(resolve => {
+        let quiet = null;
+        const done = () => { observer.disconnect(); clearTimeout(quiet); resolve(); };
+        const observer = new MutationObserver(() => { clearTimeout(quiet); quiet = setTimeout(done, 120); });
+        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+        quiet = setTimeout(done, 250);
+        setTimeout(done, max);
+    }), maxMs).catch(() => {});
+}
+
+// The board place (from a board read's places) where the player's row showed, or null.
+function placeOf(places, player) {
+    const name = normWords(player);
+    if (!name) return null;
+    const hit = (places || []).find(p => ` ${normWords(p.text)} `.includes(` ${name} `));
+    return hit ? hit.place : null;
+}
 
 // Runs inside the page: marks the best clickable element whose own label is one of
 // labels (a tab, chip or menu item, not a block of text that mentions it) with
@@ -507,7 +547,7 @@ function readLines() {
 // scrolling down to find the name. Returns the label clicked or throws.
 // stat/line: open his card for that stat (a "Rebounds" leg opens the rebounds
 // prop, not the points one) when the board shows it, else any card of his.
-async function openPlayer(page, player, { settleMs = 1500, stat = null, line = null } = {}) {
+async function openPlayer(page, player, { settleMs = 1500, stat = null, line = null, place = null } = {}) {
     const hints = { stats: statWords(stat), line: line == null ? null : String(line), avoid: avoidWords(stat) };
     const toTop = () => page.evaluate(() => { window.scrollTo(0, 0); for (const el of document.querySelectorAll('*')) if (el.scrollTop) el.scrollTop = 0; });
     const open = async label => {
@@ -516,9 +556,22 @@ async function openPlayer(page, player, { settleMs = 1500, stat = null, line = n
         await page.waitForTimeout(settleMs);
         return label;
     };
+    let anyCard = false;
+    // Where the board read saw him: straight there (a screen above, in case rows
+    // shifted), a few screens down, instead of scrolling from the top.
+    if (place) {
+        await page.evaluate(scrollToPlace, [place, 1]).catch(() => {});
+        await settleAfterScroll(page);
+        for (let i = 0; i < 4; i++) {
+            const found = await page.evaluate(markPlayer, { name: String(player), ...hints });
+            if (found && (found.stat || !hints.stats.length)) return open(found.text);
+            if (found) anyCard = true;
+            if (!await page.evaluate(scrollStep)) break;
+            await settleAfterScroll(page, 400);
+        }
+    }
     // From the top of the board: the last read may have left it scrolled down.
     await toTop().catch(() => {});
-    let anyCard = false;
     for (let i = 0; i < 40; i++) {
         const found = await page.evaluate(markPlayer, { name: String(player), ...hints });
         if (found && (found.stat || !hints.stats.length)) return open(found.text);
@@ -555,7 +608,7 @@ async function readDetails(page, { scrolls = 12, maxChars = 12000 } = {}) {
             lines.push(line);
         }
         if (i === scrolls || !await page.evaluate(scrollStep)) break;
-        await page.waitForTimeout(600);
+        await settleAfterScroll(page);
     }
     const text = lines.join('\n');
     return text.length > maxChars ? `${text.slice(0, maxChars)}\n… (cut)` : text;
@@ -910,4 +963,4 @@ function onlyGame(props, teams) {
     return props.filter(p => !p.game || p.game === key);
 }
 
-module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords };
+module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords, scrollStep, scrollPlace, scrollToPlace, settleAfterScroll, placeOf };

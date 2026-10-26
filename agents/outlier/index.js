@@ -18,7 +18,7 @@ const { spawn } = require('child_process');
 const { collectPage, parseCollected, parseText, propId } = require('./extract');
 const { createCapture } = require('./capture');
 const { projectLeg, regressionFlag, gameContext, simulateTicket } = require('./forecast');
-const { navigate, onlyGame, openPlayer, readDetails, readCardTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, sportPropsPath } = require('./navigate');
+const { navigate, onlyGame, openPlayer, readDetails, readCardTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf } = require('./navigate');
 const { OUTLIER_PRIMER, OUTLIER_GUIDE } = require('./guide');
 const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
@@ -323,46 +323,46 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 // combined. It stops at the end of the board: no scroll moved, or two steps
                 // in a row turned up nothing new.
                 const collected = await page.evaluate(collectPage, cfg.selectors || null);
-                collected.results = collected.results || [];
-                collected.injuries = collected.injuries || [];
+                for (const f of ['cards', 'tables', 'configured', 'results', 'injuries']) collected[f] = collected[f] || [];
                 const key = item => (typeof item === 'string' ? item : JSON.stringify(item));
                 const seen = new Set(['cards', 'tables', 'configured', 'results', 'injuries'].flatMap(f => (collected[f] || []).map(key)));
+                // Where on the board each new row showed (places), so a player's card can
+                // be opened by jumping back there instead of scrolling from the top.
+                collected.places = [];
+                const notePlace = async texts => {
+                    if (!texts.length) return;
+                    const place = await page.evaluate(scrollPlace).catch(() => null);
+                    if (place) collected.places.push({ place, text: texts.join('\n') });
+                };
                 const addRead = read => {
-                    let fresh = 0;
+                    const texts = [];
                     for (const field of ['cards', 'tables', 'configured', 'results', 'injuries']) {
                         for (const item of read[field] || []) {
                             if (seen.has(key(item))) continue;
                             seen.add(key(item));
                             collected[field].push(item);
-                            if (field === 'cards' || field === 'tables' || field === 'configured') fresh++;
+                            if (field === 'cards' || field === 'tables' || field === 'configured') texts.push(key(item));
                         }
                     }
-                    return fresh;
+                    return texts;
                 };
+                await notePlace(['cards', 'tables', 'configured'].flatMap(f => collected[f].map(key)));
                 let quiet = 0;
+                const started = Date.now();
+                collected.screens = 1;
                 // A list's board is read to its end (thousands of rows), or until every leg is found.
                 for (let i = 0; i < (target.scrolls || cfg.scrolls); i++) {
                     if (target.until && i % 5 === 4 && target.until(collected)) break;
-                    const moved = await page.evaluate(() => {
-                        let any = false;
-                        const before = window.scrollY;
-                        window.scrollBy(0, window.innerHeight * 0.9);
-                        if (window.scrollY !== before) any = true;
-                        // Boards that scroll inside a panel instead of the window.
-                        for (const el of document.querySelectorAll('*')) {
-                            if (el.scrollHeight > el.clientHeight + 50 && /(auto|scroll)/.test(getComputedStyle(el).overflowY)) {
-                                const top = el.scrollTop;
-                                el.scrollTop += el.clientHeight * 0.9;
-                                if (el.scrollTop !== top) any = true;
-                            }
-                        }
-                        return any;
-                    });
-                    await page.waitForTimeout(600);
-                    const fresh = addRead(await page.evaluate(collectPage, cfg.selectors || null));
-                    quiet = fresh ? 0 : quiet + 1;
+                    const moved = await page.evaluate(scrollStep);
+                    await settleAfterScroll(page);
+                    const texts = addRead(await page.evaluate(collectPage, cfg.selectors || null));
+                    await notePlace(texts);
+                    collected.screens++;
+                    if (target.progress) target.progress({ screens: collected.screens, rows: collected.cards.length + collected.tables.length + collected.configured.length });
+                    quiet = texts.length ? 0 : quiet + 1;
                     if (!moved || quiet >= (target.scrolls ? 4 : 2)) break;
                 }
+                collected.readMs = Date.now() - started;
                 collected.passwordField = await page.evaluate(() => Boolean(document.querySelector('input[type="password"]')));
                 page.off('response', onResponse);
                 if (looksSignedOut(page, collected)) signInNeeded(page, browser);
@@ -917,7 +917,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // paceMs between cards and backs off when Outlier answers 429 (too many
     // requests), stopping the cards after a third one.
     // restore(): brings the board back if a card replaced it (twice at most).
-    async function researchLegs(page, legs, { boardProps = [], settleMs = 1500, maxCards = 12, paceMs = 8000, backoffMs = [30000, 60000, 90000], restore = null } = {}) {
+    async function researchLegs(page, legs, { boardProps = [], places = [], settleMs = 1500, maxCards = 12, paceMs = 8000, backoffMs = [30000, 60000, 90000], restore = null } = {}) {
         let restores = 0;
         const results = new Map();
         let limited = 0;
@@ -951,14 +951,16 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     log(`[Outlier] ${state.progress}`);
                     await page.waitForTimeout(backoffMs[Math.min(limited - 1, backoffMs.length - 1)]);
                 }
-                state.progress = `Card ${opened + 1} of ${Math.min(order.length, maxCards)}: ${leg.player}${leg.stat ? ` ${leg.stat}` : ''}`;
-                log(`[Outlier] ${state.progress}`);
+                const cardName = `Card ${opened + 1} of ${Math.min(order.length, maxCards)}: ${leg.player}${leg.stat ? ` ${leg.stat}` : ''}`;
+                const step = what => { state.progress = `${cardName}, ${what}`; log(`[Outlier] ${state.progress}`); };
+                const place = placeOf(places, leg.player);
+                step(place ? 'jumping to his row on the board' : 'looking for his row on the board');
                 last = Date.now();
                 opened++;
                 try {
                     let label;
                     try {
-                        label = await openPlayer(page, leg.player, { settleMs, stat: leg.stat, line: leg.line });
+                        label = await openPlayer(page, leg.player, { settleMs, stat: leg.stat, line: leg.line, place });
                     } catch (err) {
                         // He's on the board, so the last card replaced it: the board once more.
                         if (!restore || restores >= 2 || opened === 1) throw err;
@@ -967,6 +969,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                         await restore();
                         label = await openPlayer(page, leg.player, { settleMs, stat: leg.stat, line: leg.line });
                     }
+                    step('reading the card');
                     const text = await readDetails(page, { scrolls: 6, maxChars: 10000 });
                     // A card that loaded while Outlier said 429 is empty: not kept.
                     const emptied = seen429 > 0;
@@ -977,10 +980,14 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     // The game-by-game bars (hovered, never clicked) and the alt lines,
                     // both against the user's line, then the tabs, then the split
                     // without a teammate who is out (it changes the whole card, so last).
+                    if (!emptied) step('game-by-game bars');
                     const games = emptied ? [] : await readBars(page).catch(() => []);
+                    if (!emptied && !seen429) step('alt lines');
                     const alt = emptied || seen429 ? null : await readAltLines(page, { line: leg.line, side: leg.side, settleMs: pace, known: text }).catch(() => null);
+                    if (!emptied) step('every tab of the card');
                     const tabs = emptied ? [] : await readCardTabs(page, { settleMs: pace, known: text, stop: () => seen429 > 0 });
                     const tabText = tabs.map(t => t.text).join('\n');
+                    if (!emptied && !seen429) step('with/without injured teammates');
                     const without = emptied || seen429 ? [] : await readWithout(page, { player: leg.player, text: `${text}\n${tabText}`, settleMs: pace, known: `${text}\n${tabText}` }).catch(() => []);
                     const all = [text, tabText].join('\n');
                     if (emptied) {
@@ -990,7 +997,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                             games, atLine: hitsAtLine(games, leg.line, leg.side), alt, without };
                         cards.set(cardKey(leg), read);
                         saveCards();
-                        results.set(i, read);
+                        results.set(i, { ...read, found: place ? 'jumped to his row' : 'searched the board' });
                     }
                 } catch (err) {
                     results.set(i, { error: err.message.split(' (http')[0].split(' on that Outlier board')[0] });
@@ -1033,9 +1040,14 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             legs.forEach((l, i) => { if (!found.has(i) && matchLeg(l, props)) found.add(i); });
             return found.size === legs.length;
         };
+        const progress = ({ screens, rows }) => {
+            state.progress = `Reading the ${sport || ''} board: screen ${screens}, ${rows.toLocaleString('en-US')} rows, ${found.size} of ${legs.length} legs seen`.replace('the  board', 'the board');
+        };
+        let boardRead = null;
         const run = await scrape({
-            pages: [{ kind: 'props', url: url || boardStart(sport), nav, scrolls: 400, until }], keep: legs,
+            pages: [{ kind: 'props', url: url || boardStart(sport), nav, scrolls: 400, until, progress }], keep: legs,
             onPage: async (page, { collected }) => {
+                boardRead = { screens: collected.screens || 1, rows: collected.cards.length + collected.tables.length + collected.configured.length, seconds: Math.round((collected.readMs || 0) / 1000), legsSeen: found.size };
                 const boardProps = parseCollected([{ kind: 'props', url: page.url(), collected }]).props;
                 // The board without an open card's ?market=…&outcome=… in its address.
                 const board = (() => { const u = new URL(page.url()); ['market', 'outcome', 'split'].forEach(k => u.searchParams.delete(k)); return u.href; })();
@@ -1046,13 +1058,13 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 };
                 const cfg = config();
                 // cardPaceMs: the wait between player cards (default 6s), set lower only in tests.
-                research = await researchLegs(page, legs, { boardProps, settleMs: cfg.settleMs, maxCards, restore,
+                research = await researchLegs(page, legs, { boardProps, places: collected.places, settleMs: cfg.settleMs, maxCards, restore,
                     ...(Number.isFinite(cfg.cardPaceMs) ? { paceMs: cfg.cardPaceMs } : {}),
                     ...(Array.isArray(cfg.backoffMs) ? { backoffMs: cfg.backoffMs } : {}) });
                 return research;
             }
         });
-        return { steps: run.navigated || [], research: research || { results: new Map(), limited: false, skipped: 0 } };
+        return { steps: run.navigated || [], board: boardRead, research: research || { results: new Map(), limited: false, skipped: 0 } };
     }
 
     // One of Outlier's sections (Insights, Trends, Popular, Games, Injuries...) for
@@ -1347,6 +1359,22 @@ function cardBody(card, leg = {}, max = 3500) {
 }
 
 // The ticket's simulated chance as text, or why it couldn't be run.
+// What CoDev did on Outlier for a list, in plain words, and how to read what follows,
+// so the agent (and the user) knows where each number came from.
+function didText(board, research, total) {
+    const cards = [...research.results.values()];
+    const reused = cards.filter(c => c.cached).length;
+    const opened = cards.filter(c => !c.cached && !c.error);
+    const jumped = opened.filter(c => c.found === 'jumped to his row').length;
+    const failed = cards.filter(c => c.error).length;
+    const boardLine = board
+        ? `- Board: read ${board.screens} screen(s), ${board.rows.toLocaleString('en-US')} rows, in ${board.seconds}s; ${board.legsSeen} of ${total} legs seen on it.`
+        : '- Board: reused the board CoDev read a few minutes ago.';
+    const cardLine = `- Player cards: ${opened.length} opened${opened.length ? ` (${jumped} by jumping to the row the board read saw, ${opened.length - jumped} by searching the board)` : ''}, ${reused} reused from the last 30 minutes, ${failed} couldn't be read${research.skipped ? `, ${research.skipped} left for later (capped)` : ''}.`;
+    return ['What CoDev did on Outlier:', boardLine, cardLine,
+        'How to read each leg: the "Outlier" line is the board row (Outlier\'s line, odds, hit rates); "Card" and the lines under it are what his player card showed (game log at the user\'s line, alt lines, with/without, minutes and opportunity, every tab). "Projection", "Regression" and "Ticket simulation" are estimates worked out from those card numbers only.'].join('\n');
+}
+
 function ticketText(legs, cards) {
     const sim = simulateTicket(cards.map(c => (c && !c.error ? c : null)), legs);
     const pct = v => `${(v * 100).toFixed(1)}%`;
@@ -1543,7 +1571,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     const nav = Object.fromEntries(Object.entries({ sport: args.sport, game: args.game, day }).filter(([, v]) => v && String(v).trim()).map(([k, v]) => [k, String(v).trim()]));
                     // One visit: the board read and audited for just these legs, then
                     // the players' cards on that same page.
-                    const { steps, research } = await outlier.researchList({ url, ...nav, legs });
+                    const { steps, research, board: boardRead } = await outlier.researchList({ url, ...nav, legs });
                     const result = outlier.state().result;
                     const audit = auditText(result);
                     let props = [];
@@ -1582,7 +1610,8 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     const top = ranked.slice(0, 4);
                     const ticket = top.length >= 2 ? ticketText(top.map(x => x.l), top.map(x => research.results.get(x.i) || null)) : '';
                     const checks = legChecks(legs);
-                    const text = `Outlier > ${read.steps.join(' > ')}\nFound ${found} of ${legs.length} legs on Outlier. Hit rates are Outlier's, turned to the user's side.\n${lines.join('\n')}\n${notes.map(n => `${n}\n`).join('')}`
+                    const did = didText(boardRead, research, legs.length);
+                    const text = `Outlier > ${read.steps.join(' > ')}\nFound ${found} of ${legs.length} legs on Outlier. Hit rates are Outlier's, turned to the user's side.\n${did}\n${lines.join('\n')}\n${notes.map(n => `${n}\n`).join('')}`
                         + (best.length ? `Best on Outlier's hit rates (average of L5, L10, L20, H2H, seasons on the user's side, counted from the game log at the user's line when Outlier's line moved, then moved a little for minutes and opportunity trends):\n${best.join('\n')}\n` : '')
                         + (ticket ? `For the top ${top.length} above: ${ticket}\n` : '')
                         + (checks.length ? `Checks:\n${checks.map(c => `- ${c}`).join('\n')}\n` : '')
