@@ -1,7 +1,7 @@
 // CoDev Studio desktop app: the same page as the Android app (mobile/www),
 // in its own window. The page talks to Groq directly; the main process only
 // does what a page can't, like fetching DuckDuckGo results without CORS.
-const { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, crashReporter, dialog, ipcMain, net, protocol, safeStorage, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { createMcpTools } = require('./mcp-tools');
@@ -35,6 +35,31 @@ function crashLog(kind, detail) {
 }
 process.on('uncaughtException', err => { crashLog('uncaughtException', err); console.error(err); });
 process.on('unhandledRejection', err => { crashLog('unhandledRejection', err); console.error(err); });
+// A crash that skips JavaScript altogether (out of memory, a native fault) leaves a
+// dump in the app's Crashpad folder instead of nothing. Kept on this computer.
+crashReporter.start({ uploadToServer: false });
+
+// A heartbeat every minute with each process's memory, removed on a normal quit. One
+// still there at the next start means the app was closed by a crash, and the log
+// gets its last reading, so memory that kept growing shows in the log.
+const heartbeatFile = () => path.join(app.getPath('userData'), 'CoDev-heartbeat.json');
+function memoryNow() {
+    const mb = kb => Math.round(kb / 1024);
+    return app.getAppMetrics().map(m => `${m.type} ${mb(m.memory.workingSetSize)} MB`).join(', ');
+}
+function beat() {
+    try { fs.writeFileSync(heartbeatFile(), JSON.stringify({ at: new Date().toISOString(), memory: memoryNow() })); } catch { /* next minute */ }
+}
+// Returns true when the last run ended without a normal quit (and logs it).
+function lastRunCrashed() {
+    let last = null;
+    try { last = JSON.parse(fs.readFileSync(heartbeatFile(), 'utf8')); } catch { return false; }
+    let dumps = [];
+    try { dumps = fs.readdirSync(path.join(app.getPath('crashDumps'), 'reports')).filter(f => f.endsWith('.dmp')); } catch { /* none */ }
+    crashLog('previous-run-ended', `the app closed without quitting; last seen ${last.at} with ${last.memory}${dumps.length ? `; crash dumps: ${dumps.slice(-3).join(', ')}` : ''}`);
+    return true;
+}
+app.on('will-quit', () => { try { fs.rmSync(heartbeatFile(), { force: true }); } catch { /* gone */ } });
 
 function createWindow() {
     const win = new BrowserWindow({
@@ -60,8 +85,14 @@ function createWindow() {
         crashLog('render-process-gone', `${details.reason} (exit code ${details.exitCode})`);
         if (details.reason !== 'clean-exit' && !win.isDestroyed()) setTimeout(() => { if (!win.isDestroyed()) win.webContents.reload(); }, 500);
     });
-    win.on('unresponsive', () => crashLog('unresponsive', 'the window stopped responding'));
+    win.on('unresponsive', () => crashLog('unresponsive', `the window stopped responding (${memoryNow()})`));
+    // The page's own errors, the first 50 a run, so a page crash comes with what led to it.
+    let pageErrors = 0;
+    win.webContents.on('console-message', ({ level, message, sourceId, lineNumber }) => {
+        if (level === 'error' && pageErrors++ < 50) crashLog('page-error', `${message} (${sourceId}:${lineNumber})`);
+    });
     win.loadURL('app://codev/index.html');
+    return win;
 }
 
 app.whenReady().then(() => {
@@ -182,7 +213,25 @@ app.whenReady().then(() => {
     app.on('child-process-gone', (_event, details) => {
         if (details.reason !== 'clean-exit' && details.reason !== 'killed') crashLog('child-process-gone', `${details.type} ${details.reason} (exit code ${details.exitCode})`);
     });
-    createWindow();
+    const crashed = lastRunCrashed();
+    beat();
+    setInterval(beat, 60000).unref();
+    const win = createWindow();
+    // After a crash, say so and offer the log, so it can be sent along.
+    if (crashed) {
+        win.webContents.once('did-finish-load', async () => {
+            const { response } = await dialog.showMessageBox(win, {
+                type: 'warning',
+                message: 'CoDev closed unexpectedly last time.',
+                detail: 'What happened is written in CoDev-crash.log. Send that file to get it fixed.',
+                buttons: ['Show the crash log', 'OK'],
+                defaultId: 0,
+                cancelId: 1
+            });
+            if (response === 0) shell.showItemInFolder(path.join(app.getPath('userData'), 'CoDev-crash.log'));
+            if (!win.isDestroyed()) { win.blur(); win.focus(); win.webContents.focus(); }
+        });
+    }
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 

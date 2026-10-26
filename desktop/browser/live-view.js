@@ -11,6 +11,7 @@ const { resolveAddress, checkPage, advice } = require('./page-check');
 
 const SCREENCAST = { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 };
 const MAX_BACKLOG = 300;
+const FRAME_GAP_MS = 200;
 const MAX_TEXT = 500;
 const DOM_BINDING = '__codevLiveDom';
 
@@ -139,9 +140,19 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
         let cdp;
         try { cdp = await session.context.newCDPSession(page); } catch (err) { return log(`[Live] Can't stream ${agentId}: ${err.message}`); }
         casts.set(agentId, { page, cdp });
+        // At most FRAME_GAP_MS apart: a busy page repaints many times a second, and every
+        // picture goes on to the app's window. The newest one is kept and sent when the
+        // gap is up, so the view still ends on the page as it is.
+        let lastSent = 0;
+        let pending = null;
+        let timer = null;
+        const flush = () => { timer = null; if (pending) { lastSent = Date.now(); send(agentId, pending); pending = null; } };
         cdp.on('Page.screencastFrame', ({ data, metadata, sessionId }) => {
             cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
-            send(agentId, { type: 'frame', data, width: metadata.deviceWidth, height: metadata.deviceHeight, url: page.isClosed() ? '' : page.url() });
+            pending = { type: 'frame', data, width: metadata.deviceWidth, height: metadata.deviceHeight, url: page.isClosed() ? '' : page.url() };
+            const wait = FRAME_GAP_MS - (Date.now() - lastSent);
+            if (wait <= 0) flush();
+            else if (!timer) timer = setTimeout(flush, wait);
         });
         try { await cdp.send('Page.startScreencast', SCREENCAST); } catch (err) { log(`[Live] ${err.message}`); }
     }
