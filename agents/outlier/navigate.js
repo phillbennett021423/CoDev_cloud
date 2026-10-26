@@ -33,7 +33,10 @@ const STATS = {
     pra: ['pts reb ast', 'pra', 'points rebounds assists', 'pts rebs asts'], 'pts reb': ['pts reb', 'points rebounds', 'pr'],
     'pts ast': ['pts ast', 'points assists', 'pa'], 'reb ast': ['reb ast', 'rebounds assists', 'ra'],
     threes: ['3 pointers made', 'threes', '3pm', '3pt made', 'three pointers made', '3 pt made', '3 pointers', 'made threes'],
-    steals: ['steals', 'stl'], blocks: ['blocks', 'blk'], 'stl blk': ['stl blk', 'steals blocks', 'blocks steals'], turnovers: ['turnovers', 'to'],
+    steals: ['steals', 'stl'], blocks: ['blocks', 'blk'], 'stl blk': ['stl blk', 'steals blocks', 'blocks steals', 'blk stl', 'blks stls', 'stocks'], turnovers: ['turnovers', 'to'],
+    'fg attempted': ['fg attempted', 'fga', 'field goals attempted', 'fg attempts', 'field goal attempts', 'fg att'],
+    'fg made': ['fg made', 'fgm', 'field goals made'], 'free throws made': ['free throws made', 'ftm'],
+    '3pt attempted': ['3pt attempted', '3pa', '3 pointers attempted', 'three pointers attempted'],
     fantasy: ['fantasy points', 'fantasy score', 'fantasy'], 'double double': ['double double'],
     'passing yards': ['passing yards', 'pass yds'], 'rushing yards': ['rushing yards', 'rush yds'], 'receiving yards': ['receiving yards', 'rec yds'],
     receptions: ['receptions', 'rec'], strikeouts: ['strikeouts', 'ks', 'pitcher strikeouts'], 'total bases': ['total bases', 'tb'],
@@ -364,7 +367,9 @@ async function navigate(page, { section, sport, market, game, player, day } = {}
                 + 'Ask the user to open Props once in the Outlier window (📈 Outlier tab, live view), then ask again: Outlier reopens the last board used.');
         }
     }
-    if (sport) await clickLabel(sportLabels(sport), `a "${sport}" tab`);
+    // Already on that sport's board (/NBA/props): its tab may not be shown there.
+    const inPath = sport && sportLabels(sport).some(l => new RegExp(`/${l.replace(/[^A-Za-z0-9]/g, '')}(/|$)`, 'i').test(new URL(page.url()).pathname));
+    if (sport) await clickLabel(sportLabels(sport), `a "${sport}" tab`, { optional: inPath });
     if (day) await clickLabel(dayLabels(day), `the ${day} tab`, { optional: true });
     if (market) await clickLabel([String(market).trim()], `a "${market}" filter`);
     if (!game) return { steps, game: null, teams: null };
@@ -470,7 +475,7 @@ async function openPlayer(page, player, { settleMs = 1500, stat = null, line = n
     // From the top of the board: the last read may have left it scrolled down.
     await toTop().catch(() => {});
     let anyCard = false;
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < 40; i++) {
         const found = await page.evaluate(markPlayer, { name: String(player), ...hints });
         if (found && (found.stat || !hints.stats.length)) return open(found.text);
         if (found) anyCard = true;
@@ -485,7 +490,7 @@ async function openPlayer(page, player, { settleMs = 1500, stat = null, line = n
             await clickPast(page, '[data-codev-nav="1"]');
             await page.waitForTimeout(settleMs);
         }
-        for (let i = 0; i < 15; i++) {
+        for (let i = 0; i < 40; i++) {
             const found = await page.evaluate(markPlayer, { name: String(player), ...hints });
             if (found) return open(`${found.text}${found.stat ? '' : ' (his card for another stat: no ' + stat + ' prop shown)'}`);
             if (!await page.evaluate(scrollStep)) break;
@@ -517,7 +522,8 @@ async function readDetails(page, { scrolls = 12, maxChars = 12000 } = {}) {
 function legSummary(text, max = 420) {
     const lines = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
     const parts = [];
-    const hit = String(text).match(/\b(L5|L10|L20|L15|H2H|Season|Szn|20\d\d(?:[-/]\d\d)?|Last \d+)\b[^\n%]{0,20}?\d{1,3}(?:\.\d)?%/gi) || [];
+    // "L5 80%", or the label and the value on lines of their own ("L5\n80%").
+    const hit = String(text).match(/\b(L5|L10|L20|L15|H2H|Season|Szn|20\d\d(?:[-/]\d\d)?|Last \d+)\b(?:[^%\n\d]|\n){0,12}\d{1,3}(?:\.\d)?%/gi) || [];
     if (hit.length) parts.push(`Hit ${[...new Set(hit.map(h => h.replace(/\s+/g, ' ')))].slice(0, 6).join(', ')}`);
     const pick = (re, n, label) => {
         const found = [...new Set(lines.filter(l => re.test(l) && l.length <= 120))].slice(0, n);
