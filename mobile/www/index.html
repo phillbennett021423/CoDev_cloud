@@ -2348,6 +2348,7 @@
             const open = force ?? !panel.classList.contains("open");
             panel.classList.toggle("open", open);
             if (open && !live.stop) watchLiveAgent(live.agentId);
+            else if (open) renderLiveFrame();
             if (open && !live.outlier && window.codevDesktop?.outlierRequest) {
                 window.codevDesktop.outlierRequest({ method: "GET", path: "/outlier/state" }).then(reply => { live.outlier = reply.body?.liveSession || ""; renderLiveAgents(); }).catch(() => {});
             } else if (open && !live.outlier && !window.codevDesktop?.browserLive) {
@@ -2423,7 +2424,8 @@
             if (update.type === "frame") {
                 live.frame = update;
                 if (document.activeElement !== document.getElementById("liveUrl")) document.getElementById("liveUrl").value = update.url;
-                return renderLiveFrame();
+                // Pictures nobody can see aren't decoded: a long run sends thousands of them.
+                return liveFrameShown() ? renderLiveFrame() : undefined;
             }
             if (update.type === "state") {
                 live.userControl = update.userControl;
@@ -2498,11 +2500,29 @@
             renderLiveLog();
         }
 
+        function liveFrameShown() {
+            return document.getElementById("livePanel").classList.contains("open") || Boolean(document.getElementById("agentViewport")?.offsetParent);
+        }
+
+        // One object URL per picture, shared by the panel and the agent's card, and the
+        // previous one freed: a data: URL for every frame piles up in the page's memory
+        // over a long run (an Outlier list sends thousands).
+        let liveFrameSrc = { frame: null, url: "" };
+        function liveFrameUrl() {
+            if (!live.frame || !live.frame.data) return "";
+            if (liveFrameSrc.frame !== live.frame) {
+                if (liveFrameSrc.url) URL.revokeObjectURL(liveFrameSrc.url);
+                const bytes = Uint8Array.from(atob(live.frame.data), c => c.charCodeAt(0));
+                liveFrameSrc = { frame: live.frame, url: URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" })) };
+            }
+            return liveFrameSrc.url;
+        }
+
         function renderLiveFrame() {
             const img = document.getElementById("liveFrame");
             const note = document.getElementById("liveNote");
             if (live.frame) {
-                img.src = `data:image/jpeg;base64,${live.frame.data}`;
+                img.src = liveFrameUrl();
                 img.style.display = "";
                 note.style.display = "none";
             } else {
@@ -2522,7 +2542,7 @@
         function renderCardLiveFrame() {
             const img = document.getElementById("agentViewport");
             if (!img) return;
-            if (live.frame) img.src = `data:image/jpeg;base64,${live.frame.data}`;
+            if (live.frame) img.src = liveFrameUrl();
             else img.removeAttribute("src");
             img.style.visibility = live.frame ? "" : "hidden";
             document.getElementById("agentViewportNote").style.display = live.frame ? "none" : "";
