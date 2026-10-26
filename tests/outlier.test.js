@@ -779,6 +779,53 @@ test('a list of legs for tomorrow is researched in one visit: each player\'s car
     assert.match(ev.content[0].text, /Pro tools/);
 });
 
+test('a long board that only draws the rows on screen: each card opens by jumping back to where the board read saw the player', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    // 900 rows in a scrolling panel, 20 drawn at a time, like Outlier's virtualized board:
+    // a player near the end is past the 40 screens a search from the top would scroll.
+    const word = i => `${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(97 + (Math.floor(i / 26) % 26))}${String.fromCharCode(97 + (Math.floor(i / 676) % 26))}son`;
+    const rows = Array.from({ length: 900 }, (_, i) => ({ n: `Kai ${word(i)}`, l: 10.5 + (i % 9) }));
+    const page = `<!doctype html><body><div id="sc" style="height:700px;overflow:auto"><div id="in" style="position:relative;height:${900 * 60}px"></div></div><script>
+        const rows = ${JSON.stringify(rows)};
+        const sc = document.getElementById('sc'); const inn = document.getElementById('in');
+        function draw() { const a = Math.floor(sc.scrollTop / 60); let h = ''; for (let i = a; i < Math.min(rows.length, a + 14); i++) h += '<div style="position:absolute;top:' + (i * 60) + 'px"><div class="pn" style="cursor:pointer">' + rows[i].n + '</div><div>BOS @ NYK</div><div>Points</div><div>Over ' + rows[i].l + '</div><div>FanDuel -119</div><div>L5 60% L10 70%</div></div>'; inn.innerHTML = h; }
+        sc.addEventListener('scroll', draw); draw();
+        inn.addEventListener('click', e => {
+            if (!e.target.classList.contains('pn')) return;
+            history.pushState({}, '', location.pathname + '?market=points');
+            const p = document.createElement('div'); p.setAttribute('role', 'dialog');
+            p.innerHTML = '<h2>' + e.target.textContent + '</h2><p>L5 60% L10 70%</p><p>Minutes 31.0</p>';
+            document.body.appendChild(p);
+        });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') { document.querySelectorAll('[role=dialog]').forEach(d => d.remove()); history.pushState({}, '', location.pathname); } });
+    </script></body>`;
+    const server = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(page); });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/NBA/props`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, backoffMs: [100, 100] }));
+    const service = createService({}, { pipeline });
+    const legs = [5, 880].map(i => ({ player: rows[i].n, stat: 'Points', line: rows[i].l, side: 'Over' }));
+    const progress = [];
+    const timer = setInterval(() => { const p = pipeline.state().progress; if (p && progress.at(-1) !== p) progress.push(p); }, 100);
+    const out = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
+    clearInterval(timer);
+    const text = out.content[0].text;
+    assert.equal(out.isError, undefined, text);
+    assert.match(text, /2\. Kai Whbson Over 17\.5 Points\n {3}Outlier 17\.5 Points[^\n]*\n {3}Card: [^\n]*Minutes 31\.0/, 'the player near the end of the board had his card read');
+    assert.match(text, /What CoDev did on Outlier:\n- Board: read \d+ screen\(s\), [\d,]+ rows, in \d+s; 2 of 2 legs seen on it\.\n- Player cards: 2 opened \(2 by jumping to the row the board read saw, 0 by searching the board\)/);
+    assert.ok(progress.some(p => /^Reading the NBA board: screen \d+, [\d,]+ rows, \d of 2 legs seen$/.test(p)), progress.join(' | '));
+    assert.ok(progress.some(p => /^Card \d of 2: Kai Whbson Points, (jumping to his row on the board|reading the card|every tab of the card)/.test(p)), progress.join(' | '));
+});
+
 test('a list keeps the board loaded: cards open over it and close with Escape, a 429 backs off, and cards read lately are reused', async t => {
     if (!hasPython) return t.skip('Python 3 is not installed');
     const launched = await launchBrowser();

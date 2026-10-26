@@ -2988,6 +2988,15 @@
             return `Exit code: ${data.exit_code}${data.timed_out ? " (timed out)" : ""}\n--- stdout ---\n${data.stdout || ""}\n--- stderr ---\n${data.stderr || ""}`;
         }
 
+        // What a running Outlier read is on, from the Outlier service's state (null when idle).
+        async function outlierProgress() {
+            try {
+                if (window.codevDesktop?.outlierRequest) return (await window.codevDesktop.outlierRequest({ method: "GET", path: "/outlier/state" })).body?.progress || null;
+                const r = await fetch("/outlier/state");
+                return r.ok ? (await r.json()).progress || null : null;
+            } catch (err) { return null; }
+        }
+
         function describeToolCall(fullName, args) {
             const split = fullName.indexOf("__");
             const name = split > 0 ? fullName.slice(split + 2) : fullName;
@@ -3018,6 +3027,12 @@
             if (name === "browser_list_credentials") return "🔐 Checking saved logins";
             if (name === "browser_login") return "🔐 Signing in (asks you first)";
             if (name === "browser_save_session" || name === "browser_load_session") return "🍪 Saved session (asks you first)";
+            if (name === "outlier_research_list") return `📈 Checking ${(args.legs || []).length} legs on Outlier${args.sport ? ` (${args.sport})` : ""}`;
+            if (name === "outlier_research") return `📈 Reading ${args.player || "a player"}'s card on Outlier`;
+            if (name === "outlier_scan_board") return `📈 Reading Outlier's ${args.sport || ""} board`.replace("  ", " ");
+            if (name === "outlier_read_section") return `📈 Reading Outlier's ${args.section || "section"}`;
+            if (name === "outlier_simulate_ticket") return "🎲 Simulating the ticket from the cards";
+            if (name === "outlier_guide") return "📘 Reading the Outlier guide";
             return `🛠️ ${fullName}`;
         }
 
@@ -3049,6 +3064,8 @@
                     + "Don't search the project files for Outlier, don't ask the user for a URL or a login, and don't open Outlier in your own browser: outlier_scan_board already uses the signed-in one. "
                     + "It opens Outlier's regular props board, not Positive EV, even when Outlier reopens on +EV (/pro/ev): always pass sport (e.g. \"NBA\") and it goes straight to that sport's board (app.outlier.bet/NBA/props). Don't pass section \"Props\"; leave section out for the board. Never pass a +EV tab such as \"NBA Player Props\", \"Pinnacle\" or \"Sharp Gamelines\" as section. If it can't find a tab, its error lists the tabs on the page: pick the matching one (or ask the user) and call it again with that name as section or sport. "
                     + "Never use a saved board file (outlier_import_board, a board dump in the project folder) in place of a live Outlier read for a list of props: those files are old. If the live read fails, say what failed and call it again with the sport. If it says Outlier asked to sign in, tell the user to click 🔑 Sign in to Outlier in the 📈 Outlier tab, then ask again. "
+                    + "Know what you're doing before and while you do it: before your first Outlier call, write a short plan as your message text (each leg as player, stat, line, side; the sport and day; which tool you'll call and why), then check every result against that plan: its \"What CoDev did on Outlier\" section says how much of the board was read, which legs were seen, and how each card was opened or why it wasn't; name any leg that was missed and why, and call again only for a reason the result gives. "
+                    + "Start your answer with two short lines on what you did on Outlier, taken from that section, then the ticket. "
                     + "Give the ticket legs in your reply. Never enter anything on Outlier, Underdog or Dabble.";
             }
             const asked = messages.filter(m => m.role === "user").map(m => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
@@ -3093,6 +3110,8 @@
                 const calls = message.tool_calls || [];
                 if (!calls.length) return message.content || "";
                 messages.push({ role: "assistant", content: message.content || "", tool_calls: calls, anthropic_content: message.anthropic_content });
+                // The agent's plan, written with its calls, stays on screen above each step.
+                if (message.content && message.content.trim()) ctx.plan = message.content.trim().slice(0, 700);
                 for (const call of calls) {
                     const tool = tools.find(t => t.name === call.function?.name);
                     let args = {};
@@ -3103,8 +3122,14 @@
                     } else {
                         const step = describeToolCall(tool.name, args);
                         logConsoleActivity(`[Tool] ${step}`);
-                        if (ctx.onStep) ctx.onStep(step);
-                        try { result = await tool.run(args, ctx); } catch (err) { result = `Tool failed: ${err.message}`; }
+                        const show = text => { if (ctx.onStep) ctx.onStep(ctx.plan ? `📝 ${ctx.plan}\n\n${text}` : text); };
+                        show(step);
+                        // A long Outlier read says where it is (board screen, card, tab) while it runs.
+                        const watch = /(^|__)outlier_/.test(tool.name) ? setInterval(async () => {
+                            const progress = await outlierProgress();
+                            if (progress) show(`${step}\n⏳ ${progress}`);
+                        }, 1500) : null;
+                        try { result = await tool.run(args, ctx); } catch (err) { result = `Tool failed: ${err.message}`; } finally { if (watch) clearInterval(watch); }
                         trackToolEffect(ctx, tool.name, args, String(result));
                         // A short note of each step stays with the reply, so a follow-up can ask about it.
                         if (ctx.toolLog) ctx.toolLog.push(`${step} → ${String(result).replace(/\s+/g, " ").slice(0, MAX_HISTORY_TOOL_CHARS)}`);
