@@ -846,6 +846,66 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     assert.ok(hits.card <= 3 + 3, 'no more than one card per strike before stopping');
 });
 
+test('each card is read whole: every tab on it, minutes and opportunity by window, and falling minutes move a leg down', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    const players = ['Jayson Tatum', 'Jaylen Brown'];
+    const board = players.map((n, i) => `<div><div class="pn" style="cursor:pointer">${n}</div><div>BOS @ NYK</div><div>Points</div><div>Over ${20.5 + i}</div><div>FanDuel -119</div><div>L5 ${74 - i * 4}% L10 ${74 - i * 4}%</div></div>`).join('');
+    // Tatum's minutes and shots are falling; Brown's are steady. Each tab fills the card's body.
+    const stats = {
+        'Jayson Tatum': 'Stat L5 L10 2026\nMinutes 30.1 32.0 34.2\nFGA 15.2 16.0 17.8',
+        'Jaylen Brown': 'Stat L5 L10 2026\nMinutes 33.9 34.0 34.1\nFGA 17.0 17.1 17.2'
+    };
+    const page = `<!doctype html><body><header><div role="tablist"><button role="tab" onclick="fetch('/nav')">Injuries</button></div></header><nav><button id="nba">NBA</button></nav><main id="main">Pick a sport</main><script>
+        const main = document.getElementById('main');
+        const stats = ${JSON.stringify(stats)};
+        document.getElementById('nba').onclick = () => { main.innerHTML = ${JSON.stringify(board)}; };
+        main.addEventListener('click', e => {
+            if (!e.target.classList.contains('pn')) return;
+            const name = e.target.textContent;
+            const panel = document.createElement('div');
+            panel.setAttribute('role', 'dialog');
+            panel.innerHTML = '<h2>' + name + '</h2><p>L5 60% L10 70%</p><div role="tablist"><button role="tab">Supporting Stats</button><button role="tab">Game Log</button><button role="tab">Odds Movement</button></div>'
+                + '<button onclick="fetch(\\'/picked\\')">Add to My Picks</button><section id="body">Overview</section>';
+            const tabs = { 'Supporting Stats': stats[name].replace(/\\n/g, '<br>'), 'Game Log': '@ MIA 31 pts<br>vs PHI 18 pts', 'Odds Movement': 'Opened 20.5, now 21.5' };
+            panel.querySelectorAll('[role=tab]').forEach(b => { b.onclick = () => { panel.querySelector('#body').innerHTML = tabs[b.textContent]; }; });
+            document.body.appendChild(panel);
+        });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') document.querySelectorAll('[role=dialog]').forEach(d => d.remove()); });
+    </script></body>`;
+    const hits = { nav: 0, picked: 0 };
+    const server = http.createServer((req, res) => {
+        const at = req.url.split('?')[0];
+        if (at === '/nav' || at === '/picked') { hits[at.slice(1)]++; return res.end(); }
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(page);
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/NBA/props`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50 }));
+    const service = createService({}, { pipeline });
+    const legs = players.map((player, i) => ({ player, stat: 'Points', line: 20.5 + i, side: 'Over' }));
+
+    const reply = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
+    assert.equal(reply.isError, undefined, reply.content[0].text);
+    const text = reply.content[0].text;
+    assert.match(text, /1\. Jayson Tatum Over 20\.5 Points\n.*\n {3}Card: .*\n {3}Minutes & opportunity: Minutes L5 30\.1 · L10 32 · 2026 34\.2 \(12% lower lately\); FG attempts L5 15\.2 · L10 16 · 2026 17\.8 \(15% lower lately\)/);
+    assert.match(text, /On the card: Jayson Tatum · L5 60% L10 70%/);
+    assert.match(text, /Tab Game Log: @ MIA 31 pts · vs PHI 18 pts/);
+    assert.match(text, /Tab Odds Movement: Opened 20\.5, now 21\.5/);
+    // Tatum's 74% drops 8 points for his falling minutes and shots: Brown's steady 70% leads.
+    assert.match(text, /Best on Outlier's hit rates.*\n2\. Jaylen Brown Over 21\.5 Points: 70%\n1\. Jayson Tatum Over 20\.5 Points: 66%/);
+    assert.deepEqual(hits, { nav: 0, picked: 0 }, 'only the card\'s own tabs were clicked: no header tab, no pick');
+});
+
 test('a grid board\'s bare hit-rate cells get their column labels, and a leg is matched at its own line, not an alt line', async t => {
     const launched = await launchBrowser();
     if (launched.skip) return t.skip(launched.skip);

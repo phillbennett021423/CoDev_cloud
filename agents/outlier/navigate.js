@@ -549,6 +549,128 @@ function legSummary(text, max = 420) {
     return out.length > max ? `${out.slice(0, max)}…` : out;
 }
 
+// The tabs inside an open player card (Supporting Stats, Game Log, Splits,
+// Matchup, Injuries, Odds Movement...). Only real tabs (role=tab, a tab list) or
+// buttons in the card's dialog, never one in a header, nav, slip or My Picks, and
+// never a pick, bet or slip button. Marked data-codev-tab; returns their labels.
+const CARD_TABS = /^(supporting stats|stats|player stats|game ?logs?|splits|home ?\/ ?away|matchup|defen[cs]e( vs\.? position)?|vs\.? (defense|position)|injur(y|ies)|injury report|odds movement|line movement|line history|public( betting)?|bet splits|betting splits|news|minutes|usage|shooting|advanced|opportunit(y|ies)|play ?types?|shot chart|lineups?)$/i;
+function markCardTabs(source) {
+    const re = new RegExp(source, 'i');
+    const bad = /pick|slip|add|bet ?now|place|remove|entry|parlay|follow|share/i;
+    document.querySelectorAll('[data-codev-tab]').forEach(el => el.removeAttribute('data-codev-tab'));
+    const dialog = document.querySelector('[role="dialog"], [aria-modal="true"]');
+    const els = new Set([...document.querySelectorAll('[role="tab"], [role="tablist"] button, [role="tablist"] a'),
+        ...(dialog ? dialog.querySelectorAll('button, [role="button"]') : [])]);
+    const labels = [];
+    for (const el of els) {
+        const label = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+        if (!label || label.length > 30 || !re.test(label) || bad.test(label) || labels.includes(label)) continue;
+        if (el.closest('header, nav, aside, [class*="slip" i], [class*="mypick" i], [class*="my-pick" i]')) continue;
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        el.setAttribute('data-codev-tab', label);
+        labels.push(label);
+    }
+    return labels;
+}
+
+// Clicks each of the open card's tabs in turn and reads what it shows. Lines
+// already in `known` (the card as it opened) are left out of each tab's text.
+async function readCardTabs(page, { settleMs = 800, max = 6, maxChars = 4000, known = '' } = {}) {
+    const seen = new Set(String(known).split('\n'));
+    const labels = (await page.evaluate(markCardTabs, CARD_TABS.source).catch(() => [])).slice(0, max);
+    const tabs = [];
+    for (const label of labels) {
+        // The card re-renders on each click: marked again, the tab found by its label.
+        const marked = await page.evaluate(markCardTabs, CARD_TABS.source).catch(() => []);
+        if (!marked.includes(label)) continue;
+        const ok = await page.click(`[data-codev-tab="${label.replace(/"/g, '\\"')}"]`, { timeout: 3000 }).then(() => true).catch(() => false);
+        if (!ok) continue;
+        await page.waitForTimeout(settleMs);
+        const fresh = (await readDetails(page, { scrolls: 3, maxChars })).split('\n').filter(l => !seen.has(l));
+        fresh.forEach(l => seen.add(l));
+        if (fresh.length) tabs.push({ tab: label, text: fresh.join('\n') });
+    }
+    return tabs;
+}
+
+// Minutes and opportunity (shot attempts, 3PT attempts, usage, touches, potential
+// assists, rebound chances, targets...) from a card's text, by window when the card
+// labels its columns: { Minutes: { values: [30.1, 32, 34.2], windows: ['L5', 'L10', '2026'] } }.
+const OPPORTUNITY = [
+    ['Minutes', /^(min|mins|minutes)( played| per game)?\b/i],
+    ['Shots on goal', /^shots on goal\b/i],
+    ['FG attempts', /^(fga|fg attempts?|fg attempted|field goals? attempted|field goal attempts|shot attempts|shots)\b/i],
+    ['3PT attempts', /^(3pa|3pt attempts?|3pt attempted|3-?pt att(empts)?|three point attempts|3 pointers attempted|three pointers attempted)\b/i],
+    ['FT attempts', /^(fta|ft attempts?|free throws? attempted|free throw attempts)\b/i],
+    ['Usage', /^(usage|usg)( rate)?( ?%)?/i],
+    ['Touches', /^touches\b/i],
+    ['Potential assists', /^(potential assists|potential ast)\b/i],
+    ['Rebound chances', /^(rebound chances|reb chances|rebounding chances)\b/i],
+    ['Targets', /^targets\b/i],
+    ['Target share', /^target share\b/i],
+    ['Rush attempts', /^(rush attempts|rushing attempts|carries)\b/i],
+    ['Snaps', /^(snaps|snap %|snap share)\b/i],
+    ['Plate appearances', /^(plate appearances|pa)\b/i]
+];
+const WINDOW_RE = /\b(L\d{1,2}|Last \d{1,2}|H2H|Season|Szn|Avg|Average|20\d\d(?:[-/]\d\d)?)\b/gi;
+function cardNumbers(text) {
+    const lines = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
+    const nums = s => (s.replace(WINDOW_RE, ' ').match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+    const onlyNumbers = l => /^[-\d.%\s·|]+$/.test(l) && /\d/.test(l);
+    let header = null;
+    const out = {};
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const windows = line.match(WINDOW_RE) || [];
+        // A row of column labels ("L5 L10 L20 2026"): the windows for the rows under it.
+        if (windows.length >= 2 && !line.replace(WINDOW_RE, '').replace(/[^A-Za-z0-9]/g, '').replace(/^(stat|stats|split|splits)$/i, '')) { header = windows; continue; }
+        for (const [name, re] of OPPORTUNITY) {
+            if (out[name] || !re.test(line)) continue;
+            const rest = line.replace(re, '');
+            // Inline pairs: "Minutes L5 30.1 L10 32.0 Season 34.2".
+            const pairs = [...rest.matchAll(/\b(L\d{1,2}|Last \d{1,2}|H2H|Season|Szn|Avg|Average|20\d\d(?:[-/]\d\d)?)\b\s*:?\s*(-?\d+(?:\.\d+)?)/gi)];
+            if (pairs.length) { out[name] = { values: pairs.map(m => Number(m[2])), windows: pairs.map(m => m[1]) }; break; }
+            let values = nums(rest);
+            // The label on a line of its own, its numbers on the lines below.
+            for (let j = i + 1; !values.length || (header && values.length < header.length); j++) {
+                if (j >= lines.length || j > i + 6 || !onlyNumbers(lines[j])) break;
+                values = values.concat(nums(lines[j]));
+            }
+            if (!values.length || values.length > 8) continue;
+            out[name] = { values, windows: header && header.length === values.length ? header : null };
+            break;
+        }
+    }
+    return out;
+}
+
+// Recent against the longer run, as a fraction (-0.12 = 12% lower lately), or null
+// when the card doesn't say which number is which window.
+function opportunityTrend({ values, windows } = {}) {
+    if (!windows || values.length < 2) return null;
+    const at = re => windows.findIndex(w => re.test(w));
+    let recent = at(/^(L[35]|Last [35])$/i);
+    if (recent < 0) recent = at(/^(L\d+|Last \d+)$/i);
+    let base = at(/^(Season|Szn|Avg|Average)$/i);
+    if (base < 0) {
+        const years = windows.map((w, i) => ({ y: /^20\d\d/.test(w) ? Number(w.slice(0, 4)) : 0, i })).filter(x => x.y).sort((a, b) => b.y - a.y);
+        base = years.length ? years[0].i : windows.length - 1;
+    }
+    if (recent < 0 || recent === base || !(values[base] > 0)) return null;
+    return (values[recent] - values[base]) / values[base];
+}
+
+// The opportunity numbers as one line for the agent.
+function opportunityLine(found) {
+    return Object.entries(found || {}).map(([name, m]) => {
+        const shown = m.windows ? m.windows.map((w, i) => `${w} ${m.values[i]}`).join(' · ') : m.values.join(' / ');
+        const t = opportunityTrend(m);
+        const trend = t == null || Math.abs(t) < 0.1 ? '' : ` (${Math.round(Math.abs(t) * 100)}% ${t < 0 ? 'lower' : 'higher'} lately)`;
+        return `${name} ${shown}${trend}`;
+    }).join('; ');
+}
+
 // Keeps the board's props that are legs the user listed ({ player, stat }): his
 // prop for that stat, or all of his when the stat isn't named or not found.
 function keepLegs(props, legs) {
@@ -573,4 +695,4 @@ function onlyGame(props, teams) {
     return props.filter(p => !p.game || p.game === key);
 }
 
-module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, dismissOverlays, markPropsLink, statWords, dayLabels, legSummary, keepLegs, onTools, normWords };
+module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, dayLabels, legSummary, keepLegs, onTools, normWords };
