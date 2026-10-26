@@ -61,7 +61,11 @@ async function openPage(browser, baseUrl, { steps = [], selfHeal = false, mcpSer
         let seq = 0;
         // Replaces the provider call for the whole page (it's a global function).
         window.groqChatMessage = async body => {
-            window.__modelCalls.push({ tools: (body.tools || []).map(t => t.function.name), system: body.messages[0]?.content || '' });
+            window.__modelCalls.push({
+                tools: (body.tools || []).map(t => t.function.name),
+                system: body.messages[0]?.content || '',
+                messages: body.messages.slice(1).map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) }))
+            });
             const step = queue.shift();
             if (step === undefined) return { role: 'assistant', content: 'Done.' };
             if (typeof step === 'string') return { role: 'assistant', content: step };

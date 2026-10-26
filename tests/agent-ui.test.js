@@ -138,6 +138,34 @@ test('with the sandbox off, the page keeps its direct tools', async t => {
     assert.match(secret.write, /Use a file path/);
 });
 
+test('a follow-up carries the earlier turns, including the tool steps that failed', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const workspace = makeWorkspace();
+    const backend = createMockBackend({ workspace });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const { page } = await openPage(launched.browser, url, {
+        steps: [[{ name: 'read_workspace_file', arguments: { name: 'missing/notes.txt' } }], "I couldn't open missing/notes.txt.", 'It failed because that file is not there.']
+    });
+    await page.uncheck('#isSandboxCheckbox');
+    await sendPrompt(page, 'Open missing/notes.txt and summarize it');
+    await waitForChat(page, /couldn't open missing\/notes\.txt/);
+    await sendPrompt(page, 'Why did that fail?');
+    await waitForChat(page, /file is not there/);
+    const calls = await page.evaluate(() => window.__modelCalls);
+    const first = calls[0].messages;
+    assert.equal(first.length, 1, 'the first prompt has no earlier turns');
+    const last = calls[calls.length - 1].messages;
+    assert.equal(last[0].role, 'user');
+    assert.match(last[0].content, /Open missing\/notes\.txt/);
+    assert.equal(last[1].role, 'assistant');
+    assert.match(last[1].content, /couldn't open missing\/notes\.txt/);
+    assert.match(last[1].content, /\[Tool steps in that turn\][\s\S]*notes\.txt/);
+    assert.equal(last[2].role, 'user');
+    assert.match(last[2].content, /^Why did that fail\?/);
+    assert.ok(!last.some(m => /Welcome to CoDev/.test(m.content)), 'the welcome note stays out');
+});
+
 test('in sandbox mode, MCP servers that write or run on this computer are kept out of the review bypass', async t => {
     if (launched.skip) return t.skip(launched.skip);
     const workspace = makeWorkspace();
