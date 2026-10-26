@@ -216,8 +216,8 @@
         /* Input & Collapsible Settings Bar */
         .chat-input-wrapper { max-width: 1000px; width: 100%; margin: 0 auto; padding: 0 20px 20px 20px; background: transparent; }
         .chat-input-area { padding: 15px 20px; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
-        .chat-input-area input { flex: 1; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px 16px; color: var(--text-main); font-size: 0.95rem; outline: none; min-width: 200px; }
-        .chat-input-area input:focus { border-color: var(--accent); }
+        .chat-input-area input#userInput { background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px 16px; color: var(--text-main); font-size: 0.95rem; outline: none; }
+        .chat-input-area input#userInput:focus { border-color: var(--accent); }
         
         .chat-controls-container { width: 100%; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; margin-bottom: 4px; }
         .chat-controls-header { display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; color: var(--text-muted); }
@@ -288,8 +288,9 @@
         .project-grid { display: grid; grid-template-columns: 260px 1fr; gap: 15px; flex: 1; overflow: hidden; }
         .project-editor-col { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
         .project-editor-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
-        .chat-input-row { display: flex; width: 100%; gap: 10px; align-items: center; }
-        .chat-input-row #userInput { min-width: 0; flex: 1 1 auto; }
+        .chat-input-row { display: flex; flex-wrap: wrap; width: 100%; gap: 10px; align-items: center; }
+        /* When the chat column is narrow (sidebars open), keep the text box readable and let the buttons wrap below it */
+        .chat-input-row #userInput { min-width: 0; flex: 1 1 260px; }
         .chat-input-row .send-btn { flex: 0 0 auto; white-space: nowrap; }
         .mic-btn { background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 12px 14px; border-radius: 8px; cursor: pointer; }
         .speak-btn { background: none; border: none; cursor: pointer; font-size: 0.9rem; padding: 4px 6px; border-radius: 4px; }
