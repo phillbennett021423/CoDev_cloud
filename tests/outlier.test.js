@@ -761,8 +761,8 @@ test('a list of legs for tomorrow is researched in one visit: each player\'s car
     assert.match(text, /Best on Outlier's hit rates.*\n1\. Bilal Coulibaly Over 3\.5 Rebounds: 80%\n2\. LaMelo Ball Higher 16\.5 Points: 55%/, 'legs are ranked, on the card\'s hit rates when the board row shows none');
     assert.match(text, /For reference only, CoDev's sportsbook audit/);
     assert.match(text, /2\. LaMelo Ball Higher 16\.5 Points\n {3}Outlier 16\.5 Points \(over -119\): no hit rates shown \(on your line\)\n {3}Card: Hit L5 40%/);
-    assert.match(text, /3\. Michael Jordan Over 30\.5 Points: no Points prop for him on Outlier's board for this game \(can't be checked on Outlier\)/);
-    assert.match(text, /4\. LaMelo Ball Under 30\.5 Pts\+Rebs\+Asts \(no prop for this stat on Outlier/);
+    assert.match(text, /3\. Michael Jordan Over 30\.5 Points: no Points prop at this part of the game for him on Outlier for this game \(read the whole board; Outlier lists no props for him\)\. Can't be checked on Outlier\./);
+    assert.match(text, /4\. LaMelo Ball Under 30\.5 Pts\+Rebs\+Asts \(no prop for this stat at this part of the game on Outlier/);
     assert.match(text, /Checks:\n- LaMelo Ball is on legs 2, 4: an Over and an Under on him work against each other/);
     assert.match(text, /a DFS leg doesn't need to pass it\):\n\d+ props/);
     const audited = JSON.parse(fs.readFileSync(pipeline.files.scrape, 'utf8'));
@@ -777,6 +777,59 @@ test('a list of legs for tomorrow is researched in one visit: each player\'s car
     const ev = await service.callTool('outlier_read_section', { section: '+EV' });
     assert.equal(ev.isError, true);
     assert.match(ev.content[0].text, /Pro tools/);
+});
+
+test('NFL quarter and half legs: each player is looked up by name, matched to the same quarter or half, and a missing one says what Outlier lists for him', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    // The board shows each player's main props; his quarter and half props show when
+    // his name is searched. A pick slip's amount field sits next to it and must stay empty.
+    const rows = [
+        ['CeeDee Lamb', 'Receiving Yards', 64.5, true], ['CeeDee Lamb', '1st Quarter Receiving Yards', 14.5, false], ['CeeDee Lamb', '2nd Quarter Receiving Yards', 18.5, false],
+        ['Saquon Barkley', 'Rushing Yards', 80.5, true], ['Saquon Barkley', 'Receptions', 3.5, false], ['Jalen Hurts', 'Passing Yards', 220.5, true]
+    ];
+    const page = `<!doctype html><body><div class="betslip"><input id="amt" placeholder="Entry amount"></div><input id="q" placeholder="Search players"><main id="b"></main><script>
+        const rows = ${JSON.stringify(rows)};
+        const b = document.getElementById('b'); const q = document.getElementById('q');
+        function draw() { const f = q.value.toLowerCase(); b.innerHTML = rows.filter(r => f ? r[0].toLowerCase().includes(f) : r[3]).map(r => '<div><div class="pn" style="cursor:pointer">' + r[0] + '</div><div>DAL @ PHI</div><div>' + r[1] + '</div><div>Over ' + r[2] + '</div><div>FanDuel -115</div><div>L5 60% L10 70%</div></div>').join(''); }
+        q.addEventListener('input', draw); draw();
+        b.addEventListener('click', e => {
+            if (!e.target.classList.contains('pn')) return;
+            const market = e.target.parentElement.children[2].textContent;
+            history.pushState({}, '', location.pathname + '?market=' + encodeURIComponent(market));
+            const p = document.createElement('div'); p.setAttribute('role', 'dialog');
+            p.innerHTML = '<h2>' + e.target.textContent + ' ' + market + '</h2><p>L5 80% L10 60%</p><p>Targets 9.7</p>';
+            document.body.appendChild(p);
+        });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') { document.querySelectorAll('[role=dialog]').forEach(d => d.remove()); history.pushState({}, '', location.pathname); } });
+    </script></body>`;
+    const server = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(page); });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/NFL/props`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, backoffMs: [100, 100] }));
+    const service = createService({}, { pipeline });
+    const legs = [
+        { player: 'CeeDee Lamb', stat: '1st Quarter Receiving Yards', line: 14.5, side: 'Over' },
+        { player: 'Saquon Barkley', stat: 'First Half Receptions', line: 1.5, side: 'Over' },
+        { player: 'CeeDee Lamb', stat: 'Receiving Yards', line: 64.5, side: 'Over' }
+    ];
+    const out = await service.callTool('outlier_research_list', { sport: 'NFL', legs });
+    const text = out.content[0].text;
+    assert.equal(out.isError, undefined, text);
+    assert.match(text, /1\. CeeDee Lamb Over 14\.5 1st Quarter Receiving Yards\n {3}Outlier 14\.5 1st Quarter Receiving Yards \(over -115\)[^\n]*\n {3}Card: [^\n]*/, 'the 1st-quarter leg matched the 1st-quarter row found by searching his name');
+    assert.match(text, /CeeDee Lamb 1st Quarter Receiving Yards · L5 80%/, 'his 1st-quarter card was the one opened');
+    assert.match(text, /2\. Saquon Barkley Over 1\.5 First Half Receptions \(no prop for this stat at this part of the game on Outlier after searching his name; Outlier lists for him: Rushing Yards 80\.5, Receptions 3\.5; his card for another stat was read\)/);
+    assert.doesNotMatch(text, /Saquon Barkley[^\n]*\n {3}Outlier /, 'his full-game receptions row is not his first-half one');
+    assert.match(text, /3\. CeeDee Lamb Over 64\.5 Receiving Yards\n {3}Outlier 64\.5 Receiving Yards \(over -115\)/, 'the full-game leg matched the full-game row, not a quarter');
+    assert.match(text, /looked up by name in Outlier's search/);
 });
 
 test('a long board that only draws the rows on screen: each card opens by jumping back to where the board read saw the player', async t => {
@@ -821,7 +874,7 @@ test('a long board that only draws the rows on screen: each card opens by jumpin
     const text = out.content[0].text;
     assert.equal(out.isError, undefined, text);
     assert.match(text, /2\. Kai Whbson Over 17\.5 Points\n {3}Outlier 17\.5 Points[^\n]*\n {3}Card: [^\n]*Minutes 31\.0/, 'the player near the end of the board had his card read');
-    assert.match(text, /What CoDev did on Outlier:\n- Board: read \d+ screen\(s\), [\d,]+ rows, in \d+s; 2 of 2 legs seen on it\.\n- Player cards: 2 opened \(2 by jumping to the row the board read saw, 0 by searching the board\)/);
+    assert.match(text, /What CoDev did on Outlier:\n- Board: read \d+ screen\(s\), [\d,]+ rows, in \d+s; 2 of 2 legs seen on it\.\n- Player cards: 2 opened \(2 by jumping to the row the board read saw, 0 from a search of his name, 0 by scrolling the board\)/);
     assert.ok(progress.some(p => /^Reading the NBA board: screen \d+, [\d,]+ rows, \d of 2 legs seen$/.test(p)), progress.join(' | '));
     assert.ok(progress.some(p => /^Card \d of 2: Kai Whbson Points, (jumping to his row on the board|reading the card|every tab of the card)/.test(p)), progress.join(' | '));
 });

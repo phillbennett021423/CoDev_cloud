@@ -5,6 +5,8 @@
 // be tested without a browser. Outlier's markup isn't documented and changes, so
 // nothing depends on its class names unless config.json names selectors.
 
+const { periodOf, withoutPeriod } = require('./navigate');
+
 // Runs in the page (page.evaluate), so it must not use anything from this file.
 // selectors (optional): { row: 'css', fields: { player: 'css', odds: 'css', ... } }
 function collectPage(selectors) {
@@ -111,7 +113,9 @@ const BOOKS = ['fanduel', 'draftkings', 'betmgm', 'caesars', 'pinnacle', 'bet365
 const MARKETS = ['team total', 'game total', 'total points', 'pts+reb+ast', 'pts + reb + ast', 'pra', 'pts+reb', 'pts+ast', 'reb+ast', 'points', 'rebounds', 'assists', 'threes', '3-pointers made',
     '3pt made', 'three pointers', 'steals', 'blocks', 'blks+stls', 'turnovers', 'fantasy score', 'fantasy points', 'double double',
     'passing yards', 'pass yards', 'passing tds', 'pass tds', 'rushing yards', 'rush yards', 'receiving yards', 'rec yards', 'receptions',
-    'rush+rec yards', 'pass attempts', 'completions', 'interceptions', 'longest reception', 'tackles', 'sacks',
+    'rush+rec yards', 'rush + rec yards', 'rush+rec yds', 'rushing+receiving yards', 'pass+rush yards', 'pass yds', 'rush yds', 'rec yds', 'receiving yds', 'rushing yds', 'passing yds',
+    'rush attempts', 'rushing attempts', 'carries', 'passing attempts', 'pass completions', 'passing touchdowns',
+    'pass attempts', 'completions', 'interceptions', 'longest reception', 'longest rush', 'tackles+assists', 'tackles', 'sacks',
     'strikeouts', 'pitcher strikeouts', 'hits allowed', 'earned runs', 'outs recorded', 'total bases', 'hits+runs+rbis', 'hits',
     'runs', 'rbis', 'home runs', 'walks', 'stolen bases', 'singles',
     'shots on goal', 'shots', 'saves', 'goals', 'goalie saves', 'blocked shots', 'power play points', 'aces', 'games won', 'kills'];
@@ -152,8 +156,20 @@ function findMarket(text) {
         if (/[a-z]/.test(before || '') || /[a-z]/.test(after || '')) continue;
         if (!best || m.length > best.length) best = m;
     }
-    return best ? best.replace(/\s*\+\s*/g, '+').replace(/\b\w/g, c => c.toUpperCase()) : null;
+    if (!best) return null;
+    const name = best.replace(/\s*\+\s*/g, '+').replace(/\b\w/g, c => c.toUpperCase());
+    // A quarter or half market keeps its period ("1st Quarter Receiving Yards"): it is
+    // another prop than the full game's. The period is read from the market's own
+    // line, or a line of the card that is only the period ("1st Quarter").
+    const lines = String(text).split(/[\n\t]+/).map(l => l.trim()).filter(Boolean);
+    const at = lines.findIndex(l => l.toLowerCase().replace(/\s+/g, ' ').includes(best));
+    const near = [lines[at], ...lines.filter(l => l.length <= 20 && withoutPeriod(l) === '')];
+    const period = near.map(l => periodOf(l || '')).find(k => k && k !== 'other');
+    return period ? `${PERIOD_NAMES[period]} ${name}` : name;
 }
+
+const PERIOD_NAMES = { q1: '1st Quarter', q2: '2nd Quarter', q3: '3rd Quarter', q4: '4th Quarter', h1: '1st Half', h2: '2nd Half',
+    p1: '1st Period', p2: '2nd Period', p3: '3rd Period', f5: 'First 5 Innings', f3: 'First 3 Innings' };
 
 function findBook(text) {
     const lower = text.toLowerCase();
