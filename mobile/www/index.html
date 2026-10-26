@@ -2255,8 +2255,9 @@
             let tools = [];
             try {
                 const result = await browserRpc("tools/list", {});
-                // server.js's /agent-tools also has other services' tools; these are the browser's.
-                tools = (result.tools || []).filter(t => t.name.startsWith("browser_")).map(t => ({ ...t, transport: "browser" }));
+                // server.js's /agent-tools also has the sandbox's tools (offered in sandbox mode);
+                // these are the browser's and the Outlier pipeline's, called the same way.
+                tools = (result.tools || []).filter(t => /^(browser|outlier)_/.test(t.name)).map(t => ({ ...t, transport: "browser" }));
             } catch (err) { /* an older server.js without /agent-tools */ }
             browserMcpCache = { at: Date.now(), tools };
             return tools;
@@ -5327,7 +5328,7 @@
             // The live view is there wherever agents have a browser (Windows app, npm start).
             setupLiveInput();
             fetchBrowserMcpTools().then(tools => {
-                if (!tools.length) return;
+                if (!tools.some(t => t.name.startsWith("browser_"))) return;
                 document.getElementById("liveViewBtn").style.display = "";
                 watchLiveAgent("");
             });
