@@ -27,6 +27,49 @@ const sportLabels = sport => {
     return [...new Set([text, ...(SPORTS[key] || [])])];
 };
 
+// Stat names a leg might use -> the words a board shows for them.
+const STATS = {
+    points: ['points', 'pts'], rebounds: ['rebounds', 'reb', 'rebs'], assists: ['assists', 'ast', 'asts'],
+    pra: ['pts reb ast', 'pra', 'points rebounds assists', 'pts rebs asts'], 'pts reb': ['pts reb', 'points rebounds', 'pr'],
+    'pts ast': ['pts ast', 'points assists', 'pa'], 'reb ast': ['reb ast', 'rebounds assists', 'ra'],
+    threes: ['3 pointers made', 'threes', '3pm', '3pt made', 'three pointers made', '3 pt made', '3 pointers', 'made threes'],
+    steals: ['steals', 'stl'], blocks: ['blocks', 'blk'], 'stl blk': ['stl blk', 'steals blocks', 'blocks steals'], turnovers: ['turnovers', 'to'],
+    fantasy: ['fantasy points', 'fantasy score', 'fantasy'], 'double double': ['double double'],
+    'passing yards': ['passing yards', 'pass yds'], 'rushing yards': ['rushing yards', 'rush yds'], 'receiving yards': ['receiving yards', 'rec yds'],
+    receptions: ['receptions', 'rec'], strikeouts: ['strikeouts', 'ks', 'pitcher strikeouts'], 'total bases': ['total bases', 'tb'],
+    hits: ['hits'], 'shots on goal': ['shots on goal', 'sog', 'shots']
+};
+const normWords = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+// "Pts+Rebs+Asts" -> every way a board might write it.
+function statWords(stat) {
+    const key = normWords(stat);
+    if (!key) return [];
+    const entry = Object.entries(STATS).find(([name, words]) => name === key || words.includes(key));
+    return entry ? [...new Set([entry[0], ...entry[1]])] : [key];
+}
+
+// "tomorrow", "today", "Monday" -> the labels a date picker shows for that day.
+function dayLabels(day, now = new Date()) {
+    const text = String(day || '').toLowerCase();
+    const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    let date = null;
+    const extra = [];
+    if (/\btomorrow\b/.test(text)) { date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1); extra.push('Tomorrow'); }
+    else if (/\b(today|tonight)\b/.test(text)) { date = new Date(now.getFullYear(), now.getMonth(), now.getDate()); extra.push('Today'); }
+    else {
+        const named = DAYS.findIndex(d => new RegExp(`\\b${d}\\b`).test(text));
+        if (named >= 0) date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + ((named - now.getDay() + 7) % 7));
+    }
+    if (!date) return [];
+    const weekday = DAYS[date.getDay()][0].toUpperCase() + DAYS[date.getDay()].slice(1);
+    const month = MONTHS[date.getMonth()];
+    const d = date.getDate();
+    const md = `${date.getMonth() + 1}/${d}`;
+    return [...extra, weekday, weekday.slice(0, 3), `${month.slice(0, 3)} ${d}`, `${month} ${d}`, md, `${weekday.slice(0, 3)} ${md}`,
+        `${weekday.slice(0, 3)}, ${month.slice(0, 3)} ${d}`, `${weekday}, ${month} ${d}`, `${weekday.slice(0, 3)} ${month.slice(0, 3)} ${d}`];
+}
+
 // "3pm", "3 p.m.", "8:30 PM", "3 o'clock", "20:00", "7:30p" -> minutes after
 // midnight, or null. Without am/pm, 1 to 11 o'clock means afternoon or evening,
 // when games are on.
@@ -87,8 +130,10 @@ function markByLabel(labels) {
         const text = ((el.innerText || '').trim() || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
         if (!text || text.length > 40 || !visible(el)) continue;
         // "NBA", "NBA 42" (a count of props) or "🏀 NBA".
-        const label = text.replace(/^[^\p{L}\p{N}]+/u, '').replace(/\s*\(?\d+\)?$/, '').trim().toLowerCase();
-        const rank = wanted.indexOf(label);
+        const whole = text.replace(/^[^\p{L}\p{N}]+/u, '').trim().toLowerCase();
+        const label = whole.replace(/\s*\(?\d+\)?$/, '').trim();
+        // "Oct 27" is a date tab, not "Oct" with a count.
+        const rank = wanted.includes(whole) ? wanted.indexOf(whole) : wanted.indexOf(label);
         if (rank < 0 || NEVER.test(text)) continue;
         let target = el;
         for (let up = el, i = 0; up && i < 4; up = up.parentElement, i++) if (clickable(up)) { target = up; break; }
@@ -143,7 +188,8 @@ function pickGame(games, game, sport) {
     const want = parseTime(game);
     const words = String(game || '').toLowerCase()
         .replace(/\b\d{1,2}(:\d{2})?\s*(a\.?m?\.?|p\.?m?\.?|o'?\s?clock)?/g, ' ')
-        .split(/[^a-z0-9]+/).filter(w => w.length >= 2 && !['the', 'game', 'at', 'vs', 'and', 'tonight', 'today', 'props', 'pm', 'am'].includes(w));
+        .split(/[^a-z0-9]+/).filter(w => w.length >= 2 && !['the', 'game', 'at', 'vs', 'and', 'tonight', 'today', 'tomorrow', 'props', 'pm', 'am', 'nba', 'nfl', 'mlb', 'nhl', 'wnba',
+            'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'on', 'for'].includes(w));
     const scored = games.map(g => {
         const at = parseTime(g.time);
         const text = g.text.toLowerCase();
@@ -249,7 +295,10 @@ async function clickPast(page, selector) {
 // Clicks through Outlier on page: the props board, sport, then market, then game. Scrolls to find
 // a game further down. Returns { steps, game, teams } or throws with what it saw.
 // player: a player's card is opened next (openPlayer), so the props board is wanted.
-async function navigate(page, { section, sport, market, game, player } = {}, { settleMs = 1500 } = {}) {
+// day: "tomorrow", "Monday": its date tab is clicked when the board has one.
+// onProps(url): called with the props board's address once it's reached, so the
+// next visit starts there instead of on +EV.
+async function navigate(page, { section, sport, market, game, player, day } = {}, { settleMs = 1500, onProps = null } = {}) {
     const steps = [];
     const settle = async () => {
         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
@@ -295,7 +344,9 @@ async function navigate(page, { section, sport, market, game, player } = {}, { s
         return false;
     };
     if (section) await clickLabel([String(section).trim()], `a "${section}" tab`);
-    else if ((sport || game || player) && !await toProps()) {
+    else if ((sport || game || player) && await toProps()) {
+        if (onProps) onProps(page.url());
+    } else if (sport || game || player) {
         const origin = new URL(page.url()).origin;
         for (const where of PROPS_PATHS) {
             await page.goto(origin + where, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
@@ -305,12 +356,14 @@ async function navigate(page, { section, sport, market, game, player } = {}, { s
             if (await toProps()) break;
             if (where !== '/' && /prop/i.test(new URL(page.url()).pathname)) { steps.push('Props'); break; }
         }
+        if (!onTools(page) && onProps) onProps(page.url());
         if (onTools(page)) {
             throw new Error(`Outlier stays on its ${new URL(page.url()).pathname} tool (+EV) and shows no way to the regular Props board from there. `
                 + 'Ask the user to open Props once in the Outlier window (📈 Outlier tab, live view), then ask again: Outlier reopens the last board used.');
         }
     }
     if (sport) await clickLabel(sportLabels(sport), `a "${sport}" tab`);
+    if (day) await clickLabel(dayLabels(day), `the ${day} tab`, { optional: true });
     if (market) await clickLabel([String(market).trim()], `a "${market}" filter`);
     if (!game) return { steps, game: null, teams: null };
     const seen = new Map();
@@ -349,7 +402,9 @@ async function navigate(page, { section, sport, market, game, player } = {}, { s
 // "L. James") with data-codev-player and returns it, or null. The name itself is
 // the click target (it opens Market Details / the player card), never a pick or
 // add button around it.
-function markPlayer(name) {
+// stats/line: the leg's stat words and line; with them, the name on that stat's
+// prop card wins (best.stat true), else any card of his.
+function markPlayer({ name, stats = [], line = null }) {
     document.querySelectorAll('[data-codev-player]').forEach(el => el.removeAttribute('data-codev-player'));
     const norm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
     const full = norm(name);
@@ -368,11 +423,19 @@ function markPlayer(name) {
         // A prop card that opens on click shows Over/Under itself; one that adds a pick doesn't open.
         const button = el.closest('button, [role="button"]');
         if (button && ENTRY.test(`${button.innerText || ''} ${button.getAttribute('aria-label') || ''}`)) continue;
-        if (!best || text.length < best.text.length) best = { el, text };
+        // The prop card around the name: its stat and line.
+        // Up to the box that still holds one prop (one Over/Under or odds), not the board.
+        const props = t => (String(t).match(/\b(over|under|more|less|higher|lower)\b|(^|\s)[+\-−]\d{3,4}(?=\s|$)/gi) || []).length;
+        let card = el;
+        for (let up = el.parentElement; up && up !== document.body && (up.innerText || '').length <= 400 && props(up.innerText || '') <= 2; up = up.parentElement) card = up;
+        const cardText = ` ${norm(card.innerText)} `;
+        const stat = stats.some(w => cardText.includes(` ${w} `));
+        const score = (stat ? 2 : 0) + (line != null && cardText.includes(` ${norm(String(line))} `) ? 1 : 0);
+        if (!best || score > best.score || (score === best.score && text.length < best.text.length)) best = { el, text, score, stat };
     }
     if (!best) return null;
     best.el.setAttribute('data-codev-player', '1');
-    return best.text;
+    return { text: best.text, stat: best.stat };
 }
 
 // Runs inside the page: the readable lines on screen (the page and any open
@@ -391,17 +454,39 @@ function readLines() {
 
 // Opens the player's Market Details / player card from the board on page,
 // scrolling down to find the name. Returns the label clicked or throws.
-async function openPlayer(page, player, { settleMs = 1500 } = {}) {
+// stat/line: open his card for that stat (a "Rebounds" leg opens the rebounds
+// prop, not the points one) when the board shows it, else any card of his.
+async function openPlayer(page, player, { settleMs = 1500, stat = null, line = null } = {}) {
+    const hints = { stats: statWords(stat), line: line == null ? null : String(line) };
+    const toTop = () => page.evaluate(() => { window.scrollTo(0, 0); for (const el of document.querySelectorAll('*')) if (el.scrollTop) el.scrollTop = 0; });
+    const open = async label => {
+        await clickPast(page, '[data-codev-player="1"]');
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+        await page.waitForTimeout(settleMs);
+        return label;
+    };
+    let anyCard = false;
     for (let i = 0; i < 15; i++) {
-        const found = await page.evaluate(markPlayer, String(player));
-        if (found) {
-            await clickPast(page, '[data-codev-player="1"]');
-            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-            await page.waitForTimeout(settleMs);
-            return found;
-        }
+        const found = await page.evaluate(markPlayer, { name: String(player), ...hints });
+        if (found && (found.stat || !hints.stats.length)) return open(found.text);
+        if (found) anyCard = true;
         if (!await page.evaluate(scrollStep)) break;
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(400);
+    }
+    if (anyCard) {
+        // His card for another stat only: that stat's filter tab, if there is one, then any card of his.
+        await toTop();
+        const tab = await page.evaluate(markByLabel, [String(stat), ...hints.stats.map(w => w.replace(/\b\w/g, c => c.toUpperCase()))]);
+        if (tab && !/^(more|less|over|under)/i.test(tab)) {
+            await clickPast(page, '[data-codev-nav="1"]');
+            await page.waitForTimeout(settleMs);
+        }
+        for (let i = 0; i < 15; i++) {
+            const found = await page.evaluate(markPlayer, { name: String(player), ...hints });
+            if (found) return open(`${found.text}${found.stat ? '' : ' (his card for another stat: no ' + stat + ' prop shown)'}`);
+            if (!await page.evaluate(scrollStep)) break;
+            await page.waitForTimeout(400);
+        }
     }
     throw new Error(`Couldn't find ${player} on that Outlier board (${page.url()}). Check the name's spelling, or give the sport, game and stat so the board shows his props.`);
 }
@@ -423,6 +508,41 @@ async function readDetails(page, { scrolls = 12, maxChars = 12000 } = {}) {
     return text.length > maxChars ? `${text.slice(0, maxChars)}\n… (cut)` : text;
 }
 
+// A player card's text -> one short line of what matters for the leg: hit rates,
+// the matchup rank, injuries, minutes/usage and odds movement.
+function legSummary(text, max = 420) {
+    const lines = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
+    const parts = [];
+    const hit = String(text).match(/\b(L5|L10|L20|L15|H2H|Season|Szn|20\d\d(?:[-/]\d\d)?|Last \d+)\b[^\n%]{0,20}?\d{1,3}(?:\.\d)?%/gi) || [];
+    if (hit.length) parts.push(`Hit ${[...new Set(hit.map(h => h.replace(/\s+/g, ' ')))].slice(0, 6).join(', ')}`);
+    const pick = (re, n, label) => {
+        const found = [...new Set(lines.filter(l => re.test(l) && l.length <= 120))].slice(0, n);
+        if (found.length) parts.push(`${label}${found.join('; ')}`);
+    };
+    pick(/\b(rank|ranks|allow(ed|s)?|vs\.? (pg|sg|sf|pf|c|position|guards?|forwards?|centers?)|def(ense)?)\b/i, 2, 'Matchup: ');
+    pick(/\b(out|questionable|doubtful|probable|gtd|day-to-day|injur(y|ed|ies))\b/i, 3, 'Injuries: ');
+    pick(/\b(min(utes)?|usage|target share|targets|shots|fga|attempts)\b/i, 2, 'Usage: ');
+    pick(/\b(movement|moved|opened?|open|public|money|bets)\b/i, 2, 'Market: ');
+    const out = parts.join(' | ') || lines.slice(0, 4).join(' · ');
+    return out.length > max ? `${out.slice(0, max)}…` : out;
+}
+
+// Keeps the board's props that are legs the user listed ({ player, stat }): his
+// prop for that stat, or all of his when the stat isn't named or not found.
+function keepLegs(props, legs) {
+    if (!Array.isArray(legs) || !legs.length) return props;
+    const kept = new Set();
+    for (const leg of legs) {
+        const name = normWords(leg.player);
+        if (!name) continue;
+        const his = props.filter(p => normWords(p.player) === name || normWords(p.player).endsWith(` ${name.split(' ').slice(-1)[0]}`) && normWords(p.player)[0] === name[0]);
+        const words = statWords(leg.stat);
+        const forStat = words.length ? his.filter(p => words.some(w => ` ${normWords(p.market)} `.includes(` ${w} `))) : [];
+        (forStat.length ? forStat : his).forEach(p => kept.add(p));
+    }
+    return props.filter(p => kept.has(p));
+}
+
 // Keeps only props from the chosen game when the game names its teams; props
 // that don't say which game they're in stay.
 function onlyGame(props, teams) {
@@ -431,4 +551,4 @@ function onlyGame(props, teams) {
     return props.filter(p => !p.game || p.game === key);
 }
 
-module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, markPlayer, openPlayer, readDetails, dismissOverlays, markPropsLink };
+module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, markPlayer, openPlayer, readDetails, dismissOverlays, markPropsLink, statWords, dayLabels, legSummary, keepLegs, onTools, normWords };

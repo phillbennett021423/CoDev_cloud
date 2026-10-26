@@ -214,6 +214,7 @@ div.ov-why { font-size: 0.78rem; }
                 state.capture && (state.capture.on || state.capture.props) ? el("span", { class: state.capture.on ? "good" : "", text: `${state.capture.on ? "● Capturing" : "Capture off"}: ${state.capture.props} prop(s) in the scratchpad${state.capture.error ? ` (${state.capture.error})` : ""}` }) : null,
                 state.result && (state.result.ruledOut || []).length ? el("span", { text: `Ruled out: ${state.result.ruledOut.map(o => o.player).join(", ")}` }) : null,
                 state.busy === "signin" ? el("span", { text: "Sign-in window open: sign in, then close it." }) : null,
+                state.busy && state.progress ? el("span", { class: "good", text: `● ${state.progress}` }) : null,
                 working ? el("span", { text: working }) : null);
         }
 
