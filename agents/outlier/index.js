@@ -17,7 +17,8 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { collectPage, parseCollected, parseText, propId } = require('./extract');
 const { createCapture } = require('./capture');
-const { navigate, onlyGame } = require('./navigate');
+const { navigate, onlyGame, openPlayer, readDetails } = require('./navigate');
+const { OUTLIER_PRIMER, OUTLIER_GUIDE } = require('./guide');
 const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
 // The signed-in browser's id in the shared browser service. Agents' ids never start with @.
@@ -807,6 +808,41 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         }
     }
 
+    // One player's Market Details / player card, or one game's page (Games tab),
+    // read as text for an agent. Reaches it like the scan (tabs, game card, then
+    // the player's name) and clicks nothing else.
+    async function research({ url = null, section, sport, market, game, player } = {}) {
+        claim('research');
+        try {
+            const cfg = config();
+            const start = url || ((cfg.pages || []).find(p => p.kind === 'props') || {}).url || 'https://app.outlier.bet/';
+            const browser = await openForVisit(cfg);
+            try {
+                const page = browser.page;
+                await gotoChecked(page, start, { pausable: browser.shared });
+                await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+                await page.waitForTimeout(cfg.settleMs);
+                const signedOut = await page.evaluate(() => Boolean(document.querySelector('input[type="password"]')));
+                if (looksSignedOut(page, { passwordField: signedOut })) signInNeeded(page, browser);
+                // Without a player it's the game's own page, on the Games tab.
+                const nav = await navigate(page, { section: section || (player || !game ? undefined : 'Games'), sport, market, game, player },
+                    { settleMs: cfg.settleMs });
+                const steps = [...nav.steps];
+                if (player) steps.push(await openPlayer(page, player, { settleMs: cfg.settleMs }));
+                const text = await readDetails(page);
+                state.signedIn = true;
+                return { steps, url: page.url(), text };
+            } finally {
+                await browser.done();
+            }
+        } catch (err) {
+            state.lastError = err.message;
+            throw err;
+        } finally {
+            state.busy = null;
+        }
+    }
+
     async function snapshot() {
         claim('snapshot');
         try {
@@ -952,7 +988,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     }
 
     watchImports();
-    return { signIn, scrape, readOpenPage, setCapture, capture, importBoard, importFile, dumpBoard, watchImports, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
+    return { signIn, scrape, research, readOpenPage, setCapture, capture, importBoard, importFile, dumpBoard, watchImports, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
         state: snapshotState, status, close, files, settleFromResults };
 }
 
@@ -965,14 +1001,6 @@ function sendJson(res, status, payload) {
 const safe = fn => async (req, res, body) => {
     try { sendJson(res, 200, await fn(body || {})); } catch (err) { sendJson(res, 400, { error: err.message }); }
 };
-
-// What an agent needs to know about Outlier to use the scan and read its results.
-const OUTLIER_PRIMER = 'About Outlier (outlier.bet, web app app.outlier.bet): a sports betting research app that compares player props and lines across sportsbooks and DFS apps (FanDuel, DraftKings, BetMGM, Caesars, PrizePicks, Underdog...). '
-    + 'Its sections: Insights/Trends (where it opens: picks with strong hit rates), Props (the Prop Finder: every player prop with its line, best odds and book, and hit rates), Games (each matchup with odds, insights, injuries), Popular, My Picks (the user\'s saved slip), and the Pro tools +EV (Positive EV), Arbitrage, Middle Bets and Boosts. '
-    + 'Sports: NBA, WNBA, NFL, NCAAF, MLB, NHL, NCAAB, soccer and more. '
-    + 'Reading a prop: player, stat (Points, Rebounds, Assists, PRA, Threes, Passing Yards, Strikeouts, Shots on Goal...), line (e.g. 22.5), side (Over/More/Higher or Under/Less/Lower), American odds (-119 means risk 119 to win 100, about 54% implied; +150 means win 150 on 100, 40%) and hit rates: how often he cleared this line in the last 5, 10 and 20 games (L5, L10, L20), head to head against this opponent (H2H) and this season, colored green (high), yellow, red (low). '
-    + 'The scan opens Props (never +EV), picks the sport, finds the game and reads every line; the audit then filters to the -119 consistency band, compares the sharp book (Pinnacle), checks correlation, injuries/usage and hit-streak decay, flags Under value legs and builds 4-6 leg tickets. '
-    + 'It only reads and clicks tabs, filters and game cards: it never adds picks to My Picks or a slip and never enters anything on Outlier, Underdog or Dabble.';
 
 // The audit as text for an agent: tickets with their odds, then under value legs.
 function auditText(result) {
@@ -1014,6 +1042,21 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                 kind: { type: 'string', enum: ['props', 'odds'], description: 'What that page shows (default props).' }
             }, additionalProperties: false }
         }, {
+            name: 'outlier_research',
+            description: 'Opens one player\'s Market Details / player card on Outlier in the user\'s signed-in browser (the Props board, sport, game, then the player\'s name) and returns everything on it as text: the hit rate chart and splits, Supporting Stats (minutes, shots, targets, target share...), the opponent\'s rank against that position, injuries, Odds Movement and public bet/money splits. Without a player it opens the game\'s page on the Games tab: spread, total, moneyline, injuries, line movement and public splits. Use it to check the legs of a ticket after outlier_scan_board (see outlier_guide for what each number means). It only reads and clicks tabs, game cards and the player\'s name; nothing is added to My Picks or a slip.',
+            inputSchema: { type: 'object', properties: {
+                player: { type: 'string', description: 'The player, e.g. "LeBron James". Leave out for the game\'s page.' },
+                sport: { type: 'string', description: 'The sport tab, e.g. "NBA", "NFL", "MLB", "NHL".' },
+                game: { type: 'string', description: 'The game by teams and/or start time, e.g. "Wizards vs Hornets", "8pm".' },
+                market: { type: 'string', description: 'A stat filter to click first so the player\'s prop shows, e.g. "Points" (optional).' },
+                section: { type: 'string', description: 'The Outlier tab to start from by its name on the page (optional; default Props for a player, Games for a game).' },
+                url: { type: 'string', description: 'An app.outlier.bet page to start from (optional).' }
+            }, additionalProperties: false }
+        }, {
+            name: 'outlier_guide',
+            description: 'The full guide to Outlier: every section and tool (Insights, Props/Prop Finder with its filters and sorts, Games, Market Details, Popular, My Picks, +EV, Arbitrage, Middles, Boosts), what each number and color means (odds, implied probability, hit rates, opposition rank, line movement, public bet vs money), when to look at each one while building a ticket, and the research checklist by sport and stat. Read it before researching or building a ticket from Outlier.',
+            inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+        }, {
             name: 'outlier_extract_page',
             description: 'Runs the Outlier DOM extraction on the page open in YOUR browser (open it first with browser_navigate) and returns the props it finds as JSON: player, market, line, side, odds by book, hit rates. With add_to_analysis true, they are added to the latest Outlier read and the entries are re-scored.',
             inputSchema: { type: 'object', properties: {
@@ -1051,6 +1094,23 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     const run = await outlier.scrape({ pages });
                     const where = run && run.navigated && run.navigated.length ? `Outlier > ${run.navigated.join(' > ')}\n` : '';
                     return { content: [{ type: 'text', text: where + auditText(outlier.state().result) }] };
+                } catch (err) {
+                    return { content: [{ type: 'text', text: err.message }], isError: true };
+                }
+            }
+            if (name === 'outlier_guide') return { content: [{ type: 'text', text: OUTLIER_GUIDE }] };
+            if (name === 'outlier_research') {
+                try {
+                    let url = null;
+                    if (args.url) {
+                        const parsed = new URL(resolveAddress(String(args.url)).url);
+                        if (!/(^|\.)outlier\.bet$/i.test(parsed.hostname)) throw new Error(`outlier_research only opens Outlier (app.outlier.bet), not ${parsed.hostname}.`);
+                        url = parsed.href;
+                    }
+                    const pick = Object.fromEntries(['section', 'sport', 'market', 'game', 'player'].filter(k => args[k] && String(args[k]).trim()).map(k => [k, String(args[k]).trim()]));
+                    if (!pick.player && !pick.game) throw new Error('Give a player (his Market Details) or a game (its page).');
+                    const read = await outlier.research({ url, ...pick });
+                    return { content: [{ type: 'text', text: `Outlier > ${read.steps.join(' > ')}\n${read.url}\n\n${read.text}` }] };
                 } catch (err) {
                     return { content: [{ type: 'text', text: err.message }], isError: true };
                 }
@@ -1101,4 +1161,4 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
     };
 }
 
-module.exports = { createService, createOutlierPipeline, runPython, sameLeg, propId, OUTLIER_PRIMER };
+module.exports = { createService, createOutlierPipeline, runPython, sameLeg, propId, OUTLIER_PRIMER, OUTLIER_GUIDE };
