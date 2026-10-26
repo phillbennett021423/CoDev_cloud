@@ -699,7 +699,7 @@ test('a list of legs for tomorrow is researched in one visit: each player\'s car
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
     const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
     t.after(() => pipeline.close());
-    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false }));
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50 }));
     const service = createService({}, { pipeline });
 
     const reply = await service.callTool('outlier_research_list', { sport: 'NBA', game: 'Wizards vs Hornets', day: 'tomorrow', legs: [
@@ -710,10 +710,10 @@ test('a list of legs for tomorrow is researched in one visit: each player\'s car
     ] });
     assert.equal(reply.isError, undefined, reply.content[0].text);
     const text = reply.content[0].text;
-    assert.match(text, /^Outlier > Props > NBA > Tomorrow > 7:00 PM WAS vs CHA\nResearched 3 of 4 legs\./);
+    assert.match(text, /^Outlier > Props > NBA > Tomorrow > 7:00 PM WAS vs CHA\nFound 3 of 4 legs on Outlier\./);
     assert.match(text, /1\. Bilal Coulibaly Over 3\.5 Rebounds\n {3}Outlier over 4\.5 Rebounds -119, your 3\.5 is 1 easier.*\n {3}Hit L5 90%, L10 70% \| Matchup: CHA rank vs SF: 28th \| Injuries: Mark Williams OUT \| Usage: Minutes 31\.2/, 'his rebounds card, not his points one');
     assert.match(text, /2\. LaMelo Ball Higher 16\.5 Points\n {3}Outlier over 16\.5 Points -119.*\n {3}Hit L5 40%/);
-    assert.match(text, /3\. Michael Jordan 30\.5 Points: not found on Outlier/);
+    assert.match(text, /3\. Michael Jordan 30\.5 Points: not on Outlier's board for this game/);
     assert.match(text, /4\. LaMelo Ball Under 30\.5 Pts\+Rebs\+Asts \(no prop for this stat on Outlier/);
     assert.match(text, /Checks:\n- LaMelo Ball is on legs 2, 4: an Over and an Under on him work against each other/);
     assert.match(text, /Audit of these legs:\n\d+ props/);
@@ -729,4 +729,70 @@ test('a list of legs for tomorrow is researched in one visit: each player\'s car
     const ev = await service.callTool('outlier_read_section', { section: '+EV' });
     assert.equal(ev.isError, true);
     assert.match(ev.content[0].text, /Pro tools/);
+});
+
+test('a list keeps the board loaded: cards open over it and close with Escape, a 429 backs off, and cards read lately are reused', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    const players = ['Jayson Tatum', 'Jaylen Brown', 'Jalen Brunson', 'Josh Hart', 'Mikal Bridges'];
+    const board = players.map((n, i) => `<div><div class="pn" style="cursor:pointer">${n}</div><div>BOS @ NYK</div><div>Points</div><div>Over ${20.5 + i}</div><div>FanDuel -119</div><div>L5 ${80 - i * 10}% L10 70%</div></div>`).join('');
+    // Like Outlier: the card is a panel over the board (the address gains ?market=), its data
+    // comes from /api/card, and Escape closes it.
+    const page = `<!doctype html><body><a href="/NBA/props">Props</a><nav><button id="nba">NBA</button></nav><main id="main">Pick a sport</main><script>
+        const main = document.getElementById('main');
+        document.getElementById('nba').onclick = () => { main.innerHTML = ${JSON.stringify(board)}; };
+        main.addEventListener('click', async e => {
+            if (!e.target.classList.contains('pn')) return;
+            history.pushState({}, '', location.pathname + '?market=' + encodeURIComponent(e.target.textContent));
+            const r = await fetch('/api/card');
+            const panel = document.createElement('div');
+            panel.setAttribute('role', 'dialog');
+            panel.innerHTML = r.status === 429 ? 'Too many requests' : '<h2>' + e.target.textContent + '</h2><p>L5 60% L10 70% H2H 50%</p><p>Minutes 34.0</p>';
+            document.body.appendChild(panel);
+        });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') { document.querySelectorAll('[role=dialog]').forEach(d => d.remove()); history.pushState({}, '', location.pathname); } });
+    </script></body>`;
+    const hits = { board: 0, card: 0 };
+    let limit = false;
+    const server = http.createServer((req, res) => {
+        const at = req.url.split('?')[0];
+        if (at === '/api/card') { hits.card++; res.writeHead(limit ? 429 : 200); return res.end('{}'); }
+        hits.board++;
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(page);
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/NBA/props`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, backoffMs: [100, 100] }));
+    const service = createService({}, { pipeline });
+    const legs = players.slice(0, 3).map((player, i) => ({ player, stat: 'Points', line: 20.5 + i, side: 'Over' }));
+
+    const first = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
+    assert.equal(first.isError, undefined, first.content[0].text);
+    assert.match(first.content[0].text, /1\. Jayson Tatum Over 20\.5 Points\n {3}Outlier over 20\.5 Points -119, hit L5 80% L10 70%.*\n {3}Hit L5 60%, L10 70%, H2H 50% \| Usage: Minutes 34\.0/);
+    assert.equal(hits.board, 1, 'the board was loaded once for all three legs');
+    assert.equal(hits.card, 3);
+
+    // Asked again: the cards read a minute ago are reused, nothing new is fetched.
+    const again = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
+    assert.match(again.content[0].text, /Minutes 34\.0 \(read earlier\)/);
+    assert.equal(hits.card, 3);
+
+    // Outlier says 429 to every card: CoDev backs off, then stops opening cards.
+    limit = true;
+    const more = players.slice(3).map((player, i) => ({ player, stat: 'Points', line: 23.5 + i, side: 'Over' }));
+    const slowed = await service.callTool('outlier_research_list', { sport: 'NBA', legs: [...more, { player: 'Jayson Tatum', stat: 'Points', line: 20.5 }] });
+    assert.equal(slowed.isError, undefined, slowed.content[0].text);
+    assert.match(slowed.content[0].text, /Outlier asked CoDev to slow down \(429\)/);
+    assert.match(slowed.content[0].text, /1\. Josh Hart Over 23\.5 Points\n {3}Outlier over 23\.5 Points -119, hit L5 50% L10 70%.*\n {3}\(card not read: Outlier said too many requests\)/, 'the board row still gives every leg its hit rates');
+    assert.doesNotMatch(slowed.content[0].text, /Too many requests/, 'an empty card is not passed on as research');
+    assert.ok(hits.card <= 3 + 3, 'no more than one card per strike before stopping');
 });

@@ -330,6 +330,8 @@ async function navigate(page, { section, sport, market, game, player, day } = {}
     // Off the Positive EV tool and onto the regular props board: its tab, else a
     // link to it, else its address (from +EV, where the menu isn't shown).
     const toProps = async () => {
+        // Already on it (the remembered board, /NBA/props): clicking Props would reload it.
+        if (!onTools(page) && /prop/i.test(new URL(page.url()).pathname)) { steps.push('Props'); return true; }
         const before = steps.length;
         await clickLabel(PROPS_SECTIONS, 'the props board', { optional: true });
         if (steps.length > before) {
@@ -465,6 +467,8 @@ async function openPlayer(page, player, { settleMs = 1500, stat = null, line = n
         await page.waitForTimeout(settleMs);
         return label;
     };
+    // From the top of the board: the last read may have left it scrolled down.
+    await toTop().catch(() => {});
     let anyCard = false;
     for (let i = 0; i < 15; i++) {
         const found = await page.evaluate(markPlayer, { name: String(player), ...hints });
