@@ -132,6 +132,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         profile: path.join(dataDir, 'profile'),
         config: path.join(dataDir, 'config.json'),
         propsUrl: path.join(dataDir, 'props-url.txt'),
+        cards: path.join(dataDir, 'cards.json'),
         scrape: path.join(dataDir, 'latest-scrape.json'),
         result: path.join(dataDir, 'latest-result.json'),
         history: path.join(dataDir, 'history.json'),
@@ -896,8 +897,13 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
 
     // Player cards read lately, by leg: asking again within CARD_TTL_MS reuses them
     // instead of opening Outlier again.
-    const CARD_TTL_MS = 15 * 60 * 1000;
-    const cards = new Map();
+    // Kept on disk too: after a crash or restart, asking again picks up the cards
+    // already read instead of opening every one again.
+    const CARD_TTL_MS = 30 * 60 * 1000;
+    const cards = new Map(Object.entries(readJson(files.cards, {})).filter(([, c]) => c && Date.now() - c.at < CARD_TTL_MS));
+    const saveCards = () => {
+        try { writeJson(files.cards, Object.fromEntries([...cards].filter(([, c]) => Date.now() - c.at < CARD_TTL_MS))); } catch { /* kept in memory */ }
+    };
     const cardKey = leg => `${normWords(leg.player)}|${statWords(leg.stat)[0] || ''}`;
     // The cards read lately for these legs, counted at each leg's own line (null when unread).
     const cardsFor = legs => legs.map(leg => {
@@ -983,6 +989,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                         const read = { at: Date.now(), opened: label, summary: legSummary(all), text, tabs, numbers: cardNumbers(all),
                             games, atLine: hitsAtLine(games, leg.line, leg.side), alt, without };
                         cards.set(cardKey(leg), read);
+                        saveCards();
                         results.set(i, read);
                     }
                 } catch (err) {
@@ -1004,10 +1011,30 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // cards are opened on that same page.
     async function researchList({ url = null, sport, game, day, legs = [], maxCards = 12 } = {}) {
         const nav = { ...Object.fromEntries(Object.entries({ sport, game, day }).filter(([, v]) => v)), player: legs[0] && legs[0].player };
+        // Asked again after a crash or a restart: the board read a few minutes ago and
+        // the cards already read are used as they are, and Outlier isn't opened again
+        // when they cover every leg.
+        const saved = readJson(files.scrape, null);
+        const savedProps = saved && Date.now() - Date.parse(saved.scrapedAt) < 10 * 60 * 1000 ? saved.props || [] : [];
+        const fresh = cardsFor(legs);
+        if (savedProps.length && legs.every(l => matchLeg(l, savedProps)) && fresh.every(Boolean)) {
+            state.progress = null;
+            return { steps: ['Props', 'saved read from a few minutes ago'], research: { results: new Map(fresh.map((c, i) => [i, { ...c, cached: true }])), limited: false, skipped: 0 } };
+        }
         let research = null;
+        // The board is read to its end or until every leg is found, checking only the
+        // rows read since the last check (a full re-parse each time froze the app).
+        const found = new Set();
+        const done = { cards: 0, tables: 0, configured: 0 };
+        const until = collected => {
+            const slice = { ...collected };
+            for (const f of Object.keys(done)) { slice[f] = (collected[f] || []).slice(done[f]); done[f] = (collected[f] || []).length; }
+            const props = parseCollected([{ kind: 'props', url: '', collected: slice }]).props;
+            legs.forEach((l, i) => { if (!found.has(i) && matchLeg(l, props)) found.add(i); });
+            return found.size === legs.length;
+        };
         const run = await scrape({
-            pages: [{ kind: 'props', url: url || boardStart(sport), nav, scrolls: 400,
-                until: collected => legs.every(l => matchLeg(l, parseCollected([{ kind: 'props', url: '', collected }]).props)) }], keep: legs,
+            pages: [{ kind: 'props', url: url || boardStart(sport), nav, scrolls: 400, until }], keep: legs,
             onPage: async (page, { collected }) => {
                 const boardProps = parseCollected([{ kind: 'props', url: page.url(), collected }]).props;
                 // The board without an open card's ?market=…&outcome=… in its address.
