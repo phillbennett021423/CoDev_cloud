@@ -3004,6 +3004,23 @@
             }
         }
 
+        // Outlier requests go straight to the scan of the signed-in Outlier browser, not
+        // to the project files or the agent's own (signed-out) browser.
+        const OUTLIER_TASK = /\b(outlier|parl[ae]ys?|parley|tickets?|props?|underdog|dabble|prizepicks)\b/i;
+        function outlierToolNote(tools, messages) {
+            if (tools.some(t => t.name === "outlier_scan_board")) {
+                return "[Outlier] Outlier is the sports props site at https://app.outlier.bet, and CoDev keeps the user's own signed-in Outlier browser. "
+                    + "For any request about Outlier, props, parlays or tickets, call outlier_scan_board first, with sport, game and market taken from the request (e.g. sport \"NBA\", game \"8pm\"). "
+                    + "Don't search the project files for Outlier, don't ask the user for a URL or a login, and don't open Outlier in your own browser: outlier_scan_board already uses the signed-in one. "
+                    + "If it says Outlier asked to sign in, tell the user to click 🔑 Sign in to Outlier in the 📈 Outlier tab, then ask again. "
+                    + "Give the ticket legs in your reply. Never enter anything on Outlier, Underdog or Dabble.";
+            }
+            const asked = messages.filter(m => m.role === "user").map(m => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
+            if (!OUTLIER_TASK.test(asked)) return "";
+            return "[Outlier] The Outlier scan isn't available in this copy of CoDev: it runs on CoDev's server. If the request is about Outlier, don't search the project files for it; "
+                + "tell the user to start CoDev with start-codev.bat (it opens http://localhost:3000), sign in once from the 📈 Outlier tab, and ask again.";
+        }
+
         // Runs the model ↔ tool loop until the model answers in plain text.
         async function runToolLoop(messages, ctx) {
             const tools = await buildLocalTools(ctx);
@@ -3021,6 +3038,8 @@
                     .filter(s => s.status === "connected" && s.instructions).map(s => `[MCP server "${s.name}" instructions] ${s.instructions.slice(0, 1500)}`) : [];
                 if (instructions.length) messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + instructions.join("\n\n") };
             }
+            const outlierNote = outlierToolNote(tools, messages);
+            if (outlierNote && messages[0]?.role === "system") messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + outlierNote };
             for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
                 const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" });
                 const calls = message.tool_calls || [];

@@ -54,7 +54,8 @@ function syntaxCheck(rel, text) {
     }
 }
 
-function createMockBackend({ workspace, docker = false, hubTools = [] } = {}) {
+// agentTools: more /agent-tools tools, name -> (box, args, agentId) => text (e.g. an Outlier stand-in).
+function createMockBackend({ workspace, docker = false, hubTools = [], agentTools = {} } = {}) {
     const sandboxes = new Map(); // id -> { id, agents:Set, files: Map(rel -> text|null), base: Map }
     const changesets = new Map();
     const log = [];
@@ -138,7 +139,8 @@ function createMockBackend({ workspace, docker = false, hubTools = [] } = {}) {
         },
         delete_file: (box, { path: rel }) => { box.files.set(safeRel(rel), null); return `Deleted ${rel}.`; },
         sandbox_diff: (box) => stage(box).diff || 'No changes staged yet.',
-        submit_changes: (box, { summary }, agentId) => { box.submission = { agent: agentId, summary: String(summary || '') }; return 'Submitted for review.'; }
+        submit_changes: (box, { summary }, agentId) => { box.submission = { agent: agentId, summary: String(summary || '') }; return 'Submitted for review.'; },
+        ...agentTools
     };
 
     function handleMcp(msg) {
