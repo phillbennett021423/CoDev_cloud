@@ -23,8 +23,11 @@ const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../de
 // The signed-in browser's id in the shared browser service. Agents' ids never start with @.
 const SESSION = '@outlier';
 
-const ANALYTICS = path.join(__dirname, '..', '..', 'tools', 'outlier-analytics', 'analyze.py');
-const MARKET = path.join(__dirname, '..', '..', 'tools', 'outlier-analytics', 'market_data.py');
+// Inside the Windows app's installer, Python reads the unpacked copy of the scripts
+// (it can't read into app.asar).
+const unpacked = file => file.replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
+const ANALYTICS = unpacked(path.join(__dirname, '..', '..', 'tools', 'outlier-analytics', 'analyze.py'));
+const MARKET = unpacked(path.join(__dirname, '..', '..', 'tools', 'outlier-analytics', 'market_data.py'));
 const DEFAULT_CONFIG = {
     signInUrl: 'https://app.outlier.bet/login',
     // kind: props (prop cards and boards), odds (odds boards), slips or history (settled entries).

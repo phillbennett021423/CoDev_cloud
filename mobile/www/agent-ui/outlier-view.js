@@ -1,4 +1,4 @@
-// The Outlier view: runs the Outlier pipeline on CoDev's server (agents/outlier)
+// The Outlier view: runs the Outlier pipeline (agents/outlier, in the Windows app or on CoDev's server)
 // and shows the entries it recommends, the entries you played and their results,
 // and how the filters have tuned themselves from those results.
 //
