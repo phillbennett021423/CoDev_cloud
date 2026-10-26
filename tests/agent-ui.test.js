@@ -166,6 +166,49 @@ test('a follow-up carries the earlier turns, including the tool steps that faile
     assert.ok(!last.some(m => /Welcome to CoDev/.test(m.content)), 'the welcome note stays out');
 });
 
+test('chats survive a reload, and a run cut off by a crash comes back as a note the next prompt carries', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const workspace = makeWorkspace();
+    const backend = createMockBackend({ workspace });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const { page } = await openPage(launched.browser, url, { steps: ['First answer.'] });
+    await page.uncheck('#isSandboxCheckbox');
+    await sendPrompt(page, 'Remember the number 42');
+    await waitForChat(page, /First answer\./);
+    // A run that was still going when CoDev closed, as the page leaves it mid-run.
+    await page.evaluate(() => {
+        const session = chatSessions.find(s => s.id === activeChatId);
+        session.messages.push({ sender: '🤖 CodeDev (Working...)', text: '📄 Reading notes.txt', task: 'Summarize notes.txt', toolLog: ['📄 Reading notes.txt → No loaded text file named "notes.txt".'] });
+        saveChatsNow();
+    });
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction(() => typeof chatSessions !== 'undefined' && document.getElementById('chatFeed').children.length > 0);
+    const restored = await page.evaluate(() => chatSessions.find(s => s.id === activeChatId).messages.map(m => ({ sender: m.sender, text: m.text, toolLog: m.toolLog })));
+    assert.ok(restored.some(m => m.sender === '👤 You' && /number 42/.test(m.text)), 'the prompt is back');
+    assert.ok(restored.some(m => /First answer/.test(m.text)), 'the reply is back');
+    const note = restored.find(m => /Interrupted \[CodeDev\]/.test(m.sender));
+    assert.ok(note, 'the cut-off run is a note');
+    assert.match(note.text, /Summarize notes\.txt/);
+    assert.ok(!restored.some(m => /Working\.\.\./.test(m.sender)), 'no run left spinning');
+    await page.evaluate(() => {
+        document.getElementById('settingsModal').style.display = 'none';
+        window.__modelCalls = [];
+        window.groqChatMessage = async body => {
+            window.__modelCalls.push(body.messages.slice(1).map(m => ({ role: m.role, content: String(m.content) })));
+            return { role: 'assistant', content: 'Picking it up.' };
+        };
+    });
+    await page.uncheck('#isSandboxCheckbox');
+    await sendPrompt(page, 'continue');
+    await waitForChat(page, /Picking it up\./);
+    const sent = (await page.evaluate(() => window.__modelCalls))[0];
+    const joined = sent.map(m => m.content).join('\n');
+    assert.match(joined, /number 42/);
+    assert.match(joined, /Summarize notes\.txt/);
+    assert.match(joined, /No loaded text file named "notes\.txt"/);
+});
+
 test('in sandbox mode, MCP servers that write or run on this computer are kept out of the review bypass', async t => {
     if (launched.skip) return t.skip(launched.skip);
     const workspace = makeWorkspace();

@@ -1242,10 +1242,64 @@
             };
         }
 
-        let chatSessions = [
+        // SAVED CHATS
+        // Chats are saved in this browser's storage as they change, so a crash or a
+        // restart reopens them where they were. A run that was still going when CoDev
+        // closed comes back as an "Interrupted" note with its task and the tool steps
+        // it had done, which the next prompt sends along, so "continue" picks it up.
+        const CHAT_STORE_KEY = "codev_chats";
+        const MAX_SAVED_MESSAGES = 200;
+        let chatSaveTimer = null;
+
+        function saveChatsNow() {
+            clearTimeout(chatSaveTimer);
+            chatSaveTimer = null;
+            const sessions = chatSessions.map(s => ({ ...s, messages: s.messages.slice(-MAX_SAVED_MESSAGES) }));
+            const write = list => localStorage.setItem(CHAT_STORE_KEY, JSON.stringify({ activeChatId, sessions: list }));
+            try {
+                write(sessions);
+            } catch (err) {
+                // Storage full: drop the picture thumbnails, then the older half of each chat.
+                const lean = sessions.map(s => ({ ...s, messages: s.messages.map(m => m.attachments ? { ...m, attachments: m.attachments.map(a => ({ ...a, thumb: "" })) } : m) }));
+                try { write(lean); } catch (err2) {
+                    try { write(lean.map(s => ({ ...s, messages: s.messages.slice(-Math.ceil(s.messages.length / 2)) }))); }
+                    catch (err3) { console.warn(`[Chats] Couldn't save the chats: ${err3.message}`); }
+                }
+            }
+        }
+
+        function scheduleChatSave() {
+            if (!chatSaveTimer) chatSaveTimer = setTimeout(saveChatsNow, 300);
+        }
+
+        // A message that was still in progress when CoDev closed.
+        function restoreUnfinishedMessage(msg) {
+            const working = /^🤖 (.*) \(Working\.\.\.\)$/.exec(String(msg.sender || ""));
+            if (!working) return msg;
+            const name = working[1];
+            const text = `CoDev closed while ${name} was working${msg.task ? ` on: "${String(msg.task).slice(0, 500)}"` : ""}. The last step shown was: ${msg.text || "starting"}. Ask to continue and ${name} picks up from the steps below.`;
+            return { sender: `⚠️ Interrupted [${name}]`, text, ...(msg.toolLog?.length ? { toolLog: msg.toolLog.slice(-12) } : {}) };
+        }
+
+        function loadSavedChats() {
+            let saved = null;
+            try { saved = JSON.parse(localStorage.getItem(CHAT_STORE_KEY) || "null"); } catch (err) { /* unreadable: start fresh */ }
+            if (!saved || !Array.isArray(saved.sessions) || !saved.sessions.length) return null;
+            const sessions = saved.sessions.filter(s => s && s.id && Array.isArray(s.messages)).map(s => ({
+                ...s,
+                // A search banner left mid-search goes; a run left mid-way becomes a note.
+                messages: s.messages.filter(m => m && !/^🔎/.test(String(m.sender || ""))).map(restoreUnfinishedMessage)
+            }));
+            if (!sessions.length) return null;
+            return { sessions, activeChatId: sessions.some(s => s.id === saved.activeChatId) ? saved.activeChatId : sessions[0].id };
+        }
+
+        const savedChats = loadSavedChats();
+        let chatSessions = savedChats ? savedChats.sessions : [
             newChatSession("chat_1", "New Session #1", false, "Welcome to CoDev Studio Pro. Tell the agents what you're working on, in any domain. To work on files, click '📁 Connect Local Folder' at the top right.")
         ];
-        let activeChatId = "chat_1";
+        let activeChatId = savedChats ? savedChats.activeChatId : "chat_1";
+        window.addEventListener("pagehide", saveChatsNow);
 
         // AGENT FACTORY: every agent, built-in or new, starts as a blank slate: empty memory,
         // no shared-memory links and generic instructions, so it takes its domain from the
@@ -1495,6 +1549,7 @@
                 container.appendChild(item);
             });
             renderActiveChatFeed();
+            scheduleChatSave();
         }
 
         function createNewChat() {
@@ -3087,7 +3142,10 @@
                         try { result = await tool.run(args, ctx); } catch (err) { result = `Tool failed: ${err.message}`; }
                         trackToolEffect(ctx, tool.name, args, String(result));
                         // A short note of each step stays with the reply, so a follow-up can ask about it.
-                        if (ctx.toolLog) ctx.toolLog.push(`${step} → ${String(result).replace(/\s+/g, " ").slice(0, MAX_HISTORY_TOOL_CHARS)}`);
+                        if (ctx.toolLog) {
+                            ctx.toolLog.push(`${step} → ${String(result).replace(/\s+/g, " ").slice(0, MAX_HISTORY_TOOL_CHARS)}`);
+                            scheduleChatSave();
+                        }
                     }
                     // A researched list of legs is one line each: let a long list through whole.
                     const limit = call.function?.name === "outlier_research_list" ? MAX_TOOL_RESULT_CHARS * 6 : MAX_TOOL_RESULT_CHARS;
@@ -5236,6 +5294,7 @@
                     setAgentState(agent.id, "active");
                     placeholder.text = step;
                     if (session.id === activeChatId) renderActiveChatFeed();
+                    scheduleChatSave();
                 }
             };
         }
@@ -5246,8 +5305,11 @@
             const { extraContext = "", aiOptions = {}, webSources = [], memory = "", notes = "", title, dispatch } = opts;
             appendMessageToSession(session, `🤖 ${agent.name} (Working...)`, dispatch ? "🧪 Starting a sandbox…" : "📁 Indexing the workspace…");
             const placeholder = session.messages[session.messages.length - 1];
+            placeholder.task = task;
             setAgentState(agent.id, "thinking");
             const tools = createToolContext(session, placeholder, agent, webSources);
+            // The same list as the run's, so a crash mid-run still leaves what was done.
+            placeholder.toolLog = tools.toolLog;
             const finish = (sender, text, sources) => {
                 const at = session.messages.indexOf(placeholder);
                 if (at >= 0) session.messages.splice(at, 1);
