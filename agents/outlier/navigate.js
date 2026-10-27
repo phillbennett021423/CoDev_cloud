@@ -726,7 +726,7 @@ function legSummary(text, max = 420) {
 // Matchup, Injuries, Odds Movement...). Only real tabs (role=tab, a tab list) or
 // buttons in the card's dialog, never one in a header, nav, slip or My Picks, and
 // never a pick, bet or slip button. Marked data-codev-tab; returns their labels.
-const CARD_TABS = /^(supporting stats|stats|player stats|game ?logs?|splits|home ?\/ ?away|matchup|defen[cs]e( vs\.? position)?|vs\.? (defense|position)|injur(y|ies)|injury report|odds movement|line movement|line history|public( betting)?|bet splits|betting splits|news|minutes|usage|shooting|advanced|opportunit(y|ies)|play ?types?|shot chart|lineups?|snaps|targets|routes|red ?zone|receiving|rushing|passing|pitching|batting|time on ice|efficiency|trends|vs\.? opponent|team stats)$/i;
+const CARD_TABS = /^(supporting stats|stats|player stats|game ?logs?|splits|home ?\/ ?away|matchup|defen[cs]e( vs\.? position)?|vs\.? (defense|position)|injur(y|ies)|injury report|odds movement|line movement|line history|public( betting)?|bet splits|betting splits|news|minutes|usage|shooting|advanced|opportunit(y|ies)|play ?types?|shot chart|lineups?|snaps|targets|routes|red ?zone|receiving|rushing|passing|pitching|batting|time on ice|efficiency|trends|vs\.? opponent|team stats|statistics|insights|[a-z0-9+ ]{2,20} vs\.? [a-z]{2,4}|key [a-z]{2,4} [a-z+ ]{2,30} defen[cs]e)$/i;
 function markCardTabs(source) {
     const re = new RegExp(source, 'i');
     const bad = /pick|slip|add|bet ?now|place|remove|entry|parlay|follow|share/i;
@@ -766,6 +766,85 @@ async function readCardTabs(page, { settleMs = 800, max = 6, maxChars = 4000, kn
         fresh.forEach(l => seen.add(l));
         if (fresh.length) tabs.push({ tab: label, text: fresh.join('\n') });
     }
+    return tabs;
+}
+
+// The small tabs and toggles inside the card's sections: the hit-rate windows
+// (H2H, L5, L10, L20, seasons), Average/Median, the position tabs of "Points vs
+// BOS" (All, PG...C) and of the opponent's defense (Overall, vs PG...), the shot
+// chart's shot types and seasons, the supporting stats (Minutes, Fouls, Field
+// Goals, 3pts...) and the two teams of Injuries. Never the stat tabs (1Q PTS,
+// PTS+AST: other props), the over/under button, alt lines, filters, share or a
+// pick. Runs inside the page: marks each data-codev-sub="n" and returns
+// [{ n, label, section }] (section: the title of the box it sits in).
+const SUB_TABS = '^(h2h|l5|l10|l15|l20|l25|l50|20\\d\\d(-\\d\\d)?|average|median|all|pg|sg|sf|pf|c|g|f|overall|vs\\.? (pg|sg|sf|pf|c|g|f|guards?|forwards?|centers?)|all fgs|3pt|2pt|ft|minutes|fouls|field goals|3pts|free throws|rebounds|assists|steals|blocks|turnovers|usage|touches|shots|targets|snaps|routes|carries|receptions|pitches|strikeouts|time on ice|shots on goal)$';
+function markSubTabs(source) {
+    const re = new RegExp(source, 'i');
+    const bad = /pick|slip|\badd\b|\bbet|place|remove|entry|parlay|follow|share|alt lines|filter|save|template|\bev\b|\b(over|under)\b/i;
+    document.querySelectorAll('[data-codev-sub]').forEach(el => el.removeAttribute('data-codev-sub'));
+    const root = document.querySelector('[role="dialog"], [aria-modal="true"]') || document.body;
+    // The box's title: the first line of the nearest box around it that isn't the
+    // row of tabs itself (a row reads like "H2HL5L10" or "AverageMedian").
+    const title = (el, label) => {
+        for (let up = el.parentElement, n = 0; up && up !== root && n < 8; up = up.parentElement, n++) {
+            const first = (up.innerText || '').split('\n').map(t => t.trim()).find(Boolean) || '';
+            if (first && first.length <= 40 && !re.test(first) && !first.includes(label)) return first;
+        }
+        return '';
+    };
+    const out = [];
+    let n = 0;
+    for (const el of root.querySelectorAll('button, [role="tab"], [role="button"], [role="radio"], [role="option"], a, div, span, li')) {
+        if (el.closest('header, nav, aside, [class*="slip" i], [class*="mypick" i]')) continue;
+        const tag = el.tagName;
+        const clickable = /^(BUTTON|A)$/.test(tag) || el.getAttribute('role') || (el.children.length <= 2 && getComputedStyle(el).cursor === 'pointer');
+        if (!clickable) continue;
+        const label = (el.innerText || '').split('\n').map(t => t.trim()).find(Boolean) || '';
+        if (!label || label.length > 20 || bad.test(label)) continue;
+        const section = title(el, label);
+        const team = /^[A-Z]{2,4}$/.test(label) && /injur/i.test(section);
+        if (!re.test(label) && !team) continue;
+        // One element per control: skip a wrapper whose clickable child carries the same label.
+        if ([...el.querySelectorAll('button, [role="tab"], [role="button"], [role="radio"]')].some(c => ((c.innerText || '').split('\n')[0] || '').trim() === label)) continue;
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        if (out.some(o => o.label === label && o.section === section)) continue;
+        el.setAttribute('data-codev-sub', String(n));
+        out.push({ n, label, section });
+        n++;
+    }
+    return out;
+}
+
+// Clicks each of those, in turn, and reads what it shows ("Points vs BOS > PG: ...").
+// The first window tab that was on when the card opened (L10 most often) is clicked
+// again at the end, so the card is left as it opened.
+async function readSubTabs(page, { settleMs = 800, max = 40, maxChars = 3000, known = '', stop = () => false } = {}) {
+    const seen = new Set(String(known).split('\n'));
+    const found = (await page.evaluate(markSubTabs, SUB_TABS).catch(() => [])).slice(0, max);
+    const active = await page.evaluate(() => {
+        const on = [...document.querySelectorAll('[aria-selected="true"], [aria-pressed="true"], [aria-checked="true"], [data-state="active"]')]
+            .map(el => (el.innerText || '').trim()).find(t => /^(H2H|L\d+|20\d\d)$/i.test(t));
+        return on || null;
+    }).catch(() => null);
+    const tabs = [];
+    const click = async ({ label, section }) => {
+        const now = await page.evaluate(markSubTabs, SUB_TABS).catch(() => []);
+        const hit = now.find(o => o.label === label && o.section === section);
+        if (!hit) return false;
+        return page.click(`[data-codev-sub="${hit.n}"]`, { timeout: 3000 }).then(() => true).catch(() => false);
+    };
+    for (const sub of found) {
+        if (stop()) break;
+        if (!await click(sub)) continue;
+        await page.waitForTimeout(settleMs);
+        if (stop()) break;
+        const fresh = (await readDetails(page, { scrolls: 0, maxChars })).split('\n').filter(l => !seen.has(l));
+        fresh.forEach(l => seen.add(l));
+        if (fresh.length) tabs.push({ tab: `${sub.section ? `${sub.section} > ` : ''}${sub.label}`, text: fresh.join('\n') });
+    }
+    const back = active && found.find(o => o.label.toLowerCase() === active.toLowerCase());
+    if (back && !stop()) { await page.waitForTimeout(settleMs); await click(back); }
     return tabs;
 }
 
@@ -1227,4 +1306,4 @@ async function setFilters(page, { altLines = true, widenOdds = true, teams = nul
     return did;
 }
 
-module.exports = { sameName, nameKey, setFilters, markFilter, navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords, periodOf, withoutPeriod, scrollStep, scrollPlace, scrollToPlace, settleAfterScroll, placeOf, markSearchBox, searchPlayer, clearSearch };
+module.exports = { SUB_TABS, markSubTabs, readSubTabs, sameName, nameKey, setFilters, markFilter, navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords, periodOf, withoutPeriod, scrollStep, scrollPlace, scrollToPlace, settleAfterScroll, placeOf, markSearchBox, searchPlayer, clearSearch };
