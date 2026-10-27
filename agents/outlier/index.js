@@ -18,7 +18,7 @@ const { spawn } = require('child_process');
 const { collectPage, parseCollected, parseText, propId } = require('./extract');
 const { createCapture } = require('./capture');
 const { projectLeg, regressionFlag, gameContext, simulateTicket } = require('./forecast');
-const { navigate, setFilters, sameName, onlyGame, openPlayer, readDetails, readCardTabs, readSubTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, periodOf, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf, searchPlayer, clearSearch, markSearchBox } = require('./navigate');
+const { navigate, setFilters, sameName, onlyGame, openPlayer, readDetails, readCardTabs, readSubTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, periodOf, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf, searchPlayer, clearSearch, markSearchBox, cardFor, cardStat, closeCard } = require('./navigate');
 const { OUTLIER_PRIMER, OUTLIER_GUIDE } = require('./guide');
 const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
@@ -960,7 +960,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // The cards read lately for these legs, counted at each leg's own line (null when unread).
     const cardsFor = legs => legs.map(leg => {
         const c = cards.get(cardKey(leg));
-        return fresh(c) ? { ...c, atLine: hitsAtLine(c.games, leg.line, leg.side) } : null;
+        return fresh(c) && cardFor(c.text, leg.player) ? { ...c, atLine: hitsAtLine(c.games, leg.line, leg.side) } : null;
     });
 
     // The legs' player cards on the game's board page, which is open: the legs the
@@ -969,7 +969,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // paceMs between cards and backs off when Outlier answers 429 (too many
     // requests), stopping the cards after a third one.
     // restore(): brings the board back if a card replaced it (twice at most).
-    async function researchLegs(page, legs, { boardProps = [], places = [], settleMs = 1500, maxCards = 12, paceMs = 10000, clickPaceMs = 3000, backoffMs = [90000, 120000, 180000, 240000], restore = null } = {}) {
+    async function researchLegs(page, legs, { boardProps = [], places = [], settleMs = 1500, maxCards = 12, paceMs = 10000, clickPaceMs = 3000, backoffMs = [90000, 120000, 180000, 240000], restore = null, fresh: forceFresh = false } = {}) {
         let restores = 0;
         const results = new Map();
         let limited = 0;
@@ -999,7 +999,15 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             let last = 0;
             for (const { leg, i, own, shown } of order) {
                 const cached = cards.get(cardKey(leg));
-                if (fresh(cached)) { results.set(i, { ...cached, atLine: hitsAtLine(cached.games, leg.line, leg.side), cached: true }); continue; }
+                // A card read earlier is reused only when it really is his (an older run
+                // could have saved another player's card under his name).
+                if (!forceFresh && fresh(cached) && cardFor(cached.text, leg.player)) { results.set(i, { ...cached, atLine: hitsAtLine(cached.games, leg.line, leg.side), cached: true }); continue; }
+                // A stat Outlier shows for nobody on this board (2PT attempted, triple
+                // doubles...): no card is opened for it, and the answer says so up front.
+                if (boardProps.length >= 40 && !boardProps.some(p => sameMarket(p.market, leg.stat))) {
+                    results.set(i, { error: `Outlier shows no ${leg.stat || 'such'} props for anyone on this board, so his card wasn't opened`, unsupported: true, props: [] });
+                    continue;
+                }
                 if (opened >= maxCards) break;
                 if (limited >= MAX_429) break;
                 // Pace the cards, and wait out a 429 before the next one.
@@ -1061,7 +1069,23 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     }
                     step('reading the card');
                     const cardStart = Date.now();
-                    const text = await readDetails(page, { scrolls: 6, maxChars: 16000 });
+                    const pace0 = clickPaceMs;
+                    let text = await readDetails(page, { scrolls: 6, maxChars: 16000 });
+                    // The card has to be his. Another player's card (the last one left open)
+                    // is closed and his opened again once; then the leg is reported, never
+                    // read from someone else's card.
+                    // (A card that loaded while Outlier said 429 is empty, and handled below.)
+                    if (!seen429 && !cardFor(text, leg.player)) {
+                        step('that was another player\'s card: closing it and opening his again');
+                        await closeCard(page, { settleMs: Math.min(settleMs, 1000) });
+                        await page.waitForTimeout(pace0);
+                        label = await openPlayer(page, leg.player, { settleMs, stat: leg.stat, line: leg.line });
+                        text = await readDetails(page, { scrolls: 6, maxChars: 16000 });
+                        if (!cardFor(text, leg.player)) throw new Error('the card Outlier opened was another player\'s, so it wasn\'t used');
+                    }
+                    // His card for another stat (its title names the stat): counted as that, not as this leg.
+                    const shownStat = cardStat(text, leg.player);
+                    if (shownStat && leg.stat && !sameMarket(shownStat, leg.stat) && !/another stat/.test(label)) label = `${label} (his card for another stat: ${shownStat}; no ${leg.stat} card opened)`;
                     // A card that loaded while Outlier said 429 is empty: not kept.
                     const emptied = seen429 > 0;
                     // Everything the card offers: each of its tabs (Supporting Stats,
@@ -1104,9 +1128,9 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     results.set(i, { error: err.message.split(' (http')[0].split(' on that Outlier board')[0], searched: Boolean(searched), props: found });
                 }
                 // Close the card where the board stays (a panel or the same page with
-                // ?market=…): Escape, never a reload or a trip back through history.
-                await page.keyboard.press('Escape').catch(() => {});
-                await page.waitForTimeout(400);
+                // ?market=…): Escape, then the card's own × if it's still open; never a
+                // reload or a trip back through history.
+                await closeCard(page, { settleMs: 400 });
                 if (searched) await clearSearch(page);
             }
             const unread = order.filter(({ leg, i }) => !results.has(i) && !cards.has(cardKey(leg))).length;
@@ -1119,7 +1143,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // Every leg on a list ({ player, stat, line, side }) in one visit: the game's
     // board is reached once, read and audited for just these legs, and the players'
     // cards are opened on that same page.
-    async function researchList({ url = null, sport, game, day, legs = [], maxCards = 12, here = false, setFilters: wantFilters = false } = {}) {
+    async function researchList({ url = null, sport, game, day, legs = [], maxCards = 12, here = false, setFilters: wantFilters = false, fresh: wantFresh = false } = {}) {
         const nav = { ...Object.fromEntries(Object.entries({ sport, game, day }).filter(([, v]) => v)), player: legs[0] && legs[0].player };
         // Asked again after a crash or a restart: the board read a few minutes ago and
         // the cards already read are used as they are, and Outlier isn't opened again
@@ -1127,7 +1151,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         const saved = readJson(files.scrape, null);
         const savedProps = saved && Date.now() - Date.parse(saved.scrapedAt) < 10 * 60 * 1000 ? saved.props || [] : [];
         const fresh = cardsFor(legs);
-        if (savedProps.length && legs.every(l => matchLeg(l, savedProps)) && fresh.every(Boolean)) {
+        if (!wantFresh && savedProps.length && legs.every(l => matchLeg(l, savedProps)) && fresh.every(Boolean)) {
             state.progress = null;
             return { steps: ['Props', 'saved read from a few minutes ago'], research: { results: new Map(fresh.map((c, i) => [i, { ...c, cached: true }])), limited: false, skipped: 0 } };
         }
@@ -1167,7 +1191,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 const board = (() => { const u = new URL(page.url()); ['market', 'outcome', 'split'].forEach(k => u.searchParams.delete(k)); return u.href; })();
                 const restore = async () => {
                     // On the user's own page a reload would wipe their filters: close the card only.
-                    if (here) { await page.keyboard.press('Escape').catch(() => {}); await page.waitForTimeout(500); return; }
+                    if (here) { await closeCard(page, { settleMs: 500 }); return; }
                     await page.goto(board, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
                     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
                     await navigate(page, nav, { settleMs: config().settleMs });
@@ -1175,7 +1199,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 const cfg = config();
                 // cardPaceMs: the wait between player cards (default 10s); clickPaceMs: the wait
                 // before each click inside a card (default 3s). Both set lower only in tests.
-                research = await researchLegs(page, legs, { boardProps, places: collected.places, settleMs: cfg.settleMs, maxCards, restore,
+                research = await researchLegs(page, legs, { boardProps, places: collected.places, settleMs: cfg.settleMs, maxCards, restore, fresh: wantFresh,
                     ...(Number.isFinite(cfg.cardPaceMs) ? { paceMs: cfg.cardPaceMs } : {}),
                     ...(Number.isFinite(cfg.clickPaceMs) ? { clickPaceMs: cfg.clickPaceMs } : {}),
                     ...(Array.isArray(cfg.backoffMs) ? { backoffMs: cfg.backoffMs } : {}) });
@@ -1648,6 +1672,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                 day: { type: 'string', description: '"today", "tomorrow" or a weekday, when the games aren\'t today (optional).' },
                 url: { type: 'string', description: 'An app.outlier.bet page to start from (optional).' },
                 here: { type: 'boolean', description: 'Read the user\'s own Outlier page as they set it (filters, game, search): no reload, no tab or filter clicks. CoDev already does this on its own when the shown tab is an Outlier props page with filters set; pass true when the user says they set the page up, false only when the user asks for a fresh board.' },
+                fresh: { type: 'boolean', description: 'true when the user asks for fresh reads (or the last cards looked wrong): every card is opened again instead of reusing today\'s reads.' },
                 set_filters: { type: 'boolean', description: 'Only when the user asks CoDev to set Outlier\'s filters itself: turns on alternative lines, widens the odds range and ticks the game, in a tab of CoDev\'s own. Off by default: the user\'s filters are never changed.' }
             }, required: ['legs'], additionalProperties: false }
         }, {
@@ -1750,7 +1775,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     const nav = Object.fromEntries(Object.entries({ sport: args.sport, game: args.game, day }).filter(([, v]) => v && String(v).trim()).map(([k, v]) => [k, String(v).trim()]));
                     // One visit: the board read and audited for just these legs, then
                     // the players' cards on that same page.
-                    const { steps, research, board: boardRead } = await outlier.researchList({ url, ...nav, legs, here: args.here === true || (args.here !== false && !url && Boolean(outlier.userBoard && outlier.userBoard())), setFilters: args.set_filters === true });
+                    const { steps, research, board: boardRead } = await outlier.researchList({ url, ...nav, legs, here: args.here === true || (args.here !== false && !url && Boolean(outlier.userBoard && outlier.userBoard())), setFilters: args.set_filters === true, fresh: args.fresh === true });
                     const result = outlier.state().result;
                     const audit = auditText(result);
                     let props = [];
@@ -1808,10 +1833,13 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     const slip = top.length ? `Slip from what was read (${sure.length} leg(s) verified on their card${research.unread || research.limited ? '; the run was cut short, so this is the best slip from the verified legs' : ''}):\n${top.map((x, n) => `${n + 1}) ${x.l.player} ${x.l.side || 'Over'} ${x.l.line ?? ''} ${x.l.stat || ''}: ${Math.round(x.score * 100)}% (${tag(x)})`.replace(/\s+/g, ' ')).join('\n')}\n` : '';
                     const checks = legChecks(legs);
                     const did = didText(boardRead, research, legs.length);
+                    // Legs whose stat Outlier shows for nobody on the board: said once, up front.
+                    const unsupported = legs.map((l, i) => (research.results.get(i) || {}).unsupported ? `${i + 1}. ${l.player} ${l.stat}` : null).filter(Boolean);
+                    const upfront = unsupported.length ? `Not researchable on Outlier (it shows no props of these stat types on this board, so no card was opened): ${unsupported.join('; ')}.\n` : '';
                     // The ranking, slip and simulation come before the legs' cards, so a long list
                     // (many cards, or a "continue" that shows every card read so far) never pushes
                     // them past what the chat keeps of a tool's answer.
-                    const text = `Outlier > ${read.steps.join(' > ')}\nFound ${found} of ${legs.length} legs on Outlier. Hit rates are Outlier's, turned to the user's side.\n${did}\n${notes.map(n => `${n}\n`).join('')}`
+                    const text = `Outlier > ${read.steps.join(' > ')}\nFound ${found} of ${legs.length} legs on Outlier. Hit rates are Outlier's, turned to the user's side.\n${upfront}${did}\n${notes.map(n => `${n}\n`).join('')}`
                         + (best.length ? `Best on Outlier's hit rates (${stage && stage.early ? `${stage.sport} is ${stage.day} days into its season, so this season counts 1.5x and last season 0.25x; ` : ''}weighted average of L5, L10, L20, H2H, seasons on the user's side, counted from the game log at the user's line when Outlier's line moved, then moved a little for minutes and opportunity trends):\n${best.join('\n')}\n` : '')
                         + slip
                         + (ticket ? `For the ${Math.min(sure.length, size)} verified leg(s) of that slip: ${ticket}\n` : '')
