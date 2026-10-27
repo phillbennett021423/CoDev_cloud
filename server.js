@@ -18,6 +18,7 @@ const path = require('path');
 const { loadConfig, describeConfig, ensureDataDirs } = require('./config');
 const { loadServices } = require('./agent-services');
 const { checkDocker } = require('./scripts/checks');
+const { handleImageFolder } = require('./desktop/image-folder');
 
 const config = loadConfig();
 const fatal = config.problems.filter(problem => problem.level === 'error');
@@ -203,6 +204,11 @@ const server = http.createServer(async (req, res) => {
     if (req.url === '/anthropic/status') return sendJson(res, 200, { available: Boolean(anthropic.key) });
     if (req.url === '/anthropic/v1/messages') return handleAnthropicRelay(req, res);
     if (req.url === '/agent-tools') return handleAgentTools(req, res);
+    // Screenshots in a folder named by its full path, for read_screenshots: CoDev's own page only.
+    if (req.url === '/screenshots') {
+        if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
+        return readJsonBody(req, res, async message => sendJson(res, 200, await handleImageFolder(message)));
+    }
     if (req.url === '/agent/status') {
         if (req.method !== 'GET' || !isOwnPageCall(req)) return sendJson(res, 403, { error: 'Forbidden' });
         return sendJson(res, 200, await agentStatus());

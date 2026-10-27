@@ -2861,9 +2861,9 @@
             tools.push({
                 name: "read_screenshots",
                 description: "Look at a folder of screenshots or other images and get what they show, read by a vision model: every leg on a betting or DFS slip (Dabble, PrizePicks, Underdog, sportsbooks) as Player | Stat | Line | Side | Sport | Game, or the text and content of any other image. "
-                    + "Reads the screenshots folder the user picked with 📸, newest first; folder can name a folder inside it or inside the project instead. Use it whenever the user mentions screenshots, pictures or a folder of images.",
+                    + "Reads every screenshot in the folder the user picked with 📸 or named before, newest first, or the folder given as folder (a full path works). Use it whenever the user mentions screenshots, pictures or a folder of images; the user never needs to upload them.",
                 inputSchema: { type: "object", properties: {
-                    folder: { type: "string", description: "Optional: a sub-folder of the 📸 folder, or a folder inside the project (like \"Dabble\"). Leave it out for the 📸 folder." },
+                    folder: { type: "string", description: "Optional: the full path of a folder on the user's computer when they give one (like \"G:\\My Drive\\continuumUniverse\\New folder\"; CoDev remembers it for next time), a sub-folder of the 📸 folder, or a folder inside the project. Leave it out for the folder the user picked or named before." },
                     question: { type: "string", description: "What to look for, in the user's words." },
                     limit: { type: "integer", description: `Read only the newest N images. Leave it out to read them all (up to ${MAX_SCREENSHOTS}); screenshots read before are remembered, so only new ones go to the vision model.` }
                 } },
@@ -3171,7 +3171,13 @@
         // Files are converted in the browser when picked: images are downscaled to
         // base64 JPEG, PDFs become text (or page images when scanned), and videos
         // are sampled into still frames, because the model takes images, not video.
-        const MAX_IMAGES_PER_MESSAGE = 3;
+        // Up to 50 images in one message: the vision model reads them 3 at a time (Groq's
+        // limit per request) and the agent gets its notes. A video gives 3 frames.
+        const MAX_IMAGES_PER_MESSAGE = 50;
+        const MAX_VIDEO_FRAMES = 3;
+        const MAX_SCANNED_PDF_PAGES = 10;
+        // Claude takes this many images straight into its tool loop; more go through the notes.
+        const ANTHROPIC_DIRECT_IMAGES = 20;
         const MAX_IMAGE_EDGE = 1280;
         const MAX_PDF_CHARS = 40000;
         const MAX_FILE_BYTES = { image: 20 * 1024 * 1024, pdf: 25 * 1024 * 1024, video: 100 * 1024 * 1024 };
@@ -3211,7 +3217,7 @@
                 if (file.size > MAX_FILE_BYTES[kind]) { alert(`${file.name} is too large (limit ${MAX_FILE_BYTES[kind] / 1024 / 1024} MB for ${kind}s).`); continue; }
                 if (kind !== "pdf" && imageBudgetLeft() === 0) { alert(`Up to ${MAX_IMAGES_PER_MESSAGE} images or video frames can go in one message.`); continue; }
                 const att = { id: ++attachmentSeq, name: file.name, kind, images: [], text: "", thumb: "", processing: true, reservedImages: kind === "image" ? 1 : 0 };
-                if (kind === "video") att.reservedImages = imageBudgetLeft();
+                if (kind === "video") att.reservedImages = Math.min(MAX_VIDEO_FRAMES, imageBudgetLeft());
                 pendingAttachments.push(att);
                 renderAttachmentTray();
                 try {
@@ -3334,7 +3340,42 @@
             });
         }
 
+        // A folder named by its full path (G:\My Drive\...) is read by the Windows app or
+        // CoDev's server (desktop/image-folder.js), so it needs no picker and no permission.
+        const SCREENSHOT_PATH_KEY = "codev_screenshot_path";
+        const ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\\\\|\/|~(?:[\\/]|$))/;
+
+        function canReadImagePaths() {
+            return Boolean(window.codevDesktop?.imageFolder)
+                || (!window.codevDesktop && location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname));
+        }
+
+        async function imageFolderRequest(req) {
+            if (window.codevDesktop?.imageFolder) return window.codevDesktop.imageFolder(req);
+            const response = await fetch("/screenshots", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) });
+            if (response.status === 404) return { ok: false, error: "this copy of CoDev's server is too old to read folders by path: update CoDev and restart start-codev.bat" };
+            return response.ok ? response.json() : { ok: false, error: `CoDev's server answered ${response.status}` };
+        }
+
+        function folderBaseName(folder) {
+            return String(folder).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || folder;
+        }
+
+        function useScreenshotPath(folder) {
+            screenshotFolder = { name: folderBaseName(folder), path: folder };
+            try { localStorage.setItem(SCREENSHOT_PATH_KEY, folder); } catch (err) { /* kept for this session only */ }
+            showScreenshotFolder();
+        }
+
         async function restoreScreenshotFolder() {
+            let saved = "";
+            try { saved = localStorage.getItem(SCREENSHOT_PATH_KEY) || ""; } catch (err) { /* none */ }
+            if (saved && canReadImagePaths() && !screenshotFolder) {
+                screenshotFolder = { name: folderBaseName(saved), path: saved };
+                showScreenshotFolder();
+                logConsoleActivity(`[Screenshots] Remembered folder: ${saved}.`);
+                return;
+            }
             const handle = await screenshotFolderStore("get");
             if (!handle || screenshotFolder) return;
             screenshotFolder = { name: handle.name, handle };
@@ -3362,16 +3403,22 @@
             const btn = document.getElementById("screenshotFolderBtn");
             btn.classList.toggle("active", Boolean(screenshotFolder));
             btn.title = screenshotFolder
-                ? `Screenshots: ${screenshotFolder.name}. Ask an agent to read them, like "look at my screenshots and research the props". Click to pick another folder.`
+                ? `Screenshots: ${screenshotFolder.path || screenshotFolder.name}. Ask an agent to read them, like "look at my screenshots and research the props". Click to pick another folder.`
                 : "Pick a folder of screenshots (like Dabble slips) for the agents to read";
         }
 
         async function pickScreenshotFolder() {
-            if (window.showDirectoryPicker) {
+            if (window.codevDesktop?.imageFolder) {
+                // The Windows app's own folder dialog: CoDev keeps the path, so it never asks again.
+                const picked = await window.codevDesktop.imageFolder({ op: "pick" });
+                if (!picked?.ok) return;
+                useScreenshotPath(picked.folder);
+            } else if (window.showDirectoryPicker) {
                 try {
                     const handle = await window.showDirectoryPicker({ id: "codev-screenshots", mode: "read" });
                     screenshotFolder = { name: handle.name, handle };
                     screenshotFolderStore("put", handle);
+                    try { localStorage.removeItem(SCREENSHOT_PATH_KEY); } catch (err) { /* nothing saved */ }
                 } catch (err) {
                     if (err.name !== "AbortError") alert("Couldn't open that folder: " + err.message);
                     return;
@@ -3391,7 +3438,7 @@
                 screenshotFolder = { name: `${images.length} picked screenshot${images.length === 1 ? "" : "s"}`, files: images.map(file => ({ path: file.name, file })) };
             }
             showScreenshotFolder();
-            logConsoleActivity(`[Screenshots] Agents can read ${screenshotFolder.name} with read_screenshots.`);
+            logConsoleActivity(`[Screenshots] Agents can read ${screenshotFolder.path || screenshotFolder.name} with read_screenshots.`);
             appendMessageToActiveSession("📸 Screenshots", `Ready: ${screenshotFolder.name}. Ask something like "look at my screenshots and research these props", and the agent reads them. New screenshots saved in the folder are picked up each time, and CoDev remembers the folder after a restart.`);
         }
 
@@ -3414,6 +3461,14 @@
         // The images to read for a folder name ("" = the 📸 folder, or the project's root),
         // newest first, as { path, modified, load() → data URL }.
         async function findScreenshots(folder) {
+            // A full path: read there (and remember it for "my screenshots" next time).
+            if (ABSOLUTE_PATH.test(String(folder).trim())) {
+                if (!canReadImagePaths()) throw new Error("this copy of CoDev can't open folders by their path (only the Windows app and CoDev opened from start-codev.bat can). Click 📸 and pick the folder instead");
+                const images = await screenshotsAtPath(String(folder).trim());
+                useScreenshotPath(String(folder).trim());
+                return images;
+            }
+            if (screenshotFolder?.path && (!folder || folder.toLowerCase() === screenshotFolder.name.toLowerCase())) return screenshotsAtPath(screenshotFolder.path);
             const wanted = normalizeWorkspacePath(folder);
             if (folder && !wanted) throw new Error(`"${folder}" isn't a folder CoDev can read (hidden folders and .. are off limits).`);
             const fromFiles = (files, base) => files
@@ -3451,6 +3506,20 @@
                 if (images.length) return images.sort((a, b) => (b.modified - a.modified) || b.path.localeCompare(a.path));
             }
             return null;
+        }
+
+        async function screenshotsAtPath(folder) {
+            const listed = await imageFolderRequest({ op: "list", folder });
+            if (!listed?.ok) throw new Error(listed?.error || `couldn't open ${folder}`);
+            if (!listed.images.length) return null;
+            return listed.images.map(image => ({
+                path: image.name, modified: image.modified, key: `${listed.folder}|${image.name}|${image.size}|${image.modified}`,
+                load: async () => {
+                    const read = await imageFolderRequest({ op: "read", path: image.path });
+                    if (!read?.ok) throw new Error(read?.error || `couldn't read ${image.name}`);
+                    return dataUrlToJpeg(`data:${read.mimeType};base64,${read.data}`);
+                }
+            }));
         }
 
         async function desktopImage(path) {
@@ -3557,6 +3626,11 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             return { legs: [...legs.values()], total };
         }
 
+        function formatPropLegs(legs, total) {
+            return `Prop legs found in the screenshots: ${legs.length} different leg(s)${total > legs.length ? ` (${total - legs.length} repeat(s) on more than one screenshot counted once)` : ""}.\nPlayer | Stat | Line | Side | Sport | Game | Screenshots\n`
+                + legs.map(leg => [...leg.cells, "", ""].slice(0, 6).concat(leg.from.join(", ")).join(" | ")).join("\n");
+        }
+
         async function readScreenshotsTool({ folder = "", question = "", limit } = {}) {
             let found;
             try { found = await findScreenshots(String(folder || "")); } catch (err) { return `Couldn't read the screenshots: ${err.message}.`; }
@@ -3566,7 +3640,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (!found) {
                 return folder
                     ? `No images found in "${folder}". Tell the user to click 📸 next to the chat box and pick that folder (on a phone, pick the screenshots), then ask again.`
-                    : "No screenshots folder is picked. Tell the user to click 📸 next to the chat box and pick their screenshots folder (on a phone, pick the screenshots), then ask again. A folder inside their project works too: name it as folder.";
+                    : "No screenshots folder is picked. Ask the user for the folder's full path (like G:\\My Drive\\Screenshots) and call read_screenshots again with it as folder, or tell them to click 📸 next to the chat box and pick it (on a phone, pick the screenshots).";
             }
             const count = Math.max(1, Math.min(MAX_SCREENSHOTS, Number(limit) || MAX_SCREENSHOTS));
             const chosen = found.slice(0, count);
@@ -3605,8 +3679,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const otherNotes = notes.split("\n").filter(line => !line.includes("|") && !/^Prop legs found/i.test(line.trim())).join("\n").replace(/\n{3,}/g, "\n\n").trim();
             return [header,
                 failed.length ? `Couldn't open (say so to the user): ${failed.join("; ")}` : "",
-                `Prop legs found in the screenshots: ${legs.length} different leg(s)${total > legs.length ? ` (${total - legs.length} repeat(s) on more than one screenshot counted once)` : ""}.\nPlayer | Stat | Line | Side | Sport | Game | Screenshots\n`
-                    + legs.map(leg => [...leg.cells, "", ""].slice(0, 6).concat(leg.from.join(", ")).join(" | ")).join("\n"),
+                formatPropLegs(legs, total),
                 otherNotes ? `[Other notes from the screenshots]\n${otherNotes.slice(0, 6000)}` : "",
                 "To research these legs, call outlier_research_list once with every leg above (player, stat, line, side), the sport and the day; with legs from several sports, call it once per sport. Say which legs came out [unreadable]."
             ].filter(Boolean).join("\n\n");
@@ -3688,7 +3761,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
             // Scanned PDFs have no text layer; send the first pages as images instead.
             if (text.replace(/--- Page \d+ ---|\s/g, "").length < 10) {
-                const pagesToRender = Math.min(pdf.numPages, imageBudgetLeft(att.id));
+                const pagesToRender = Math.min(pdf.numPages, MAX_SCANNED_PDF_PAGES, imageBudgetLeft(att.id));
                 if (pagesToRender === 0) throw new Error(`it looks scanned (no text), and the ${MAX_IMAGES_PER_MESSAGE}-image limit for this message is already used`);
                 for (let pageNo = 1; pageNo <= pagesToRender; pageNo++) {
                     const page = await pdf.getPage(pageNo);
@@ -5096,7 +5169,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             // providers' tool models can't see images, so the vision model reads them first
             // and its notes go in as text (once per message, shared by every agent).
             if (images.length && options.tools) {
-                if (currentBackend === "anthropic") {
+                if (currentBackend === "anthropic" && images.length <= ANTHROPIC_DIRECT_IMAGES) {
                     const messages = [{ role: "system", content: fullSystemPrompt }, ...(options.history || []), { role: "user", content: [
                         ...images.map(url => ({ type: "image_url", image_url: { url } })), { type: "text", text: userMessage }] }];
                     try { return await runToolLoop(messages, options.tools); } catch (err) {
@@ -5110,7 +5183,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                             imageNotesCache.set(images, readImagesWithVision(images.map((url, n) => ({ name: `Attached image ${n + 1}`, url })), userMessage.slice(0, 600)));
                         }
                         const notes = await imageNotesCache.get(images);
-                        userMessage += `\n\n[Attached images, read by the vision model]\n${notes}`;
+                        const { legs, total } = collectPropLegs(notes);
+                        userMessage += `\n\n[Attached images, read by the vision model]\n${notes}` + (legs.length ? `\n\n${formatPropLegs(legs, total)}` : "");
                         images = [];
                     } catch (err) {
                         imageNotesCache.delete(images);
@@ -5137,6 +5211,12 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 return groqChat({ model: TEXT_MODEL, temperature: 0.0, messages });
             }
 
+            // More images than one vision request takes: answer from the vision model's notes.
+            if (images.length > VISION_BATCH && currentBackend !== "anthropic") {
+                const notes = await readImagesWithVision(images.map((url, n) => ({ name: `Attached image ${n + 1}`, url })), userMessage.slice(0, 600));
+                return groqChat({ model: TEXT_MODEL, temperature: 0.0, messages: [{ role: "system", content: fullSystemPrompt }, ...history,
+                    { role: "user", content: `${userMessage}\n\n[Attached images, read by the vision model]\n${notes}` }] });
+            }
             logConsoleActivity(`[Vision] Sending ${images.length} image(s) to ${{ groq: VISION_MODEL, openrouter: openRouterModel, anthropic: ANTHROPIC_MODEL }[currentBackend]}.`);
             return groqChat({
                 model: VISION_MODEL,

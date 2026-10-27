@@ -5,6 +5,7 @@ const { app, BrowserWindow, crashReporter, dialog, ipcMain, net, protocol, safeS
 const fs = require('fs');
 const path = require('path');
 const { createMcpTools } = require('./mcp-tools');
+const { handleImageFolder } = require('./image-folder');
 const { createNodeMcpHub } = require('./mcp-hub');
 const { createSandbox } = require('./sandbox');
 const { createBrowserService } = require('./browser');
@@ -133,6 +134,14 @@ app.whenReady().then(() => {
     const handleMcp = createMcpTools(getProjectDir);
     ipcMain.handle('codev:mcp', (_event, message) => handleMcp(message));
     ipcMain.handle('codev:mcp-folder', () => getProjectDir());
+    // Screenshots in a folder named by its full path (read_screenshots).
+    ipcMain.handle('codev:image-folder', async (event, req) => {
+        if (req?.op !== 'pick') return handleImageFolder(req);
+        const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+            title: 'Choose your screenshots folder', properties: ['openDirectory']
+        });
+        return result.canceled || !result.filePaths[0] ? { ok: false, canceled: true } : { ok: true, folder: result.filePaths[0] };
+    });
 
     // Sandboxed agents: tools that work in a staging copy of the project, commands in
     // per-agent Docker containers, and the review gate (the only path that writes

@@ -413,3 +413,68 @@ test('read_screenshots reads the whole 📸 folder, counts a leg on two screensh
     assert.match(again[1].messages.find(m => m.role === 'tool').content, /2 from earlier reads[\s\S]*LeBron James \| Points/);
     assert.deepEqual(errors, []);
 });
+
+test('📎 takes more than 3 screenshots: the vision model reads them 3 at a time and the agent gets every leg once', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const backend = createMockBackend({ workspace: makeWorkspace() });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const leg = 'Prop legs found in the screenshots:\nLeBron James | Points | 25.5 | Over | NBA |';
+    const { page, errors } = await openPage(launched.browser, url, { steps: [
+        `### Attached image 1\n${leg}\n### Attached image 2\n${leg}\n### Attached image 3\nJayson Tatum | Rebounds | 8.5 | Under | NBA |`,
+        `### Attached image 4\n${leg}\n### Attached image 5\nNikola Jokic | Assists | 9.5 | Over | NBA |`,
+        'Here is the slip.'
+    ] });
+    page.on('dialog', dialog => dialog.accept());
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    await page.setInputFiles('#attachmentInput', [1, 2, 3, 4, 5].map(n => ({ name: `IMG_28${n}.PNG`, mimeType: 'image/png', buffer: png })));
+    await page.waitForFunction(() => pendingAttachments.length === 5 && pendingAttachments.every(a => !a.processing));
+    await sendPrompt(page, 'Build me a slip from these Dabble props');
+    await waitForChat(page, /Here is the slip\./);
+    const calls = await page.evaluate(() => window.__modelCalls);
+    const imagesIn = call => (call.messages.at(-1).content.match(/data:image\/jpeg;base64/g) || []).length;
+    assert.deepEqual([imagesIn(calls[0]), imagesIn(calls[1])], [3, 2], 'two vision requests, 3 images at most each');
+    const asked = calls[2].messages.at(-1).content;
+    assert.match(asked, /3 different leg\(s\) \(2 repeat\(s\)/);
+    assert.match(asked, /Nikola Jokic \| Assists \| 9\.5 \| Over/);
+    assert.ok(calls[2].tools.length > 0, 'the agent still has its tools');
+    assert.deepEqual(errors, []);
+});
+
+test('a folder named by its full path is read without a picker or an upload, and remembered for next time', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { handleImageFolder } = require('../desktop/image-folder');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'New folder '));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    for (let n = 0; n < 5; n++) fs.writeFileSync(path.join(dir, `IMG_281${n}.PNG`), png);
+    const backend = createMockBackend({ workspace: makeWorkspace() });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const leg = n => `### IMG_281${n}.PNG\nProp legs found in the screenshots:\nLeBron James | Points | 25.5 | Over | NBA |`;
+    const { page, errors } = await openPage(launched.browser, url, { steps: [
+        [{ name: 'read_screenshots', arguments: { folder: dir } }],
+        [4, 3, 2].map(leg).join('\n'), [1, 0].map(leg).join('\n'),
+        'All five read.',
+        [{ name: 'read_screenshots', arguments: {} }],
+        'Read them again.'
+    ] });
+    page.on('dialog', dialog => dialog.accept());
+    await page.exposeFunction('__imageFolder', req => handleImageFolder(req));
+    await page.evaluate(() => { localStorage.removeItem(SCREENSHOT_NOTES_KEY); window.imageFolderRequest = req => window.__imageFolder(req); });
+    await sendPrompt(page, `Look in ${dir} and research the props`);
+    await waitForChat(page, /All five read\./);
+    let calls = await page.evaluate(() => window.__modelCalls);
+    const result = calls[3].messages.find(m => m.role === 'tool').content;
+    assert.match(result, /Read 5 screenshot/);
+    assert.match(result, /1 different leg\(s\) \(4 repeat\(s\)/);
+    assert.equal(await page.evaluate(() => localStorage.getItem(SCREENSHOT_PATH_KEY)), dir, 'the folder is remembered');
+
+    // Next time, "my screenshots" is enough, and nothing is read twice.
+    await sendPrompt(page, 'Read my screenshots again');
+    await waitForChat(page, /Read them again\./);
+    calls = await page.evaluate(() => window.__modelCalls);
+    assert.equal(calls.length, 6, 'no new vision requests');
+    assert.match(calls[5].messages.find(m => m.role === 'tool' && /5 from earlier reads/.test(m.content)).content, /LeBron James/);
+    assert.deepEqual(errors, []);
+});
