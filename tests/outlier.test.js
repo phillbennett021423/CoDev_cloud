@@ -1268,3 +1268,42 @@ test('a 429 from the page\'s error reports or analytics is not Outlier slowing C
     assert.equal(thirdParty('http://127.0.0.1:4000/api/card'), false);
     assert.equal(thirdParty('not a url'), false);
 });
+
+test('every small tab inside a card\'s sections is clicked and read, never a pick, alt lines or another stat', async t => {
+    const { readSubTabs } = require('../agents/outlier/navigate');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const page = await launched.browser.newPage();
+    await page.setContent(`<div role="dialog">
+        <h1>Julius Randle</h1>
+        <div><button>1Q PTS</button><button>PTS</button><button>PTS+AST</button></div>
+        <section><h2>Statistics</h2>
+          <div role="tablist"><button role="tab">H2H</button><button role="tab">L5</button><button role="tab" aria-selected="true">L10</button><button role="tab">2025</button></div>
+          <div><button>Average</button><button>Median</button></div>
+          <p id="win">Average 16.1 Median 14.5 (L10)</p></section>
+        <section><h2>Points vs BOS</h2><div><button>All</button><button>PG</button><button>PF</button></div><p id="pos">PF: Caleb Wilson 17 O 16.5</p></section>
+        <section><h2>Shot Chart</h2><div><button>All FGs</button><button>3PT</button></div><p id="shot">27% favorable</p></section>
+        <section><h2>Injuries</h2><div><button>BKN</button><button>BOS</button></div><p id="inj">BKN: Tyler Bilodeau Out</p></section>
+        <button id="over">Over 19.5 +115</button><button id="alt">ALT LINES</button>
+      </div>
+      <script>
+        window.clicks = [];
+        document.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+          clicks.push(b.innerText);
+          const t = b.innerText, sec = b.closest('section');
+          if (!sec) return;
+          const p = sec.querySelector('p');
+          if (/^(H2H|L5|L10|2025)$/.test(t)) p.textContent = 'Average ' + t.length + ' Median ' + t + ' window';
+          else if (/Average|Median/.test(t)) p.textContent = t + ' shown for the window';
+          else p.textContent = sec.querySelector('h2').textContent + ' ' + t + ' rows';
+        }));
+      </script>`);
+    const tabs = await readSubTabs(page, { settleMs: 10, known: await page.evaluate(() => document.body.innerText) });
+    const names = tabs.map(x => x.tab);
+    assert.ok(names.includes('Statistics > H2H') && names.includes('Statistics > 2025') && names.includes('Statistics > Median'), names.join(' | '));
+    assert.ok(names.includes('Points vs BOS > PG') && names.includes('Shot Chart > 3PT') && names.includes('Injuries > BOS'), names.join(' | '));
+    const clicks = await page.evaluate(() => window.clicks);
+    assert.ok(!clicks.some(c => /Over|ALT|1Q|PTS/.test(c)), clicks.join(' | '));
+    assert.equal(clicks[clicks.length - 1], 'L10', 'the window that was on is clicked again at the end');
+});

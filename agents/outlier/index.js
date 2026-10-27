@@ -18,7 +18,7 @@ const { spawn } = require('child_process');
 const { collectPage, parseCollected, parseText, propId } = require('./extract');
 const { createCapture } = require('./capture');
 const { projectLeg, regressionFlag, gameContext, simulateTicket } = require('./forecast');
-const { navigate, setFilters, sameName, onlyGame, openPlayer, readDetails, readCardTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, periodOf, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf, searchPlayer, clearSearch } = require('./navigate');
+const { navigate, setFilters, sameName, onlyGame, openPlayer, readDetails, readCardTabs, readSubTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, periodOf, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf, searchPlayer, clearSearch } = require('./navigate');
 const { OUTLIER_PRIMER, OUTLIER_GUIDE } = require('./guide');
 const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
@@ -924,7 +924,9 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     const fresh = c => Boolean(c) && Date.now() - c.at < CARD_TTL_MS && new Date(c.at).toDateString() === new Date().toDateString();
     // How many times Outlier may say 429 in one run before the cards stop (each one waited out).
     const MAX_429 = 6;
-    const CARD_DEADLINE_MS = 3 * 60 * 1000;
+    const CARD_DEADLINE_MS = 6 * 60 * 1000;
+    // The in-card tabs stop after this long on one card, so the card is kept (not cut by the deadline).
+    const SUB_TAB_BUDGET_MS = 4 * 60 * 1000;
     const cards = new Map(Object.entries(readJson(files.cards, {})).filter(([, c]) => fresh(c)));
     const saveCards = () => {
         try { writeJson(files.cards, Object.fromEntries([...cards].filter(([, c]) => fresh(c)))); } catch { /* kept in memory */ }
@@ -1034,7 +1036,8 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                         label = await openPlayer(page, leg.player, { settleMs, stat: leg.stat, line: leg.line });
                     }
                     step('reading the card');
-                    const text = await readDetails(page, { scrolls: 6, maxChars: 10000 });
+                    const cardStart = Date.now();
+                    const text = await readDetails(page, { scrolls: 6, maxChars: 16000 });
                     // A card that loaded while Outlier said 429 is empty: not kept.
                     const emptied = seen429 > 0;
                     // Everything the card offers: each of its tabs (Supporting Stats,
@@ -1052,7 +1055,13 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     if (!emptied && !seen429) step('alt lines');
                     const alt = emptied || seen429 ? null : await readAltLines(page, { line: leg.line, side: leg.side, settleMs: pace, known: text }).catch(() => null);
                     if (!emptied) step('every tab of the card');
-                    const tabs = emptied ? [] : await readCardTabs(page, { settleMs: pace, known: text, stop: () => seen429 > 0 });
+                    const cardTabs = emptied ? [] : await readCardTabs(page, { settleMs: pace, max: 10, known: text, stop: () => seen429 > 0 });
+                    // Then every small tab inside its sections (windows, Average/Median,
+                    // positions, shot types, defense vs position, both teams' injuries).
+                    if (!emptied && !seen429) step('every tab inside its sections');
+                    const subTabs = emptied || seen429 ? [] : await readSubTabs(page, { settleMs: pace, known: [text, ...cardTabs.map(t => t.text)].join('\n'),
+                        stop: () => seen429 > 0 || Date.now() - cardStart > SUB_TAB_BUDGET_MS }).catch(() => []);
+                    const tabs = [...cardTabs, ...subTabs];
                     const tabText = tabs.map(t => t.text).join('\n');
                     if (!emptied && !seen429) step('with/without injured teammates');
                     const without = emptied || seen429 ? [] : await readWithout(page, { player: leg.player, text: `${text}\n${tabText}`, settleMs: pace, known: `${text}\n${tabText}` }).catch(() => []);
@@ -1439,7 +1448,7 @@ function opportunityShift(leg, numbers) {
 
 // The rest of a card for the agent: minutes and opportunity, then everything the
 // card and each of its tabs showed.
-function cardBody(card, leg = {}, max = 3500) {
+function cardBody(card, leg = {}, max = 6000) {
     const flat = t => String(t || '').split('\n').map(l => l.trim()).filter(Boolean).join(' · ');
     const opp = opportunityLine(card.numbers);
     let body = '';
@@ -1767,7 +1776,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                         + (ticket ? `For the ${Math.min(sure.length, size)} verified leg(s) of that slip: ${ticket}\n` : '')
                         + (checks.length ? `Checks:\n${checks.map(c => `- ${c}`).join('\n')}\n` : '')
                         + `For reference only, CoDev's sportsbook audit (the -119 juice strategy for sportsbooks; a DFS leg doesn't need to pass it):\n${audit}\n`
-                        + 'Build the slip from the best legs above: hit rates high across several windows on the user\'s line, then everything on the card: minutes and opportunity (shot attempts, usage, potential assists, rebound chances, targets) steady or rising, the matchup rank, splits, injuries around him, line movement and public betting. Trust Outlier\'s rosters and teams over your own memory (players get traded); lines on a card like "@ MIN" are past games in the log. Lines move between apps and over the day: when Outlier\'s line differs from the user\'s, use the "Game log at your line" counts (or the alt lines row) instead of Outlier\'s rates for its own line. When a teammate is out, weigh the "Without" split. Projection and Regression lines are estimates from the card\'s own numbers: say so when you use them. After picking the legs, call outlier_simulate_ticket with them and give its "all hit" percentage as an estimate. Never state a number, pace or probability that these results don\'t show. A leg with no Outlier prop can\'t be checked: say so, don\'t guess. Always give the user the 4 best legs that Outlier did check (more if they asked for 4-6), ranked, with one reason per leg from Outlier\'s numbers and any weak spot; list the legs that couldn\'t be checked after them. Don\'t withhold the ticket because some legs couldn\'t be checked or a card was left unread: their board rows and hit rates count. Estimates, not guarantees.'
+                        + 'Build the slip from the best legs above: hit rates high across several windows on the user\'s line, then everything on the card: minutes and opportunity (shot attempts, usage, potential assists, rebound chances, targets) steady or rising, the matchup rank, splits, injuries around him, line movement and public betting. Trust Outlier\'s rosters and teams over your own memory (players get traded); lines on a card like "@ MIN" are past games in the log. Lines move between apps and over the day: when Outlier\'s line differs from the user\'s, use the "Game log at your line" counts (or the alt lines row) instead of Outlier\'s rates for its own line. When a teammate is out, weigh the "Without" split. Projection and Regression lines are estimates from the card\'s own numbers: say so when you use them. After picking the legs, call outlier_simulate_ticket with them and give its "all hit" percentage as an estimate. Never state a number, pace or probability that these results don\'t show. A leg with no Outlier prop can\'t be checked: say so, don\'t guess. Read each card section by section: the Statistics row (every window, average and median), Supporting Stats (minutes, fouls, shooting), the stat against this opponent by position (other players\' results against their lines), Insights (Outlier\'s trend line), the Shot Chart (the share of his points in zones where this defense is weak: high helps an Over; red zones are tough defense), the opponent\'s defense rank overall and against his position (1 = toughest, 30 = softest), the expected lineup and both teams\' injuries. For each leg you give, say in plain words what each of those showed and whether it helps or hurts the pick, so the user can follow why. Always give the user the 4 best legs that Outlier did check (more if they asked for 4-6), ranked, with one reason per leg from Outlier\'s numbers and any weak spot; list the legs that couldn\'t be checked after them. Don\'t withhold the ticket because some legs couldn\'t be checked or a card was left unread: their board rows and hit rates count. If the user set their own rules (a hit-rate floor such as 67%, this season only, a minimum number of games) and fewer than 4 legs pass them, still give a 4-leg slip: the legs that pass first, then the closest misses, each marked with the rule it misses and by how much. Early in a season this season has only a few games, so a this-season-only rule leaves few legs: say so. Never end without a slip when any leg was read. Estimates, not guarantees.'
                         + `\n\nThe legs, with what Outlier showed for each:\n${lines.join('\n')}`;
                     return { content: [{ type: 'text', text }] };
                 } catch (err) {
