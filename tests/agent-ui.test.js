@@ -209,6 +209,95 @@ test('chats survive a reload, and a run cut off by a crash comes back as a note 
     assert.match(joined, /No loaded text file named "notes\.txt"/);
 });
 
+test('a run cut off by a crash resumes from its last step, and agents and settings survive a reload', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const workspace = makeWorkspace();
+    const backend = createMockBackend({ workspace });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const { page } = await openPage(launched.browser, url);
+    await page.uncheck('#isSandboxCheckbox');
+    // The first round calls a tool; the second never answers, as if CoDev died mid-run.
+    await page.evaluate(() => {
+        let calls = 0;
+        window.groqChatMessage = async () => {
+            if (++calls === 1) return { role: 'assistant', content: '', tool_calls: [{ id: 'call_a', type: 'function', function: { name: 'read_workspace_file', arguments: JSON.stringify({ name: 'missing/notes.txt' }) } }] };
+            return new Promise(() => {});
+        };
+        agents[0].memory = 'Likes short answers.';
+        renderAgentList();
+        document.getElementById('isSelfHealCheckbox').checked = false;
+    });
+    await sendPrompt(page, 'Summarize missing/notes.txt');
+    await page.waitForFunction(() => Object.keys(localStorage).some(k => k.startsWith('codev_run_') && /No loaded text file/.test(localStorage.getItem(k))));
+    await page.evaluate(() => saveChatsNow());
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForSelector('.resume-btn');
+    const after = await page.evaluate(() => ({ memory: agents[0].memory, selfHeal: document.getElementById('isSelfHealCheckbox').checked }));
+    assert.equal(after.memory, 'Likes short answers.', 'agents come back with their memory');
+    assert.equal(after.selfHeal, false, 'the toggles come back as they were left');
+    await page.evaluate(() => {
+        document.getElementById('settingsModal').style.display = 'none';
+        window.__sent = [];
+        window.groqChatMessage = async body => {
+            window.__sent.push(body.messages.map(m => ({ role: m.role, content: String(m.content), tool_call_id: m.tool_call_id })));
+            return { role: 'assistant', content: 'Resumed and finished.' };
+        };
+    });
+    await page.uncheck('#isSandboxCheckbox');
+    await page.click('.resume-btn');
+    await waitForChat(page, /Resumed and finished\./);
+    const sent = (await page.evaluate(() => window.__sent))[0];
+    assert.match(sent[0].content, /\[MCP\]/, 'the notes are added again');
+    assert.equal(sent[0].content.match(/\[MCP\]/g).length, 1, 'only once');
+    assert.ok(sent.some(m => m.role === 'user' && /Summarize missing\/notes\.txt/.test(m.content)), 'the original prompt');
+    assert.ok(sent.some(m => m.role === 'tool' && m.tool_call_id === 'call_a' && /No loaded text file/.test(m.content)), 'the tool result from before the crash');
+    assert.match(sent[sent.length - 1].content, /\[CoDev restarted\]/);
+    const left = await page.evaluate(() => ({
+        checkpoints: Object.keys(localStorage).filter(k => k.startsWith('codev_run_')).length,
+        notes: chatSessions.find(s => s.id === activeChatId).messages.filter(m => /Interrupted/.test(m.sender)).length
+    }));
+    assert.deepEqual(left, { checkpoints: 0, notes: 0 }, 'the checkpoint and the note go once the run ends');
+});
+
+test('saying "continue" after a crash resumes the cut-off run, and a call left mid-way gets a result', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const workspace = makeWorkspace();
+    const backend = createMockBackend({ workspace });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const { page } = await openPage(launched.browser, url);
+    await page.evaluate(() => {
+        // As a crash leaves it: a run mid-way, its last call never answered.
+        localStorage.setItem('codev_run_r1', JSON.stringify({ agentId: 'agent_1', task: 'Check the props', kind: 'research', toolLog: ['📈 Researching → started'], messages: [
+            { role: 'system', content: 'BASE PROMPT' },
+            { role: 'user', content: 'Check the props' },
+            { role: 'assistant', content: '', tool_calls: [{ id: 'call_x', type: 'function', function: { name: 'outlier_research_list', arguments: '{}' } }] }
+        ] }));
+        const session = chatSessions.find(s => s.id === activeChatId);
+        session.messages.push({ sender: '🤖 Architect (Working...)', text: '📈 Researching', task: 'Check the props', runId: 'r1' });
+        saveChatsNow();
+    });
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForSelector('.resume-btn');
+    await page.evaluate(() => {
+        document.getElementById('settingsModal').style.display = 'none';
+        window.__sent = [];
+        window.groqChatMessage = async body => {
+            window.__sent.push(body.messages.map(m => ({ role: m.role, content: String(m.content), tool_call_id: m.tool_call_id })));
+            return { role: 'assistant', content: 'Picked the research back up.' };
+        };
+    });
+    await page.uncheck('#isSandboxCheckbox');
+    await sendPrompt(page, 'continue');
+    await waitForChat(page, /Picked the research back up\./);
+    const sent = (await page.evaluate(() => window.__sent))[0];
+    assert.match(sent[0].content, /^BASE PROMPT/);
+    const result = sent.find(m => m.role === 'tool' && m.tool_call_id === 'call_x');
+    assert.ok(result, 'the unanswered call gets a result');
+    assert.match(result.content, /closed before this call finished/);
+});
+
 test('in sandbox mode, MCP servers that write or run on this computer are kept out of the review bypass', async t => {
     if (launched.skip) return t.skip(launched.skip);
     const workspace = makeWorkspace();

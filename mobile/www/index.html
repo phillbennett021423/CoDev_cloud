@@ -293,6 +293,7 @@
         .chat-input-row #userInput { min-width: 0; flex: 1 1 260px; }
         .chat-input-row .send-btn { flex: 0 0 auto; white-space: nowrap; }
         .mic-btn { background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 12px 14px; border-radius: 8px; cursor: pointer; }
+        .resume-btn { background: var(--accent, #3b82f6); color: #fff; border: none; cursor: pointer; font-size: 0.85rem; font-weight: 600; padding: 5px 12px; border-radius: 6px; }
         .speak-btn { background: none; border: none; cursor: pointer; font-size: 0.9rem; padding: 4px 6px; border-radius: 4px; }
 
         .tool-btn { background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 12px 14px; border-radius: 8px; cursor: pointer; }
@@ -1105,13 +1106,57 @@
             picker.click();
         }
 
+        // The connected folder is kept in IndexedDB, so it opens again after a restart.
+        // The browser may want the user to allow it again first: then the next click on
+        // 📁 Connect Local Folder reopens that folder instead of asking for a new one.
+        let rememberedFolderHandle = null;
+
+        function projectFolderStore(op, value) {
+            return new Promise(resolve => {
+                try {
+                    const open = indexedDB.open("codev-workspace", 1);
+                    open.onupgradeneeded = () => open.result.createObjectStore("folder");
+                    open.onerror = () => resolve(null);
+                    open.onsuccess = () => {
+                        const store = open.result.transaction("folder", op === "get" ? "readonly" : "readwrite").objectStore("folder");
+                        const req = op === "get" ? store.get("current") : store.put(value, "current");
+                        req.onsuccess = () => resolve(req.result ?? null);
+                        req.onerror = () => resolve(null);
+                    };
+                } catch (err) { resolve(null); }
+            });
+        }
+
+        async function restoreProjectFolder() {
+            const handle = await projectFolderStore("get");
+            if (!handle || connectedDirectoryHandle || !handle.queryPermission) return;
+            let state = "prompt";
+            try { state = await handle.queryPermission({ mode: "readwrite" }); } catch (err) { /* ask on the next click */ }
+            if (state === "granted") {
+                connectedDirectoryHandle = handle;
+                await scanConnectedDirectory().catch(err => logConsoleActivity(`[Workspace] ${err.message}`));
+                logConsoleActivity(`[Workspace] Reopened your project folder: ${handle.name}.`);
+                return;
+            }
+            rememberedFolderHandle = handle;
+            const hint = document.getElementById("projectSourceHint");
+            if (hint) hint.innerText = `Last project folder: ${handle.name}. Click 📁 Connect Local Folder to open it again.`;
+            logConsoleActivity(`[Workspace] Remembered your project folder "${handle.name}": click 📁 Connect Local Folder to open it again.`);
+        }
+
         async function connectLocalFolder() {
             if (!window.showDirectoryPicker) {
                 pickProjectFiles();
                 return;
             }
             try {
-                connectedDirectoryHandle = await window.showDirectoryPicker();
+                // The folder from last time, if the user allows it again; otherwise the picker.
+                const again = rememberedFolderHandle;
+                rememberedFolderHandle = null;
+                let reopened = false;
+                if (again) { try { reopened = (await again.requestPermission({ mode: "readwrite" })) === "granted"; } catch (err) { /* pick a new one */ } }
+                connectedDirectoryHandle = reopened ? again : await window.showDirectoryPicker();
+                projectFolderStore("put", connectedDirectoryHandle);
                 logConsoleActivity(`Connected to local folder: ${connectedDirectoryHandle.name}`);
                 alert(`Successfully connected to folder: ${connectedDirectoryHandle.name}!`);
                 await scanConnectedDirectory();
@@ -1243,18 +1288,43 @@
             };
         }
 
-        // SAVED CHATS
+        // SAVED CHATS AND WORKSPACE
         // Chats are saved in this browser's storage as they change, so a crash or a
         // restart reopens them where they were. A run that was still going when CoDev
         // closed comes back as an "Interrupted" note with its task and the tool steps
         // it had done, which the next prompt sends along, so "continue" picks it up.
+        // The agents (names, roles, instructions, memory), the selected agent and the
+        // mode toggles are saved the same way (codev_workspace). In the Windows app this
+        // storage lives in its user data folder (%APPDATA%\CoDev Studio), which updates
+        // and reinstalls keep.
         const CHAT_STORE_KEY = "codev_chats";
+        const WORKSPACE_STORE_KEY = "codev_workspace";
         const MAX_SAVED_MESSAGES = 200;
         let chatSaveTimer = null;
+
+        function saveWorkspaceNow() {
+            try {
+                localStorage.setItem(WORKSPACE_STORE_KEY, JSON.stringify({
+                    agents, selectedAgentId,
+                    selfHeal: document.getElementById("isSelfHealCheckbox")?.checked,
+                    webSearch: webSearchEnabled
+                }));
+            } catch (err) { console.warn(`[Workspace] Couldn't save the agents: ${err.message}`); }
+        }
+
+        function loadSavedWorkspace() {
+            try {
+                const saved = JSON.parse(localStorage.getItem(WORKSPACE_STORE_KEY) || "null");
+                return saved && typeof saved === "object" ? saved : null;
+            } catch (err) { return null; }
+        }
 
         function saveChatsNow() {
             clearTimeout(chatSaveTimer);
             chatSaveTimer = null;
+            saveWorkspaceNow();
+            // The Windows app writes it to disk right away instead of within a few seconds.
+            setTimeout(() => window.codevDesktop?.flushStorage?.(), 0);
             const sessions = chatSessions.map(s => ({ ...s, messages: s.messages.slice(-MAX_SAVED_MESSAGES) }));
             const write = list => localStorage.setItem(CHAT_STORE_KEY, JSON.stringify({ activeChatId, sessions: list }));
             try {
@@ -1273,13 +1343,52 @@
             if (!chatSaveTimer) chatSaveTimer = setTimeout(saveChatsNow, 300);
         }
 
+        // RUN CHECKPOINTS
+        // A running agent saves its whole model conversation (prompt, its calls and every
+        // tool result) after each round, under codev_run_<id>. After a crash its note
+        // offers ▶ Resume, which starts the tool loop again from that conversation
+        // instead of from the beginning. The checkpoint goes once the run ends.
+        const RUN_STORE_PREFIX = "codev_run_";
+        const MAX_CHECKPOINT_TOOL_CHARS = 24000;
+
+        function runCheckpointKey(runId) { return RUN_STORE_PREFIX + runId; }
+
+        function saveRunCheckpoint(runId, data) {
+            // Pictures and Claude's raw blocks stay out: the text and the calls are enough to go on.
+            const shrink = limit => data.messages.map(m => {
+                const out = { role: m.role, content: m.content };
+                if (Array.isArray(m.content)) out.content = m.content.map(p => p.type === "image_url" ? { type: "text", text: "[An attached picture was here; it isn't kept after a restart.]" } : p);
+                if (m.tool_calls) out.tool_calls = m.tool_calls;
+                if (m.role === "tool") { out.tool_call_id = m.tool_call_id; out.name = m.name; out.content = String(m.content ?? "").slice(0, limit); }
+                return out;
+            });
+            for (const limit of [MAX_CHECKPOINT_TOOL_CHARS, 6000, 1500]) {
+                try {
+                    localStorage.setItem(runCheckpointKey(runId), JSON.stringify({ ...data, messages: shrink(limit), savedAt: Date.now() }));
+                    window.codevDesktop?.flushStorage?.();
+                    return true;
+                } catch (err) { /* storage full: try with shorter tool results */ }
+            }
+            return false;
+        }
+
+        function loadRunCheckpoint(runId) {
+            try { return JSON.parse(localStorage.getItem(runCheckpointKey(runId)) || "null"); } catch (err) { return null; }
+        }
+
+        function dropRunCheckpoint(runId) {
+            try { localStorage.removeItem(runCheckpointKey(runId)); } catch (err) { /* gone already */ }
+        }
+
         // A message that was still in progress when CoDev closed.
         function restoreUnfinishedMessage(msg) {
             const working = /^🤖 (.*) \(Working\.\.\.\)$/.exec(String(msg.sender || ""));
             if (!working) return msg;
             const name = working[1];
-            const text = `CoDev closed while ${name} was working${msg.task ? ` on: "${String(msg.task).slice(0, 500)}"` : ""}. The last step shown was: ${msg.text || "starting"}. Ask to continue and ${name} picks up from the steps below.`;
-            return { sender: `⚠️ Interrupted [${name}]`, text, ...(msg.toolLog?.length ? { toolLog: msg.toolLog.slice(-12) } : {}) };
+            const resumable = msg.runId && loadRunCheckpoint(msg.runId);
+            const text = `CoDev closed while ${name} was working${msg.task ? ` on: "${String(msg.task).slice(0, 500)}"` : ""}. The last step shown was: ${msg.text || "starting"}. `
+                + (resumable ? `Press ▶ Resume (or say "continue") and ${name} carries on from exactly where it stopped.` : `Ask to continue and ${name} picks up from the steps below.`);
+            return { sender: `⚠️ Interrupted [${name}]`, text, ...(resumable ? { runId: msg.runId } : {}), ...(msg.toolLog?.length ? { toolLog: msg.toolLog.slice(-12) } : {}) };
         }
 
         function loadSavedChats() {
@@ -1292,6 +1401,11 @@
                 messages: s.messages.filter(m => m && !/^🔎/.test(String(m.sender || ""))).map(restoreUnfinishedMessage)
             }));
             if (!sessions.length) return null;
+            // Checkpoints no note points at any more (a run that ended, a deleted chat) go.
+            const kept = new Set(sessions.flatMap(s => s.messages.map(m => m.runId).filter(Boolean)));
+            try {
+                Object.keys(localStorage).filter(k => k.startsWith(RUN_STORE_PREFIX) && !kept.has(k.slice(RUN_STORE_PREFIX.length))).forEach(k => localStorage.removeItem(k));
+            } catch (err) { /* storage unavailable */ }
             return { sessions, activeChatId: sessions.some(s => s.id === saved.activeChatId) ? saved.activeChatId : sessions[0].id };
         }
 
@@ -1321,7 +1435,9 @@
             };
         }
 
-        let agents = [
+        const savedWorkspace = loadSavedWorkspace();
+        const savedAgents = (savedWorkspace?.agents || []).filter(a => a && a.id && a.name).map(a => createAgentDefaults({ ...a, sharedWith: Array.isArray(a.sharedWith) ? a.sharedWith : [] }));
+        let agents = savedAgents.length ? savedAgents : [
             createAgentDefaults({ id: "agent_1", name: "Architect", devRole: "architect", role: "Lead Agent" }),
             createAgentDefaults({ id: "agent_3", name: "Swarm", devRole: "swarm", role: "Implementation Agent",
                 instructions: `${NEUTRAL_AGENT_INSTRUCTIONS} Pick up whatever the agents before you left open.` }),
@@ -1329,7 +1445,7 @@
                 instructions: `${NEUTRAL_AGENT_INSTRUCTIONS} Check the other agents' work for errors and unverified claims.` })
         ];
 
-        let selectedAgentId = "agent_1";
+        let selectedAgentId = agents.some(a => a.id === savedWorkspace?.selectedAgentId) ? savedWorkspace.selectedAgentId : agents[0].id;
 
         // Smart Sidebar Toggle Logic with Dynamic Grid & Reopen Tabs
         let isMenuCollapsed = false;
@@ -1684,7 +1800,9 @@
                 let formattedText = escapeHtml(msg.text).replace(/```([a-z]*)\n([\s\S]*?)```/g, '<pre><code class="$1">$2</code></pre>');
                 
                 let speakButtonHtml = "";
-                if (!msg.sender.includes("You")) {
+                if (msg.runId && /^⚠️ Interrupted/.test(msg.sender)) {
+                    speakButtonHtml = `<button class="resume-btn" onclick="resumeInterruptedRun('${escapeHtml(session.id)}', '${escapeHtml(msg.runId)}')" title="Carry on from where it stopped">▶ Resume</button>`;
+                } else if (!msg.sender.includes("You")) {
                     // Look the text up by index on click; inlining it broke on newlines and quotes.
                     speakButtonHtml = `<button class="speak-btn" onclick="speakMessage(${index})" title="Listen to response">🔊</button>`;
                 }
@@ -3154,6 +3272,9 @@
 
         // Runs the model ↔ tool loop until the model answers in plain text.
         async function runToolLoop(messages, ctx) {
+            // The prompt before the notes below, which a resumed run adds again fresh.
+            const baseSystem = messages[0]?.role === "system" ? messages[0].content : null;
+            const checkpoint = () => { if (ctx.checkpoint) ctx.checkpoint(baseSystem === null ? messages : [{ ...messages[0], content: baseSystem }, ...messages.slice(1)]); };
             const tools = await buildLocalTools(ctx);
             const toolDefs = tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
             // Tell the model what "MCP" means here, so a request like "use MCP to..." lands on these tools.
@@ -3186,6 +3307,7 @@
                 const calls = message.tool_calls || [];
                 if (!calls.length) return message.content || "";
                 messages.push({ role: "assistant", content: message.content || "", tool_calls: calls, anthropic_content: message.anthropic_content });
+                checkpoint();
                 // The agent's plan, written with its calls, stays on screen above each step.
                 if (message.content && message.content.trim()) ctx.plan = message.content.trim().slice(0, 700);
                 for (const call of calls) {
@@ -3224,6 +3346,7 @@
                     // A researched list of legs is one line each: let a long list through whole.
                     const limit = /^(outlier_research_list|read_screenshots)$/.test(call.function?.name) ? MAX_TOOL_RESULT_CHARS * 6 : MAX_TOOL_RESULT_CHARS;
                     messages.push({ role: "tool", tool_call_id: call.id, name: call.function?.name || "unknown", content: String(result).slice(0, limit) });
+                    checkpoint();
                 }
             }
             // Out of rounds: ask for the answer with what was gathered.
@@ -4895,6 +5018,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         }
 
         function renderAgentList() {
+            scheduleChatSave();
             const list = document.getElementById("agentList");
             list.innerHTML = "";
             agents.forEach(agent => {
@@ -4937,6 +5061,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         function toggleAgentGroup(id, isChecked) {
             const agent = agents.find(a => a.id === id);
             if (agent) agent.selectedForGroup = isChecked;
+            scheduleChatSave();
         }
 
         function updateActiveAgentIndicator() {
@@ -4991,6 +5116,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             } else {
                 agent.sharedWith = agent.sharedWith.filter(id => id !== targetId);
             }
+            scheduleChatSave();
             logConsoleActivity(`Updated cross-agent memory channel for ${agent.name} -> Target: ${targetId}`);
         }
 
@@ -5208,6 +5334,27 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             return turns;
         }
 
+        // Calls that were still running when CoDev closed get a result saying so, since every
+        // call needs one; the model then calls again what it still needs. Outlier keeps the
+        // board and the cards it read lately, so a repeated research call starts from those.
+        function completeInterruptedCalls(saved) {
+            const messages = saved.map(m => ({ ...m }));
+            const answered = new Set(messages.filter(m => m.role === "tool").map(m => m.tool_call_id));
+            const out = [];
+            for (let i = 0; i < messages.length; i++) {
+                out.push(messages[i]);
+                const calls = messages[i].role === "assistant" ? messages[i].tool_calls || [] : [];
+                // Results follow their call; a missing one goes right after the call's other results.
+                let at = i + 1;
+                while (at < messages.length && messages[at].role === "tool") out.push(messages[at++]);
+                calls.filter(c => !answered.has(c.id)).forEach(c => out.push({ role: "tool", tool_call_id: c.id, name: c.function?.name || "unknown",
+                    content: "CoDev closed before this call finished, so it has no result. Call it again if you still need it." }));
+                i = at - 1;
+            }
+            out.push({ role: "user", content: "[CoDev restarted] CoDev closed in the middle of this task and has just reopened. Carry on from exactly where you stopped: don't redo the steps that have results above, and finish the task." });
+            return out;
+        }
+
         async function callAI(systemPrompt, userMessage, options = {}) {
             if (!activeProviderKey()) {
                 throw new Error(`No ${BACKEND_NAMES[currentBackend]} API key saved yet. Open ⚙️ Settings, pick a provider and paste its key (Anthropic keys start with sk-ant-).`);
@@ -5227,6 +5374,16 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 6. CITATIONS: When a statement relies on a web snippet, cite it inline as [n] using that snippet's number. Never cite a source that was not provided. Workspace files are cited by file name.
 7. TOOLS: When tools are available, use them on your own initiative. Call web_search before answering about any API, library, engine feature, syntax, version or error message you are not certain about, and for any code implementation that is unfamiliar. When the task is about the user's code or files, call list_workspace_files and read_workspace_file (or list_files and read_file) to check their real code instead of assuming; for questions, research, props or anything else that isn't about their files, don't list, search or read the project folder. When the user asks you to change, create, run or test code and file or command tools (write_workspace_file, write_file, edit_file, run_command, run_approved_command) are available, do it with those tools directly instead of only showing code, then verify by reading the file back or running it. Never claim you searched, read, ran or verified something unless a tool result in this conversation shows it.`;
             
+            // A resumed run: the conversation it had saved, from where it stopped.
+            if (options.resumeMessages) {
+                const messages = completeInterruptedCalls(options.resumeMessages);
+                try { return await runToolLoop(messages, options.tools); } catch (err) {
+                    if (!/tool|function/i.test(err.message)) throw err;
+                    logConsoleActivity(`[Tool] Tool loop failed (${err.message}); answering without tools.`);
+                    return groqChat({ model: TEXT_MODEL, temperature: 0.0, messages });
+                }
+            }
+
             const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}`;
             let images = options.images || [];
             // Attached images and tools together: Claude takes both at once; the other
@@ -5836,15 +5993,20 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // One agent's turn. The workspace is indexed again for every agent, since the
         // agent before it may have changed files.
         async function runAgentStep(session, agent, task, opts) {
-            const { extraContext = "", aiOptions = {}, webSources = [], memory = "", notes = "", title, dispatch, kind = "code" } = opts;
-            appendMessageToSession(session, `🤖 ${agent.name} (Working...)`, dispatch ? "🧪 Starting a sandbox…" : kind === "code" ? "📁 Indexing the workspace…" : "Working on it…");
+            const { extraContext = "", aiOptions = {}, webSources = [], memory = "", notes = "", title, dispatch, kind = "code", resume = null } = opts;
+            appendMessageToSession(session, `🤖 ${agent.name} (Working...)`, resume ? "▶ Resuming where it stopped…" : dispatch ? "🧪 Starting a sandbox…" : kind === "code" ? "📁 Indexing the workspace…" : "Working on it…");
             const placeholder = session.messages[session.messages.length - 1];
             placeholder.task = task;
+            const runId = resume?.runId || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+            placeholder.runId = runId;
             setAgentState(agent.id, "thinking");
             const tools = createToolContext(session, placeholder, agent, webSources);
+            if (resume?.toolLog) tools.toolLog.push(...resume.toolLog);
             // The same list as the run's, so a crash mid-run still leaves what was done.
             placeholder.toolLog = tools.toolLog;
+            tools.checkpoint = messages => saveRunCheckpoint(runId, { agentId: agent.id, sessionId: session.id, task, kind, title: title ? title(agent) : null, toolLog: tools.toolLog.slice(-MAX_HISTORY_TOOL_STEPS), messages });
             const finish = (sender, text, sources) => {
+                dropRunCheckpoint(runId);
                 const at = session.messages.indexOf(placeholder);
                 if (at >= 0) session.messages.splice(at, 1);
                 appendMessageToSession(session, sender, text, null, sources);
@@ -5855,6 +6017,13 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 // Sandbox mode: this agent's container on the task's shared staging copy.
                 // If it can't start, the agent doesn't run, rather than writing to disk unreviewed.
                 if (dispatch) tools.sandbox = await openAgentSandbox(dispatch, agent);
+                if (resume) {
+                    placeholder.text = "▶ Resuming where it stopped…";
+                    const response = await callAI("", task, { tools, resumeMessages: resume.messages });
+                    finish(resume.title || (title ? title(agent) : `🤖 ${agent.name}`), response, tools.sources);
+                    setAgentState(agent.id, "success");
+                    return { ok: true, agent, response, changes: tools.changes, commands: tools.commands };
+                }
                 const ws = await getWorkspace(tools.sandbox).catch(err => {
                     logConsoleActivity(`[Workspace] ${err.message}`);
                     return null;
@@ -5899,6 +6068,32 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             return runAgentStep(session, healer, `Audit the code in these replies to "${task}" for syntax errors, API mismatches and claims the sources don't support. Reply with the corrected code, or say it is clean. Don't change project files for this.`, { ...opts, kind: "code", notes: reports, title: a => `🛡️ ${a.name} (code audit)` });
         }
 
+        // ▶ Resume on an interrupted run's note (or "continue" typed after one): that agent
+        // carries on from its last checkpoint, in the chat it was in.
+        async function resumeInterruptedRun(sessionId, runId) {
+            const session = chatSessions.find(s => s.id === sessionId);
+            const note = session && session.messages.find(m => m.runId === runId && /^⚠️ Interrupted/.test(m.sender));
+            const saved = loadRunCheckpoint(runId);
+            if (!note) return false;
+            if (!saved || !Array.isArray(saved.messages) || !saved.messages.length) {
+                delete note.runId;
+                note.text += "\n\nIts saved progress is gone, so it can't resume. Ask again and it starts over.";
+                renderChatList();
+                return false;
+            }
+            const agent = agents.find(a => a.id === saved.agentId) || agents.find(a => a.id === selectedAgentId) || agents[0];
+            if (!agent) return false;
+            session.messages.splice(session.messages.indexOf(note), 1);
+            renderChatList();
+            logConsoleActivity(`[Resume] ${agent.name} carries on from its last step (${saved.messages.length} saved message(s)).`);
+            const dispatch = sandboxModeActive() ? CodevAgentClient.createSandboxDispatch(agentInfra.client, { task: saved.task }) : null;
+            await runAgentStep(session, agent, saved.task || "", { kind: saved.kind || "code", dispatch, resume: { ...saved, runId } });
+            await finishSandboxDispatch(session, dispatch);
+            return true;
+        }
+
+        const RESUME_REQUEST = /^\s*(continue|resume|keep going|carry on|pick (it )?(back )?up|go on)\b[\s.!]*$/i;
+
         async function sendChatMessage() {
             let inputField = document.getElementById("userInput");
             let userText = inputField.value.trim();
@@ -5929,6 +6124,16 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (attachments.length) logConsoleActivity(`Sending ${attachments.length} attachment(s) with ${aiOptions.images.length} image(s).`);
 
             const session = chatSessions.find(s => s.id === activeChatId);
+            // "continue" right after a run a crash cut off resumes that run itself.
+            const cutOff = session && !attachments.length && RESUME_REQUEST.test(userText)
+                && [...session.messages].reverse().find(m => m.runId && /^⚠️ Interrupted/.test(m.sender));
+            if (cutOff) {
+                appendMessageToActiveSession("👤 You", userText);
+                inputField.value = "";
+                clearAttachments();
+                await resumeInterruptedRun(session.id, cutOff.runId);
+                return;
+            }
             // Earlier turns of this chat, taken before this message joins it.
             aiOptions.history = chatHistoryForModel(session);
             const lastAsked = [...aiOptions.history].reverse().find(m => m.role === "user");
@@ -6038,6 +6243,12 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             updateMobileTabs();
             initAgentInfra();
             restoreScreenshotFolder();
+            restoreProjectFolder();
+            // Mode toggles as they were left; changing one saves it.
+            if (typeof savedWorkspace?.selfHeal === "boolean") document.getElementById("isSelfHealCheckbox").checked = savedWorkspace.selfHeal;
+            if (savedWorkspace?.webSearch && !webSearchEnabled) toggleWebSearch();
+            document.getElementById("isSelfHealCheckbox").addEventListener("change", scheduleChatSave);
+            document.getElementById("webSearchBtn").addEventListener("click", scheduleChatSave);
             // The live view is there wherever agents have a browser (Windows app, npm start).
             setupLiveInput();
             fetchBrowserMcpTools().then(tools => {
