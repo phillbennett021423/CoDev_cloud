@@ -758,7 +758,7 @@ test('a list of legs for tomorrow is researched in one visit: each player\'s car
     const text = reply.content[0].text;
     assert.match(text, /^Outlier > Props > NBA > Tomorrow > 7:00 PM WAS vs CHA\nFound 3 of 4 legs on Outlier\./);
     assert.match(text, /1\. Bilal Coulibaly Over 3\.5 Rebounds\n {3}Outlier 4\.5 Rebounds \(over -119\): no hit rates shown \(for Outlier's 4\.5 \(the line moved; your 3\.5 is 1 easier\)\)\n {3}Card: Hit L5 90%, L10 70% \| Matchup: CHA rank vs SF: 28th \| Injuries: Mark Williams OUT \| Usage: Minutes 31\.2/, 'his rebounds card, not his points one');
-    assert.match(text, /Best on Outlier's hit rates.*\n1\. Bilal Coulibaly Over 3\.5 Rebounds: 80%\n2\. LaMelo Ball Higher 16\.5 Points: 55%/, 'legs are ranked, on the card\'s hit rates when the board row shows none');
+    assert.match(text, /Best on Outlier's hit rates.*\n1\. Bilal Coulibaly Over 3\.5 Rebounds: 80% \([^)]*\)\n2\. LaMelo Ball Higher 16\.5 Points: 55% \([^)]*\)/, 'legs are ranked, on the card\'s hit rates when the board row shows none');
     assert.match(text, /For reference only, CoDev's sportsbook audit/);
     assert.match(text, /2\. LaMelo Ball Higher 16\.5 Points\n {3}Outlier 16\.5 Points \(over -119\): no hit rates shown \(on your line\)\n {3}Card: Hit L5 40%/);
     assert.match(text, /3\. Michael Jordan Over 30\.5 Points: no Points prop at this part of the game for him on Outlier for this game \(read the whole board; Outlier lists no props for him\)\. Can't be checked on Outlier\./);
@@ -998,7 +998,7 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     const first = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
     assert.equal(first.isError, undefined, first.content[0].text);
     assert.match(first.content[0].text, /1\. Jayson Tatum Over 20\.5 Points\n {3}Outlier 20\.5 Points \(over -119\): L5 80% · L10 70% on your line\n {3}Card: Hit L5 60%, L10 70%, H2H 50% \| Usage: Minutes 34\.0/);
-    assert.match(first.content[0].text, /Best on Outlier's hit rates.*\n1\. Jayson Tatum Over 20\.5 Points: 75%\n2\. Jaylen Brown Over 21\.5 Points: 70%/);
+    assert.match(first.content[0].text, /Best on Outlier's hit rates.*\n1\. Jayson Tatum Over 20\.5 Points: 75% \([^)]*\)\n2\. Jaylen Brown Over 21\.5 Points: 70% \([^)]*\)/);
     assert.equal(hits.board, 1, 'the board was loaded once for all three legs');
     assert.equal(hits.card, 3);
 
@@ -1022,6 +1022,9 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     assert.match(slowed.content[0].text, /1\. Josh Hart Over 23\.5 Points\n {3}Outlier 23\.5 Points \(over -119\): L5 50% · L10 70% on your line\n {3}\(card not read: Outlier said too many requests\)/, 'the board row still gives every leg its hit rates');
     assert.doesNotMatch(slowed.content[0].text, /Too many requests/, 'an empty card is not passed on as research');
     assert.ok(hits.card <= 3 + 3, 'no more than one card per strike before stopping');
+    // Cut short, the run still ends with a slip, its unread legs marked unverified.
+    assert.match(slowed.content[0].text, /Slip from what was read \(\d+ leg\(s\) verified on their card; the run was cut short[^\n]*\n1\) /);
+    assert.match(slowed.content[0].text, /\(board only, card not read: unverified\)/);
 
     // One 429, then Outlier answers again: CoDev waits it out and reads the next cards
     // light (no tabs), saying so; asked again later, those are read whole.
@@ -1108,7 +1111,7 @@ test('each card is read whole: every tab on it, minutes and opportunity by windo
     assert.match(text, /Without Al Horford: Without Al Horford: L10 90% \(9 games\)/);
     // Forward-looking lines from the card's own numbers, labelled as estimates.
     assert.match(text, /Projection \(estimate\): [\d.]+ = [\d.]+ per minute \(median of his last 10 games\) x 30\.1 minutes \(the card's L5 minutes\); [+-][\d.]+ against your 20\.5/);
-    assert.match(text, /For the top 2 above: Ticket simulation \(estimate, 10,000 runs from each leg's own games at the user's line\): all 2 hit in [\d.]+% of runs; 44\.4% if the legs were unrelated\. Leg chances: Jaylen Brown 66\.7% \(7 of 10 games\), Jayson Tatum 66\.7% \(7 of 10 games\)\. No shared game dates/);
+    assert.match(text, /For the 2 verified leg\(s\) of that slip: Ticket simulation \(estimate, 10,000 runs from each leg's own games at the user's line\): all 2 hit in [\d.]+% of runs; 44\.4% if the legs were unrelated\. Leg chances: Jaylen Brown 66\.7% \(7 of 10 games\), Jayson Tatum 66\.7% \(7 of 10 games\)\. No shared game dates/);
     const sim = await service.callTool('outlier_simulate_ticket', { legs: [legs[0], legs[1]] });
     assert.equal(sim.isError, undefined, sim.content[0].text);
     assert.match(sim.content[0].text, /all 2 hit in [\d.]+% of runs; 44\.4% if the legs were unrelated/);
@@ -1117,7 +1120,7 @@ test('each card is read whole: every tab on it, minutes and opportunity by windo
     assert.match(text, /Tab Game Log: @ MIA 31 pts · vs PHI 18 pts/);
     assert.match(text, /Tab Odds Movement: Opened 20\.5, now 21\.5/);
     // Tatum's 74% drops 8 points for his falling minutes and shots: Brown's steady 70% leads.
-    assert.match(text, /Best on Outlier's hit rates.*\n2\. Jaylen Brown Over 21\.5 Points: 70%\n1\. Jayson Tatum Over 20\.5 Points: 66%/);
+    assert.match(text, /Best on Outlier's hit rates.*\n2\. Jaylen Brown Over 21\.5 Points: 70% \(card read\)\n1\. Jayson Tatum Over 20\.5 Points: 66% \(card read\)/);
     assert.deepEqual(hits, { nav: 0, picked: 0 }, 'only the card\'s own tabs were clicked: no header tab, no pick');
 });
 
