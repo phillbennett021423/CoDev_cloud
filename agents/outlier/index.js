@@ -948,7 +948,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         const results = new Map();
         let limited = 0;
         let seen429 = 0;
-        const on429 = response => { if (response.status() === 429) seen429++; };
+        const on429 = response => { if (response.status() === 429 && !thirdParty(response.url())) seen429++; };
         page.on('response', on429);
         const host = (() => { try { return new URL(page.url()).hostname; } catch { return ''; } })();
         try {
@@ -1374,6 +1374,13 @@ function legLine(leg, match) {
 // user's side, a little lower when the rates are for a harder line.
 // When each sport's regular season starts (month, day) and how many days count as its
 // early season, when L10/L20 and last season still lean on last year's games.
+// Error reports and analytics the page sends elsewhere (Sentry, Mixpanel...): a 429
+// from them says nothing about Outlier's own limit, so it does not slow CoDev down.
+const THIRD_PARTY = /(^|\.)(sentry\.io|sentry-cdn\.com|mixpanel\.com|google-analytics\.com|googletagmanager\.com|doubleclick\.net|segment\.io|segment\.com|intercom\.io|hotjar\.com|amplitude\.com|datadoghq\.com|launchdarkly\.com|facebook\.com|facebook\.net)$/i;
+function thirdParty(url) {
+    try { return THIRD_PARTY.test(new URL(url).hostname); } catch { return false; }
+}
+
 const SEASONS = { nba: [10, 21, 21], wnba: [5, 16, 14], nhl: [10, 7, 21], nfl: [9, 4, 28], ncaaf: [8, 29, 28], cfb: [8, 29, 28],
     ncaab: [11, 3, 21], cbb: [11, 3, 21], mlb: [3, 26, 21] };
 function seasonStage(sport, now = new Date()) {
@@ -1826,4 +1833,4 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
     };
 }
 
-module.exports = { seasonStage, rateWeights, createService, createOutlierPipeline, runPython, sameLeg, propId, OUTLIER_PRIMER, OUTLIER_GUIDE, matchLeg };
+module.exports = { thirdParty, seasonStage, rateWeights, createService, createOutlierPipeline, runPython, sameLeg, propId, OUTLIER_PRIMER, OUTLIER_GUIDE, matchLeg };

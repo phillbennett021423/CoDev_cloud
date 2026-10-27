@@ -10,7 +10,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { parseText, parseTable, parseResult, parseCollected, collectPage } = require('../agents/outlier/extract');
-const { createOutlierPipeline, sameLeg } = require('../agents/outlier');
+const { createOutlierPipeline, sameLeg, thirdParty } = require('../agents/outlier');
 const { launchBrowser } = require('./helpers/page-driver');
 
 const BOARD = fs.readFileSync(path.join(__dirname, 'fixtures', 'outlier-board.html'), 'utf8');
@@ -1256,4 +1256,13 @@ test('forecasts come only from the card\'s numbers: projection, regression, game
     assert.equal(f.regressionFlag({ games: a.games, numbers: {} }, { side: 'Over' }, () => 0), null, 'no volume numbers: no flag');
     assert.deepEqual(f.gameContext('WAS @ CHA\nO/U 231.5 · CHA -3.5'), { total: 231.5, spread: 'CHA -3.5' });
     assert.equal(f.gameContext('FGA +2 · Total 18'), null, 'not a spread or a game total');
+});
+
+test('a 429 from the page\'s error reports or analytics is not Outlier slowing CoDev down', () => {
+    assert.equal(thirdParty('https://o1398585.ingest.sentry.io/api/6725321/envelope/?sentry_key=x'), true);
+    assert.equal(thirdParty('https://api-js.mixpanel.com/flags/?x=1'), true);
+    assert.equal(thirdParty('https://app.outlier.bet/NBA/props?filters=x'), false);
+    assert.equal(thirdParty('https://sportsdata-prod-bucket.s3.amazonaws.com/logo.png'), false);
+    assert.equal(thirdParty('http://127.0.0.1:4000/api/card'), false);
+    assert.equal(thirdParty('not a url'), false);
 });
