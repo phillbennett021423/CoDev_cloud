@@ -998,19 +998,19 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     const first = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
     assert.equal(first.isError, undefined, first.content[0].text);
     assert.match(first.content[0].text, /1\. Jayson Tatum Over 20\.5 Points\n {3}Outlier 20\.5 Points \(over -119\): L5 80% · L10 70% on your line\n {3}Card: Hit L5 60%, L10 70%, H2H 50% \| Usage: Minutes 34\.0/);
-    assert.match(first.content[0].text, /Best on Outlier's hit rates.*\n1\. Jayson Tatum Over 20\.5 Points: 75% \([^)]*\)\n2\. Jaylen Brown Over 21\.5 Points: 70% \([^)]*\)/);
+    assert.match(first.content[0].text, /Best on Outlier's hit rates.*\n1\. Jayson Tatum Over 20\.5 Points: 7[56]% \([^)]*\)\n2\. Jaylen Brown Over 21\.5 Points: 70% \([^)]*\)/);
     assert.equal(hits.board, 1, 'the board was loaded once for all three legs');
     assert.equal(hits.card, 3);
 
     // Asked again: the cards read a minute ago are reused, nothing new is fetched.
     const again = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
-    assert.match(again.content[0].text, /Minutes 34\.0 \(read earlier\)/);
+    assert.match(again.content[0].text, /Minutes 34\.0 \(read earlier today at [^;]+; the line and odds above are from this run\)/);
     assert.equal(hits.card, 3);
     assert.equal(hits.board, 1, 'every leg read a minute ago: Outlier isn\'t opened again');
     // After a crash or restart (a new pipeline on the same folder), the cards are still there.
     const restarted = createService({}, { pipeline: createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] }) });
     const resumed = await restarted.callTool('outlier_research_list', { sport: 'NBA', legs });
-    assert.match(resumed.content[0].text, /Minutes 34\.0 \(read earlier\)/);
+    assert.match(resumed.content[0].text, /Minutes 34\.0 \(read earlier today at [^;]+; the line and odds above are from this run\)/);
     assert.equal(hits.card, 3, 'no card opened again after the restart');
 
     // Outlier says 429 to every card: CoDev backs off, then stops opening cards.
@@ -1164,6 +1164,17 @@ test('a player named differently by the DFS app and Outlier still matches: initi
     assert.ok(!sameName('A Brown', 'J Brown'));
     const { parseText } = require('../agents/outlier/extract');
     assert.deepEqual(parseText('A.J. Brown\nReceiving Yards\nOver 62.5\nFanDuel EVEN').odds, [{ book: 'fanduel', price: 100 }]);
+});
+
+test('early in a season this season counts more than last season, per sport', () => {
+    const { seasonStage, rateWeights } = require('../agents/outlier');
+    assert.deepEqual(seasonStage('NBA', new Date(2026, 9, 27)), { sport: 'NBA', day: 7, early: true });
+    assert.equal(seasonStage('NFL', new Date(2026, 9, 27)).early, false, 'Week 8 of the NFL is not early');
+    assert.equal(seasonStage('NFL', new Date(2026, 8, 20)).early, true);
+    assert.equal(seasonStage('NBA', new Date(2026, 2, 1)).early, false, 'March is late in the season that started last October');
+    assert.equal(seasonStage('Tennis'), null);
+    assert.ok(rateWeights({ early: true }).season > rateWeights({ early: true }).last);
+    assert.equal(rateWeights(null).l10, 1);
 });
 
 test('a leg matches its full-game stat, not a quarter, combo or far-off alt line, and a moved line still matches', () => {

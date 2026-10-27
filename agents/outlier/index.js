@@ -904,20 +904,24 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // instead of opening Outlier again.
     // Kept on disk too: after a crash or restart, asking again picks up the cards
     // already read instead of opening every one again.
-    const CARD_TTL_MS = 30 * 60 * 1000;
+    // A card's game log, minutes, usage and matchup only change after games, so a card
+    // read today is reused all day (up to 18 hours, never past midnight); lines and
+    // odds still come fresh from each run's board read.
+    const CARD_TTL_MS = 18 * 60 * 60 * 1000;
+    const fresh = c => Boolean(c) && Date.now() - c.at < CARD_TTL_MS && new Date(c.at).toDateString() === new Date().toDateString();
     // How many times Outlier may say 429 in one run before the cards stop (each one waited out).
     const MAX_429 = 6;
     const CARD_DEADLINE_MS = 3 * 60 * 1000;
-    const cards = new Map(Object.entries(readJson(files.cards, {})).filter(([, c]) => c && Date.now() - c.at < CARD_TTL_MS));
+    const cards = new Map(Object.entries(readJson(files.cards, {})).filter(([, c]) => fresh(c)));
     const saveCards = () => {
-        try { writeJson(files.cards, Object.fromEntries([...cards].filter(([, c]) => Date.now() - c.at < CARD_TTL_MS))); } catch { /* kept in memory */ }
+        try { writeJson(files.cards, Object.fromEntries([...cards].filter(([, c]) => fresh(c)))); } catch { /* kept in memory */ }
     };
     // A 1st-quarter leg's card is another than the full game's.
     const cardKey = leg => `${normWords(leg.player)}|${periodOf(leg.stat) ? `${periodOf(leg.stat)} ` : ''}${statWords(leg.stat)[0] || ''}`;
     // The cards read lately for these legs, counted at each leg's own line (null when unread).
     const cardsFor = legs => legs.map(leg => {
         const c = cards.get(cardKey(leg));
-        return c && Date.now() - c.at < CARD_TTL_MS ? { ...c, atLine: hitsAtLine(c.games, leg.line, leg.side) } : null;
+        return fresh(c) ? { ...c, atLine: hitsAtLine(c.games, leg.line, leg.side) } : null;
     });
 
     // The legs' player cards on the game's board page, which is open: the legs the
@@ -956,7 +960,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             let last = 0;
             for (const { leg, i, own, shown } of order) {
                 const cached = cards.get(cardKey(leg));
-                if (cached && Date.now() - cached.at < CARD_TTL_MS) { results.set(i, { ...cached, atLine: hitsAtLine(cached.games, leg.line, leg.side), cached: true }); continue; }
+                if (fresh(cached)) { results.set(i, { ...cached, atLine: hitsAtLine(cached.games, leg.line, leg.side), cached: true }); continue; }
                 if (opened >= maxCards) break;
                 if (limited >= MAX_429) break;
                 // Pace the cards, and wait out a 429 before the next one.
@@ -1353,11 +1357,34 @@ function legLine(leg, match) {
 
 // How good a leg looks on Outlier's numbers: the mean of its hit rates on the
 // user's side, a little lower when the rates are for a harder line.
-function legScore(match) {
+// When each sport's regular season starts (month, day) and how many days count as its
+// early season, when L10/L20 and last season still lean on last year's games.
+const SEASONS = { nba: [10, 21, 21], wnba: [5, 16, 14], nhl: [10, 7, 21], nfl: [9, 4, 28], ncaaf: [8, 29, 28], cfb: [8, 29, 28],
+    ncaab: [11, 3, 21], cbb: [11, 3, 21], mlb: [3, 26, 21] };
+function seasonStage(sport, now = new Date()) {
+    const key = String(sport || '').toLowerCase().replace(/[^a-z]/g, '');
+    const season = SEASONS[key];
+    if (!season) return null;
+    const [month, day, early] = season;
+    let start = new Date(now.getFullYear(), month - 1, day);
+    if (start > now) start = new Date(now.getFullYear() - 1, month - 1, day);
+    const days = Math.floor((now - start) / 86400000);
+    return { sport: key.toUpperCase(), day: days + 1, early: days < early };
+}
+// How much each hit-rate window counts. Early in a season this season counts more and
+// last season (and the long windows that reach into it) less; after that, every recent
+// window counts the same and last season half.
+function rateWeights(stage) {
+    return stage && stage.early
+        ? { l5: 1, l10: 0.75, l15: 0.6, l20: 0.5, h2h: 0.75, season: 1.5, last: 0.25 }
+        : { l5: 1, l10: 1, l15: 1, l20: 1, h2h: 0.75, season: 1, last: 0.5 };
+}
+function legScore(match, weights = rateWeights(null)) {
     if (!match) return null;
-    const vals = RATE_ORDER.map(k => match.rates[k]).filter(v => v != null);
-    if (!vals.length) return null;
-    const mean = vals.reduce((a, v) => a + v, 0) / vals.length;
+    const keys = RATE_ORDER.filter(k => match.rates[k] != null);
+    if (!keys.length) return null;
+    const total = keys.reduce((a, k) => a + (weights[k] ?? 1), 0);
+    const mean = keys.reduce((a, k) => a + match.rates[k] * (weights[k] ?? 1), 0) / total;
     return match.sameLine ? mean : match.easier ? mean + 0.02 : mean - 0.05 * match.gap;
 }
 
@@ -1669,7 +1696,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                         if (!board && (!card || (card.error && !card.summary))) return missing;
                         if (!card) return `${head}\n   ${board}`;
                         if (card.error) return `${head}${board ? `\n   ${board}` : ''}\n   (card not read: ${card.error})`;
-                        return `${head}${/another stat/.test(card.opened) ? ` (no prop for this stat at this part of the game on Outlier${card.searched ? ' after searching his name' : ''}${his ? `; Outlier lists for him: ${his}` : ''}; his card for another stat was read)` : ''}\n   ${board ? `${board}\n   ` : ''}Card: ${card.summary}${card.cached ? ' (read earlier)' : ''}`
+                        return `${head}${/another stat/.test(card.opened) ? ` (no prop for this stat at this part of the game on Outlier${card.searched ? ' after searching his name' : ''}${his ? `; Outlier lists for him: ${his}` : ''}; his card for another stat was read)` : ''}\n   ${board ? `${board}\n   ` : ''}Card: ${card.summary}${card.cached ? ` (read earlier${card.at ? ` today at ${new Date(card.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}` : ''}; the line and odds above are from this run)` : ''}`
                             + cardBody(card, l);
                     });
                     const read = { steps };
@@ -1680,13 +1707,16 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                         const vals = card && card.summary ? [...card.summary.matchAll(/\b(?:L\d+|H2H|Season|20\d\d)\D{0,3}(\d{1,3})%/gi)].map(m => Number(m[1]) / 100) : [];
                         return vals.length && !/another stat/.test(card.opened || '') ? vals.reduce((a, v) => a + v, 0) / vals.length : null;
                     };
+                    // This season against last season, by how far into the sport's season today is.
+                    const stage = seasonStage(args.sport);
+                    const weights = rateWeights(stage);
                     // Then a little lower when his minutes or chances are falling, higher when rising.
                     const ranked = legs.map((l, i) => {
                         const card = research.results.get(i);
                         // The game log counted at the user's own line beats Outlier's rates for a moved line.
                         const own = card && card.atLine && card.atLine.all[1] >= 5 && !/another stat/.test(card.opened || '')
                             ? [card.atLine.l5, card.atLine.l10, card.atLine.all].filter(([, n]) => n).map(([h, n]) => h / n) : null;
-                        const base = own && (!matches[i] || !matches[i].sameLine) ? own.reduce((a, v) => a + v, 0) / own.length : legScore(matches[i]) ?? cardScore(i);
+                        const base = own && (!matches[i] || !matches[i].sameLine) ? own.reduce((a, v) => a + v, 0) / own.length : legScore(matches[i], weights) ?? cardScore(i);
                         return { l, i, score: base == null ? null : base + opportunityShift(l, card && card.numbers) };
                     }).filter(x => x.score != null).sort((x, y) => y.score - x.score);
                     // Verified: his card for this stat was read, with at least 5 games at the user's line.
@@ -1706,7 +1736,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     const checks = legChecks(legs);
                     const did = didText(boardRead, research, legs.length);
                     const text = `Outlier > ${read.steps.join(' > ')}\nFound ${found} of ${legs.length} legs on Outlier. Hit rates are Outlier's, turned to the user's side.\n${did}\n${lines.join('\n')}\n${notes.map(n => `${n}\n`).join('')}`
-                        + (best.length ? `Best on Outlier's hit rates (average of L5, L10, L20, H2H, seasons on the user's side, counted from the game log at the user's line when Outlier's line moved, then moved a little for minutes and opportunity trends):\n${best.join('\n')}\n` : '')
+                        + (best.length ? `Best on Outlier's hit rates (${stage && stage.early ? `${stage.sport} is ${stage.day} days into its season, so this season counts 1.5x and last season 0.25x; ` : ''}weighted average of L5, L10, L20, H2H, seasons on the user's side, counted from the game log at the user's line when Outlier's line moved, then moved a little for minutes and opportunity trends):\n${best.join('\n')}\n` : '')
                         + slip
                         + (ticket ? `For the ${Math.min(sure.length, size)} verified leg(s) of that slip: ${ticket}\n` : '')
                         + (checks.length ? `Checks:\n${checks.map(c => `- ${c}`).join('\n')}\n` : '')
@@ -1780,4 +1810,4 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
     };
 }
 
-module.exports = { createService, createOutlierPipeline, runPython, sameLeg, propId, OUTLIER_PRIMER, OUTLIER_GUIDE, matchLeg };
+module.exports = { seasonStage, rateWeights, createService, createOutlierPipeline, runPython, sameLeg, propId, OUTLIER_PRIMER, OUTLIER_GUIDE, matchLeg };
