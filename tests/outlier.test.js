@@ -905,9 +905,10 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     </script></body>`;
     const hits = { board: 0, card: 0 };
     let limit = false;
+    let once = 0;
     const server = http.createServer((req, res) => {
         const at = req.url.split('?')[0];
-        if (at === '/api/card') { hits.card++; res.writeHead(limit ? 429 : 200); return res.end('{}'); }
+        if (at === '/api/card') { hits.card++; res.writeHead(limit || once-- > 0 ? 429 : 200); return res.end('{}'); }
         hits.board++;
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(page);
@@ -950,6 +951,15 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     assert.match(slowed.content[0].text, /1\. Josh Hart Over 23\.5 Points\n {3}Outlier 23\.5 Points \(over -119\): L5 50% · L10 70% on your line\n {3}\(card not read: Outlier said too many requests\)/, 'the board row still gives every leg its hit rates');
     assert.doesNotMatch(slowed.content[0].text, /Too many requests/, 'an empty card is not passed on as research');
     assert.ok(hits.card <= 3 + 3, 'no more than one card per strike before stopping');
+
+    // One 429, then Outlier answers again: CoDev waits it out and reads the next cards
+    // light (no tabs), saying so; asked again later, those are read whole.
+    limit = false;
+    once = 1;
+    const light = await service.callTool('outlier_research_list', { sport: 'NBA', legs: more });
+    assert.match(light.content[0].text, /\(Read light: Outlier asked CoDev to slow down/);
+    const whole = await service.callTool('outlier_research_list', { sport: 'NBA', legs: more });
+    assert.doesNotMatch(whole.content[0].text, /Read light/, 'read whole once Outlier stopped limiting');
 });
 
 test('each card is read whole: every tab on it, minutes and opportunity by window, and falling minutes move a leg down', async t => {
