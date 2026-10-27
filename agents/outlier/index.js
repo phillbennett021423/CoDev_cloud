@@ -18,7 +18,7 @@ const { spawn } = require('child_process');
 const { collectPage, parseCollected, parseText, propId } = require('./extract');
 const { createCapture } = require('./capture');
 const { projectLeg, regressionFlag, gameContext, simulateTicket } = require('./forecast');
-const { navigate, setFilters, sameName, onlyGame, openPlayer, readDetails, readCardTabs, readSubTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, periodOf, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf, searchPlayer, clearSearch } = require('./navigate');
+const { navigate, setFilters, sameName, onlyGame, openPlayer, readDetails, readCardTabs, readSubTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, periodOf, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf, searchPlayer, clearSearch, markSearchBox } = require('./navigate');
 const { OUTLIER_PRIMER, OUTLIER_GUIDE } = require('./guide');
 const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
@@ -268,6 +268,22 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             || Boolean(collected && collected.passwordField);
     }
 
+    // The Outlier page open in CoDev's shown tab (the user's page), or null.
+    // The user's rule: CoDev never reloads, re-navigates or re-filters that page.
+    function shownOutlier() {
+        if (!shared) return null;
+        const session = shared.manager.peek(SESSION);
+        const page = session && session.page;
+        if (!page || (page.isClosed && page.isClosed())) return null;
+        try { const u = new URL(page.url()); return /(^|\.)outlier\.bet$/i.test(u.hostname) ? u : null; } catch { return null; }
+    }
+    // The user's own Outlier props board in the shown tab (filters, game, search as
+    // they left them): runs read it as it is, without the user having to say so.
+    function userBoard() {
+        const u = shownOutlier();
+        return u && /\/props\b/i.test(u.pathname) ? u.href : null;
+    }
+
     // Visits each configured page with the saved profile and collects its text.
     // The shared "@outlier" browser when there is one (left open for the live view),
     // else a browser of its own that closes after. While the user is browsing it,
@@ -279,6 +295,14 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         if (here && shared && !cfg.showBrowser) {
             const session = await shared.manager.get(SESSION);
             return { page: session.page, shared: true, here: true, done: async () => {} };
+        }
+        // The shown tab is on Outlier (the user's page): any other visit (a player,
+        // a section, another board) goes in a tab of its own, so their page and its
+        // filters are never reloaded or clicked.
+        if (shared && !cfg.showBrowser && shownOutlier()) {
+            const session = shared.manager.peek(SESSION);
+            const page = await session.page.context().newPage();
+            return { page, shared: true, done: async () => { await page.close().catch(() => {}); } };
         }
         if (shared && !cfg.showBrowser) {
             const page = await shared.manager.workPage(SESSION);
@@ -370,7 +394,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 collected.screens = 1;
                 // A list's board is read to its end (thousands of rows), or until every leg is found.
                 for (let i = 0; i < (target.scrolls || cfg.scrolls); i++) {
-                    if (target.until && i % 5 === 4 && target.until(collected)) break;
+                    if (target.until && i % 5 === 4 && await target.until(collected, page)) break;
                     const moved = await page.evaluate(scrollStep);
                     await settleAfterScroll(page);
                     const texts = addRead(await page.evaluate(collectPage, cfg.selectors || null));
@@ -1095,7 +1119,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // Every leg on a list ({ player, stat, line, side }) in one visit: the game's
     // board is reached once, read and audited for just these legs, and the players'
     // cards are opened on that same page.
-    async function researchList({ url = null, sport, game, day, legs = [], maxCards = 12, here = false } = {}) {
+    async function researchList({ url = null, sport, game, day, legs = [], maxCards = 12, here = false, setFilters: wantFilters = false } = {}) {
         const nav = { ...Object.fromEntries(Object.entries({ sport, game, day }).filter(([, v]) => v)), player: legs[0] && legs[0].player };
         // Asked again after a crash or a restart: the board read a few minutes ago and
         // the cards already read are used as they are, and Outlier isn't opened again
@@ -1108,23 +1132,34 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             return { steps: ['Props', 'saved read from a few minutes ago'], research: { results: new Map(fresh.map((c, i) => [i, { ...c, cached: true }])), limited: false, skipped: 0 } };
         }
         let research = null;
+        // The user's own (filtered) page is read to its end. A full board isn't: after
+        // BOARD_SCREENS screens CoDev stops scrolling and finds each leg still missing
+        // by typing the player's name in Outlier's search box (one search per player),
+        // instead of scrolling through thousands of props.
+        const BOARD_SCREENS = 25;
         // The board is read to its end or until every leg is found, checking only the
         // rows read since the last check (a full re-parse each time froze the app).
         const found = new Set();
         const done = { cards: 0, tables: 0, configured: 0 };
-        const until = collected => {
+        let searchable = null;
+        const until = async (collected, page) => {
             const slice = { ...collected };
             for (const f of Object.keys(done)) { slice[f] = (collected[f] || []).slice(done[f]); done[f] = (collected[f] || []).length; }
             const props = parseCollected([{ kind: 'props', url: '', collected: slice }]).props;
             legs.forEach((l, i) => { if (!found.has(i) && matchLeg(l, props)) found.add(i); });
-            return found.size === legs.length;
+            if (found.size === legs.length) return true;
+            // A whole board (not the user's filtered page): past BOARD_SCREENS, stop when
+            // Outlier's search box is there; the legs still missing are searched by name.
+            if (here || !page || (collected.screens || 0) < BOARD_SCREENS) return false;
+            if (searchable === null) searchable = Boolean(await page.evaluate(markSearchBox).catch(() => null));
+            return searchable;
         };
         const progress = ({ screens, rows }) => {
             state.progress = `Reading the ${sport || ''} board: screen ${screens}, ${rows.toLocaleString('en-US')} rows, ${found.size} of ${legs.length} legs seen`.replace('the  board', 'the board');
         };
         let boardRead = null;
         const run = await scrape({
-            pages: [{ kind: 'props', url: url || boardStart(sport), nav, here, filters: { altLines: true, widenOdds: true }, scrolls: 400, until, progress }], keep: legs,
+            pages: [{ kind: 'props', url: url || boardStart(sport), nav, here, filters: wantFilters ? { altLines: true, widenOdds: true } : null, scrolls: 400, until, progress }], keep: legs,
             onPage: async (page, { collected }) => {
                 boardRead = { screens: collected.screens || 1, rows: collected.cards.length + collected.tables.length + collected.configured.length, seconds: Math.round((collected.readMs || 0) / 1000), legsSeen: found.size };
                 const boardProps = parseCollected([{ kind: 'props', url: page.url(), collected }]).props;
@@ -1327,7 +1362,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     }
 
     watchImports();
-    return { signIn, scrape, research, researchList, readSection, boardStart, cardsFor, readOpenPage, setCapture, capture, importBoard, importFile, dumpBoard, watchImports, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
+    return { userBoard, signIn, scrape, research, researchList, readSection, boardStart, cardsFor, readOpenPage, setCapture, capture, importBoard, importFile, dumpBoard, watchImports, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
         state: snapshotState, progress: progressState, status, close, files, settleFromResults };
 }
 
@@ -1582,7 +1617,8 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                 market: { type: 'string', description: 'A stat filter to click, e.g. "Points", "Rebounds" (optional).' },
                 day: { type: 'string', description: '"today", "tomorrow" or a weekday, when the game isn\'t today (optional).' },
                 url: { type: 'string', description: 'An app.outlier.bet page to start from instead of the configured one (optional).' },
-                kind: { type: 'string', enum: ['props', 'odds'], description: 'What that page shows (default props).' }
+                kind: { type: 'string', enum: ['props', 'odds'], description: 'What that page shows (default props).' },
+                here: { type: 'boolean', description: 'When the shown tab is an Outlier props page with the user\'s filters set, CoDev reads it as it is (no reload, no clicks) on its own. Pass false only when the user asks for a fresh board.' }
             }, additionalProperties: false }
         }, {
             name: 'outlier_research',
@@ -1611,7 +1647,8 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                 game: { type: 'string', description: 'The game by teams and/or start time, e.g. "Wizards vs Hornets", "7pm". Only when the user named one: leave it out for a list that may span games, and the sport\'s whole board is read.' },
                 day: { type: 'string', description: '"today", "tomorrow" or a weekday, when the games aren\'t today (optional).' },
                 url: { type: 'string', description: 'An app.outlier.bet page to start from (optional).' },
-                here: { type: 'boolean', description: 'true when the user set Outlier up by hand in CoDev\'s browser (filters, game, search) and wants it read as it is: no reload, no tab or filter clicks. Use it when the user says they set the page or the filters themselves.' }
+                here: { type: 'boolean', description: 'Read the user\'s own Outlier page as they set it (filters, game, search): no reload, no tab or filter clicks. CoDev already does this on its own when the shown tab is an Outlier props page with filters set; pass true when the user says they set the page up, false only when the user asks for a fresh board.' },
+                set_filters: { type: 'boolean', description: 'Only when the user asks CoDev to set Outlier\'s filters itself: turns on alternative lines, widens the odds range and ticks the game, in a tab of CoDev\'s own. Off by default: the user\'s filters are never changed.' }
             }, required: ['legs'], additionalProperties: false }
         }, {
             name: 'outlier_simulate_ticket',
@@ -1671,6 +1708,10 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                         const start = pages ? pages[0] : { kind: 'props', url: outlier.boardStart ? outlier.boardStart(args.sport) : 'https://app.outlier.bet/' };
                         pages = [{ ...start, nav }];
                     }
+                    // The user filtered Outlier themselves: their page, as it is, unless they
+                    // gave another address or said not to (here: false).
+                    const mine = !args.url && args.here !== false && outlier.userBoard && outlier.userBoard();
+                    if (mine) pages = [{ kind: 'props', url: mine, here: true }];
                     const run = await outlier.scrape({ pages });
                     const where = run && run.navigated && run.navigated.length ? `Outlier > ${run.navigated.join(' > ')}\n` : '';
                     return { content: [{ type: 'text', text: where + auditText(outlier.state().result) }] };
@@ -1709,7 +1750,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     const nav = Object.fromEntries(Object.entries({ sport: args.sport, game: args.game, day }).filter(([, v]) => v && String(v).trim()).map(([k, v]) => [k, String(v).trim()]));
                     // One visit: the board read and audited for just these legs, then
                     // the players' cards on that same page.
-                    const { steps, research, board: boardRead } = await outlier.researchList({ url, ...nav, legs, here: args.here === true });
+                    const { steps, research, board: boardRead } = await outlier.researchList({ url, ...nav, legs, here: args.here === true || (args.here !== false && !url && Boolean(outlier.userBoard && outlier.userBoard())), setFilters: args.set_filters === true });
                     const result = outlier.state().result;
                     const audit = auditText(result);
                     let props = [];
