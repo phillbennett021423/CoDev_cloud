@@ -338,6 +338,8 @@ function parseText(raw, page = {}, { requireOdds = true } = {}) {
     // Prices: a line naming a book is that book's; "consensus"/"market" is the consensus.
     for (const l of lines) {
         const prices = [...l.matchAll(PRICE_RE)].map(m => toPrice(m[1])).filter(v => v !== null);
+        // "EVEN" (or "EV" next to a book) is +100.
+        if (!prices.length && /(^|[\s(|/])even($|[\s)|/])/i.test(l)) prices.push(100);
         if (!prices.length) continue;
         const book = findBook(l);
         if (book === 'consensus' || /\b(consensus|market|avg|average|fair)\b/i.test(l)) prop.consensus = prices[0];

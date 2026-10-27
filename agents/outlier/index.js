@@ -18,7 +18,7 @@ const { spawn } = require('child_process');
 const { collectPage, parseCollected, parseText, propId } = require('./extract');
 const { createCapture } = require('./capture');
 const { projectLeg, regressionFlag, gameContext, simulateTicket } = require('./forecast');
-const { navigate, setFilters, onlyGame, openPlayer, readDetails, readCardTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, periodOf, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf, searchPlayer, clearSearch } = require('./navigate');
+const { navigate, setFilters, sameName, onlyGame, openPlayer, readDetails, readCardTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, periodOf, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf, searchPlayer, clearSearch } = require('./navigate');
 const { OUTLIER_PRIMER, OUTLIER_GUIDE } = require('./guide');
 const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
@@ -990,7 +990,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     else {
                         const read = await page.evaluate(collectPage, config().selectors || null).catch(() => null);
                         const name = normWords(leg.player);
-                        found = read ? parseCollected([{ kind: 'props', url: page.url(), collected: read }]).props.filter(p => normWords(p.player) === name) : [];
+                        found = read ? parseCollected([{ kind: 'props', url: page.url(), collected: read }]).props.filter(p => sameName(p.player, name)) : [];
                     }
                 }
                 // Not on the board and nothing when searched: nothing to open.
@@ -1321,7 +1321,7 @@ const RATE_ORDER = ['l5', 'l10', 'l15', 'l20', 'h2h', 'season', 'last'];
 function matchLeg(leg, props = []) {
     const name = normWords(leg.player);
     const words = statWords(leg.stat);
-    const his = props.filter(p => normWords(p.player) === name && Number.isFinite(Number(p.line))
+    const his = props.filter(p => sameName(p.player, name) && Number.isFinite(Number(p.line))
         && (!words.length || sameMarket(p.market, leg.stat)));
     if (!his.length) return null;
     const mine = Number(leg.line);
@@ -1427,7 +1427,7 @@ function withDeadline(promise, ms, what) {
 // The props Outlier lists for the leg's player (market and line), at most 12.
 function hisProps(leg, props) {
     const name = normWords(leg.player);
-    const seen = [...new Set(props.filter(p => normWords(p.player) === name && p.market).map(p => `${p.market}${Number.isFinite(Number(p.line)) ? ` ${p.line}` : ''}`))];
+    const seen = [...new Set(props.filter(p => sameName(p.player, name) && p.market).map(p => `${p.market}${Number.isFinite(Number(p.line)) ? ` ${p.line}` : ''}`))];
     return seen.length ? seen.slice(0, 12).join(', ') + (seen.length > 12 ? ` and ${seen.length - 12} more` : '') : '';
 }
 
