@@ -1,7 +1,7 @@
 // CoDev Studio desktop app: the same page as the Android app (mobile/www),
 // in its own window. The page talks to Groq directly; the main process only
 // does what a page can't, like fetching DuckDuckGo results without CORS.
-const { app, BrowserWindow, crashReporter, dialog, ipcMain, net, protocol, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, crashReporter, dialog, ipcMain, net, protocol, safeStorage, session, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { createMcpTools } = require('./mcp-tools');
@@ -134,6 +134,14 @@ app.whenReady().then(() => {
     const handleMcp = createMcpTools(getProjectDir);
     ipcMain.handle('codev:mcp', (_event, message) => handleMcp(message));
     ipcMain.handle('codev:mcp-folder', () => getProjectDir());
+    // Chromium writes the page's storage to disk only every few seconds, so a crash
+    // could lose the last chat messages and run checkpoint. The page asks for a write
+    // after each save; at most one a second.
+    let flushTimer = null;
+    ipcMain.on('codev:flush-storage', () => {
+        if (flushTimer) return;
+        flushTimer = setTimeout(() => { flushTimer = null; session.defaultSession.flushStorageData(); }, 1000);
+    });
     // Screenshots in a folder named by its full path (read_screenshots).
     ipcMain.handle('codev:image-folder', async (event, req) => {
         if (req?.op !== 'pick') return handleImageFolder(req);

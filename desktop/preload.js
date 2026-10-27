@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('codevDesktop', {
         get: ({ url, headers }) => ipcRenderer.invoke('codev:http-get', { url, headers })
     },
     azureTts: ({ region, key, ssml }) => ipcRenderer.invoke('codev:azure-tts', { region, key, ssml }),
+    // Writes the page's saved chats and run checkpoints to disk now, so a crash right after loses nothing.
+    flushStorage: () => ipcRenderer.send('codev:flush-storage'),
     // Gives keyboard focus back to the page after a native alert or confirm.
     refocus: () => ipcRenderer.send('codev:refocus'),
     // Built-in MCP tools for the chosen project folder.
