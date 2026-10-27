@@ -361,7 +361,7 @@ test('each request is sorted first: only code and file tasks carry the project, 
     assert.deepEqual(errors, []);
 });
 
-test('read_screenshots reads the 📸 folder with the vision model and hands prop legs to the Outlier research', async t => {
+test('read_screenshots reads the whole 📸 folder, counts a leg on two screenshots once, remembers what it read and hands the legs to the Outlier research', async t => {
     if (launched.skip) return t.skip(launched.skip);
     const backend = createMockBackend({ workspace: makeWorkspace(), agentTools: {
         outlier_research_list: (box, args) => `Researched ${args.legs.length} legs.`
@@ -369,31 +369,47 @@ test('read_screenshots reads the 📸 folder with the vision model and hands pro
     const url = await backend.listen();
     t.after(() => backend.close());
     const legs = 'Prop legs found in the screenshots:\nLeBron James | Points | 25.5 | Over | NBA | vs BOS 7:30 PM';
+    const research = [{ name: 'outlier_research_list', arguments: { sport: 'NBA', legs: [{ player: 'LeBron James', stat: 'Points', line: 25.5, side: 'over' }] } }];
     const { page, errors } = await openPage(launched.browser, url, { steps: [
         [{ name: 'read_screenshots', arguments: { question: 'research these' } }],
-        `### slip.png\n${legs}`,
-        [{ name: 'outlier_research_list', arguments: { sport: 'NBA', legs: [{ player: 'LeBron James', stat: 'Points', line: 25.5, side: 'over' }] } }],
-        'LeBron Over 25.5 points checks out.'
+        `### IMG_2811.PNG\n${legs}\nJayson Tatum | Rebounds | 8.5 | Under | NBA |\n\n### IMG_2810.PNG\n${legs}\nEntry $10, pays 3x`,
+        research,
+        'LeBron Over 25.5 points checks out.',
+        [{ name: 'read_screenshots', arguments: {} }],
+        'Same legs as before.'
     ] });
     page.on('dialog', dialog => dialog.accept());
     // No screenshots picked yet: the tool says how to pick them.
     assert.match(await page.evaluate(() => readScreenshotsTool({})), /click 📸/);
     await page.evaluate(async () => {
+        localStorage.removeItem(SCREENSHOT_NOTES_KEY);
         const canvas = document.createElement('canvas');
         canvas.width = 40; canvas.height = 80;
         const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-        screenshotFolder = { name: 'Dabble', files: [{ path: 'slip.png', file: new File([blob], 'slip.png', { type: 'image/png', lastModified: 2 }) },
-            { path: 'notes.txt', file: new File(['x'], 'notes.txt') }].filter(f => isScreenshotName(f.path)) };
+        const file = (name, modified) => ({ path: name, file: new File([blob], name, { type: 'image/png', lastModified: modified }) });
+        screenshotFolder = { name: 'New folder', files: [file('IMG_2810.PNG', 1), file('IMG_2811.PNG', 2), { path: 'notes.txt', file: new File(['x'], 'notes.txt') }].filter(f => isScreenshotName(f.path)) };
     });
     await sendPrompt(page, 'Look at my Dabble screenshots and research them');
     await waitForChat(page, /checks out/);
-    const calls = await page.evaluate(() => window.__modelCalls);
+    let calls = await page.evaluate(() => window.__modelCalls);
     const vision = calls[1];
     assert.match(vision.system, /Prop legs found in the screenshots/);
-    assert.match(vision.messages[0].content, /image_url[\s\S]*data:image\/jpeg;base64/, 'the screenshot went to the vision model');
+    assert.equal((vision.messages[0].content.match(/data:image\/jpeg;base64/g) || []).length, 2, 'both screenshots went to the vision model in one batch');
     const toolResult = calls[2].messages.find(m => m.role === 'tool').content;
-    assert.match(toolResult, /LeBron James \| Points \| 25\.5 \| Over/);
+    assert.match(toolResult, /2 different leg\(s\) \(1 repeat\(s\)/);
+    assert.match(toolResult, /LeBron James \| Points \| 25\.5 \| Over \| NBA \| vs BOS 7:30 PM \| IMG_2811\.PNG, IMG_2810\.PNG/);
+    assert.match(toolResult, /Jayson Tatum \| Rebounds \| 8\.5 \| Under/);
+    assert.match(toolResult, /Entry \$10, pays 3x/);
     assert.match(toolResult, /call outlier_research_list/);
     assert.ok(backend.log.some(entry => entry.tool === 'outlier_research_list'), 'the legs were researched');
+
+    // Asked again with the same screenshots: nothing goes to the vision model.
+    await sendPrompt(page, 'Read my screenshots again');
+    await waitForChat(page, /Same legs as before\./);
+    calls = await page.evaluate(() => window.__modelCalls);
+    const again = calls.slice(4);
+    assert.equal(again.length, 2, 'two agent turns and no second vision call');
+    assert.ok(!again.some(c => /You read screenshots for CoDev/.test(c.system)), 'no second vision call');
+    assert.match(again[1].messages.find(m => m.role === 'tool').content, /2 from earlier reads[\s\S]*LeBron James \| Points/);
     assert.deepEqual(errors, []);
 });
