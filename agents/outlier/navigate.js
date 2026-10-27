@@ -726,7 +726,7 @@ function legSummary(text, max = 420) {
 // Matchup, Injuries, Odds Movement...). Only real tabs (role=tab, a tab list) or
 // buttons in the card's dialog, never one in a header, nav, slip or My Picks, and
 // never a pick, bet or slip button. Marked data-codev-tab; returns their labels.
-const CARD_TABS = /^(supporting stats|stats|player stats|game ?logs?|splits|home ?\/ ?away|matchup|defen[cs]e( vs\.? position)?|vs\.? (defense|position)|injur(y|ies)|injury report|odds movement|line movement|line history|public( betting)?|bet splits|betting splits|news|minutes|usage|shooting|advanced|opportunit(y|ies)|play ?types?|shot chart|lineups?)$/i;
+const CARD_TABS = /^(supporting stats|stats|player stats|game ?logs?|splits|home ?\/ ?away|matchup|defen[cs]e( vs\.? position)?|vs\.? (defense|position)|injur(y|ies)|injury report|odds movement|line movement|line history|public( betting)?|bet splits|betting splits|news|minutes|usage|shooting|advanced|opportunit(y|ies)|play ?types?|shot chart|lineups?|snaps|targets|routes|red ?zone|receiving|rushing|passing|pitching|batting|time on ice|efficiency|trends|vs\.? opponent|team stats)$/i;
 function markCardTabs(source) {
     const re = new RegExp(source, 'i');
     const bad = /pick|slip|add|bet ?now|place|remove|entry|parlay|follow|share/i;
@@ -967,7 +967,18 @@ const OPPORTUNITY = [
     ['Target share', /^target share\b/i],
     ['Rush attempts', /^(rush attempts|rushing attempts|carries)\b/i],
     ['Snaps', /^(snaps|snap %|snap share)\b/i],
-    ['Plate appearances', /^(plate appearances|pa)\b/i]
+    ['Routes', /^(routes|routes run|route participation|route %|route share)\b/i],
+    ['Air yards', /^(air yards|air yds|air yards share)\b/i],
+    ['Red zone touches', /^(red ?zone (touches|targets|carries|opportunities|looks))\b/i],
+    ['Pass attempts', /^(pass attempts|passing attempts|pass att)\b/i],
+    ['Plate appearances', /^(plate appearances|pa)\b/i],
+    ['At bats', /^(at bats|ab)\b/i],
+    ['Batting order', /^(batting order|lineup spot|batting position)\b/i],
+    ['Pitch count', /^(pitch count|pitches|pitches thrown)\b/i],
+    ['Innings pitched', /^(innings pitched|ip)\b/i],
+    ['Batters faced', /^(batters faced|bf)\b/i],
+    ['Time on ice', /^(time on ice|toi)\b/i],
+    ['Power play time', /^(power ?play time|pp toi|pp time)\b/i]
 ];
 const WINDOW_RE = /\b(L\d{1,2}|Last \d{1,2}|H2H|Season|Szn|Avg|Average|20\d\d(?:[-/]\d\d)?)\b/gi;
 function cardNumbers(text) {

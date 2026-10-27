@@ -926,7 +926,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // paceMs between cards and backs off when Outlier answers 429 (too many
     // requests), stopping the cards after a third one.
     // restore(): brings the board back if a card replaced it (twice at most).
-    async function researchLegs(page, legs, { boardProps = [], places = [], settleMs = 1500, maxCards = 12, paceMs = 10000, backoffMs = [90000, 120000, 180000, 240000], restore = null } = {}) {
+    async function researchLegs(page, legs, { boardProps = [], places = [], settleMs = 1500, maxCards = 12, paceMs = 10000, clickPaceMs = 3000, backoffMs = [90000, 120000, 180000, 240000], restore = null } = {}) {
         let restores = 0;
         const results = new Map();
         let limited = 0;
@@ -956,8 +956,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             let last = 0;
             for (const { leg, i, own, shown } of order) {
                 const cached = cards.get(cardKey(leg));
-                // A card read light (after a 429) is read again whole while Outlier isn't limiting.
-                if (cached && Date.now() - cached.at < CARD_TTL_MS && !(cached.light && !limited)) { results.set(i, { ...cached, atLine: hitsAtLine(cached.games, leg.line, leg.side), cached: true }); continue; }
+                if (cached && Date.now() - cached.at < CARD_TTL_MS) { results.set(i, { ...cached, atLine: hitsAtLine(cached.games, leg.line, leg.side), cached: true }); continue; }
                 if (opened >= maxCards) break;
                 if (limited >= MAX_429) break;
                 // Pace the cards, and wait out a 429 before the next one.
@@ -1024,28 +1023,28 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     // Everything the card offers: each of its tabs (Supporting Stats,
                     // Game Log, Splits, Matchup, Injuries, Odds Movement...) read in turn,
                     // paced, and no more of them once Outlier says 429.
-                    const pace = Math.max(1500, Math.min(settleMs, 2500));
+                    // Every click inside the card (alt lines, each tab, the with/without
+                    // split) waits clickPaceMs first, twice that once Outlier has said 429,
+                    // so a card's clicks don't land on Outlier in one burst.
+                    const pace = limited > 0 ? Math.min(8000, clickPaceMs * 2) : clickPaceMs;
                     // The game-by-game bars (hovered, never clicked) and the alt lines,
                     // both against the user's line, then the tabs, then the split
                     // without a teammate who is out (it changes the whole card, so last).
                     if (!emptied) step('game-by-game bars');
                     const games = emptied ? [] : await readBars(page).catch(() => []);
-                    // After a 429 a card is read light: the card, its game log and alt
-                    // lines, with its tabs and with/without left for a later run.
-                    const light = limited > 0;
                     if (!emptied && !seen429) step('alt lines');
                     const alt = emptied || seen429 ? null : await readAltLines(page, { line: leg.line, side: leg.side, settleMs: pace, known: text }).catch(() => null);
-                    if (!emptied && !light) step('every tab of the card');
-                    const tabs = emptied || light ? [] : await readCardTabs(page, { settleMs: pace, known: text, stop: () => seen429 > 0 });
+                    if (!emptied) step('every tab of the card');
+                    const tabs = emptied ? [] : await readCardTabs(page, { settleMs: pace, known: text, stop: () => seen429 > 0 });
                     const tabText = tabs.map(t => t.text).join('\n');
-                    if (!emptied && !seen429 && !light) step('with/without injured teammates');
-                    const without = emptied || seen429 || light ? [] : await readWithout(page, { player: leg.player, text: `${text}\n${tabText}`, settleMs: pace, known: `${text}\n${tabText}` }).catch(() => []);
+                    if (!emptied && !seen429) step('with/without injured teammates');
+                    const without = emptied || seen429 ? [] : await readWithout(page, { player: leg.player, text: `${text}\n${tabText}`, settleMs: pace, known: `${text}\n${tabText}` }).catch(() => []);
                     const all = [text, tabText].join('\n');
                     if (emptied) {
                         results.set(i, { error: 'Outlier said too many requests' });
                     } else {
                         const read = { at: Date.now(), opened: label, summary: legSummary(all), text, tabs, numbers: cardNumbers(all),
-                            games, atLine: hitsAtLine(games, leg.line, leg.side), alt, without, ...(light ? { light: true } : {}) };
+                            games, atLine: hitsAtLine(games, leg.line, leg.side), alt, without };
                         cards.set(cardKey(leg), read);
                         saveCards();
                         results.set(i, { ...read, found: place ? 'jumped to his row' : searched ? 'searched his name' : 'searched the board', searched: Boolean(searched), props: found });
@@ -1111,9 +1110,11 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     await navigate(page, nav, { settleMs: config().settleMs });
                 };
                 const cfg = config();
-                // cardPaceMs: the wait between player cards (default 6s), set lower only in tests.
+                // cardPaceMs: the wait between player cards (default 10s); clickPaceMs: the wait
+                // before each click inside a card (default 3s). Both set lower only in tests.
                 research = await researchLegs(page, legs, { boardProps, places: collected.places, settleMs: cfg.settleMs, maxCards, restore,
                     ...(Number.isFinite(cfg.cardPaceMs) ? { paceMs: cfg.cardPaceMs } : {}),
+                    ...(Number.isFinite(cfg.clickPaceMs) ? { clickPaceMs: cfg.clickPaceMs } : {}),
                     ...(Array.isArray(cfg.backoffMs) ? { backoffMs: cfg.backoffMs } : {}) });
                 return research;
             }
@@ -1366,9 +1367,13 @@ const STAT_CHANCES = [
     [/three|3pt|3pm|3-pt|3 pointers/i, ['3PT attempts']],
     [/rebound|reb/i, ['Rebound chances']],
     [/assist|ast/i, ['Potential assists', 'Touches']],
-    [/receiv|reception|target/i, ['Targets', 'Target share', 'Snaps']],
-    [/rush/i, ['Rush attempts', 'Snaps']],
-    [/shot/i, ['Shots on goal']]
+    [/receiv|reception|target/i, ['Targets', 'Target share', 'Routes', 'Air yards', 'Snaps']],
+    [/rush|carries/i, ['Rush attempts', 'Red zone touches', 'Snaps']],
+    [/pass|completion|interception/i, ['Pass attempts', 'Snaps']],
+    [/touchdown|\btds?\b/i, ['Red zone touches', 'Targets', 'Snaps']],
+    [/strikeout|outs recorded|earned run|hits allowed|pitcher|walks allowed/i, ['Pitch count', 'Innings pitched', 'Batters faced']],
+    [/total bases|\bhits\b|runs|rbi|home run|singles|doubles|stolen base|batter walks/i, ['Plate appearances', 'At bats', 'Batting order']],
+    [/shot|goal|saves|power play|blocked/i, ['Shots on goal', 'Time on ice', 'Power play time']]
 ];
 function opportunityShift(leg, numbers) {
     if (!numbers) return 0;
@@ -1665,7 +1670,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                         if (!card) return `${head}\n   ${board}`;
                         if (card.error) return `${head}${board ? `\n   ${board}` : ''}\n   (card not read: ${card.error})`;
                         return `${head}${/another stat/.test(card.opened) ? ` (no prop for this stat at this part of the game on Outlier${card.searched ? ' after searching his name' : ''}${his ? `; Outlier lists for him: ${his}` : ''}; his card for another stat was read)` : ''}\n   ${board ? `${board}\n   ` : ''}Card: ${card.summary}${card.cached ? ' (read earlier)' : ''}`
-                            + cardBody(card, l) + (card.light ? '\n   (Read light: Outlier asked CoDev to slow down, so this card\'s tabs and with/without split were left for a later run.)' : '');
+                            + cardBody(card, l);
                     });
                     const read = { steps };
                     const found = legs.filter((l, i) => matches[i] || (research.results.get(i) && !research.results.get(i).error)).length;
@@ -1684,16 +1689,26 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                         const base = own && (!matches[i] || !matches[i].sameLine) ? own.reduce((a, v) => a + v, 0) / own.length : legScore(matches[i]) ?? cardScore(i);
                         return { l, i, score: base == null ? null : base + opportunityShift(l, card && card.numbers) };
                     }).filter(x => x.score != null).sort((x, y) => y.score - x.score);
-                    const best = ranked.slice(0, 8).map(x => `${x.i + 1}. ${x.l.player} ${x.l.side || 'Over'} ${x.l.line ?? ''} ${x.l.stat || ''}: ${Math.round(x.score * 100)}%`.replace(/\s+/g, ' '));
+                    // Verified: his card for this stat was read, with at least 5 games at the user's line.
+                    const verified = x => { const c = research.results.get(x.i); return Boolean(c && !c.error && !/another stat/.test(c.opened || '') && c.atLine && c.atLine.all[1] >= 5); };
+                    const tag = x => (verified(x) ? 'card read' : research.results.get(x.i) && !research.results.get(x.i).error ? 'card read, short game log' : 'board only, card not read: unverified');
+                    const best = ranked.slice(0, 8).map(x => `${x.i + 1}. ${x.l.player} ${x.l.side || 'Over'} ${x.l.line ?? ''} ${x.l.stat || ''}: ${Math.round(x.score * 100)}% (${tag(x)})`.replace(/\s+/g, ' '));
                     const notes = [research.limited ? 'Outlier asked CoDev to slow down (429): CoDev waited it out and slowed down between cards.' : '',
-                        research.unread ? `${research.unread} leg(s) on the board still have their card unread${research.limited ? ' (Outlier kept saying 429)' : ' (cards are read 12 at a time to spare Outlier)'}. ${research.limited ? 'Outlier is limiting CoDev right now, so don\'t call again now: answer from what was read, and tell the user to say "continue" in about 10 minutes; the next call keeps the board and every card already read and opens only the rest.' : 'To finish, call outlier_research_list again with the same legs: it keeps the board and every card already read and opens only the rest.'}` : ''].filter(Boolean);
-                    const top = ranked.slice(0, 4);
-                    const ticket = top.length >= 2 ? ticketText(top.map(x => x.l), top.map(x => research.results.get(x.i) || null)) : '';
+                        research.unread ? `${research.unread} leg(s) on the board still have their card unread${research.limited ? ' (Outlier kept saying 429)' : ' (cards are read 12 at a time to spare Outlier)'}. ${research.limited ? 'Outlier is limiting CoDev right now, so don\'t call again now. Answer now with the "Slip from what was read" below (it is built from the legs whose card was read, with its simulation), mark any unverified leg as unverified, and tell the user to say "continue" in about 10 minutes to read the rest; the next call keeps the board and every card already read and opens only the rest.' : 'To finish, call outlier_research_list again with the same legs: it keeps the board and every card already read and opens only the rest.'}` : ''].filter(Boolean);
+                    // The slip is built from verified legs first, so a run that Outlier cut short
+                    // (429, cards unread) still ends with a slip and a simulation; unverified legs
+                    // only fill the slip when fewer than 4 are verified, and are marked.
+                    const size = Math.min(4, ranked.length);
+                    const sure = ranked.filter(verified);
+                    const top = [...sure, ...ranked.filter(x => !verified(x))].slice(0, size);
+                    const ticket = sure.length >= 2 ? ticketText(sure.slice(0, size).map(x => x.l), sure.slice(0, size).map(x => research.results.get(x.i) || null)) : '';
+                    const slip = top.length ? `Slip from what was read (${sure.length} leg(s) verified on their card${research.unread || research.limited ? '; the run was cut short, so this is the best slip from the verified legs' : ''}):\n${top.map((x, n) => `${n + 1}) ${x.l.player} ${x.l.side || 'Over'} ${x.l.line ?? ''} ${x.l.stat || ''}: ${Math.round(x.score * 100)}% (${tag(x)})`.replace(/\s+/g, ' ')).join('\n')}\n` : '';
                     const checks = legChecks(legs);
                     const did = didText(boardRead, research, legs.length);
                     const text = `Outlier > ${read.steps.join(' > ')}\nFound ${found} of ${legs.length} legs on Outlier. Hit rates are Outlier's, turned to the user's side.\n${did}\n${lines.join('\n')}\n${notes.map(n => `${n}\n`).join('')}`
                         + (best.length ? `Best on Outlier's hit rates (average of L5, L10, L20, H2H, seasons on the user's side, counted from the game log at the user's line when Outlier's line moved, then moved a little for minutes and opportunity trends):\n${best.join('\n')}\n` : '')
-                        + (ticket ? `For the top ${top.length} above: ${ticket}\n` : '')
+                        + slip
+                        + (ticket ? `For the ${Math.min(sure.length, size)} verified leg(s) of that slip: ${ticket}\n` : '')
                         + (checks.length ? `Checks:\n${checks.map(c => `- ${c}`).join('\n')}\n` : '')
                         + `For reference only, CoDev's sportsbook audit (the -119 juice strategy for sportsbooks; a DFS leg doesn't need to pass it):\n${audit}\n`
                         + 'Build the slip from the best legs above: hit rates high across several windows on the user\'s line, then everything on the card: minutes and opportunity (shot attempts, usage, potential assists, rebound chances, targets) steady or rising, the matchup rank, splits, injuries around him, line movement and public betting. Trust Outlier\'s rosters and teams over your own memory (players get traded); lines on a card like "@ MIN" are past games in the log. Lines move between apps and over the day: when Outlier\'s line differs from the user\'s, use the "Game log at your line" counts (or the alt lines row) instead of Outlier\'s rates for its own line. When a teammate is out, weigh the "Without" split. Projection and Regression lines are estimates from the card\'s own numbers: say so when you use them. After picking the legs, call outlier_simulate_ticket with them and give its "all hit" percentage as an estimate. Never state a number, pace or probability that the results above don\'t show. A leg with no Outlier prop can\'t be checked: say so, don\'t guess. Always give the user the 4 best legs that Outlier did check (more if they asked for 4-6), ranked, with one reason per leg from Outlier\'s numbers and any weak spot; list the legs that couldn\'t be checked after them. Don\'t withhold the ticket because some legs couldn\'t be checked or a card was left unread: their board rows and hit rates count. Estimates, not guarantees.';
