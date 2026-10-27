@@ -51,6 +51,12 @@ test("the Windows app's folder tools never list, search, read or write secret fi
         }
     }
     assert.match(text(await call('list_files', { path: '.github' })), /hidden or env file/);
+    // read_image, for the screenshot reader: images only, never a secret file.
+    assert.match(text(await call('read_image', { path: '.env' })), /hidden or env file/);
+    assert.match(text(await call('read_image', { path: 'app.js' })), /isn't a PNG/);
+    fs.writeFileSync(path.join(project, 'slip.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const image = await call('read_image', { path: 'slip.png' });
+    assert.deepEqual(image.content, [{ type: 'image', data: 'iVBORw==', mimeType: 'image/png' }]);
     for (const [rel, content] of Object.entries(FILES)) assert.equal(fs.readFileSync(path.join(project, rel), 'utf8'), content, rel);
 });
 

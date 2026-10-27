@@ -323,3 +323,77 @@ test('an Outlier prompt goes straight to the Outlier scan, and says how to get i
     const without = await other.page.evaluate(() => window.__modelCalls);
     assert.match(without[0].system, /The Outlier scan isn't available here\. .*start-codev\.bat/);
 });
+
+test('each request is sorted first: only code and file tasks carry the project, and a question never browses it', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const workspace = makeWorkspace();
+    const backend = createMockBackend({ workspace });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const { page, errors } = await openPage(launched.browser, url, { steps: ['Paris.', 'Added it.'] });
+    await page.uncheck('#isSandboxCheckbox');
+    await page.evaluate(() => { loadedProjectFiles = { 'README.md': '# Demo\n', 'src/app.js': 'console.log(1);\n' }; });
+
+    const kinds = await page.evaluate(() => [
+        classifyRequest('What is the capital of France?'),
+        classifyRequest('Look up player props for LeBron tonight'),
+        classifyRequest('Read the screenshots in my folder'),
+        classifyRequest('Fix the bug in src/app.js'),
+        classifyRequest('now do the same for the other one', 'Fix the bug in src/app.js'),
+        classifyRequest('Build me a 5 leg slip from these', '', true)
+    ]);
+    assert.deepEqual(kinds, ['general', 'props', 'images', 'code', 'code', 'props']);
+
+    await sendPrompt(page, 'What is the capital of France?');
+    await waitForChat(page, /Paris\./);
+    await sendPrompt(page, 'Add a footer to src/app.js');
+    await waitForChat(page, /Added it\./);
+    const calls = await page.evaluate(() => window.__modelCalls);
+    const question = calls[0].messages.at(-1).content;
+    assert.doesNotMatch(question, /\[Workspace/, 'a question carries no project files');
+    assert.match(calls[0].system, /You are CoDev, a multi-purpose agent/);
+    assert.match(calls[0].system, /\[Request type\] A general question/);
+    assert.doesNotMatch(calls[0].system, /AUTONOMOUS DEVELOPER MODE/);
+    assert.ok(calls[0].tools.includes('read_screenshots'));
+    const coding = calls[1].messages.at(-1).content;
+    assert.match(coding, /\[Workspace File: src\/app\.js\]/, 'a code task carries the files');
+    assert.match(calls[1].system, /AUTONOMOUS DEVELOPER MODE/);
+    assert.deepEqual(errors, []);
+});
+
+test('read_screenshots reads the 📸 folder with the vision model and hands prop legs to the Outlier research', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const backend = createMockBackend({ workspace: makeWorkspace(), agentTools: {
+        outlier_research_list: (box, args) => `Researched ${args.legs.length} legs.`
+    } });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const legs = 'Prop legs found in the screenshots:\nLeBron James | Points | 25.5 | Over | NBA | vs BOS 7:30 PM';
+    const { page, errors } = await openPage(launched.browser, url, { steps: [
+        [{ name: 'read_screenshots', arguments: { question: 'research these' } }],
+        `### slip.png\n${legs}`,
+        [{ name: 'outlier_research_list', arguments: { sport: 'NBA', legs: [{ player: 'LeBron James', stat: 'Points', line: 25.5, side: 'over' }] } }],
+        'LeBron Over 25.5 points checks out.'
+    ] });
+    page.on('dialog', dialog => dialog.accept());
+    // No screenshots picked yet: the tool says how to pick them.
+    assert.match(await page.evaluate(() => readScreenshotsTool({})), /click 📸/);
+    await page.evaluate(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 40; canvas.height = 80;
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        screenshotFolder = { name: 'Dabble', files: [{ path: 'slip.png', file: new File([blob], 'slip.png', { type: 'image/png', lastModified: 2 }) },
+            { path: 'notes.txt', file: new File(['x'], 'notes.txt') }].filter(f => isScreenshotName(f.path)) };
+    });
+    await sendPrompt(page, 'Look at my Dabble screenshots and research them');
+    await waitForChat(page, /checks out/);
+    const calls = await page.evaluate(() => window.__modelCalls);
+    const vision = calls[1];
+    assert.match(vision.system, /Prop legs found in the screenshots/);
+    assert.match(vision.messages[0].content, /image_url[\s\S]*data:image\/jpeg;base64/, 'the screenshot went to the vision model');
+    const toolResult = calls[2].messages.find(m => m.role === 'tool').content;
+    assert.match(toolResult, /LeBron James \| Points \| 25\.5 \| Over/);
+    assert.match(toolResult, /call outlier_research_list/);
+    assert.ok(backend.log.some(entry => entry.tool === 'outlier_research_list'), 'the legs were researched');
+    assert.deepEqual(errors, []);
+});
