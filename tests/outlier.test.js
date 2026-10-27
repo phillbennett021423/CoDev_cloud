@@ -1150,6 +1150,19 @@ test('a grid board\'s bare hit-rate cells get their column labels, and a leg is 
     assert.ok([9.5, 10.5].includes(between.row.line));
 });
 
+test('a player named differently by the DFS app and Outlier still matches: initials, Jr., III, accents, EVEN odds', () => {
+    const { sameName } = require('../agents/outlier/navigate');
+    assert.ok(sameName('AJ Brown', 'A.J. Brown'));
+    assert.ok(sameName('Marvin Harrison', 'Marvin Harrison Jr.'));
+    assert.ok(sameName('Kenneth Walker', 'Kenneth Walker III'));
+    assert.ok(sameName('Luka Doncic', 'Luka Dončić'));
+    assert.ok(sameName('C. Lamb', 'CeeDee Lamb'));
+    assert.ok(!sameName('Josh Allen', 'Josh Jacobs'));
+    assert.ok(!sameName('A Brown', 'J Brown'));
+    const { parseText } = require('../agents/outlier/extract');
+    assert.deepEqual(parseText('A.J. Brown\nReceiving Yards\nOver 62.5\nFanDuel EVEN').odds, [{ book: 'fanduel', price: 100 }]);
+});
+
 test('a leg matches its full-game stat, not a quarter, combo or far-off alt line, and a moved line still matches', () => {
     const { matchLeg } = require('../agents/outlier');
     const row = (player, market, line, l10) => ({ player, market, line, side: 'Over', hitRates: { l10 }, odds: [] });
