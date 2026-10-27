@@ -643,6 +643,7 @@
                             <input type="text" id="userInput" enterkeyhint="send" placeholder="Ask your agents anything or type @filename to reference local file..." onkeydown="if(event.key==='Enter' && !event.isComposing) { event.preventDefault(); sendChatMessage(); }">
                             <button id="micBtn" class="mic-btn" onclick="toggleSpeechRecognition()" title="Voice Input (STT)">🎤</button>
                             <button id="attachBtn" class="tool-btn" onclick="document.getElementById('attachmentInput').click()" title="Attach images, PDFs or short videos">📎</button>
+                            <button id="screenshotFolderBtn" class="tool-btn" onclick="pickScreenshotFolder()" title="Pick a folder of screenshots (like Dabble slips) for the agents to read">📸</button>
                             <button id="webSearchBtn" class="tool-btn" onclick="toggleWebSearch()" title="Search the web for every message: off (technical questions are searched automatically)" aria-pressed="false">🔎</button>
                             <button class="send-btn" onclick="sendChatMessage()">Send Task</button>
                         </div>
@@ -2857,6 +2858,17 @@
                 },
             ];
             // Sandbox mode: the sandbox's own file and command tools replace every tool that writes to disk.
+            tools.push({
+                name: "read_screenshots",
+                description: "Look at a folder of screenshots or other images and get what they show, read by a vision model: every leg on a betting or DFS slip (Dabble, PrizePicks, Underdog, sportsbooks) as Player | Stat | Line | Side | Sport | Game, or the text and content of any other image. "
+                    + "Reads the screenshots folder the user picked with 📸, newest first; folder can name a folder inside it or inside the project instead. Use it whenever the user mentions screenshots, pictures or a folder of images.",
+                inputSchema: { type: "object", properties: {
+                    folder: { type: "string", description: "Optional: a sub-folder of the 📸 folder, or a folder inside the project (like \"Dabble\"). Leave it out for the 📸 folder." },
+                    question: { type: "string", description: "What to look for, in the user's words." },
+                    limit: { type: "integer", description: `Read only the newest N images (default and max ${MAX_SCREENSHOTS}).` }
+                } },
+                run: async args => readScreenshotsTool(args)
+            });
             if (ctx && ctx.sandbox) return buildSandboxTools(tools, ctx);
             const mcpTools = await fetchAllMcpTools();
             // The folder connected in the page gets its own tools. When the Windows app or the
@@ -2910,7 +2922,8 @@
             );
             for (const tool of mcpTools) {
                 const name = tool.qualifiedName || tool.name;
-                if (tools.some(t => t.name === name)) continue;
+                // read_image returns pixels for read_screenshots, not text a model can use.
+                if (tools.some(t => t.name === name) || (tool.transport === "desktop" && tool.name === "read_image")) continue;
                 tools.push({
                     name,
                     description: (tool.server ? `[MCP server "${tool.server}"] ` : "") + (tool.description || tool.title || tool.name),
@@ -3034,6 +3047,7 @@
             if (name === "outlier_read_section") return `📈 Reading Outlier's ${args.section || "section"}`;
             if (name === "outlier_simulate_ticket") return "🎲 Simulating the ticket from the cards";
             if (name === "outlier_guide") return "📘 Reading the Outlier guide";
+            if (name === "read_screenshots") return `📸 Reading screenshots${args.folder ? ` in ${args.folder}` : ""}`;
             return `🛠️ ${fullName}`;
         }
 
@@ -3090,7 +3104,7 @@
                 messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + sandboxToolNote(tools) };
             } else if (messages[0]?.role === "system") {
                 messages[0] = { ...messages[0], content: messages[0].content + (mcpNames.length
-                    ? `\n\n[MCP] The user's MCP tools are connected and work on their computer: ${mcpNames.join(", ")}. When the user mentions MCP, they mean these tools. Use them to read, create and edit files and to run code, instead of only showing code.`
+                    ? `\n\n[MCP] The user's MCP tools are connected and work on their computer: ${mcpNames.join(", ")}. When the user mentions MCP, they mean these tools. When the task needs files or code, use them to read, create and edit files and to run code, instead of only showing code.`
                     : `\n\n[MCP] No MCP tools are connected right now. If the user asks for MCP, file edits or running code on their computer, tell them to choose a project folder under Settings > Web grounding & local tools in the Windows app, or add an MCP server there, then ask again.`) };
                 // Instructions servers sent in their initialize reply, so the model uses them as intended.
                 const instructions = mcpServersConfigured() ? (await mcpHubRequest({ op: "status" }).catch(() => []))
@@ -3132,6 +3146,11 @@
                         }, 1500) : null;
                         try { result = await tool.run(args, ctx); } catch (err) { result = `Tool failed: ${err.message}`; } finally { if (watch) clearInterval(watch); }
                         trackToolEffect(ctx, tool.name, args, String(result));
+                        // Screenshots that turned out to be prop slips: the Outlier steps come with them.
+                        if (tool.name === "read_screenshots" && !outlierNote && /Prop legs found/i.test(String(result))) {
+                            outlierNote = outlierToolNote(tools, [{ role: "user", content: "props" }]);
+                            if (outlierNote) result = `${result}\n\n${outlierNote}`;
+                        }
                         // A short note of each step stays with the reply, so a follow-up can ask about it.
                         if (ctx.toolLog) ctx.toolLog.push(`${step} → ${String(result).replace(/\s+/g, " ").slice(0, MAX_HISTORY_TOOL_CHARS)}`);
                     }
@@ -3273,6 +3292,187 @@
             } finally {
                 URL.revokeObjectURL(url);
             }
+        }
+
+        // SCREENSHOT FOLDERS
+        // 📸 picks a folder of screenshots (or, on a phone, a set of them) that the agents
+        // read with read_screenshots, the way you'd point Gemini at a folder. A folder in
+        // the project works too: the Windows app's project folder (its read_image tool) or
+        // the folder connected in Project Files. A vision model reads the images, in
+        // groups of 3 (Groq's limit per request), and turns prop slips into legs that
+        // outlier_research_list takes as they are.
+        const SCREENSHOT_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"];
+        const MAX_SCREENSHOTS = 20;
+        const SCREENSHOT_EDGE = 1600;
+        const VISION_BATCH = 3;
+        // The vision model's notes on a message's attached images, read once for all its agents.
+        const imageNotesCache = new WeakMap();
+        let screenshotFolder = null;   // { name, handle } from the folder picker, or { name, files } from the file picker
+
+        function isScreenshotName(name) {
+            const lower = String(name).toLowerCase();
+            return !isSecretName(lower.split("/").pop()) && SCREENSHOT_EXTENSIONS.some(ext => lower.endsWith(ext));
+        }
+
+        function showScreenshotFolder() {
+            const btn = document.getElementById("screenshotFolderBtn");
+            btn.classList.toggle("active", Boolean(screenshotFolder));
+            btn.title = screenshotFolder
+                ? `Screenshots: ${screenshotFolder.name}. Ask an agent to read them, like "look at my screenshots and research the props". Click to pick another folder.`
+                : "Pick a folder of screenshots (like Dabble slips) for the agents to read";
+        }
+
+        async function pickScreenshotFolder() {
+            if (window.showDirectoryPicker) {
+                try {
+                    const handle = await window.showDirectoryPicker({ id: "codev-screenshots", mode: "read" });
+                    screenshotFolder = { name: handle.name, handle };
+                } catch (err) {
+                    if (err.name !== "AbortError") alert("Couldn't open that folder: " + err.message);
+                    return;
+                }
+            } else {
+                // Phones have no folder picker: pick the screenshots themselves.
+                const files = await new Promise(resolve => {
+                    const picker = document.createElement("input");
+                    picker.type = "file";
+                    picker.multiple = true;
+                    picker.accept = "image/*";
+                    picker.onchange = () => resolve(Array.from(picker.files || []));
+                    picker.click();
+                });
+                const images = files.filter(f => f.type.startsWith("image/") || isScreenshotName(f.name));
+                if (!images.length) return;
+                screenshotFolder = { name: `${images.length} picked screenshot${images.length === 1 ? "" : "s"}`, files: images.map(file => ({ path: file.name, file })) };
+            }
+            showScreenshotFolder();
+            logConsoleActivity(`[Screenshots] Agents can read ${screenshotFolder.name} with read_screenshots.`);
+            appendMessageToActiveSession("📸 Screenshots", `Ready: ${screenshotFolder.name}. Ask something like "look at my screenshots and research these props", and the agent reads them. New screenshots saved in the folder are picked up each time.`);
+        }
+
+        // The image files under a folder handle, as { path, file } (sub-folders included).
+        async function walkImageHandle(dirHandle, prefix, found) {
+            for await (const [name, handle] of dirHandle.entries()) {
+                if (found.length >= 500 || isSecretName(name)) continue;
+                if (handle.kind === "directory") { if (!WORKSPACE_SKIPPED_DIRS.has(name)) await walkImageHandle(handle, `${prefix}${name}/`, found); }
+                else if (isScreenshotName(name)) found.push({ path: prefix + name, file: await handle.getFile() });
+            }
+            return found;
+        }
+
+        async function subfolderHandle(root, folder) {
+            let dir = root;
+            for (const part of normalizeWorkspacePath(folder).split("/").filter(Boolean)) dir = await dir.getDirectoryHandle(part);
+            return dir;
+        }
+
+        // The images to read for a folder name ("" = the 📸 folder, or the project's root),
+        // newest first, as { path, modified, load() → data URL }.
+        async function findScreenshots(folder) {
+            const wanted = normalizeWorkspacePath(folder);
+            if (folder && !wanted) throw new Error(`"${folder}" isn't a folder CoDev can read (hidden folders and .. are off limits).`);
+            const fromFiles = (files, base) => files
+                .filter(f => !base || f.path === base || f.path.startsWith(base + "/"))
+                .map(f => ({ path: f.path, modified: f.file.lastModified || 0, load: () => fileToJpeg(f.file) }));
+            const sources = [];
+            // The 📸 folder: by its name, a sub-folder of it, or when no folder is named.
+            if (screenshotFolder) {
+                const named = wanted && wanted.toLowerCase() === screenshotFolder.name.toLowerCase();
+                const base = named ? "" : wanted;
+                sources.push(async () => {
+                    if (screenshotFolder.files) return fromFiles(screenshotFolder.files, base);
+                    const dir = base ? await subfolderHandle(screenshotFolder.handle, base).catch(() => null) : screenshotFolder.handle;
+                    return dir ? fromFiles(await walkImageHandle(dir, "", []), "") : [];
+                });
+            }
+            // The Windows app's project folder.
+            const readImage = (await fetchDesktopMcpTools()).find(t => t.name === "read_image");
+            if (readImage) sources.push(async () => {
+                const listed = await callMcpTool({ ...readImage, name: "list_files" }, wanted ? { path: wanted } : {});
+                if (/^Error: /.test(listed)) return [];
+                return listed.split("\n").filter(isScreenshotName).map(path => ({ path, modified: 0, load: () => desktopImage(path) }));
+            });
+            // The folder connected in Project Files.
+            if (connectedDirectoryHandle) sources.push(async () => {
+                const dir = wanted ? await subfolderHandle(connectedDirectoryHandle, wanted).catch(() => null) : connectedDirectoryHandle;
+                return dir ? fromFiles(await walkImageHandle(dir, wanted ? `${wanted}/` : "", []), "") : [];
+            });
+            for (const source of sources) {
+                const images = await source().catch(err => { logConsoleActivity(`[Screenshots] ${err.message}`); return []; });
+                // Newest first: by date when known, else by name (phones name screenshots by time).
+                if (images.length) return images.sort((a, b) => (b.modified - a.modified) || b.path.localeCompare(a.path));
+            }
+            return null;
+        }
+
+        async function desktopImage(path) {
+            const reply = await window.codevDesktop.mcp({ jsonrpc: "2.0", id: ++mcpRequestId, method: "tools/call", params: { name: "read_image", arguments: { path } } });
+            const image = (reply.result?.content || []).find(c => c.type === "image");
+            if (reply.error || reply.result?.isError || !image) throw new Error(reply.error?.message || mcpContentToText(reply.result?.content) || `couldn't read ${path}`);
+            return dataUrlToJpeg(`data:${image.mimeType};base64,${image.data}`);
+        }
+
+        async function fileToJpeg(file) {
+            const url = URL.createObjectURL(file);
+            try { return await dataUrlToJpeg(url); } finally { URL.revokeObjectURL(url); }
+        }
+
+        async function dataUrlToJpeg(url) {
+            const img = await loadImageElement(url);
+            return sourceToJpeg(img, img.naturalWidth, img.naturalHeight, SCREENSHOT_EDGE, 0.9);
+        }
+
+        const SCREENSHOT_READER_PROMPT = `You read screenshots for CoDev and write down exactly what they show, for another agent that can't see them.
+For each image, start with a line "### " and the image's name.
+- A betting or DFS slip, pick'em board or prop list (Dabble, PrizePicks, Underdog, Sleeper, a sportsbook): put the line "Prop legs found in the screenshots:" and then every leg on its own line as
+  Player | Stat | Line | Side | Sport | Game
+  Keep the stat exactly as shown, quarter or half included ("1st Quarter Points", "1H Rush Yds"). Side is Over or Under (More or Higher = Over, Less or Lower = Under). Game is the opponent or matchup and start time when shown; leave it blank otherwise. After the legs, one line with the entry amount, payout or multiplier if shown.
+- Any other image: transcribe its text and describe what matters in it.
+Copy names and numbers exactly. Write [unreadable] for anything you can't read; never guess.`;
+
+        // Reads images ({ name, url }) with the vision model and returns its notes as text.
+        async function readImagesWithVision(images, question) {
+            const notes = [];
+            for (let i = 0; i < images.length; i += VISION_BATCH) {
+                const batch = images.slice(i, i + VISION_BATCH);
+                const text = await groqChat({
+                    model: VISION_MODEL,
+                    temperature: 0.0,
+                    messages: [
+                        { role: "system", content: SCREENSHOT_READER_PROMPT },
+                        { role: "user", content: [
+                            { type: "text", text: `${question ? `The user asked: ${question}\n` : ""}The images, in order: ${batch.map(img => img.name).join(", ")}.` },
+                            ...batch.map(img => ({ type: "image_url", image_url: { url: img.url } }))
+                        ] }
+                    ]
+                });
+                notes.push(String(text || "").trim() || batch.map(img => `### ${img.name}\n[the vision model returned nothing]`).join("\n"));
+            }
+            return notes.join("\n\n");
+        }
+
+        async function readScreenshotsTool({ folder = "", question = "", limit } = {}) {
+            const found = await findScreenshots(String(folder || ""));
+            if (!found) {
+                return folder
+                    ? `No images found in "${folder}". Tell the user to click 📸 next to the chat box and pick that folder (on a phone, pick the screenshots), then ask again.`
+                    : "No screenshots folder is picked. Tell the user to click 📸 next to the chat box and pick their screenshots folder (on a phone, pick the screenshots), then ask again. A folder inside their project works too: name it as folder.";
+            }
+            const count = Math.max(1, Math.min(MAX_SCREENSHOTS, Number(limit) || MAX_SCREENSHOTS));
+            const chosen = found.slice(0, count);
+            logConsoleActivity(`[Screenshots] Reading ${chosen.length} of ${found.length} image(s): ${chosen.map(f => f.path).join(", ")}`);
+            const images = [];
+            const failed = [];
+            for (const item of chosen) {
+                try { images.push({ name: item.path, url: await item.load() }); } catch (err) { failed.push(`${item.path} (${err.message})`); }
+            }
+            if (!images.length) return `Couldn't open any of the images: ${failed.join("; ")}`;
+            const notes = await readImagesWithVision(images, String(question || ""));
+            return [`Read ${images.length} image(s), newest first${found.length > chosen.length ? ` (${found.length - chosen.length} older one(s) not read; pass a bigger limit for more)` : ""}.`,
+                failed.length ? `Couldn't open: ${failed.join("; ")}` : "",
+                notes,
+                /Prop legs found/i.test(notes) ? "To research these legs, call outlier_research_list once with every leg (player, stat, line, side) as read here, the sport and the day. Say which legs came out [unreadable]." : ""
+            ].filter(Boolean).join("\n\n");
         }
 
         function waitForEvent(target, name, timeoutMs = 15000) {
@@ -4751,10 +4951,36 @@
 4. GROUNDING: Blocks marked [Workspace ...], [Web Search Snippets] or [Attached ...] in the user message are your sources of truth. For code syntax, API names, signatures, versions and technical facts, rely on them first; when they conflict with your memory, follow the sources.
 5. NO GUESSING: Never invent functions, classes, parameters, packages, versions, settings or URLs. If the sources and well-established knowledge don't confirm something, say plainly that you could not verify it instead of guessing. This rule is about facts, not about analysis: when the task gives you data (odds, a board JSON, workspace files, tool results), work through it and compute what was asked from that data.
 6. CITATIONS: When a statement relies on a web snippet, cite it inline as [n] using that snippet's number. Never cite a source that was not provided. Workspace files are cited by file name.
-7. TOOLS: When tools are available, use them on your own initiative. Call web_search before answering about any API, library, engine feature, syntax, version or error message you are not certain about, and for any code implementation that is unfamiliar. Call list_workspace_files and read_workspace_file (or list_files and read_file) to check the user's real code instead of assuming. When the user asks you to change, create, run or test code and file or command tools (write_workspace_file, write_file, edit_file, run_command, run_approved_command) are available, do it with those tools directly instead of only showing code, then verify by reading the file back or running it. Never claim you searched, read, ran or verified something unless a tool result in this conversation shows it.`;
+7. TOOLS: When tools are available, use them on your own initiative. Call web_search before answering about any API, library, engine feature, syntax, version or error message you are not certain about, and for any code implementation that is unfamiliar. When the task is about the user's code or files, call list_workspace_files and read_workspace_file (or list_files and read_file) to check their real code instead of assuming; for questions, research, props or anything else that isn't about their files, don't list, search or read the project folder. When the user asks you to change, create, run or test code and file or command tools (write_workspace_file, write_file, edit_file, run_command, run_approved_command) are available, do it with those tools directly instead of only showing code, then verify by reading the file back or running it. Never claim you searched, read, ran or verified something unless a tool result in this conversation shows it.`;
             
             const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}`;
-            const images = options.images || [];
+            let images = options.images || [];
+            // Attached images and tools together: Claude takes both at once; the other
+            // providers' tool models can't see images, so the vision model reads them first
+            // and its notes go in as text (once per message, shared by every agent).
+            if (images.length && options.tools) {
+                if (currentBackend === "anthropic") {
+                    const messages = [{ role: "system", content: fullSystemPrompt }, ...(options.history || []), { role: "user", content: [
+                        ...images.map(url => ({ type: "image_url", image_url: { url } })), { type: "text", text: userMessage }] }];
+                    try { return await runToolLoop(messages, options.tools); } catch (err) {
+                        if (!/tool|function/i.test(err.message)) throw err;
+                        logConsoleActivity(`[Tool] Tool loop failed (${err.message}); answering without tools.`);
+                    }
+                } else {
+                    try {
+                        if (!imageNotesCache.has(images)) {
+                            logConsoleActivity(`[Vision] Reading ${images.length} image(s) so the agent can use its tools with them.`);
+                            imageNotesCache.set(images, readImagesWithVision(images.map((url, n) => ({ name: `Attached image ${n + 1}`, url })), userMessage.slice(0, 600)));
+                        }
+                        const notes = await imageNotesCache.get(images);
+                        userMessage += `\n\n[Attached images, read by the vision model]\n${notes}`;
+                        images = [];
+                    } catch (err) {
+                        imageNotesCache.delete(images);
+                        logConsoleActivity(`[Vision] Couldn't read the images first (${err.message}); sending them without tools.`);
+                    }
+                }
+            }
             const history = options.history || [];
             if (history.length) logConsoleActivity(`[Chat] Sending ${history.length} earlier message(s) as context.`);
 
@@ -4821,12 +5047,51 @@
             return DEV_ROLES[agent?.devRole] ? agent.devRole : "architect";
         }
 
-        function agentSystemPrompt(agent, workspaceNote, memory) {
-            const general = agentDevRole(agent) === "general";
+        // REQUEST TYPE
+        // CoDev does many kinds of work, so each request is sorted before an agent runs.
+        // Only a code or file task gets the project's files put in the prompt and the
+        // "act on the project" rules; a question, research, a prop list or screenshots go
+        // to their own tools instead of a trip through the project folder.
+        const CODE_TASK_STRONG = /```|@[\w./-]+\.\w+|\b[\w./-]+\.(?:js|mjs|cjs|ts|tsx|jsx|py|cs|gd|tscn|html|css|json|java|kt|gradle|xml|ya?ml|toml|md|sh|bat|ps1|c|h|cpp|hpp|rs|go|rb|php|lua|sql|txt)\b|\b(?:code|coding|codebase|repo|repository|function|method|class|variable|bug|debug|stack ?trace|exception|compile|compiler|build|lint|refactor|implement|script|endpoint|component|commit|deploy|godot|gdscript|javascript|typescript|python|kotlin|html|css|npm|gradle|apk|syntax)\b/i;
+        const CODE_TASK_WEAK = /\b(?:project|folder|files?|tests?|app|program|page|website|site|error|crash|feature|install)\b/i;
+        const IMAGE_TASK = /\b(?:screenshots?|screen ?shots?|screen ?caps?|images?|pictures?|pics?|photos?)\b/i;
+        const PROPS_TASK = /\b(?:outlier|parl[ae]ys?|parley|tickets?|props?|underdog|dabble|prizepicks|slips?|legs?|pick'?em|sportsbooks?|over\/under|odds|betting)\b/i;
+        const REQUEST_KIND_LABELS = { code: "code or project files", props: "sports props research", images: "reading screenshots or images", general: "a general question or task" };
+
+        // "code", "props", "images" or "general". A short follow-up ("now fix it", "why?")
+        // keeps the type of the message before it.
+        function classifyRequest(text, previousText = "", hasImages = false) {
+            const t = String(text || "");
+            let kind = PROPS_TASK.test(t) ? "props"
+                : CODE_TASK_STRONG.test(t) ? "code"
+                : IMAGE_TASK.test(t) || hasImages ? "images"
+                : CODE_TASK_WEAK.test(t) ? "code" : "general";
+            if (kind === "general" && previousText && t.length < 80) {
+                const before = classifyRequest(previousText);
+                if (before !== "general") kind = before;
+            }
+            return kind;
+        }
+
+        const CODEV_IDENTITY = "[CoDev] You are CoDev, a multi-purpose agent: you write and fix code, answer questions, research on the web, analyze sports props on Outlier, read screenshots, images and documents, and help with writing and planning. "
+            + "Before acting, work out what kind of request this is and use only the tools it needs. Touch the user's project files only when the task is about them or the user asks.";
+        const REQUEST_KIND_NOTES = {
+            props: "[Request type] Sports props and betting research, not a coding task. Use the Outlier tools, read_screenshots for slip screenshots, and web_search. Don't list, search or read the project files unless the user asks about a file.",
+            images: "[Request type] A request about screenshots or images. Read a folder of them with read_screenshots, or use the attached images. If they turn out to be prop slips, research the legs like any prop list. Don't browse the project's code for this.",
+            general: "[Request type] A general question or task, not about the project files. Answer it directly, using web_search for facts you aren't sure of. List, search or read the project files only if the user asks about them."
+        };
+
+        function agentSystemPrompt(agent, workspaceNote, memory, kind = "code") {
+            const coding = kind === "code";
+            // Outside a code task, the coding roles answer as the general agent does: they
+            // aren't told to treat the message as a job on the project.
+            const role = coding || agentDevRole(agent) === "self_healing" ? agentDevRole(agent) : "general";
+            const general = role === "general";
             // A general agent isn't told to treat every message as a coding job, or to nag about
             // a missing project folder when the task may not need one.
             if (general && /^\[Workspace status\] No project/.test(workspaceNote)) workspaceNote = "[Workspace status] No project folder is connected. That only matters if the task is about project files.";
-            return [DEV_ROLES[agentDevRole(agent)].prompt, general ? null : AUTONOMY_RULES, workspaceNote,
+            else if (!coding && workspaceNote) workspaceNote = "[Workspace status] A project folder is connected; its files only matter if the user asks about them.";
+            return [CODEV_IDENTITY, DEV_ROLES[role].prompt, general ? null : AUTONOMY_RULES, coding ? null : REQUEST_KIND_NOTES[kind], workspaceNote,
                 agent.instructions && `[Agent instructions] ${agent.instructions}`, memory].filter(Boolean).join("\n\n");
         }
 
@@ -5289,8 +5554,8 @@
         // One agent's turn. The workspace is indexed again for every agent, since the
         // agent before it may have changed files.
         async function runAgentStep(session, agent, task, opts) {
-            const { extraContext = "", aiOptions = {}, webSources = [], memory = "", notes = "", title, dispatch } = opts;
-            appendMessageToSession(session, `🤖 ${agent.name} (Working...)`, dispatch ? "🧪 Starting a sandbox…" : "📁 Indexing the workspace…");
+            const { extraContext = "", aiOptions = {}, webSources = [], memory = "", notes = "", title, dispatch, kind = "code" } = opts;
+            appendMessageToSession(session, `🤖 ${agent.name} (Working...)`, dispatch ? "🧪 Starting a sandbox…" : kind === "code" ? "📁 Indexing the workspace…" : "Working on it…");
             const placeholder = session.messages[session.messages.length - 1];
             setAgentState(agent.id, "thinking");
             const tools = createToolContext(session, placeholder, agent, webSources);
@@ -5309,10 +5574,11 @@
                     logConsoleActivity(`[Workspace] ${err.message}`);
                     return null;
                 });
-                const context = await buildWorkspaceContext(task, ws);
-                if (ws) logConsoleActivity(`[Workspace] ${agent.name}: tree of ${context.total} files${context.files.length ? ` + ${context.files.join(", ")}` : ""}.`);
+                // Only a code or file task carries the project's files; the tools can still read them.
+                const context = kind === "code" ? await buildWorkspaceContext(task, ws) : { text: "", files: [], total: 0 };
+                if (ws && kind === "code") logConsoleActivity(`[Workspace] ${agent.name}: tree of ${context.total} files${context.files.length ? ` + ${context.files.join(", ")}` : ""}.`);
                 placeholder.text = "Working on it…";
-                const response = await callAI(agentSystemPrompt(agent, workspaceNote(ws), memory), task + context.text + extraContext + notes, { ...aiOptions, tools });
+                const response = await callAI(agentSystemPrompt(agent, workspaceNote(ws), memory, kind), task + context.text + extraContext + notes, { ...aiOptions, tools });
                 finish(title ? title(agent) : `🤖 ${agent.name}`, response, tools.sources);
                 setAgentState(agent.id, "success");
                 return { ok: true, agent, response, changes: tools.changes, commands: tools.commands };
@@ -5338,14 +5604,14 @@
             if (changes.length) {
                 logConsoleActivity(`[Self-Healing Loop] Verifying ${changes.length} changed file(s): ${changes.join(", ")}`);
                 const notes = `\n\n[Changes to verify]\n${changes.join("\n")}` + (commands.length ? `\n\n[Commands already run]\n${commands.join("\n")}` : "") + reports;
-                return runAgentStep(session, healer, `Verify and repair the changes just made for this task: ${task}`, { ...opts, notes, title: a => `🛡️ ${a.name}` });
+                return runAgentStep(session, healer, `Verify and repair the changes just made for this task: ${task}`, { ...opts, kind: "code", notes, title: a => `🛡️ ${a.name}` });
             }
             if (!done.some(r => r.response.includes("```"))) {
                 logConsoleActivity("[Self-Healing Loop] No file changes or code to check.");
                 return null;
             }
             logConsoleActivity("[Self-Healing Loop] Auditing the code in the reply for compiler traps and syntax bugs...");
-            return runAgentStep(session, healer, `Audit the code in these replies to "${task}" for syntax errors, API mismatches and claims the sources don't support. Reply with the corrected code, or say it is clean. Don't change project files for this.`, { ...opts, notes: reports, title: a => `🛡️ ${a.name} (code audit)` });
+            return runAgentStep(session, healer, `Audit the code in these replies to "${task}" for syntax errors, API mismatches and claims the sources don't support. Reply with the corrected code, or say it is clean. Don't change project files for this.`, { ...opts, kind: "code", notes: reports, title: a => `🛡️ ${a.name} (code audit)` });
         }
 
         async function sendChatMessage() {
@@ -5377,6 +5643,9 @@
             const session = chatSessions.find(s => s.id === activeChatId);
             // Earlier turns of this chat, taken before this message joins it.
             aiOptions.history = chatHistoryForModel(session);
+            const lastAsked = [...aiOptions.history].reverse().find(m => m.role === "user");
+            const requestKind = classifyRequest(userText, lastAsked ? lastAsked.content : "", aiOptions.images.length > 0);
+            logConsoleActivity(`[Request] Sorted as ${REQUEST_KIND_LABELS[requestKind]}.`);
             appendMessageToActiveSession("👤 You", userText, attachments.map(a => ({ name: a.name, kind: a.kind, thumb: a.thumb })));
             inputField.value = "";
             clearAttachments();
@@ -5428,7 +5697,7 @@
 
             // 🧪 Sandbox: the agents' edits are staged and reviewed (finishSandboxDispatch) before they are saved.
             const dispatch = sandboxModeActive() ? CodevAgentClient.createSandboxDispatch(agentInfra.client, { task: userText }) : null;
-            const stepOptions = { extraContext: injectedContext, aiOptions, webSources, memory: collectiveMemory, dispatch };
+            const stepOptions = { extraContext: injectedContext, aiOptions, webSources, memory: collectiveMemory, dispatch, kind: requestKind };
 
             if (isBackground) {
                 document.getElementById("isBackgroundWorkerCheckbox").checked = false;

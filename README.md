@@ -71,9 +71,17 @@ The parser doesn't depend on Outlier's markup, but if it misses props, **Save pa
 
 Every agent, the three built in (Architect, Swarm, Self-Healing) and any you add, starts with empty memory, no shared-memory links and generic instructions: it takes its domain (code, data, research, betting analytics…) from your task, not from a project built into CoDev. New agents get the **General** role, which adapts to any task; the developer roles below are for work on a connected project. Engine-specific rules (Godot) are only added when the task is about that engine. When you switch to an unrelated task, **🧹 New task (clear context)** in the menu empties every agent's memory and shared-memory links, opens an empty chat and can unload the project files, so nothing from the old task carries over; **Clear** next to an agent's memory empties just that one.
 
+## Reading screenshots (Dabble slips and more)
+
+Click **📸** next to the chat box and pick the folder you save screenshots in (on a phone, pick the screenshots themselves). Then ask in plain words: "look at my screenshots and research these props", or "read the newest 3 screenshots". The agent's `read_screenshots` tool sends the images, newest first, to the vision model, which writes down every leg on a slip (player, stat, line, Over/Under, sport, game) or the text of any other image. Prop legs go straight on to `outlier_research_list`, the same research a typed list gets. Screenshots you add to the folder later are picked up the next time you ask. A folder inside your project works too ("read the screenshots in the Dabble folder"), and so do screenshots attached with 📎: the vision model reads them first so the agent can still use its tools.
+
+## Every request is sorted first
+
+CoDev is a multi-purpose agent. Before an agent runs, CoDev sorts the request: **code or project files**, **sports props**, **screenshots or images**, or **a general question**. A short follow-up ("now fix it") keeps the type of the message before it. Only code and file tasks get the project's files put in the prompt and the developer rules below; for anything else the Architect and Swarm agents answer like the General agent and leave the project folder alone unless you ask about a file. The Console shows how each request was sorted.
+
 ## Autonomous developer workspace
 
-Every message is treated as a task on your project. You don't type file paths or paste code:
+Every code or file task is treated as a task on your project. You don't type file paths or paste code:
 
 - **Workspace auto-injection.** Each agent request carries the project's file tree, the file open in the editor, the files agents just changed and the files that best match the task. The amount is capped per provider (about 14k characters on Groq, whose free tier has small per-minute token limits, 30k on OpenRouter, 80k on Anthropic); agents read anything else with their tools.
 - **Autonomous execution.** Agents search the project, edit files and, where a command tool exists, run the code, tests or build themselves. Tools are always on.
