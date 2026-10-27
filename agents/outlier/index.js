@@ -18,7 +18,7 @@ const { spawn } = require('child_process');
 const { collectPage, parseCollected, parseText, propId } = require('./extract');
 const { createCapture } = require('./capture');
 const { projectLeg, regressionFlag, gameContext, simulateTicket } = require('./forecast');
-const { navigate, onlyGame, openPlayer, readDetails, readCardTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, periodOf, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf, searchPlayer, clearSearch } = require('./navigate');
+const { navigate, setFilters, onlyGame, openPlayer, readDetails, readCardTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, periodOf, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf, searchPlayer, clearSearch } = require('./navigate');
 const { OUTLIER_PRIMER, OUTLIER_GUIDE } = require('./guide');
 const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
@@ -317,6 +317,11 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     const signedOut = await page.evaluate(() => Boolean(document.querySelector('input[type="password"]')));
                     if (looksSignedOut(page, { passwordField: signedOut })) signInNeeded(page, browser);
                     nav = await navigate(page, target.nav, { settleMs: cfg.settleMs, onProps: rememberProps });
+                }
+                // Outlier's filter panel: alt lines on, the whole odds range, the game.
+                if (target.filters && nav) {
+                    const set = await setFilters(page, { ...target.filters, teams: nav.teams, sport: target.nav.sport }, { settleMs: cfg.settleMs }).catch(() => []);
+                    if (set.length) nav.steps.push(`filters: ${set.join(', ')}`);
                 }
                 // Boards load more rows as they scroll, and long ones remove the rows that
                 // scroll away, so the page is read after every step and the reads are
@@ -1094,7 +1099,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         };
         let boardRead = null;
         const run = await scrape({
-            pages: [{ kind: 'props', url: url || boardStart(sport), nav, scrolls: 400, until, progress }], keep: legs,
+            pages: [{ kind: 'props', url: url || boardStart(sport), nav, filters: { altLines: true, widenOdds: true }, scrolls: 400, until, progress }], keep: legs,
             onPage: async (page, { collected }) => {
                 boardRead = { screens: collected.screens || 1, rows: collected.cards.length + collected.tables.length + collected.configured.length, seconds: Math.round((collected.readMs || 0) / 1000), legsSeen: found.size };
                 const boardProps = parseCollected([{ kind: 'props', url: page.url(), collected }]).props;
