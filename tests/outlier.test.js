@@ -1065,6 +1065,8 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     // Cut short, the run still ends with a slip, its unread legs marked unverified.
     assert.match(slowed.content[0].text, /Slip from what was read \(\d+ leg\(s\) verified on their card; the run was cut short[^\n]*\n1\) /);
     assert.match(slowed.content[0].text, /\(board only, card not read: unverified\)/);
+    // The slip comes before the legs' cards, so a long answer cut by the chat still has it.
+    assert.ok(slowed.content[0].text.indexOf('Slip from what was read') < slowed.content[0].text.indexOf('The legs, with what Outlier showed for each:'));
 
     // One 429, then Outlier answers again: CoDev waits it out and still reads every
     // card whole (every tab), only with slower clicks.
