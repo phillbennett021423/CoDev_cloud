@@ -50,6 +50,17 @@ const STATS = {
     hits: ['hits'], 'shots on goal': ['shots on goal', 'sog', 'shots']
 };
 const normWords = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+// A player's name as apps write it differently: "A.J. Brown" and "AJ Brown",
+// "Marvin Harrison Jr." and "Marvin Harrison", "Luka Dončić" and "Luka Doncic".
+const nameKey = t => normWords(t).replace(/\b([a-z]) (?=[a-z]\b)/g, '$1').replace(/ (jr|sr|ii|iii|iv|v)$/, '').trim();
+const sameName = (a, b) => {
+    const x = nameKey(a), y = nameKey(b);
+    if (!x || !y) return false;
+    if (x === y) return true;
+    // "C. Lamb" for "CeeDee Lamb": a lone first initial and the same last name.
+    const [xf, ...xl] = x.split(' '), [yf, ...yl] = y.split(' ');
+    return xl.length > 0 && xl.join(' ') === yl.join(' ') && (xf.length === 1 || yf.length === 1) && xf[0] === yf[0];
+};
 // "Pts+Rebs+Asts" -> every way a board might write it.
 // A quarter, half, period or first innings of a market ("1st Quarter Receiving
 // Yards", "1H Rush Yds"), by its usual names; null for the full game.
@@ -531,7 +542,9 @@ async function navigate(page, { section, sport, market, game, player, day } = {}
 function markPlayer({ name, stats = [], line = null, avoid = [], need = [] }) {
     document.querySelectorAll('[data-codev-player]').forEach(el => el.removeAttribute('data-codev-player'));
     const norm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
-    const full = norm(name);
+    // "A.J. Brown" and "AJ Brown", "Marvin Harrison Jr." and "Marvin Harrison" (as nameKey).
+    const key = t => norm(t).replace(/\b([a-z]) (?=[a-z]\b)/g, '$1').replace(/ (jr|sr|ii|iii|iv|v)\b/g, '');
+    const full = key(name);
     const parts = full.split(' ');
     const short = parts.length > 1 ? `${parts[0][0]} ${parts.slice(1).join(' ')}` : null;
     const NEVER = /\b(submit|place|enter|confirm|add|pick|slip|deposit|withdraw|remove|delete|more|less|over|under|higher|lower)\b/i;
@@ -541,7 +554,7 @@ function markPlayer({ name, stats = [], line = null, avoid = [], need = [] }) {
     for (const el of document.querySelectorAll('body *')) {
         const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
         if (!text || text.length > 60 || !visible(el)) continue;
-        const own = ` ${norm(text)} `;
+        const own = ` ${key(text)} `;
         if (!own.includes(` ${full} `) && !(short && own.includes(` ${short} `))) continue;
         if (NEVER.test(text)) continue;
         // A prop card that opens on click shows Over/Under itself; one that adds a pick doesn't open.
@@ -1022,7 +1035,7 @@ function keepLegs(props, legs) {
     for (const leg of legs) {
         const name = normWords(leg.player);
         if (!name) continue;
-        const his = props.filter(p => normWords(p.player) === name || normWords(p.player).endsWith(` ${name.split(' ').slice(-1)[0]}`) && normWords(p.player)[0] === name[0]);
+        const his = props.filter(p => sameName(p.player, name) || normWords(p.player).endsWith(` ${name.split(' ').slice(-1)[0]}`) && normWords(p.player)[0] === name[0]);
         const words = statWords(leg.stat);
         const forStat = words.length ? his.filter(p => sameMarket(p.market, leg.stat)) : [];
         (forStat.length ? forStat : his).forEach(p => kept.add(p));
@@ -1203,4 +1216,4 @@ async function setFilters(page, { altLines = true, widenOdds = true, teams = nul
     return did;
 }
 
-module.exports = { setFilters, markFilter, navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords, periodOf, withoutPeriod, scrollStep, scrollPlace, scrollToPlace, settleAfterScroll, placeOf, markSearchBox, searchPlayer, clearSearch };
+module.exports = { sameName, nameKey, setFilters, markFilter, navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords, periodOf, withoutPeriod, scrollStep, scrollPlace, scrollToPlace, settleAfterScroll, placeOf, markSearchBox, searchPlayer, clearSearch };
