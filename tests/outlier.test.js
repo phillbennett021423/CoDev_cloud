@@ -832,7 +832,7 @@ test('NFL quarter and half legs: each player is looked up by name, matched to th
     assert.match(text, /looked up by name in Outlier's search/);
 });
 
-test('Outlier\'s filter panel: alt lines on, the odds range opened past -300, the game ticked, never Only EV+ or Save filters', async t => {
+test('Outlier\'s filter panel (when the user asks CoDev to set it): alt lines on, the odds range opened past -300, the game ticked, never Only EV+ or Save filters', async t => {
     if (!hasPython) return t.skip('Python 3 is not installed');
     const launched = await launchBrowser();
     if (launched.skip) return t.skip(launched.skip);
@@ -894,7 +894,7 @@ test('Outlier\'s filter panel: alt lines on, the odds range opened past -300, th
         { player: 'Jalen Hurts', stat: 'Passing Yards', line: 180.5, side: 'Over' },
         { player: 'CeeDee Lamb', stat: 'Receptions', line: 3.5, side: 'Over' }
     ];
-    const out = await service.callTool('outlier_research_list', { sport: 'NFL', game: 'Cowboys Eagles', legs });
+    const out = await service.callTool('outlier_research_list', { sport: 'NFL', game: 'Cowboys Eagles', set_filters: true, legs });
     const text = out.content[0].text;
     assert.equal(out.isError, undefined, text);
     assert.match(text, /filters: alt lines on, odds from -16500, game Today 7:15 PM Cowboys @ Eagles/, 'the steps say what was set');
@@ -941,6 +941,54 @@ test('"use the page I set up": the board is read as the user left it, no tab, fi
     assert.match(text, /^Outlier > your page as you set it \(filters kept, nothing reloaded\)/);
     assert.match(text, /1\. Jalen Hurts Over 220\.5 Passing Yards\n {3}Outlier 220\.5 Passing Yards/, 'the row was read, so neither the tab nor Filters was clicked');
     assert.equal(loads, 1, 'opened once (a test has no page set up yet), never reloaded');
+});
+
+test('the user\'s own filtered Outlier page is read as it is, never reloaded or re-filtered, without being asked', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const { createService } = require('../agents/outlier');
+    // Clicking Filters or a sport tab empties this board, so a read that finds the row
+    // never clicked them; every load of Outlier is counted.
+    const html = `<!doctype html><body><button id="fb" aria-label="Filters">☰</button><a id="nba">NBA</a><main id="b"></main><script>
+        const b = document.getElementById('b');
+        b.innerHTML = '<div><div class="pn" style="cursor:pointer">Julius Randle</div><div>BKN @ BOS</div><div>Points</div><div>Over 19.5</div><div>FanDuel +115</div><div>L5 40% L10 30%</div></div>';
+        const wipe = () => { b.innerHTML = ''; };
+        document.getElementById('fb').onclick = wipe; document.getElementById('nba').onclick = wipe;
+        b.addEventListener('click', e => {
+            if (!e.target.classList.contains('pn')) return;
+            const p = document.createElement('div'); p.setAttribute('role', 'dialog');
+            p.innerHTML = '<h2>Julius Randle Points</h2><p>L5 40% L10 30%</p>';
+            document.body.appendChild(p);
+        });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') document.querySelectorAll('[role=dialog]').forEach(d => d.remove()); });
+    </script></body>`;
+    const context = await launched.browser.newContext();
+    let loads = 0;
+    await context.route('https://app.outlier.bet/**', route => { loads++; route.fulfill({ status: 200, contentType: 'text/html', body: html }); });
+    await context.route(u => !/app\.outlier\.bet/.test(String(u)), route => route.abort());
+    const shown = await context.newPage();
+    const mine = 'https://app.outlier.bet/NBA/props?filters=ONE_GAME';
+    await shown.goto(mine);
+    const session = { page: shown, agentPage: null };
+    const manager = { registerProfile() {}, close: async () => true, peek: () => session, get: async () => session, workPage: async () => shown };
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [], shared: { manager } });
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 300, backoffMs: [100, 100] }));
+    const service = createService({}, { pipeline });
+    assert.equal(pipeline.userBoard(), mine);
+    // Not told "I set it up": a game and a sport are named, as a screenshot list would.
+    const out = await service.callTool('outlier_research_list', { sport: 'NBA', game: 'Nets vs Celtics', legs: [{ player: 'Julius Randle', stat: 'Points', line: 19.5, side: 'Over' }] });
+    const text = out.content[0].text;
+    assert.equal(out.isError, undefined, text);
+    assert.match(text, /^Outlier > your page as you set it \(filters kept, nothing reloaded\)/);
+    assert.match(text, /Julius Randle Over 19\.5 Points\n {3}Outlier 19\.5 Points/, 'the row was read, so neither Filters nor the sport tab was clicked');
+    const scan = await service.callTool('outlier_scan_board', { sport: 'NBA', game: '7pm' });
+    assert.equal(scan.isError, undefined, scan.content[0].text);
+    assert.equal(loads, 1, 'Outlier was loaded once, by the user, and never reloaded');
+    assert.equal(shown.url(), mine, 'the filters in the address are as the user left them');
 });
 
 test('a long board that only draws the rows on screen: each card opens by jumping back to where the board read saw the player', async t => {
