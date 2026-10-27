@@ -814,7 +814,7 @@ test('NFL quarter and half legs: each player is looked up by name, matched to th
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
     const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
     t.after(() => pipeline.close());
-    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, backoffMs: [100, 100] }));
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 300, backoffMs: [100, 100] }));
     const service = createService({}, { pipeline });
     const legs = [
         { player: 'CeeDee Lamb', stat: '1st Quarter Receiving Yards', line: 14.5, side: 'Over' },
@@ -888,7 +888,7 @@ test('Outlier\'s filter panel: alt lines on, the odds range opened past -300, th
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
     const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
     t.after(() => pipeline.close());
-    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, backoffMs: [100, 100] }));
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 300, backoffMs: [100, 100] }));
     const service = createService({}, { pipeline });
     const legs = [
         { player: 'Jalen Hurts', stat: 'Passing Yards', line: 180.5, side: 'Over' },
@@ -935,7 +935,7 @@ test('a long board that only draws the rows on screen: each card opens by jumpin
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
     const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
     t.after(() => pipeline.close());
-    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, backoffMs: [100, 100] }));
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 300, backoffMs: [100, 100] }));
     const service = createService({}, { pipeline });
     const legs = [5, 880].map(i => ({ player: rows[i].n, stat: 'Points', line: rows[i].l, side: 'Over' }));
     const progress = [];
@@ -991,7 +991,7 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
     const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
     t.after(() => pipeline.close());
-    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, backoffMs: [100, 100] }));
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 300, backoffMs: [100, 100] }));
     const service = createService({}, { pipeline });
     const legs = players.slice(0, 3).map((player, i) => ({ player, stat: 'Points', line: 20.5 + i, side: 'Over' }));
 
@@ -1026,14 +1026,14 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     assert.match(slowed.content[0].text, /Slip from what was read \(\d+ leg\(s\) verified on their card; the run was cut short[^\n]*\n1\) /);
     assert.match(slowed.content[0].text, /\(board only, card not read: unverified\)/);
 
-    // One 429, then Outlier answers again: CoDev waits it out and reads the next cards
-    // light (no tabs), saying so; asked again later, those are read whole.
+    // One 429, then Outlier answers again: CoDev waits it out and still reads every
+    // card whole (every tab), only with slower clicks.
     limit = false;
     once = 1;
-    const light = await service.callTool('outlier_research_list', { sport: 'NBA', legs: more });
-    assert.match(light.content[0].text, /\(Read light: Outlier asked CoDev to slow down/);
-    const whole = await service.callTool('outlier_research_list', { sport: 'NBA', legs: more });
-    assert.doesNotMatch(whole.content[0].text, /Read light/, 'read whole once Outlier stopped limiting');
+    const after = await service.callTool('outlier_research_list', { sport: 'NBA', legs: more });
+    assert.match(after.content[0].text, /Outlier asked CoDev to slow down \(429\)/);
+    assert.doesNotMatch(after.content[0].text, /Read light/);
+    assert.match(after.content[0].text, /\n {3}Card: /, 'the cards after the 429 were read');
 });
 
 test('each card is read whole: every tab on it, minutes and opportunity by window, and falling minutes move a leg down', async t => {

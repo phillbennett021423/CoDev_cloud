@@ -926,7 +926,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // paceMs between cards and backs off when Outlier answers 429 (too many
     // requests), stopping the cards after a third one.
     // restore(): brings the board back if a card replaced it (twice at most).
-    async function researchLegs(page, legs, { boardProps = [], places = [], settleMs = 1500, maxCards = 12, paceMs = 10000, backoffMs = [90000, 120000, 180000, 240000], restore = null } = {}) {
+    async function researchLegs(page, legs, { boardProps = [], places = [], settleMs = 1500, maxCards = 12, paceMs = 10000, clickPaceMs = 3000, backoffMs = [90000, 120000, 180000, 240000], restore = null } = {}) {
         let restores = 0;
         const results = new Map();
         let limited = 0;
@@ -956,8 +956,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             let last = 0;
             for (const { leg, i, own, shown } of order) {
                 const cached = cards.get(cardKey(leg));
-                // A card read light (after a 429) is read again whole while Outlier isn't limiting.
-                if (cached && Date.now() - cached.at < CARD_TTL_MS && !(cached.light && !limited)) { results.set(i, { ...cached, atLine: hitsAtLine(cached.games, leg.line, leg.side), cached: true }); continue; }
+                if (cached && Date.now() - cached.at < CARD_TTL_MS) { results.set(i, { ...cached, atLine: hitsAtLine(cached.games, leg.line, leg.side), cached: true }); continue; }
                 if (opened >= maxCards) break;
                 if (limited >= MAX_429) break;
                 // Pace the cards, and wait out a 429 before the next one.
@@ -1024,28 +1023,28 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     // Everything the card offers: each of its tabs (Supporting Stats,
                     // Game Log, Splits, Matchup, Injuries, Odds Movement...) read in turn,
                     // paced, and no more of them once Outlier says 429.
-                    const pace = Math.max(1500, Math.min(settleMs, 2500));
+                    // Every click inside the card (alt lines, each tab, the with/without
+                    // split) waits clickPaceMs first, twice that once Outlier has said 429,
+                    // so a card's clicks don't land on Outlier in one burst.
+                    const pace = limited > 0 ? Math.min(8000, clickPaceMs * 2) : clickPaceMs;
                     // The game-by-game bars (hovered, never clicked) and the alt lines,
                     // both against the user's line, then the tabs, then the split
                     // without a teammate who is out (it changes the whole card, so last).
                     if (!emptied) step('game-by-game bars');
                     const games = emptied ? [] : await readBars(page).catch(() => []);
-                    // After a 429 a card is read light: the card, its game log and alt
-                    // lines, with its tabs and with/without left for a later run.
-                    const light = limited > 0;
                     if (!emptied && !seen429) step('alt lines');
                     const alt = emptied || seen429 ? null : await readAltLines(page, { line: leg.line, side: leg.side, settleMs: pace, known: text }).catch(() => null);
-                    if (!emptied && !light) step('every tab of the card');
-                    const tabs = emptied || light ? [] : await readCardTabs(page, { settleMs: pace, known: text, stop: () => seen429 > 0 });
+                    if (!emptied) step('every tab of the card');
+                    const tabs = emptied ? [] : await readCardTabs(page, { settleMs: pace, known: text, stop: () => seen429 > 0 });
                     const tabText = tabs.map(t => t.text).join('\n');
-                    if (!emptied && !seen429 && !light) step('with/without injured teammates');
-                    const without = emptied || seen429 || light ? [] : await readWithout(page, { player: leg.player, text: `${text}\n${tabText}`, settleMs: pace, known: `${text}\n${tabText}` }).catch(() => []);
+                    if (!emptied && !seen429) step('with/without injured teammates');
+                    const without = emptied || seen429 ? [] : await readWithout(page, { player: leg.player, text: `${text}\n${tabText}`, settleMs: pace, known: `${text}\n${tabText}` }).catch(() => []);
                     const all = [text, tabText].join('\n');
                     if (emptied) {
                         results.set(i, { error: 'Outlier said too many requests' });
                     } else {
                         const read = { at: Date.now(), opened: label, summary: legSummary(all), text, tabs, numbers: cardNumbers(all),
-                            games, atLine: hitsAtLine(games, leg.line, leg.side), alt, without, ...(light ? { light: true } : {}) };
+                            games, atLine: hitsAtLine(games, leg.line, leg.side), alt, without };
                         cards.set(cardKey(leg), read);
                         saveCards();
                         results.set(i, { ...read, found: place ? 'jumped to his row' : searched ? 'searched his name' : 'searched the board', searched: Boolean(searched), props: found });
@@ -1111,9 +1110,11 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     await navigate(page, nav, { settleMs: config().settleMs });
                 };
                 const cfg = config();
-                // cardPaceMs: the wait between player cards (default 6s), set lower only in tests.
+                // cardPaceMs: the wait between player cards (default 10s); clickPaceMs: the wait
+                // before each click inside a card (default 3s). Both set lower only in tests.
                 research = await researchLegs(page, legs, { boardProps, places: collected.places, settleMs: cfg.settleMs, maxCards, restore,
                     ...(Number.isFinite(cfg.cardPaceMs) ? { paceMs: cfg.cardPaceMs } : {}),
+                    ...(Number.isFinite(cfg.clickPaceMs) ? { clickPaceMs: cfg.clickPaceMs } : {}),
                     ...(Array.isArray(cfg.backoffMs) ? { backoffMs: cfg.backoffMs } : {}) });
                 return research;
             }
@@ -1366,9 +1367,13 @@ const STAT_CHANCES = [
     [/three|3pt|3pm|3-pt|3 pointers/i, ['3PT attempts']],
     [/rebound|reb/i, ['Rebound chances']],
     [/assist|ast/i, ['Potential assists', 'Touches']],
-    [/receiv|reception|target/i, ['Targets', 'Target share', 'Snaps']],
-    [/rush/i, ['Rush attempts', 'Snaps']],
-    [/shot/i, ['Shots on goal']]
+    [/receiv|reception|target/i, ['Targets', 'Target share', 'Routes', 'Air yards', 'Snaps']],
+    [/rush|carries/i, ['Rush attempts', 'Red zone touches', 'Snaps']],
+    [/pass|completion|interception/i, ['Pass attempts', 'Snaps']],
+    [/touchdown|\btds?\b/i, ['Red zone touches', 'Targets', 'Snaps']],
+    [/strikeout|outs recorded|earned run|hits allowed|pitcher|walks allowed/i, ['Pitch count', 'Innings pitched', 'Batters faced']],
+    [/total bases|\bhits\b|runs|rbi|home run|singles|doubles|stolen base|batter walks/i, ['Plate appearances', 'At bats', 'Batting order']],
+    [/shot|goal|saves|power play|blocked/i, ['Shots on goal', 'Time on ice', 'Power play time']]
 ];
 function opportunityShift(leg, numbers) {
     if (!numbers) return 0;
@@ -1665,7 +1670,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                         if (!card) return `${head}\n   ${board}`;
                         if (card.error) return `${head}${board ? `\n   ${board}` : ''}\n   (card not read: ${card.error})`;
                         return `${head}${/another stat/.test(card.opened) ? ` (no prop for this stat at this part of the game on Outlier${card.searched ? ' after searching his name' : ''}${his ? `; Outlier lists for him: ${his}` : ''}; his card for another stat was read)` : ''}\n   ${board ? `${board}\n   ` : ''}Card: ${card.summary}${card.cached ? ' (read earlier)' : ''}`
-                            + cardBody(card, l) + (card.light ? '\n   (Read light: Outlier asked CoDev to slow down, so this card\'s tabs and with/without split were left for a later run.)' : '');
+                            + cardBody(card, l);
                     });
                     const read = { steps };
                     const found = legs.filter((l, i) => matches[i] || (research.results.get(i) && !research.results.get(i).error)).length;
