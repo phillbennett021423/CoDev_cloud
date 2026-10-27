@@ -921,7 +921,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // paceMs between cards and backs off when Outlier answers 429 (too many
     // requests), stopping the cards after a third one.
     // restore(): brings the board back if a card replaced it (twice at most).
-    async function researchLegs(page, legs, { boardProps = [], places = [], settleMs = 1500, maxCards = 12, paceMs = 8000, backoffMs = [30000, 60000, 120000, 180000], restore = null } = {}) {
+    async function researchLegs(page, legs, { boardProps = [], places = [], settleMs = 1500, maxCards = 12, paceMs = 10000, backoffMs = [90000, 120000, 180000, 240000], restore = null } = {}) {
         let restores = 0;
         const results = new Map();
         let limited = 0;
@@ -951,7 +951,8 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             let last = 0;
             for (const { leg, i, own, shown } of order) {
                 const cached = cards.get(cardKey(leg));
-                if (cached && Date.now() - cached.at < CARD_TTL_MS) { results.set(i, { ...cached, atLine: hitsAtLine(cached.games, leg.line, leg.side), cached: true }); continue; }
+                // A card read light (after a 429) is read again whole while Outlier isn't limiting.
+                if (cached && Date.now() - cached.at < CARD_TTL_MS && !(cached.light && !limited)) { results.set(i, { ...cached, atLine: hitsAtLine(cached.games, leg.line, leg.side), cached: true }); continue; }
                 if (opened >= maxCards) break;
                 if (limited >= MAX_429) break;
                 // Pace the cards, and wait out a 429 before the next one.
@@ -960,11 +961,15 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 if (seen429) {
                     limited++;
                     seen429 = 0;
-                    pace = Math.min(30000, pace * 2);
+                    // Slower from here on: at least 2.5x the usual pause, doubling with each 429.
+                    pace = Math.min(45000, Math.max(pace * 2, paceMs * 2.5));
                     if (limited >= MAX_429) break;
                     state.progress = `Outlier asked to slow down: waiting ${Math.round(backoffMs[Math.min(limited - 1, backoffMs.length - 1)] / 1000)}s`;
                     log(`[Outlier] ${state.progress}`);
                     await page.waitForTimeout(backoffMs[Math.min(limited - 1, backoffMs.length - 1)]);
+                    // Outlier's own page keeps refreshing while CoDev waits; those 429s
+                    // aren't CoDev's and don't count against the next card.
+                    seen429 = 0;
                 }
                 const cardName = `Card ${opened + 1} of ${Math.min(order.length, maxCards)}: ${leg.player}${leg.stat ? ` ${leg.stat}` : ''}`;
                 const step = what => { state.progress = `${cardName}, ${what}`; log(`[Outlier] ${state.progress}`); };
@@ -1020,19 +1025,22 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     // without a teammate who is out (it changes the whole card, so last).
                     if (!emptied) step('game-by-game bars');
                     const games = emptied ? [] : await readBars(page).catch(() => []);
+                    // After a 429 a card is read light: the card, its game log and alt
+                    // lines, with its tabs and with/without left for a later run.
+                    const light = limited > 0;
                     if (!emptied && !seen429) step('alt lines');
                     const alt = emptied || seen429 ? null : await readAltLines(page, { line: leg.line, side: leg.side, settleMs: pace, known: text }).catch(() => null);
-                    if (!emptied) step('every tab of the card');
-                    const tabs = emptied ? [] : await readCardTabs(page, { settleMs: pace, known: text, stop: () => seen429 > 0 });
+                    if (!emptied && !light) step('every tab of the card');
+                    const tabs = emptied || light ? [] : await readCardTabs(page, { settleMs: pace, known: text, stop: () => seen429 > 0 });
                     const tabText = tabs.map(t => t.text).join('\n');
-                    if (!emptied && !seen429) step('with/without injured teammates');
-                    const without = emptied || seen429 ? [] : await readWithout(page, { player: leg.player, text: `${text}\n${tabText}`, settleMs: pace, known: `${text}\n${tabText}` }).catch(() => []);
+                    if (!emptied && !seen429 && !light) step('with/without injured teammates');
+                    const without = emptied || seen429 || light ? [] : await readWithout(page, { player: leg.player, text: `${text}\n${tabText}`, settleMs: pace, known: `${text}\n${tabText}` }).catch(() => []);
                     const all = [text, tabText].join('\n');
                     if (emptied) {
                         results.set(i, { error: 'Outlier said too many requests' });
                     } else {
                         const read = { at: Date.now(), opened: label, summary: legSummary(all), text, tabs, numbers: cardNumbers(all),
-                            games, atLine: hitsAtLine(games, leg.line, leg.side), alt, without };
+                            games, atLine: hitsAtLine(games, leg.line, leg.side), alt, without, ...(light ? { light: true } : {}) };
                         cards.set(cardKey(leg), read);
                         saveCards();
                         results.set(i, { ...read, found: place ? 'jumped to his row' : searched ? 'searched his name' : 'searched the board', searched: Boolean(searched), props: found });
@@ -1652,7 +1660,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                         if (!card) return `${head}\n   ${board}`;
                         if (card.error) return `${head}${board ? `\n   ${board}` : ''}\n   (card not read: ${card.error})`;
                         return `${head}${/another stat/.test(card.opened) ? ` (no prop for this stat at this part of the game on Outlier${card.searched ? ' after searching his name' : ''}${his ? `; Outlier lists for him: ${his}` : ''}; his card for another stat was read)` : ''}\n   ${board ? `${board}\n   ` : ''}Card: ${card.summary}${card.cached ? ' (read earlier)' : ''}`
-                            + cardBody(card, l);
+                            + cardBody(card, l) + (card.light ? '\n   (Read light: Outlier asked CoDev to slow down, so this card\'s tabs and with/without split were left for a later run.)' : '');
                     });
                     const read = { steps };
                     const found = legs.filter((l, i) => matches[i] || (research.results.get(i) && !research.results.get(i).error)).length;
@@ -1673,7 +1681,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     }).filter(x => x.score != null).sort((x, y) => y.score - x.score);
                     const best = ranked.slice(0, 8).map(x => `${x.i + 1}. ${x.l.player} ${x.l.side || 'Over'} ${x.l.line ?? ''} ${x.l.stat || ''}: ${Math.round(x.score * 100)}%`.replace(/\s+/g, ' '));
                     const notes = [research.limited ? 'Outlier asked CoDev to slow down (429): CoDev waited it out and slowed down between cards.' : '',
-                        research.unread ? `${research.unread} leg(s) on the board still have their card unread${research.limited ? ' (Outlier kept saying 429)' : ' (cards are read 12 at a time to spare Outlier)'}. To finish, call outlier_research_list again with the same legs: it keeps the board and every card already read and opens only the rest.` : ''].filter(Boolean);
+                        research.unread ? `${research.unread} leg(s) on the board still have their card unread${research.limited ? ' (Outlier kept saying 429)' : ' (cards are read 12 at a time to spare Outlier)'}. ${research.limited ? 'Outlier is limiting CoDev right now, so don\'t call again now: answer from what was read, and tell the user to say "continue" in about 10 minutes; the next call keeps the board and every card already read and opens only the rest.' : 'To finish, call outlier_research_list again with the same legs: it keeps the board and every card already read and opens only the rest.'}` : ''].filter(Boolean);
                     const top = ranked.slice(0, 4);
                     const ticket = top.length >= 2 ? ticketText(top.map(x => x.l), top.map(x => research.results.get(x.i) || null)) : '';
                     const checks = legChecks(legs);
