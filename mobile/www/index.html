@@ -2865,9 +2865,12 @@
                 inputSchema: { type: "object", properties: {
                     folder: { type: "string", description: "Optional: a sub-folder of the 📸 folder, or a folder inside the project (like \"Dabble\"). Leave it out for the 📸 folder." },
                     question: { type: "string", description: "What to look for, in the user's words." },
-                    limit: { type: "integer", description: `Read only the newest N images (default and max ${MAX_SCREENSHOTS}).` }
+                    limit: { type: "integer", description: `Read only the newest N images. Leave it out to read them all (up to ${MAX_SCREENSHOTS}); screenshots read before are remembered, so only new ones go to the vision model.` }
                 } },
-                run: async args => readScreenshotsTool(args)
+                run: async (args, ctx) => {
+                    ctxStep = ctx?.onStep || null;
+                    try { return await readScreenshotsTool(args); } finally { ctxStep = null; }
+                }
             });
             if (ctx && ctx.sandbox) return buildSandboxTools(tools, ctx);
             const mcpTools = await fetchAllMcpTools();
@@ -3155,7 +3158,7 @@
                         if (ctx.toolLog) ctx.toolLog.push(`${step} → ${String(result).replace(/\s+/g, " ").slice(0, MAX_HISTORY_TOOL_CHARS)}`);
                     }
                     // A researched list of legs is one line each: let a long list through whole.
-                    const limit = call.function?.name === "outlier_research_list" ? MAX_TOOL_RESULT_CHARS * 6 : MAX_TOOL_RESULT_CHARS;
+                    const limit = /^(outlier_research_list|read_screenshots)$/.test(call.function?.name) ? MAX_TOOL_RESULT_CHARS * 6 : MAX_TOOL_RESULT_CHARS;
                     messages.push({ role: "tool", tool_call_id: call.id, name: call.function?.name || "unknown", content: String(result).slice(0, limit) });
                 }
             }
@@ -3302,12 +3305,53 @@
         // groups of 3 (Groq's limit per request), and turns prop slips into legs that
         // outlier_research_list takes as they are.
         const SCREENSHOT_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"];
-        const MAX_SCREENSHOTS = 20;
+        const MAX_SCREENSHOTS = 100;
         const SCREENSHOT_EDGE = 1600;
         const VISION_BATCH = 3;
         // The vision model's notes on a message's attached images, read once for all its agents.
         const imageNotesCache = new WeakMap();
-        let screenshotFolder = null;   // { name, handle } from the folder picker, or { name, files } from the file picker
+        let screenshotFolder = null;
+        let ctxStep = null;   // shows read_screenshots' progress on the agent's card   // { name, handle } from the folder picker, or { name, files } from the file picker
+        // What the vision model read on each screenshot, by file, size and date, so asking
+        // again only reads the screenshots that are new since last time.
+        const SCREENSHOT_NOTES_KEY = "codev_screenshot_notes";
+        const MAX_CACHED_SCREENSHOT_NOTES = 300;
+
+        // The picked folder is kept in IndexedDB, so it's still there after a restart.
+        function screenshotFolderStore(op, value) {
+            return new Promise(resolve => {
+                try {
+                    const open = indexedDB.open("codev-screenshots", 1);
+                    open.onupgradeneeded = () => open.result.createObjectStore("folder");
+                    open.onerror = () => resolve(null);
+                    open.onsuccess = () => {
+                        const store = open.result.transaction("folder", op === "get" ? "readonly" : "readwrite").objectStore("folder");
+                        const req = op === "get" ? store.get("current") : store.put(value, "current");
+                        req.onsuccess = () => resolve(req.result ?? null);
+                        req.onerror = () => resolve(null);
+                    };
+                } catch (err) { resolve(null); }
+            });
+        }
+
+        async function restoreScreenshotFolder() {
+            const handle = await screenshotFolderStore("get");
+            if (!handle || screenshotFolder) return;
+            screenshotFolder = { name: handle.name, handle };
+            showScreenshotFolder();
+            logConsoleActivity(`[Screenshots] Remembered folder: ${handle.name}.`);
+        }
+
+        // After a restart the browser asks once more before CoDev reads the folder. It can
+        // only ask right after a click or Enter, so sendChatMessage calls this first.
+        async function screenshotFolderAccess(ask) {
+            const handle = screenshotFolder?.handle;
+            if (!handle || !handle.queryPermission) return true;
+            try {
+                if ((await handle.queryPermission({ mode: "read" })) === "granted") return true;
+                return ask ? (await handle.requestPermission({ mode: "read" })) === "granted" : false;
+            } catch (err) { return false; }
+        }
 
         function isScreenshotName(name) {
             const lower = String(name).toLowerCase();
@@ -3327,6 +3371,7 @@
                 try {
                     const handle = await window.showDirectoryPicker({ id: "codev-screenshots", mode: "read" });
                     screenshotFolder = { name: handle.name, handle };
+                    screenshotFolderStore("put", handle);
                 } catch (err) {
                     if (err.name !== "AbortError") alert("Couldn't open that folder: " + err.message);
                     return;
@@ -3347,7 +3392,7 @@
             }
             showScreenshotFolder();
             logConsoleActivity(`[Screenshots] Agents can read ${screenshotFolder.name} with read_screenshots.`);
-            appendMessageToActiveSession("📸 Screenshots", `Ready: ${screenshotFolder.name}. Ask something like "look at my screenshots and research these props", and the agent reads them. New screenshots saved in the folder are picked up each time.`);
+            appendMessageToActiveSession("📸 Screenshots", `Ready: ${screenshotFolder.name}. Ask something like "look at my screenshots and research these props", and the agent reads them. New screenshots saved in the folder are picked up each time, and CoDev remembers the folder after a restart.`);
         }
 
         // The image files under a folder handle, as { path, file } (sub-folders included).
@@ -3355,7 +3400,7 @@
             for await (const [name, handle] of dirHandle.entries()) {
                 if (found.length >= 500 || isSecretName(name)) continue;
                 if (handle.kind === "directory") { if (!WORKSPACE_SKIPPED_DIRS.has(name)) await walkImageHandle(handle, `${prefix}${name}/`, found); }
-                else if (isScreenshotName(name)) found.push({ path: prefix + name, file: await handle.getFile() });
+                else if (isScreenshotName(name)) found.push({ path: prefix + name, file: await handle.getFile(), handle });
             }
             return found;
         }
@@ -3373,7 +3418,9 @@
             if (folder && !wanted) throw new Error(`"${folder}" isn't a folder CoDev can read (hidden folders and .. are off limits).`);
             const fromFiles = (files, base) => files
                 .filter(f => !base || f.path === base || f.path.startsWith(base + "/"))
-                .map(f => ({ path: f.path, modified: f.file.lastModified || 0, load: () => fileToJpeg(f.file) }));
+                .map(f => ({ path: f.path, modified: f.file.lastModified || 0, key: `${f.path}|${f.file.size}|${f.file.lastModified}`,
+                    // A fresh File each try: an online-only cloud file (Google Drive, OneDrive) downloads as it's read.
+                    load: async () => fileToJpeg(f.handle ? await f.handle.getFile() : f.file) }));
             const sources = [];
             // The 📸 folder: by its name, a sub-folder of it, or when no folder is named.
             if (screenshotFolder) {
@@ -3381,6 +3428,7 @@
                 const base = named ? "" : wanted;
                 sources.push(async () => {
                     if (screenshotFolder.files) return fromFiles(screenshotFolder.files, base);
+                    if (!(await screenshotFolderAccess(false))) throw new Error(`CoDev needs your OK to read "${screenshotFolder.name}" again`);
                     const dir = base ? await subfolderHandle(screenshotFolder.handle, base).catch(() => null) : screenshotFolder.handle;
                     return dir ? fromFiles(await walkImageHandle(dir, "", []), "") : [];
                 });
@@ -3413,7 +3461,11 @@
         }
 
         async function fileToJpeg(file) {
-            const url = URL.createObjectURL(file);
+            let bytes;
+            try { bytes = await file.arrayBuffer(); } catch (err) {
+                throw new Error(`couldn't read the file (${err.message}); if it's an online-only Google Drive or OneDrive file, it may still be downloading`);
+            }
+            const url = URL.createObjectURL(new Blob([bytes], { type: file.type || "image/png" }));
             try { return await dataUrlToJpeg(url); } finally { URL.revokeObjectURL(url); }
         }
 
@@ -3451,8 +3503,66 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             return notes.join("\n\n");
         }
 
+        // Tries a screenshot up to 3 times: a cloud file that's still downloading often works a moment later.
+        async function loadScreenshot(item) {
+            for (let attempt = 1; ; attempt++) {
+                try { return await item.load(); } catch (err) {
+                    if (attempt >= 3) throw err;
+                    logConsoleActivity(`[Screenshots] ${item.path}: ${err.message}. Trying again…`);
+                    await new Promise(resolve => setTimeout(resolve, 1500 * attempt));
+                }
+            }
+        }
+
+        function loadScreenshotNotes() {
+            try { return JSON.parse(localStorage.getItem(SCREENSHOT_NOTES_KEY) || "{}") || {}; } catch (err) { return {}; }
+        }
+
+        function saveScreenshotNotes(notes) {
+            const keys = Object.keys(notes);
+            for (const key of keys.slice(0, Math.max(0, keys.length - MAX_CACHED_SCREENSHOT_NOTES))) delete notes[key];
+            try { localStorage.setItem(SCREENSHOT_NOTES_KEY, JSON.stringify(notes)); } catch (err) { /* storage full: read them again next time */ }
+        }
+
+        // The vision model's notes split per image, by its "### name" headings.
+        function notesByImage(text, names) {
+            const found = {};
+            for (const section of String(text).split(/^(?=###\s)/m)) {
+                const heading = /^###\s*(.+)/.exec(section);
+                const name = heading && names.find(n => heading[1].toLowerCase().includes(n.toLowerCase().split("/").pop()));
+                if (name && !found[name]) found[name] = section.trim();
+            }
+            return found;
+        }
+
+        // Every "Player | Stat | Line | Side | Sport | Game" line, once each: the same leg on
+        // several screenshots counts once, with the screenshots it was on.
+        function collectPropLegs(notes) {
+            const legs = new Map();
+            let current = "";
+            let total = 0;
+            for (const raw of String(notes).split("\n")) {
+                const line = raw.trim();
+                const heading = /^###\s*(.+)$/.exec(line);
+                if (heading) { current = heading[1].trim(); continue; }
+                const cells = line.replace(/^[-*•]\s*/, "").replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+                if (cells.length < 4 || !cells[0] || /^player$/i.test(cells[0]) || !/\d/.test(cells[2])) continue;
+                total++;
+                const key = cells.slice(0, 4).map(c => c.toLowerCase().replace(/[^a-z0-9.]+/g, " ").trim()).join("|");
+                const leg = legs.get(key) || { cells: cells.slice(0, 6), from: [] };
+                for (let i = 4; i < 6; i++) if (cells[i] && !leg.cells[i]) leg.cells[i] = cells[i];
+                if (current && !leg.from.includes(current)) leg.from.push(current);
+                legs.set(key, leg);
+            }
+            return { legs: [...legs.values()], total };
+        }
+
         async function readScreenshotsTool({ folder = "", question = "", limit } = {}) {
-            const found = await findScreenshots(String(folder || ""));
+            let found;
+            try { found = await findScreenshots(String(folder || "")); } catch (err) { return `Couldn't read the screenshots: ${err.message}.`; }
+            if (!found && screenshotFolder?.handle && !(await screenshotFolderAccess(false))) {
+                return `CoDev remembers the screenshots folder "${screenshotFolder.name}", but after a restart the browser needs the user's OK to read it again. Tell the user to send the message again and click Allow (or click 📸 and pick the folder).`;
+            }
             if (!found) {
                 return folder
                     ? `No images found in "${folder}". Tell the user to click 📸 next to the chat box and pick that folder (on a phone, pick the screenshots), then ask again.`
@@ -3460,18 +3570,45 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             }
             const count = Math.max(1, Math.min(MAX_SCREENSHOTS, Number(limit) || MAX_SCREENSHOTS));
             const chosen = found.slice(0, count);
-            logConsoleActivity(`[Screenshots] Reading ${chosen.length} of ${found.length} image(s): ${chosen.map(f => f.path).join(", ")}`);
+            // Screenshots read before (same name, size and date) aren't sent to the vision model again.
+            const cache = loadScreenshotNotes();
+            const known = chosen.filter(item => item.key && cache[item.key]);
+            const fresh = chosen.filter(item => !(item.key && cache[item.key]));
+            logConsoleActivity(`[Screenshots] ${chosen.length} of ${found.length} image(s): ${fresh.length} to read, ${known.length} read before.`);
             const images = [];
             const failed = [];
-            for (const item of chosen) {
-                try { images.push({ name: item.path, url: await item.load() }); } catch (err) { failed.push(`${item.path} (${err.message})`); }
+            for (const item of fresh) {
+                if (ctxStep) ctxStep(`📸 Opening screenshot ${images.length + failed.length + 1} of ${fresh.length}: ${item.path}`);
+                try { images.push({ item, name: item.path, url: await loadScreenshot(item) }); } catch (err) { failed.push(`${item.path} (${err.message})`); }
             }
-            if (!images.length) return `Couldn't open any of the images: ${failed.join("; ")}`;
-            const notes = await readImagesWithVision(images, String(question || ""));
-            return [`Read ${images.length} image(s), newest first${found.length > chosen.length ? ` (${found.length - chosen.length} older one(s) not read; pass a bigger limit for more)` : ""}.`,
-                failed.length ? `Couldn't open: ${failed.join("; ")}` : "",
-                notes,
-                /Prop legs found/i.test(notes) ? "To research these legs, call outlier_research_list once with every leg (player, stat, line, side) as read here, the sport and the day. Say which legs came out [unreadable]." : ""
+            if (!images.length && !known.length) return `Couldn't open any of the images: ${failed.join("; ")}`;
+            const parts = {};
+            for (let i = 0; i < images.length; i += VISION_BATCH) {
+                const batch = images.slice(i, i + VISION_BATCH);
+                if (ctxStep) ctxStep(`📸 Reading screenshots ${i + 1}-${i + batch.length} of ${images.length} with the vision model`);
+                const text = await readImagesWithVision(batch, String(question || ""));
+                const split = notesByImage(text, batch.map(img => img.name));
+                for (const img of batch) {
+                    parts[img.name] = split[img.name] || (batch.length === 1 ? text : "");
+                    if (img.item.key && split[img.name]) cache[img.item.key] = split[img.name];
+                }
+                // A batch that didn't split by image still counts, under its first image.
+                if (batch.every(img => !split[img.name]) && batch.length > 1) parts[batch[0].name] = text;
+            }
+            known.forEach(item => { parts[item.path] = cache[item.key]; });
+            saveScreenshotNotes(cache);
+            const notes = chosen.map(item => parts[item.path]).filter(Boolean).join("\n\n");
+            const { legs, total } = collectPropLegs(notes);
+            const header = `Read ${images.length + known.length} screenshot(s), newest first (${known.length} from earlier reads, unchanged)`
+                + `${found.length > chosen.length ? `; ${found.length - chosen.length} older one(s) not read, pass a bigger limit for more` : ""}.`;
+            if (!legs.length) return [header, failed.length ? `Couldn't open: ${failed.join("; ")}` : "", notes].filter(Boolean).join("\n\n");
+            const otherNotes = notes.split("\n").filter(line => !line.includes("|") && !/^Prop legs found/i.test(line.trim())).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+            return [header,
+                failed.length ? `Couldn't open (say so to the user): ${failed.join("; ")}` : "",
+                `Prop legs found in the screenshots: ${legs.length} different leg(s)${total > legs.length ? ` (${total - legs.length} repeat(s) on more than one screenshot counted once)` : ""}.\nPlayer | Stat | Line | Side | Sport | Game | Screenshots\n`
+                    + legs.map(leg => [...leg.cells, "", ""].slice(0, 6).concat(leg.from.join(", ")).join(" | ")).join("\n"),
+                otherNotes ? `[Other notes from the screenshots]\n${otherNotes.slice(0, 6000)}` : "",
+                "To research these legs, call outlier_research_list once with every leg above (player, stat, line, side), the sport and the day; with legs from several sports, call it once per sport. Say which legs came out [unreadable]."
             ].filter(Boolean).join("\n\n");
         }
 
@@ -5617,6 +5754,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         async function sendChatMessage() {
             let inputField = document.getElementById("userInput");
             let userText = inputField.value.trim();
+            // Right after the click or Enter: the only moment the browser lets CoDev ask to read
+            // a remembered screenshots folder again.
+            if (screenshotFolder?.handle && (IMAGE_TASK.test(userText) || PROPS_TASK.test(userText))) await screenshotFolderAccess(true);
             if (pendingAttachments.some(a => a.processing)) {
                 alert("Attachments are still being prepared. Try again in a moment.");
                 return;
@@ -5749,6 +5889,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             updateWorkspaceGrid();
             updateMobileTabs();
             initAgentInfra();
+            restoreScreenshotFolder();
             // The live view is there wherever agents have a browser (Windows app, npm start).
             setupLiveInput();
             fetchBrowserMcpTools().then(tools => {
