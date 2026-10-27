@@ -685,6 +685,47 @@ async function openPlayer(page, player, { settleMs = 1500, stat = null, line = n
     throw new Error(`Couldn't find ${player} on that Outlier board (${page.url()}). Check the name's spelling, or give the sport, game and stat so the board shows his props.`);
 }
 
+// Whose card is open: true when one of the card's first lines names this player
+// ("Julius Randle", "Julius Randle - Points"). A card left open from the last leg
+// (Escape didn't close it) names someone else, and is never read as his.
+function cardFor(text, player) {
+    const want = nameKey(player);
+    if (!want) return false;
+    return String(text || '').split("\n").slice(0, 60).some(line => {
+        const key = nameKey(line);
+        return key === want || key.startsWith(`${want} `) || sameName(line.split(/\s[-–|·]\s/)[0], player);
+    });
+}
+
+// The stat a card is for, from its "Player - Stat" title, or null.
+function cardStat(text, player) {
+    for (const line of String(text || '').split('\n').slice(0, 30)) {
+        const m = /^(.+?)\s[-–]\s(.+)$/.exec(line.trim());
+        if (m && sameName(m[1], player)) return m[2].trim();
+    }
+    return null;
+}
+
+// Closes an open player card: Escape, then the card's own close button (an × or a
+// button labelled Close in the card), never a pick, slip or filter button.
+async function closeCard(page, { settleMs = 600 } = {}) {
+    const open = () => page.evaluate(() => Boolean(document.querySelector('[role="dialog"], [aria-modal="true"]'))).catch(() => false);
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(settleMs);
+    if (!await open()) return true;
+    await page.evaluate(() => {
+        const card = document.querySelector('[role="dialog"], [aria-modal="true"]');
+        if (!card) return;
+        for (const el of card.querySelectorAll('button, [role="button"]')) {
+            // Its text, or its label when the button is only an icon.
+            const names = [el.innerText, el.getAttribute('aria-label'), el.getAttribute('title')].map(n => (n || '').trim()).filter(Boolean);
+            if (names.some(n => /^(×|✕|✖|x|close|close card|back)$/i.test(n))) { el.click(); return; }
+        }
+    }).catch(() => {});
+    await page.waitForTimeout(settleMs);
+    return !await open();
+}
+
 // Reads every line of the open player card or game page, scrolling to its end.
 async function readDetails(page, { scrolls = 12, maxChars = 12000 } = {}) {
     const lines = [];
@@ -1306,4 +1347,4 @@ async function setFilters(page, { altLines = true, widenOdds = true, teams = nul
     return did;
 }
 
-module.exports = { SUB_TABS, markSubTabs, readSubTabs, sameName, nameKey, setFilters, markFilter, navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords, periodOf, withoutPeriod, scrollStep, scrollPlace, scrollToPlace, settleAfterScroll, placeOf, markSearchBox, searchPlayer, clearSearch };
+module.exports = { cardFor, cardStat, closeCard, SUB_TABS, markSubTabs, readSubTabs, sameName, nameKey, setFilters, markFilter, navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords, periodOf, withoutPeriod, scrollStep, scrollPlace, scrollToPlace, settleAfterScroll, placeOf, markSearchBox, searchPlayer, clearSearch };

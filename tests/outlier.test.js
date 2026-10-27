@@ -991,6 +991,52 @@ test('the user\'s own filtered Outlier page is read as it is, never reloaded or 
     assert.equal(shown.url(), mine, 'the filters in the address are as the user left them');
 });
 
+test('a card that Escape doesn\'t close is never read as the next player\'s card', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    const { cardFor, cardStat } = require('../agents/outlier/navigate');
+    assert.equal(cardFor('Derrick White\nDerrick White - 1H Pts+Reb+Ast\nL5 40%', 'Jayson Tatum'), false);
+    assert.equal(cardFor('Julius Randle PF\nJulius Randle - Points', 'Julius Randle'), true);
+    assert.equal(cardStat('Julius Randle\nJulius Randle - Points', 'Julius Randle'), 'Points');
+    // Like the run that read Derrick White's card for five legs: the card stays open on
+    // Escape (only its × closes it), and a click on another row while it's open does nothing.
+    const players = [['Derrick White', '1H Pts+Reb+Ast', 12.5], ['Jayson Tatum', 'Points', 26.5], ['Paul George', 'Points', 15.5]];
+    const board = players.map(([n, st, l]) => `<div><div class="pn" style="cursor:pointer">${n}</div><div>BOS @ BKN</div><div>${st}</div><div>Over ${l}</div><div>FanDuel -119</div><div>L5 60% L10 70%</div></div>`).join('');
+    const page = `<!doctype html><body><main id="b">${board}</main><script>
+        document.getElementById('b').addEventListener('click', e => {
+            if (!e.target.classList.contains('pn') || document.querySelector('[role=dialog]')) return;
+            const row = e.target.parentElement.children;
+            const p = document.createElement('div'); p.setAttribute('role', 'dialog');
+            p.innerHTML = '<button aria-label="Close">×</button><h2>' + row[0].textContent + '</h2><p>' + row[0].textContent + ' - ' + row[2].textContent + '</p><p>L5 60% L10 70%</p><p>Minutes 30.0</p>';
+            p.querySelector('button').onclick = () => p.remove();
+            document.body.appendChild(p);
+        });
+    </script></body>`;
+    const server = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(page); });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/NBA/props`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 50, backoffMs: [100, 100] }));
+    const service = createService({}, { pipeline });
+    const legs = players.map(([player, stat, line]) => ({ player, stat, line, side: 'Over' }));
+    const out = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
+    const text = out.content[0].text;
+    assert.equal(out.isError, undefined, text);
+    for (const [n, st] of players) {
+        const block = text.split('The legs, with what Outlier showed for each:')[1].split(/\n(?=\d+\. )/).find(b => b.includes(`${n} Over`));
+        assert.ok(block && block.includes(`Card:`), `${n} has a card: ${block}`);
+        for (const [other] of players) if (other !== n) assert.ok(!block.includes(`${other} - `), `${n}'s card is not ${other}'s: ${block}`);
+        assert.ok(block.includes(`${n} - ${st}`), `${n}'s own card was read: ${block}`);
+    }
+});
+
 test('a long board that only draws the rows on screen: each card opens by jumping back to where the board read saw the player', async t => {
     if (!hasPython) return t.skip('Python 3 is not installed');
     const launched = await launchBrowser();
