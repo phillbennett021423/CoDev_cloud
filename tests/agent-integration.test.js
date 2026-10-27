@@ -351,7 +351,7 @@ test("the agent's card shows its browser live, and the user can drive it from th
     // The live picture appears in the selected agent's own card.
     const viewport = page.locator(`.agent-card[data-agent-id="${agentId}"] .agent-browser-panel #agentViewport`);
     await viewport.waitFor({ state: 'visible', timeout: 20000 });
-    await page.waitForFunction(() => (document.getElementById('agentViewport').getAttribute('src') || '').startsWith('data:image/jpeg;base64,'), null, { timeout: 20000 });
+    await page.waitForFunction(() => (document.getElementById('agentViewport').getAttribute('src') || '').startsWith('blob:'), null, { timeout: 20000 });
     assert.equal(await page.textContent('#agentViewportUrl'), url);
     if (process.env.CODEV_CARD_SCREENSHOT) await page.locator(`.agent-card[data-agent-id="${agentId}"]`).screenshot({ path: process.env.CODEV_CARD_SCREENSHOT });
 

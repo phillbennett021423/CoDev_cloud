@@ -366,3 +366,158 @@ test('an Outlier prompt goes straight to the Outlier scan, and says how to get i
     const without = await other.page.evaluate(() => window.__modelCalls);
     assert.match(without[0].system, /The Outlier scan isn't available here\. .*start-codev\.bat/);
 });
+
+test('each request is sorted first: only code and file tasks carry the project, and a question never browses it', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const workspace = makeWorkspace();
+    const backend = createMockBackend({ workspace });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const { page, errors } = await openPage(launched.browser, url, { steps: ['Paris.', 'Added it.'] });
+    await page.uncheck('#isSandboxCheckbox');
+    await page.evaluate(() => { loadedProjectFiles = { 'README.md': '# Demo\n', 'src/app.js': 'console.log(1);\n' }; });
+
+    const kinds = await page.evaluate(() => [
+        classifyRequest('What is the capital of France?'),
+        classifyRequest('Look up player props for LeBron tonight'),
+        classifyRequest('Read the screenshots in my folder'),
+        classifyRequest('Fix the bug in src/app.js'),
+        classifyRequest('now do the same for the other one', 'Fix the bug in src/app.js'),
+        classifyRequest('Build me a 5 leg slip from these', '', true)
+    ]);
+    assert.deepEqual(kinds, ['general', 'props', 'images', 'code', 'code', 'props']);
+
+    await sendPrompt(page, 'What is the capital of France?');
+    await waitForChat(page, /Paris\./);
+    await sendPrompt(page, 'Add a footer to src/app.js');
+    await waitForChat(page, /Added it\./);
+    const calls = await page.evaluate(() => window.__modelCalls);
+    const question = calls[0].messages.at(-1).content;
+    assert.doesNotMatch(question, /\[Workspace/, 'a question carries no project files');
+    assert.match(calls[0].system, /You are CoDev, a multi-purpose agent/);
+    assert.match(calls[0].system, /\[Request type\] A general question/);
+    assert.doesNotMatch(calls[0].system, /AUTONOMOUS DEVELOPER MODE/);
+    assert.ok(calls[0].tools.includes('read_screenshots'));
+    const coding = calls[1].messages.at(-1).content;
+    assert.match(coding, /\[Workspace File: src\/app\.js\]/, 'a code task carries the files');
+    assert.match(calls[1].system, /AUTONOMOUS DEVELOPER MODE/);
+    assert.deepEqual(errors, []);
+});
+
+test('read_screenshots reads the whole 📸 folder, counts a leg on two screenshots once, remembers what it read and hands the legs to the Outlier research', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const backend = createMockBackend({ workspace: makeWorkspace(), agentTools: {
+        outlier_research_list: (box, args) => `Researched ${args.legs.length} legs.`
+    } });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const legs = 'Prop legs found in the screenshots:\nLeBron James | Points | 25.5 | Over | NBA | vs BOS 7:30 PM';
+    const research = [{ name: 'outlier_research_list', arguments: { sport: 'NBA', legs: [{ player: 'LeBron James', stat: 'Points', line: 25.5, side: 'over' }] } }];
+    const { page, errors } = await openPage(launched.browser, url, { steps: [
+        [{ name: 'read_screenshots', arguments: { question: 'research these' } }],
+        `### IMG_2811.PNG\n${legs}\nJayson Tatum | Rebounds | 8.5 | Under | NBA |\n\n### IMG_2810.PNG\n${legs}\nEntry $10, pays 3x`,
+        research,
+        'LeBron Over 25.5 points checks out.',
+        [{ name: 'read_screenshots', arguments: {} }],
+        'Same legs as before.'
+    ] });
+    page.on('dialog', dialog => dialog.accept());
+    // No screenshots picked yet: the tool says how to pick them.
+    assert.match(await page.evaluate(() => readScreenshotsTool({})), /click 📸/);
+    await page.evaluate(async () => {
+        localStorage.removeItem(SCREENSHOT_NOTES_KEY);
+        const canvas = document.createElement('canvas');
+        canvas.width = 40; canvas.height = 80;
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        const file = (name, modified) => ({ path: name, file: new File([blob], name, { type: 'image/png', lastModified: modified }) });
+        screenshotFolder = { name: 'New folder', files: [file('IMG_2810.PNG', 1), file('IMG_2811.PNG', 2), { path: 'notes.txt', file: new File(['x'], 'notes.txt') }].filter(f => isScreenshotName(f.path)) };
+    });
+    await sendPrompt(page, 'Look at my Dabble screenshots and research them');
+    await waitForChat(page, /checks out/);
+    let calls = await page.evaluate(() => window.__modelCalls);
+    const vision = calls[1];
+    assert.match(vision.system, /Prop legs found in the screenshots/);
+    assert.equal((vision.messages[0].content.match(/data:image\/jpeg;base64/g) || []).length, 2, 'both screenshots went to the vision model in one batch');
+    const toolResult = calls[2].messages.find(m => m.role === 'tool').content;
+    assert.match(toolResult, /2 different leg\(s\) \(1 repeat\(s\)/);
+    assert.match(toolResult, /LeBron James \| Points \| 25\.5 \| Over \| NBA \| vs BOS 7:30 PM \| IMG_2811\.PNG, IMG_2810\.PNG/);
+    assert.match(toolResult, /Jayson Tatum \| Rebounds \| 8\.5 \| Under/);
+    assert.match(toolResult, /Entry \$10, pays 3x/);
+    assert.match(toolResult, /call outlier_research_list/);
+    assert.ok(backend.log.some(entry => entry.tool === 'outlier_research_list'), 'the legs were researched');
+
+    // Asked again with the same screenshots: nothing goes to the vision model.
+    await sendPrompt(page, 'Read my screenshots again');
+    await waitForChat(page, /Same legs as before\./);
+    calls = await page.evaluate(() => window.__modelCalls);
+    const again = calls.slice(4);
+    assert.equal(again.length, 2, 'two agent turns and no second vision call');
+    assert.ok(!again.some(c => /You read screenshots for CoDev/.test(c.system)), 'no second vision call');
+    assert.match(again[1].messages.find(m => m.role === 'tool').content, /2 from earlier reads[\s\S]*LeBron James \| Points/);
+    assert.deepEqual(errors, []);
+});
+
+test('📎 takes more than 3 screenshots: the vision model reads them 3 at a time and the agent gets every leg once', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const backend = createMockBackend({ workspace: makeWorkspace() });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const leg = 'Prop legs found in the screenshots:\nLeBron James | Points | 25.5 | Over | NBA |';
+    const { page, errors } = await openPage(launched.browser, url, { steps: [
+        `### Attached image 1\n${leg}\n### Attached image 2\n${leg}\n### Attached image 3\nJayson Tatum | Rebounds | 8.5 | Under | NBA |`,
+        `### Attached image 4\n${leg}\n### Attached image 5\nNikola Jokic | Assists | 9.5 | Over | NBA |`,
+        'Here is the slip.'
+    ] });
+    page.on('dialog', dialog => dialog.accept());
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    await page.setInputFiles('#attachmentInput', [1, 2, 3, 4, 5].map(n => ({ name: `IMG_28${n}.PNG`, mimeType: 'image/png', buffer: png })));
+    await page.waitForFunction(() => pendingAttachments.length === 5 && pendingAttachments.every(a => !a.processing));
+    await sendPrompt(page, 'Build me a slip from these Dabble props');
+    await waitForChat(page, /Here is the slip\./);
+    const calls = await page.evaluate(() => window.__modelCalls);
+    const imagesIn = call => (call.messages.at(-1).content.match(/data:image\/jpeg;base64/g) || []).length;
+    assert.deepEqual([imagesIn(calls[0]), imagesIn(calls[1])], [3, 2], 'two vision requests, 3 images at most each');
+    const asked = calls[2].messages.at(-1).content;
+    assert.match(asked, /3 different leg\(s\) \(2 repeat\(s\)/);
+    assert.match(asked, /Nikola Jokic \| Assists \| 9\.5 \| Over/);
+    assert.ok(calls[2].tools.length > 0, 'the agent still has its tools');
+    assert.deepEqual(errors, []);
+});
+
+test('a folder named by its full path is read without a picker or an upload, and remembered for next time', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { handleImageFolder } = require('../desktop/image-folder');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'New folder '));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    for (let n = 0; n < 5; n++) fs.writeFileSync(path.join(dir, `IMG_281${n}.PNG`), png);
+    const backend = createMockBackend({ workspace: makeWorkspace() });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const leg = n => `### IMG_281${n}.PNG\nProp legs found in the screenshots:\nLeBron James | Points | 25.5 | Over | NBA |`;
+    const { page, errors } = await openPage(launched.browser, url, { steps: [
+        [{ name: 'read_screenshots', arguments: { folder: dir } }],
+        [4, 3, 2].map(leg).join('\n'), [1, 0].map(leg).join('\n'),
+        'All five read.',
+        [{ name: 'read_screenshots', arguments: {} }],
+        'Read them again.'
+    ] });
+    page.on('dialog', dialog => dialog.accept());
+    await page.exposeFunction('__imageFolder', req => handleImageFolder(req));
+    await page.evaluate(() => { localStorage.removeItem(SCREENSHOT_NOTES_KEY); window.imageFolderRequest = req => window.__imageFolder(req); });
+    await sendPrompt(page, `Look in ${dir} and research the props`);
+    await waitForChat(page, /All five read\./);
+    let calls = await page.evaluate(() => window.__modelCalls);
+    const result = calls[3].messages.find(m => m.role === 'tool').content;
+    assert.match(result, /Read 5 screenshot/);
+    assert.match(result, /1 different leg\(s\) \(4 repeat\(s\)/);
+    assert.equal(await page.evaluate(() => localStorage.getItem(SCREENSHOT_PATH_KEY)), dir, 'the folder is remembered');
+
+    // Next time, "my screenshots" is enough, and nothing is read twice.
+    await sendPrompt(page, 'Read my screenshots again');
+    await waitForChat(page, /Read them again\./);
+    calls = await page.evaluate(() => window.__modelCalls);
+    assert.equal(calls.length, 6, 'no new vision requests');
+    assert.match(calls[5].messages.find(m => m.role === 'tool' && /5 from earlier reads/.test(m.content)).content, /LeBron James/);
+    assert.deepEqual(errors, []);
+});

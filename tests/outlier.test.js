@@ -10,7 +10,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { parseText, parseTable, parseResult, parseCollected, collectPage } = require('../agents/outlier/extract');
-const { createOutlierPipeline, sameLeg } = require('../agents/outlier');
+const { createOutlierPipeline, sameLeg, thirdParty } = require('../agents/outlier');
 const { launchBrowser } = require('./helpers/page-driver');
 
 const BOARD = fs.readFileSync(path.join(__dirname, 'fixtures', 'outlier-board.html'), 'utf8');
@@ -758,11 +758,11 @@ test('a list of legs for tomorrow is researched in one visit: each player\'s car
     const text = reply.content[0].text;
     assert.match(text, /^Outlier > Props > NBA > Tomorrow > 7:00 PM WAS vs CHA\nFound 3 of 4 legs on Outlier\./);
     assert.match(text, /1\. Bilal Coulibaly Over 3\.5 Rebounds\n {3}Outlier 4\.5 Rebounds \(over -119\): no hit rates shown \(for Outlier's 4\.5 \(the line moved; your 3\.5 is 1 easier\)\)\n {3}Card: Hit L5 90%, L10 70% \| Matchup: CHA rank vs SF: 28th \| Injuries: Mark Williams OUT \| Usage: Minutes 31\.2/, 'his rebounds card, not his points one');
-    assert.match(text, /Best on Outlier's hit rates.*\n1\. Bilal Coulibaly Over 3\.5 Rebounds: 80%\n2\. LaMelo Ball Higher 16\.5 Points: 55%/, 'legs are ranked, on the card\'s hit rates when the board row shows none');
+    assert.match(text, /Best on Outlier's hit rates.*\n1\. Bilal Coulibaly Over 3\.5 Rebounds: 80% \([^)]*\)\n2\. LaMelo Ball Higher 16\.5 Points: 55% \([^)]*\)/, 'legs are ranked, on the card\'s hit rates when the board row shows none');
     assert.match(text, /For reference only, CoDev's sportsbook audit/);
     assert.match(text, /2\. LaMelo Ball Higher 16\.5 Points\n {3}Outlier 16\.5 Points \(over -119\): no hit rates shown \(on your line\)\n {3}Card: Hit L5 40%/);
-    assert.match(text, /3\. Michael Jordan Over 30\.5 Points: no Points prop for him on Outlier's board for this game \(can't be checked on Outlier\)/);
-    assert.match(text, /4\. LaMelo Ball Under 30\.5 Pts\+Rebs\+Asts \(no prop for this stat on Outlier/);
+    assert.match(text, /3\. Michael Jordan Over 30\.5 Points: no Points prop at this part of the game for him on Outlier for this game \(read the whole board; Outlier lists no props for him\)\. Can't be checked on Outlier\./);
+    assert.match(text, /4\. LaMelo Ball Under 30\.5 Pts\+Rebs\+Asts \(no prop for this stat at this part of the game on Outlier/);
     assert.match(text, /Checks:\n- LaMelo Ball is on legs 2, 4: an Over and an Under on him work against each other/);
     assert.match(text, /a DFS leg doesn't need to pass it\):\n\d+ props/);
     const audited = JSON.parse(fs.readFileSync(pipeline.files.scrape, 'utf8'));
@@ -777,6 +777,265 @@ test('a list of legs for tomorrow is researched in one visit: each player\'s car
     const ev = await service.callTool('outlier_read_section', { section: '+EV' });
     assert.equal(ev.isError, true);
     assert.match(ev.content[0].text, /Pro tools/);
+});
+
+test('NFL quarter and half legs: each player is looked up by name, matched to the same quarter or half, and a missing one says what Outlier lists for him', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    // The board shows each player's main props; his quarter and half props show when
+    // his name is searched. A pick slip's amount field sits next to it and must stay empty.
+    const rows = [
+        ['CeeDee Lamb', 'Receiving Yards', 64.5, true], ['CeeDee Lamb', '1st Quarter Receiving Yards', 14.5, false], ['CeeDee Lamb', '2nd Quarter Receiving Yards', 18.5, false],
+        ['Saquon Barkley', 'Rushing Yards', 80.5, true], ['Saquon Barkley', 'Receptions', 3.5, false], ['Jalen Hurts', 'Passing Yards', 220.5, true]
+    ];
+    const page = `<!doctype html><body><div class="betslip"><input id="amt" placeholder="Entry amount"></div><input id="q" placeholder="Search players"><main id="b"></main><script>
+        const rows = ${JSON.stringify(rows)};
+        const b = document.getElementById('b'); const q = document.getElementById('q');
+        function draw() { const f = q.value.toLowerCase(); b.innerHTML = rows.filter(r => f ? r[0].toLowerCase().includes(f) : r[3]).map(r => '<div><div class="pn" style="cursor:pointer">' + r[0] + '</div><div>DAL @ PHI</div><div>' + r[1] + '</div><div>Over ' + r[2] + '</div><div>FanDuel -115</div><div>L5 60% L10 70%</div></div>').join(''); }
+        q.addEventListener('input', draw); draw();
+        b.addEventListener('click', e => {
+            if (!e.target.classList.contains('pn')) return;
+            const market = e.target.parentElement.children[2].textContent;
+            history.pushState({}, '', location.pathname + '?market=' + encodeURIComponent(market));
+            const p = document.createElement('div'); p.setAttribute('role', 'dialog');
+            p.innerHTML = '<h2>' + e.target.textContent + ' ' + market + '</h2><p>L5 80% L10 60%</p><p>Targets 9.7</p>';
+            document.body.appendChild(p);
+        });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') { document.querySelectorAll('[role=dialog]').forEach(d => d.remove()); history.pushState({}, '', location.pathname); } });
+    </script></body>`;
+    const server = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(page); });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/NFL/props`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 300, backoffMs: [100, 100] }));
+    const service = createService({}, { pipeline });
+    const legs = [
+        { player: 'CeeDee Lamb', stat: '1st Quarter Receiving Yards', line: 14.5, side: 'Over' },
+        { player: 'Saquon Barkley', stat: 'First Half Receptions', line: 1.5, side: 'Over' },
+        { player: 'CeeDee Lamb', stat: 'Receiving Yards', line: 64.5, side: 'Over' }
+    ];
+    const out = await service.callTool('outlier_research_list', { sport: 'NFL', legs });
+    const text = out.content[0].text;
+    assert.equal(out.isError, undefined, text);
+    assert.match(text, /1\. CeeDee Lamb Over 14\.5 1st Quarter Receiving Yards\n {3}Outlier 14\.5 1st Quarter Receiving Yards \(over -115\)[^\n]*\n {3}Card: [^\n]*/, 'the 1st-quarter leg matched the 1st-quarter row found by searching his name');
+    assert.match(text, /CeeDee Lamb 1st Quarter Receiving Yards · L5 80%/, 'his 1st-quarter card was the one opened');
+    assert.match(text, /2\. Saquon Barkley Over 1\.5 First Half Receptions \(no prop for this stat at this part of the game on Outlier after searching his name; Outlier lists for him: Rushing Yards 80\.5, Receptions 3\.5; his card for another stat was read\)/);
+    assert.doesNotMatch(text, /Saquon Barkley[^\n]*\n {3}Outlier /, 'his full-game receptions row is not his first-half one');
+    assert.match(text, /3\. CeeDee Lamb Over 64\.5 Receiving Yards\n {3}Outlier 64\.5 Receiving Yards \(over -115\)/, 'the full-game leg matched the full-game row, not a quarter');
+    assert.match(text, /looked up by name in Outlier's search/);
+});
+
+test('Outlier\'s filter panel (when the user asks CoDev to set it): alt lines on, the odds range opened past -300, the game ticked, never Only EV+ or Save filters', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    // Rows: player, market, line, odds, alt line?, game. The board hides odds under
+    // the odds floor (-300 by default) and alt lines until they're switched on.
+    const rows = [
+        ['Jalen Hurts', 'Passing Yards', 220.5, -115, false, 'DAL @ PHI'], ['Jalen Hurts', 'Passing Yards', 180.5, -450, true, 'DAL @ PHI'],
+        ['CeeDee Lamb', 'Receptions', 3.5, -520, false, 'DAL @ PHI'], ['Jordan Love', 'Passing Yards', 240.5, -110, false, 'CAR @ GB']
+    ];
+    const page = `<!doctype html><body><button id="fb" aria-label="Filters">☰</button><div class="betslip"><input placeholder="Entry amount"></div><main id="b"></main>
+        <div id="panel" hidden><h3>Current filters</h3>
+          <div class="row"><span>Only EV+</span><button role="switch" id="ev" aria-checked="false"></button></div>
+          <div class="row"><span>Games</span></div>
+          <label><input type="checkbox" id="g1"><span>Today 7:15 PM</span> <span>Cowboys @ Eagles</span></label>
+          <label><input type="checkbox" id="g2"><span>Thursday 7:15 PM</span> <span>Panthers @ Packers</span></label>
+          <div class="row" id="oddsrow"><span>Odds</span><span id="oddsat">At least -300</span></div>
+          <div id="oddsbox" hidden><div role="slider" tabindex="0" id="from" aria-valuemin="-16500" aria-valuemax="16000" aria-valuenow="-300" style="width:20px;height:20px">||</div></div>
+          <div class="row"><span>Opponent Matchup</span></div>
+          <div class="row"><span>Include alternative lines</span><button role="switch" id="alt" aria-checked="false"></button></div>
+          <button id="save">SAVE FILTERS</button><button id="show">SHOW 3109 RESULTS</button>
+        </div><script>
+        const rows = ${JSON.stringify(rows)}; const state = { alt: false, floor: -300, game: null };
+        const b = document.getElementById('b'), panel = document.getElementById('panel');
+        function draw() { b.innerHTML = rows.filter(r => (state.alt || !r[4]) && r[3] >= state.floor && (!state.game || r[5] === state.game)).map(r => '<div><div class="pn" style="cursor:pointer">' + r[0] + '</div><div>' + r[5] + '</div><div>' + r[1] + '</div><div>Over ' + r[2] + '</div><div>FanDuel ' + r[3] + '</div><div>L5 80% L10 70%</div></div>').join(''); }
+        draw();
+        document.getElementById('fb').onclick = () => { panel.hidden = false; };
+        document.getElementById('alt').onclick = e => { e.target.setAttribute('aria-checked', String(e.target.getAttribute('aria-checked') !== 'true')); };
+        document.getElementById('ev').onclick = () => { state.floor = 1e9; draw(); };
+        document.getElementById('save').onclick = () => { state.floor = 1e9; draw(); };
+        document.getElementById('oddsrow').onclick = () => { document.getElementById('oddsbox').hidden = false; };
+        document.getElementById('from').addEventListener('keydown', e => { if (e.key === 'Home') { e.target.setAttribute('aria-valuenow', '-16500'); document.getElementById('oddsat').textContent = 'At least -16500'; } });
+        document.getElementById('show').onclick = () => {
+            state.alt = document.getElementById('alt').getAttribute('aria-checked') === 'true';
+            state.floor = Number(document.getElementById('from').getAttribute('aria-valuenow'));
+            state.game = document.getElementById('g1').checked ? 'DAL @ PHI' : null;
+            panel.hidden = true; draw();
+        };
+        b.addEventListener('click', e => {
+            if (!e.target.classList.contains('pn')) return;
+            const p = document.createElement('div'); p.setAttribute('role', 'dialog');
+            p.innerHTML = '<h2>' + e.target.textContent + ' ' + e.target.parentElement.children[2].textContent + '</h2><p>L5 80% L10 70%</p>';
+            document.body.appendChild(p);
+        });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') { document.querySelectorAll('[role=dialog]').forEach(d => d.remove()); panel.hidden = true; } });
+    </script></body>`;
+    const server = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(page); });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/NFL/props`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 300, backoffMs: [100, 100] }));
+    const service = createService({}, { pipeline });
+    const legs = [
+        { player: 'Jalen Hurts', stat: 'Passing Yards', line: 180.5, side: 'Over' },
+        { player: 'CeeDee Lamb', stat: 'Receptions', line: 3.5, side: 'Over' }
+    ];
+    const out = await service.callTool('outlier_research_list', { sport: 'NFL', game: 'Cowboys Eagles', set_filters: true, legs });
+    const text = out.content[0].text;
+    assert.equal(out.isError, undefined, text);
+    assert.match(text, /filters: alt lines on, odds from -16500, game Today 7:15 PM Cowboys @ Eagles/, 'the steps say what was set');
+    assert.match(text, /1\. Jalen Hurts Over 180\.5 Passing Yards\n {3}Outlier 180\.5 Passing Yards/, 'his alt line shows once alt lines are on');
+    assert.match(text, /2\. CeeDee Lamb Over 3\.5 Receptions\n {3}Outlier 3\.5 Receptions \(over -520\)/, 'a -520 line shows once the odds range is opened');
+    assert.doesNotMatch(text, /Jordan Love/, 'the other game is filtered out');
+});
+
+test('"use the page I set up": the board is read as the user left it, no tab, filter or reload', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    // Clicking Filters or the NFL tab would empty this board, so a read that finds the
+    // row never clicked them.
+    const page = `<!doctype html><body><button id="fb" aria-label="Filters">☰</button><a id="nfl">NFL</a><main id="b"></main><script>
+        const b = document.getElementById('b');
+        b.innerHTML = '<div><div class="pn" style="cursor:pointer">Jalen Hurts</div><div>DAL @ PHI</div><div>Passing Yards</div><div>Over 220.5</div><div>FanDuel -115</div><div>L5 80% L10 70%</div></div>';
+        const wipe = () => { b.innerHTML = ''; };
+        document.getElementById('fb').onclick = wipe; document.getElementById('nfl').onclick = wipe;
+        b.addEventListener('click', e => {
+            if (!e.target.classList.contains('pn')) return;
+            const p = document.createElement('div'); p.setAttribute('role', 'dialog');
+            p.innerHTML = '<h2>Jalen Hurts Passing Yards</h2><p>L5 80% L10 70%</p>';
+            document.body.appendChild(p);
+        });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') document.querySelectorAll('[role=dialog]').forEach(d => d.remove()); });
+    </script></body>`;
+    let loads = 0;
+    const server = http.createServer((req, res) => { loads++; res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(page); });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/NFL/props`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 300, backoffMs: [100, 100] }));
+    const service = createService({}, { pipeline });
+    const out = await service.callTool('outlier_research_list', { sport: 'NFL', here: true, legs: [{ player: 'Jalen Hurts', stat: 'Passing Yards', line: 220.5, side: 'Over' }] });
+    const text = out.content[0].text;
+    assert.equal(out.isError, undefined, text);
+    assert.match(text, /^Outlier > your page as you set it \(filters kept, nothing reloaded\)/);
+    assert.match(text, /1\. Jalen Hurts Over 220\.5 Passing Yards\n {3}Outlier 220\.5 Passing Yards/, 'the row was read, so neither the tab nor Filters was clicked');
+    assert.equal(loads, 1, 'opened once (a test has no page set up yet), never reloaded');
+});
+
+test('the user\'s own filtered Outlier page is read as it is, never reloaded or re-filtered, without being asked', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const { createService } = require('../agents/outlier');
+    // Clicking Filters or a sport tab empties this board, so a read that finds the row
+    // never clicked them; every load of Outlier is counted.
+    const html = `<!doctype html><body><button id="fb" aria-label="Filters">☰</button><a id="nba">NBA</a><main id="b"></main><script>
+        const b = document.getElementById('b');
+        b.innerHTML = '<div><div class="pn" style="cursor:pointer">Julius Randle</div><div>BKN @ BOS</div><div>Points</div><div>Over 19.5</div><div>FanDuel +115</div><div>L5 40% L10 30%</div></div>';
+        const wipe = () => { b.innerHTML = ''; };
+        document.getElementById('fb').onclick = wipe; document.getElementById('nba').onclick = wipe;
+        b.addEventListener('click', e => {
+            if (!e.target.classList.contains('pn')) return;
+            const p = document.createElement('div'); p.setAttribute('role', 'dialog');
+            p.innerHTML = '<h2>Julius Randle Points</h2><p>L5 40% L10 30%</p>';
+            document.body.appendChild(p);
+        });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') document.querySelectorAll('[role=dialog]').forEach(d => d.remove()); });
+    </script></body>`;
+    const context = await launched.browser.newContext();
+    let loads = 0;
+    await context.route('https://app.outlier.bet/**', route => { loads++; route.fulfill({ status: 200, contentType: 'text/html', body: html }); });
+    await context.route(u => !/app\.outlier\.bet/.test(String(u)), route => route.abort());
+    const shown = await context.newPage();
+    const mine = 'https://app.outlier.bet/NBA/props?filters=ONE_GAME';
+    await shown.goto(mine);
+    const session = { page: shown, agentPage: null };
+    const manager = { registerProfile() {}, close: async () => true, peek: () => session, get: async () => session, workPage: async () => shown };
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [], shared: { manager } });
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 300, backoffMs: [100, 100] }));
+    const service = createService({}, { pipeline });
+    assert.equal(pipeline.userBoard(), mine);
+    // Not told "I set it up": a game and a sport are named, as a screenshot list would.
+    const out = await service.callTool('outlier_research_list', { sport: 'NBA', game: 'Nets vs Celtics', legs: [{ player: 'Julius Randle', stat: 'Points', line: 19.5, side: 'Over' }] });
+    const text = out.content[0].text;
+    assert.equal(out.isError, undefined, text);
+    assert.match(text, /^Outlier > your page as you set it \(filters kept, nothing reloaded\)/);
+    assert.match(text, /Julius Randle Over 19\.5 Points\n {3}Outlier 19\.5 Points/, 'the row was read, so neither Filters nor the sport tab was clicked');
+    const scan = await service.callTool('outlier_scan_board', { sport: 'NBA', game: '7pm' });
+    assert.equal(scan.isError, undefined, scan.content[0].text);
+    assert.equal(loads, 1, 'Outlier was loaded once, by the user, and never reloaded');
+    assert.equal(shown.url(), mine, 'the filters in the address are as the user left them');
+});
+
+test('a long board that only draws the rows on screen: each card opens by jumping back to where the board read saw the player', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    // 900 rows in a scrolling panel, 20 drawn at a time, like Outlier's virtualized board:
+    // a player near the end is past the 40 screens a search from the top would scroll.
+    const word = i => `${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(97 + (Math.floor(i / 26) % 26))}${String.fromCharCode(97 + (Math.floor(i / 676) % 26))}son`;
+    const rows = Array.from({ length: 900 }, (_, i) => ({ n: `Kai ${word(i)}`, l: 10.5 + (i % 9) }));
+    const page = `<!doctype html><body><div id="sc" style="height:700px;overflow:auto"><div id="in" style="position:relative;height:${900 * 60}px"></div></div><script>
+        const rows = ${JSON.stringify(rows)};
+        const sc = document.getElementById('sc'); const inn = document.getElementById('in');
+        function draw() { const a = Math.floor(sc.scrollTop / 60); let h = ''; for (let i = a; i < Math.min(rows.length, a + 14); i++) h += '<div style="position:absolute;top:' + (i * 60) + 'px"><div class="pn" style="cursor:pointer">' + rows[i].n + '</div><div>BOS @ NYK</div><div>Points</div><div>Over ' + rows[i].l + '</div><div>FanDuel -119</div><div>L5 60% L10 70%</div></div>'; inn.innerHTML = h; }
+        sc.addEventListener('scroll', draw); draw();
+        inn.addEventListener('click', e => {
+            if (!e.target.classList.contains('pn')) return;
+            history.pushState({}, '', location.pathname + '?market=points');
+            const p = document.createElement('div'); p.setAttribute('role', 'dialog');
+            p.innerHTML = '<h2>' + e.target.textContent + '</h2><p>L5 60% L10 70%</p><p>Minutes 31.0</p>';
+            document.body.appendChild(p);
+        });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') { document.querySelectorAll('[role=dialog]').forEach(d => d.remove()); history.pushState({}, '', location.pathname); } });
+    </script></body>`;
+    const server = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(page); });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/NBA/props`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 300, backoffMs: [100, 100] }));
+    const service = createService({}, { pipeline });
+    const legs = [5, 880].map(i => ({ player: rows[i].n, stat: 'Points', line: rows[i].l, side: 'Over' }));
+    const progress = [];
+    const timer = setInterval(() => { const p = pipeline.progress().progress; if (p && progress.at(-1) !== p) progress.push(p); }, 100);
+    const out = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
+    clearInterval(timer);
+    const text = out.content[0].text;
+    assert.equal(out.isError, undefined, text);
+    assert.match(text, /2\. Kai Whbson Over 17\.5 Points\n {3}Outlier 17\.5 Points[^\n]*\n {3}Card: [^\n]*Minutes 31\.0/, 'the player near the end of the board had his card read');
+    assert.match(text, /What CoDev did on Outlier:\n- Board: read \d+ screen\(s\), [\d,]+ rows, in \d+s; 2 of 2 legs seen on it\.\n- Player cards: 2 opened \(2 by jumping to the row the board read saw, 0 from a search of his name, 0 by scrolling the board\)/);
+    assert.ok(progress.some(p => /^Reading the NBA board: screen \d+, [\d,]+ rows, \d of 2 legs seen$/.test(p)), progress.join(' | '));
+    assert.ok(progress.some(p => /^Card \d of 2: Kai Whbson Points, (jumping to his row on the board|reading the card|every tab of the card)/.test(p)), progress.join(' | '));
 });
 
 test('a list keeps the board loaded: cards open over it and close with Escape, a 429 backs off, and cards read lately are reused', async t => {
@@ -805,9 +1064,10 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     </script></body>`;
     const hits = { board: 0, card: 0 };
     let limit = false;
+    let once = 0;
     const server = http.createServer((req, res) => {
         const at = req.url.split('?')[0];
-        if (at === '/api/card') { hits.card++; res.writeHead(limit ? 429 : 200); return res.end('{}'); }
+        if (at === '/api/card') { hits.card++; res.writeHead(limit || once-- > 0 ? 429 : 200); return res.end('{}'); }
         hits.board++;
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(page);
@@ -819,21 +1079,27 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
     const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
     t.after(() => pipeline.close());
-    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, backoffMs: [100, 100] }));
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 300, backoffMs: [100, 100] }));
     const service = createService({}, { pipeline });
     const legs = players.slice(0, 3).map((player, i) => ({ player, stat: 'Points', line: 20.5 + i, side: 'Over' }));
 
     const first = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
     assert.equal(first.isError, undefined, first.content[0].text);
     assert.match(first.content[0].text, /1\. Jayson Tatum Over 20\.5 Points\n {3}Outlier 20\.5 Points \(over -119\): L5 80% · L10 70% on your line\n {3}Card: Hit L5 60%, L10 70%, H2H 50% \| Usage: Minutes 34\.0/);
-    assert.match(first.content[0].text, /Best on Outlier's hit rates.*\n1\. Jayson Tatum Over 20\.5 Points: 75%\n2\. Jaylen Brown Over 21\.5 Points: 70%/);
+    assert.match(first.content[0].text, /Best on Outlier's hit rates.*\n1\. Jayson Tatum Over 20\.5 Points: 7[56]% \([^)]*\)\n2\. Jaylen Brown Over 21\.5 Points: 70% \([^)]*\)/);
     assert.equal(hits.board, 1, 'the board was loaded once for all three legs');
     assert.equal(hits.card, 3);
 
     // Asked again: the cards read a minute ago are reused, nothing new is fetched.
     const again = await service.callTool('outlier_research_list', { sport: 'NBA', legs });
-    assert.match(again.content[0].text, /Minutes 34\.0 \(read earlier\)/);
+    assert.match(again.content[0].text, /Minutes 34\.0 \(read earlier today at [^;]+; the line and odds above are from this run\)/);
     assert.equal(hits.card, 3);
+    assert.equal(hits.board, 1, 'every leg read a minute ago: Outlier isn\'t opened again');
+    // After a crash or restart (a new pipeline on the same folder), the cards are still there.
+    const restarted = createService({}, { pipeline: createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] }) });
+    const resumed = await restarted.callTool('outlier_research_list', { sport: 'NBA', legs });
+    assert.match(resumed.content[0].text, /Minutes 34\.0 \(read earlier today at [^;]+; the line and odds above are from this run\)/);
+    assert.equal(hits.card, 3, 'no card opened again after the restart');
 
     // Outlier says 429 to every card: CoDev backs off, then stops opening cards.
     limit = true;
@@ -844,6 +1110,20 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     assert.match(slowed.content[0].text, /1\. Josh Hart Over 23\.5 Points\n {3}Outlier 23\.5 Points \(over -119\): L5 50% · L10 70% on your line\n {3}\(card not read: Outlier said too many requests\)/, 'the board row still gives every leg its hit rates');
     assert.doesNotMatch(slowed.content[0].text, /Too many requests/, 'an empty card is not passed on as research');
     assert.ok(hits.card <= 3 + 3, 'no more than one card per strike before stopping');
+    // Cut short, the run still ends with a slip, its unread legs marked unverified.
+    assert.match(slowed.content[0].text, /Slip from what was read \(\d+ leg\(s\) verified on their card; the run was cut short[^\n]*\n1\) /);
+    assert.match(slowed.content[0].text, /\(board only, card not read: unverified\)/);
+    // The slip comes before the legs' cards, so a long answer cut by the chat still has it.
+    assert.ok(slowed.content[0].text.indexOf('Slip from what was read') < slowed.content[0].text.indexOf('The legs, with what Outlier showed for each:'));
+
+    // One 429, then Outlier answers again: CoDev waits it out and still reads every
+    // card whole (every tab), only with slower clicks.
+    limit = false;
+    once = 1;
+    const after = await service.callTool('outlier_research_list', { sport: 'NBA', legs: more });
+    assert.match(after.content[0].text, /Outlier asked CoDev to slow down \(429\)/);
+    assert.doesNotMatch(after.content[0].text, /Read light/);
+    assert.match(after.content[0].text, /\n {3}Card: /, 'the cards after the 429 were read');
 });
 
 test('each card is read whole: every tab on it, minutes and opportunity by window, and falling minutes move a leg down', async t => {
@@ -921,7 +1201,7 @@ test('each card is read whole: every tab on it, minutes and opportunity by windo
     assert.match(text, /Without Al Horford: Without Al Horford: L10 90% \(9 games\)/);
     // Forward-looking lines from the card's own numbers, labelled as estimates.
     assert.match(text, /Projection \(estimate\): [\d.]+ = [\d.]+ per minute \(median of his last 10 games\) x 30\.1 minutes \(the card's L5 minutes\); [+-][\d.]+ against your 20\.5/);
-    assert.match(text, /For the top 2 above: Ticket simulation \(estimate, 10,000 runs from each leg's own games at the user's line\): all 2 hit in [\d.]+% of runs; 44\.4% if the legs were unrelated\. Leg chances: Jaylen Brown 66\.7% \(7 of 10 games\), Jayson Tatum 66\.7% \(7 of 10 games\)\. No shared game dates/);
+    assert.match(text, /For the 2 verified leg\(s\) of that slip: Ticket simulation \(estimate, 10,000 runs from each leg's own games at the user's line\): all 2 hit in [\d.]+% of runs; 44\.4% if the legs were unrelated\. Leg chances: Jaylen Brown 66\.7% \(7 of 10 games\), Jayson Tatum 66\.7% \(7 of 10 games\)\. No shared game dates/);
     const sim = await service.callTool('outlier_simulate_ticket', { legs: [legs[0], legs[1]] });
     assert.equal(sim.isError, undefined, sim.content[0].text);
     assert.match(sim.content[0].text, /all 2 hit in [\d.]+% of runs; 44\.4% if the legs were unrelated/);
@@ -930,7 +1210,7 @@ test('each card is read whole: every tab on it, minutes and opportunity by windo
     assert.match(text, /Tab Game Log: @ MIA 31 pts · vs PHI 18 pts/);
     assert.match(text, /Tab Odds Movement: Opened 20\.5, now 21\.5/);
     // Tatum's 74% drops 8 points for his falling minutes and shots: Brown's steady 70% leads.
-    assert.match(text, /Best on Outlier's hit rates.*\n2\. Jaylen Brown Over 21\.5 Points: 70%\n1\. Jayson Tatum Over 20\.5 Points: 66%/);
+    assert.match(text, /Best on Outlier's hit rates.*\n2\. Jaylen Brown Over 21\.5 Points: 70% \(card read\)\n1\. Jayson Tatum Over 20\.5 Points: 66% \(card read\)/);
     assert.deepEqual(hits, { nav: 0, picked: 0 }, 'only the card\'s own tabs were clicked: no header tab, no pick');
 });
 
@@ -961,6 +1241,30 @@ test('a grid board\'s bare hit-rate cells get their column labels, and a leg is 
     assert.equal(Math.round(under.rates.l5 * 100), 20, 'an Under reads the Over row\'s rate turned around');
     const between = matchLeg({ player: 'Trae Young', stat: 'Assists', line: 10, side: 'Over' }, props);
     assert.ok([9.5, 10.5].includes(between.row.line));
+});
+
+test('a player named differently by the DFS app and Outlier still matches: initials, Jr., III, accents, EVEN odds', () => {
+    const { sameName } = require('../agents/outlier/navigate');
+    assert.ok(sameName('AJ Brown', 'A.J. Brown'));
+    assert.ok(sameName('Marvin Harrison', 'Marvin Harrison Jr.'));
+    assert.ok(sameName('Kenneth Walker', 'Kenneth Walker III'));
+    assert.ok(sameName('Luka Doncic', 'Luka Dončić'));
+    assert.ok(sameName('C. Lamb', 'CeeDee Lamb'));
+    assert.ok(!sameName('Josh Allen', 'Josh Jacobs'));
+    assert.ok(!sameName('A Brown', 'J Brown'));
+    const { parseText } = require('../agents/outlier/extract');
+    assert.deepEqual(parseText('A.J. Brown\nReceiving Yards\nOver 62.5\nFanDuel EVEN').odds, [{ book: 'fanduel', price: 100 }]);
+});
+
+test('early in a season this season counts more than last season, per sport', () => {
+    const { seasonStage, rateWeights } = require('../agents/outlier');
+    assert.deepEqual(seasonStage('NBA', new Date(2026, 9, 27)), { sport: 'NBA', day: 7, early: true });
+    assert.equal(seasonStage('NFL', new Date(2026, 9, 27)).early, false, 'Week 8 of the NFL is not early');
+    assert.equal(seasonStage('NFL', new Date(2026, 8, 20)).early, true);
+    assert.equal(seasonStage('NBA', new Date(2026, 2, 1)).early, false, 'March is late in the season that started last October');
+    assert.equal(seasonStage('Tennis'), null);
+    assert.ok(rateWeights({ early: true }).season > rateWeights({ early: true }).last);
+    assert.equal(rateWeights(null).l10, 1);
 });
 
 test('a leg matches its full-game stat, not a quarter, combo or far-off alt line, and a moved line still matches', () => {
@@ -1002,4 +1306,52 @@ test('forecasts come only from the card\'s numbers: projection, regression, game
     assert.equal(f.regressionFlag({ games: a.games, numbers: {} }, { side: 'Over' }, () => 0), null, 'no volume numbers: no flag');
     assert.deepEqual(f.gameContext('WAS @ CHA\nO/U 231.5 · CHA -3.5'), { total: 231.5, spread: 'CHA -3.5' });
     assert.equal(f.gameContext('FGA +2 · Total 18'), null, 'not a spread or a game total');
+});
+
+test('a 429 from the page\'s error reports or analytics is not Outlier slowing CoDev down', () => {
+    assert.equal(thirdParty('https://o1398585.ingest.sentry.io/api/6725321/envelope/?sentry_key=x'), true);
+    assert.equal(thirdParty('https://api-js.mixpanel.com/flags/?x=1'), true);
+    assert.equal(thirdParty('https://app.outlier.bet/NBA/props?filters=x'), false);
+    assert.equal(thirdParty('https://sportsdata-prod-bucket.s3.amazonaws.com/logo.png'), false);
+    assert.equal(thirdParty('http://127.0.0.1:4000/api/card'), false);
+    assert.equal(thirdParty('not a url'), false);
+});
+
+test('every small tab inside a card\'s sections is clicked and read, never a pick, alt lines or another stat', async t => {
+    const { readSubTabs } = require('../agents/outlier/navigate');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const page = await launched.browser.newPage();
+    await page.setContent(`<div role="dialog">
+        <h1>Julius Randle</h1>
+        <div><button>1Q PTS</button><button>PTS</button><button>PTS+AST</button></div>
+        <section><h2>Statistics</h2>
+          <div role="tablist"><button role="tab">H2H</button><button role="tab">L5</button><button role="tab" aria-selected="true">L10</button><button role="tab">2025</button></div>
+          <div><button>Average</button><button>Median</button></div>
+          <p id="win">Average 16.1 Median 14.5 (L10)</p></section>
+        <section><h2>Points vs BOS</h2><div><button>All</button><button>PG</button><button>PF</button></div><p id="pos">PF: Caleb Wilson 17 O 16.5</p></section>
+        <section><h2>Shot Chart</h2><div><button>All FGs</button><button>3PT</button></div><p id="shot">27% favorable</p></section>
+        <section><h2>Injuries</h2><div><button>BKN</button><button>BOS</button></div><p id="inj">BKN: Tyler Bilodeau Out</p></section>
+        <button id="over">Over 19.5 +115</button><button id="alt">ALT LINES</button>
+      </div>
+      <script>
+        window.clicks = [];
+        document.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+          clicks.push(b.innerText);
+          const t = b.innerText, sec = b.closest('section');
+          if (!sec) return;
+          const p = sec.querySelector('p');
+          if (/^(H2H|L5|L10|2025)$/.test(t)) p.textContent = 'Average ' + t.length + ' Median ' + t + ' window';
+          else if (/Average|Median/.test(t)) p.textContent = t + ' shown for the window';
+          else p.textContent = sec.querySelector('h2').textContent + ' ' + t + ' rows';
+        }));
+      </script>`);
+    const tabs = await readSubTabs(page, { settleMs: 10, known: await page.evaluate(() => document.body.innerText) });
+    const names = tabs.map(x => x.tab);
+    assert.ok(names.includes('Statistics > H2H') && names.includes('Statistics > 2025') && names.includes('Statistics > Median'), names.join(' | '));
+    assert.ok(names.includes('Points vs BOS > PG') && names.includes('Shot Chart > 3PT') && names.includes('Injuries > BOS'), names.join(' | '));
+    const clicks = await page.evaluate(() => window.clicks);
+    assert.ok(!clicks.some(c => /Over|ALT|1Q|PTS/.test(c)), clicks.join(' | '));
+    assert.equal(clicks[clicks.length - 1], 'L10', 'the window that was on is clicked again at the end');
 });

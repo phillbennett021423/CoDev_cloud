@@ -13,6 +13,8 @@ const MAX_TIMEOUT_SECONDS = 600;
 const MAX_SEARCH_MATCHES = 200;
 const MAX_SEARCHED_FILES = 2000;
 const MAX_SEARCHED_FILE_BYTES = 1024 * 1024;
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp' };
 const SKIPPED_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.godot', '.import', 'venv', '.venv', 'dist', 'build']);
 
 // Files that can hold API keys and secrets, which agents never see: hidden files
@@ -77,6 +79,17 @@ function createMcpTools(getProjectDir) {
         return text.length > MAX_READ_CHARS ? text.slice(0, MAX_READ_CHARS) + `\n[truncated at ${MAX_READ_CHARS} characters]` : text;
     }
 
+    // An image (a screenshot, say) as MCP image content, for the page's screenshot reader.
+    function readImage({ path: rel } = {}) {
+        const full = projectPath(rel);
+        if (!fs.existsSync(full) || !fs.statSync(full).isFile()) throw new ToolError(`No file at '${rel}'. Call list_files to see what exists.`);
+        const mimeType = IMAGE_TYPES[path.extname(full).toLowerCase()];
+        if (!mimeType) throw new ToolError(`'${rel}' isn't a PNG, JPG, WebP, GIF or BMP image`);
+        const stat = fs.statSync(full);
+        if (stat.size > MAX_IMAGE_BYTES) throw new ToolError(`'${rel}' is over ${MAX_IMAGE_BYTES / 1024 / 1024} MB`);
+        return { content: [{ type: 'image', data: fs.readFileSync(full).toString('base64'), mimeType }], _meta: { 'codev/modified': stat.mtimeMs } };
+    }
+
     function searchFiles({ query, path: rel } = {}) {
         if (typeof query !== 'string' || !query.trim()) throw new ToolError("search_files needs a 'query' string");
         const needle = query.toLowerCase();
@@ -139,6 +152,9 @@ function createMcpTools(getProjectDir) {
         { name: 'read_file', run: readFile, annotations: { readOnlyHint: true },
           description: "Read a text file from the user's project folder.",
           inputSchema: { type: 'object', properties: { path: pathProp }, required: ['path'] } },
+        { name: 'read_image', run: readImage, annotations: { readOnlyHint: true },
+          description: "Read an image file (PNG, JPG, WebP, GIF, BMP) from the user's project folder as image content.",
+          inputSchema: { type: 'object', properties: { path: pathProp }, required: ['path'] } },
         { name: 'search_files', run: searchFiles, annotations: { readOnlyHint: true },
           description: "Search the text of every file in the user's project folder (case-insensitive) and get matching lines as path:line: text. Use it to find where something is defined or used.",
           inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'Text to look for.' },
@@ -178,8 +194,9 @@ function createMcpTools(getProjectDir) {
             const tool = TOOLS.find(t => t.name === msg.params?.name);
             if (!tool) return { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown tool: ${msg.params?.name}` } };
             try {
-                const text = await tool.run(msg.params.arguments || {});
-                return ok({ content: [{ type: 'text', text }], isError: false });
+                const output = await tool.run(msg.params.arguments || {});
+                if (output && typeof output === 'object') return ok({ ...output, isError: false });
+                return ok({ content: [{ type: 'text', text: output }], isError: false });
             } catch (err) {
                 return ok({ content: [{ type: 'text', text: err instanceof ToolError ? err.message : `${err.name}: ${err.message}` }], isError: true });
             }

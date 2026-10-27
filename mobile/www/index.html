@@ -643,6 +643,7 @@
                             <input type="text" id="userInput" enterkeyhint="send" placeholder="Ask your agents anything or type @filename to reference local file..." onkeydown="if(event.key==='Enter' && !event.isComposing) { event.preventDefault(); sendChatMessage(); }">
                             <button id="micBtn" class="mic-btn" onclick="toggleSpeechRecognition()" title="Voice Input (STT)">🎤</button>
                             <button id="attachBtn" class="tool-btn" onclick="document.getElementById('attachmentInput').click()" title="Attach images, PDFs or short videos">📎</button>
+                            <button id="screenshotFolderBtn" class="tool-btn" onclick="pickScreenshotFolder()" title="Pick a folder of screenshots (like Dabble slips) for the agents to read">📸</button>
                             <button id="webSearchBtn" class="tool-btn" onclick="toggleWebSearch()" title="Search the web for every message: off (technical questions are searched automatically)" aria-pressed="false">🔎</button>
                             <button class="send-btn" onclick="sendChatMessage()">Send Task</button>
                         </div>
@@ -2403,6 +2404,7 @@
             const open = force ?? !panel.classList.contains("open");
             panel.classList.toggle("open", open);
             if (open && !live.stop) watchLiveAgent(live.agentId);
+            else if (open) renderLiveFrame();
             if (open && !live.outlier && window.codevDesktop?.outlierRequest) {
                 window.codevDesktop.outlierRequest({ method: "GET", path: "/outlier/state" }).then(reply => { live.outlier = reply.body?.liveSession || ""; renderLiveAgents(); }).catch(() => {});
             } else if (open && !live.outlier && !window.codevDesktop?.browserLive) {
@@ -2478,7 +2480,8 @@
             if (update.type === "frame") {
                 live.frame = update;
                 if (document.activeElement !== document.getElementById("liveUrl")) document.getElementById("liveUrl").value = update.url;
-                return renderLiveFrame();
+                // Pictures nobody can see aren't decoded: a long run sends thousands of them.
+                return liveFrameShown() ? renderLiveFrame() : undefined;
             }
             if (update.type === "state") {
                 live.userControl = update.userControl;
@@ -2553,11 +2556,29 @@
             renderLiveLog();
         }
 
+        function liveFrameShown() {
+            return document.getElementById("livePanel").classList.contains("open") || Boolean(document.getElementById("agentViewport")?.offsetParent);
+        }
+
+        // One object URL per picture, shared by the panel and the agent's card, and the
+        // previous one freed: a data: URL for every frame piles up in the page's memory
+        // over a long run (an Outlier list sends thousands).
+        let liveFrameSrc = { frame: null, url: "" };
+        function liveFrameUrl() {
+            if (!live.frame || !live.frame.data) return "";
+            if (liveFrameSrc.frame !== live.frame) {
+                if (liveFrameSrc.url) URL.revokeObjectURL(liveFrameSrc.url);
+                const bytes = Uint8Array.from(atob(live.frame.data), c => c.charCodeAt(0));
+                liveFrameSrc = { frame: live.frame, url: URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" })) };
+            }
+            return liveFrameSrc.url;
+        }
+
         function renderLiveFrame() {
             const img = document.getElementById("liveFrame");
             const note = document.getElementById("liveNote");
             if (live.frame) {
-                img.src = `data:image/jpeg;base64,${live.frame.data}`;
+                img.src = liveFrameUrl();
                 img.style.display = "";
                 note.style.display = "none";
             } else {
@@ -2577,7 +2598,7 @@
         function renderCardLiveFrame() {
             const img = document.getElementById("agentViewport");
             if (!img) return;
-            if (live.frame) img.src = `data:image/jpeg;base64,${live.frame.data}`;
+            if (live.frame) img.src = liveFrameUrl();
             else img.removeAttribute("src");
             img.style.visibility = live.frame ? "" : "hidden";
             document.getElementById("agentViewportNote").style.display = live.frame ? "none" : "";
@@ -2892,6 +2913,20 @@
                 },
             ];
             // Sandbox mode: the sandbox's own file and command tools replace every tool that writes to disk.
+            tools.push({
+                name: "read_screenshots",
+                description: "Look at a folder of screenshots or other images and get what they show, read by a vision model: every leg on a betting or DFS slip (Dabble, PrizePicks, Underdog, sportsbooks) as Player | Stat | Line | Side | Sport | Game, or the text and content of any other image. "
+                    + "Reads every screenshot in the folder the user picked with 📸 or named before, newest first, or the folder given as folder (a full path works). Use it whenever the user mentions screenshots, pictures or a folder of images; the user never needs to upload them.",
+                inputSchema: { type: "object", properties: {
+                    folder: { type: "string", description: "Optional: the full path of a folder on the user's computer when they give one (like \"G:\\My Drive\\continuumUniverse\\New folder\"; CoDev remembers it for next time), a sub-folder of the 📸 folder, or a folder inside the project. Leave it out for the folder the user picked or named before." },
+                    question: { type: "string", description: "What to look for, in the user's words." },
+                    limit: { type: "integer", description: `Read only the newest N images. Leave it out to read them all (up to ${MAX_SCREENSHOTS}); screenshots read before are remembered, so only new ones go to the vision model.` }
+                } },
+                run: async (args, ctx) => {
+                    ctxStep = ctx?.onStep || null;
+                    try { return await readScreenshotsTool(args); } finally { ctxStep = null; }
+                }
+            });
             if (ctx && ctx.sandbox) return buildSandboxTools(tools, ctx);
             const mcpTools = await fetchAllMcpTools();
             // The folder connected in the page gets its own tools. When the Windows app or the
@@ -2945,7 +2980,8 @@
             );
             for (const tool of mcpTools) {
                 const name = tool.qualifiedName || tool.name;
-                if (tools.some(t => t.name === name)) continue;
+                // read_image returns pixels for read_screenshots, not text a model can use.
+                if (tools.some(t => t.name === name) || (tool.transport === "desktop" && tool.name === "read_image")) continue;
                 tools.push({
                     name,
                     description: (tool.server ? `[MCP server "${tool.server}"] ` : "") + (tool.description || tool.title || tool.name),
@@ -3023,6 +3059,16 @@
             return `Exit code: ${data.exit_code}${data.timed_out ? " (timed out)" : ""}\n--- stdout ---\n${data.stdout || ""}\n--- stderr ---\n${data.stderr || ""}`;
         }
 
+        // What a running Outlier read is on (null when idle): the light /outlier/progress,
+        // not /outlier/state, which reads the whole saved board each time.
+        async function outlierProgress() {
+            try {
+                if (window.codevDesktop?.outlierRequest) return (await window.codevDesktop.outlierRequest({ method: "GET", path: "/outlier/progress" })).body?.progress || null;
+                const r = await fetch("/outlier/progress");
+                return r.ok ? (await r.json()).progress || null : null;
+            } catch (err) { return null; }
+        }
+
         function describeToolCall(fullName, args) {
             const split = fullName.indexOf("__");
             const name = split > 0 ? fullName.slice(split + 2) : fullName;
@@ -3053,6 +3099,13 @@
             if (name === "browser_list_credentials") return "🔐 Checking saved logins";
             if (name === "browser_login") return "🔐 Signing in (asks you first)";
             if (name === "browser_save_session" || name === "browser_load_session") return "🍪 Saved session (asks you first)";
+            if (name === "outlier_research_list") return `📈 Checking ${(args.legs || []).length} legs on Outlier${args.sport ? ` (${args.sport})` : ""}`;
+            if (name === "outlier_research") return `📈 Reading ${args.player || "a player"}'s card on Outlier`;
+            if (name === "outlier_scan_board") return `📈 Reading Outlier's ${args.sport || ""} board`.replace("  ", " ");
+            if (name === "outlier_read_section") return `📈 Reading Outlier's ${args.section || "section"}`;
+            if (name === "outlier_simulate_ticket") return "🎲 Simulating the ticket from the cards";
+            if (name === "outlier_guide") return "📘 Reading the Outlier guide";
+            if (name === "read_screenshots") return `📸 Reading screenshots${args.folder ? ` in ${args.folder}` : ""}`;
             return `🛠️ ${fullName}`;
         }
 
@@ -3079,11 +3132,13 @@
             if (tools.some(t => t.name === "outlier_scan_board")) {
                 return "[Outlier] Outlier (outlier.bet) is a sports betting research app at https://app.outlier.bet: its Props board lists every player prop with its line, odds by book and hit rates (L5, L10, L20, H2H, season); clicking a prop opens its Market Details (hit rate chart, supporting stats, opponent rank against the position, injuries, odds movement, public bet splits), and the Games tab has each game's lines, injuries and public money. outlier_guide explains every section and what each number means. CoDev keeps the user's own signed-in Outlier browser. "
                     + "For any request about Outlier, props, parlays or tickets, call outlier_scan_board first, with sport, game and market taken from the request (e.g. sport \"NBA\", game \"8pm\"). "
-                    + "When the user gives a list of props (from Dabble, Underdog, PrizePicks...), call outlier_research_list once with every leg (player, stat, line, side), the sport, the game and the day (\"tomorrow\"), and build the 4-6 leg slip only from those legs, one reason per leg. Leave game out unless the user named one (a list can span games). Use its \"Best on Outlier's hit rates\" ranking and the hit rates it prints, then weigh everything it read from each player's card and its tabs: minutes and opportunity (shot attempts, usage, potential assists, rebound chances; a drop lately is a warning for an Over), splits, the matchup rank, injuries around him, line movement and public betting; after picking the legs, call outlier_simulate_ticket with them for the chance they all hit, and give it as an estimate; never invent a number, pace, projection or probability the tools didn't return; its sportsbook audit is for reference only, not a pass/fail for DFS legs. Trust Outlier's rosters and teams over your own memory: players get traded. "
+                    + "When the user gives a list of props (from Dabble, Underdog, PrizePicks...), call outlier_research_list once with every leg (player, stat, line, side), the sport, the game and the day (\"tomorrow\"), and build the 4-6 leg slip only from those legs, one reason per leg. Leave game out unless the user named one (a list can span games). Never reload, refresh or re-filter the user's Outlier page: when CoDev's browser is already on an Outlier props page, outlier_scan_board and outlier_research_list read it exactly as the user set it (their filters, game, search) on their own, so don't pass here: false, url or set_filters unless the user asks for a fresh board or for CoDev to set the filters. Use its \"Best on Outlier's hit rates\" ranking and the hit rates it prints, then weigh everything it read from each player's card and its tabs: minutes and opportunity (shot attempts, usage, potential assists, rebound chances; a drop lately is a warning for an Over), splits, the matchup rank, injuries around him, line movement and public betting; after picking the legs, call outlier_simulate_ticket with them for the chance they all hit, and give it as an estimate; never invent a number, pace, projection or probability the tools didn't return; if a run was interrupted (a crash or a restart), call outlier_research_list again with the same legs: it picks up the board and the cards it already read in the last 30 minutes instead of starting over; when its result says legs still have their card unread, call it again with the same legs (up to 3 calls in all) before answering, since each call opens only the cards not read yet, unless it says Outlier is limiting CoDev: then answer right away with its \"Slip from what was read\" (built from the legs whose card was read, with its simulation), mark any unverified leg as unverified, and tell the user to say \"continue\" in about 10 minutes to read the rest; never stop without a slip; keep each leg's stat exactly as the user gave it, quarter or half included (\"1st Quarter Receiving Yards\", \"1H Rush Yds\"): Outlier lists those apart from the full game; its sportsbook audit is for reference only, not a pass/fail for DFS legs. Research every leg the same way, in this order, from what the tools returned: 1) the exact line: Outlier's line against the user's (outlier_research_list turns on Outlier's alt lines and opens the odds filter past -300 first, so the user's line is usually there; if only another line shows, say how far off it is and which way that helps or hurts), 2) hit rates at the user's line for L5, L10, L20, H2H and the season (a small sample counts less), 3) playing time and opportunity for that sport and whether it's rising or falling: basketball minutes, usage, shot attempts, touches, potential assists, rebound chances; football snaps, routes, targets, target share, air yards, carries, red-zone touches, pass attempts; baseball plate appearances, batting order, pitch count, innings pitched, batters faced; hockey time on ice, power-play time, shots; use every one the card shows, 4) the opponent matchup (Favorable, Neutral, Unfavorable or the rank against his position), 5) injuries around him (a teammate out moves his volume), 6) line movement and the odds (heavy juice means the books expect it to hit). Flag a leg whose matchup is Unfavorable while his volume is falling, and say which of these six points each leg's reason rests on. Trust Outlier's rosters and teams over your own memory: players get traded. "
                     + "Without a list: scan the board with outlier_scan_board, then check the legs you like with outlier_research. outlier_read_section reads Insights, Popular, Games or Injuries for ideas and context. The Outlier guide below says what every section is for. "
                     + "Don't search the project files for Outlier, don't ask the user for a URL or a login, and don't open Outlier in your own browser: outlier_scan_board already uses the signed-in one. "
                     + "It opens Outlier's regular props board, not Positive EV, even when Outlier reopens on +EV (/pro/ev): always pass sport (e.g. \"NBA\") and it goes straight to that sport's board (app.outlier.bet/NBA/props). Don't pass section \"Props\"; leave section out for the board. Never pass a +EV tab such as \"NBA Player Props\", \"Pinnacle\" or \"Sharp Gamelines\" as section. If it can't find a tab, its error lists the tabs on the page: pick the matching one (or ask the user) and call it again with that name as section or sport. "
-                    + "Never use a saved board file (outlier_import_board, a board dump in the project folder) in place of a live Outlier read for a list of props: those files are old. If the live read fails, say what failed and call it again with the sport. If it says Outlier asked to sign in, tell the user to click 🔑 Sign in to Outlier in the 📈 Outlier tab, then ask again. "
+                    + "Never use a saved board file (outlier_import_board, a board dump in the project folder) in place of a live Outlier read for a list of props: those files are old. If the live read fails, call it again once at most; if it fails again, stop, tell the user exactly what failed and what to do, and don't call more Outlier tools (each call costs the user time and usage). If it says Outlier asked to sign in, tell the user to click 🔑 Sign in to Outlier in the 📈 Outlier tab, then ask again. "
+                    + "Know what you're doing before and while you do it: before your first Outlier call, write a short plan as your message text (each leg as player, stat, line, side; the sport and day; which tool you'll call and why), then check every result against that plan: its \"What CoDev did on Outlier\" section says how much of the board was read, which legs were seen, and how each card was opened or why it wasn't; name any leg that was missed and why, and call again only for a reason the result gives. "
+                    + "Start your answer with two short lines on what you did on Outlier, taken from that section, then the ticket. "
                     + "Give the ticket legs in your reply. Never enter anything on Outlier, Underdog or Dabble.";
             }
             const asked = messages.filter(m => m.role === "user").map(m => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
@@ -3107,7 +3162,7 @@
                 messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + sandboxToolNote(tools) };
             } else if (messages[0]?.role === "system") {
                 messages[0] = { ...messages[0], content: messages[0].content + (mcpNames.length
-                    ? `\n\n[MCP] The user's MCP tools are connected and work on their computer: ${mcpNames.join(", ")}. When the user mentions MCP, they mean these tools. Use them to read, create and edit files and to run code, instead of only showing code.`
+                    ? `\n\n[MCP] The user's MCP tools are connected and work on their computer: ${mcpNames.join(", ")}. When the user mentions MCP, they mean these tools. When the task needs files or code, use them to read, create and edit files and to run code, instead of only showing code.`
                     : `\n\n[MCP] No MCP tools are connected right now. If the user asks for MCP, file edits or running code on their computer, tell them to choose a project folder under Settings > Web grounding & local tools in the Windows app, or add an MCP server there, then ask again.`) };
                 // Instructions servers sent in their initialize reply, so the model uses them as intended.
                 const instructions = mcpServersConfigured() ? (await mcpHubRequest({ op: "status" }).catch(() => []))
@@ -3123,11 +3178,16 @@
                 try { outlierNote += "\n\n[Outlier guide]\n" + String(await guideTool.run({}, ctx)).slice(0, 16000); } catch (err) { /* the note alone */ }
             }
             if (outlierNote && messages[0]?.role === "system") messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + outlierNote };
-            for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+            // Two failed Outlier calls in one request stop the tools: the agent answers with
+            // what failed instead of retrying and spending the user's time and usage.
+            let outlierFailures = 0;
+            for (let round = 0; round < MAX_TOOL_ROUNDS && outlierFailures < 2; round++) {
                 const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" });
                 const calls = message.tool_calls || [];
                 if (!calls.length) return message.content || "";
                 messages.push({ role: "assistant", content: message.content || "", tool_calls: calls, anthropic_content: message.anthropic_content });
+                // The agent's plan, written with its calls, stays on screen above each step.
+                if (message.content && message.content.trim()) ctx.plan = message.content.trim().slice(0, 700);
                 for (const call of calls) {
                     const tool = tools.find(t => t.name === call.function?.name);
                     let args = {};
@@ -3138,9 +3198,23 @@
                     } else {
                         const step = describeToolCall(tool.name, args);
                         logConsoleActivity(`[Tool] ${step}`);
-                        if (ctx.onStep) ctx.onStep(step);
-                        try { result = await tool.run(args, ctx); } catch (err) { result = `Tool failed: ${err.message}`; }
+                        const show = text => { if (ctx.onStep) ctx.onStep(ctx.plan ? `📝 ${ctx.plan}\n\n${text}` : text); };
+                        show(step);
+                        // A long Outlier read says where it is (board screen, card, tab) while it runs.
+                        const watch = /(^|__)outlier_/.test(tool.name) ? setInterval(async () => {
+                            const progress = await outlierProgress();
+                            if (progress) show(`${step}\n⏳ ${progress}`);
+                        }, 1500) : null;
+                        try { result = await tool.run(args, ctx); } catch (err) { result = `Tool failed: ${err.message}`; } finally { if (watch) clearInterval(watch); }
                         trackToolEffect(ctx, tool.name, args, String(result));
+                        if (/(^|__)outlier_/.test(tool.name) && /^(Error:|Tool failed:)/.test(String(result)) && ++outlierFailures >= 2) {
+                            result = `${result}\n\nThat is the second Outlier call that failed, so CoDev stopped calling tools. Answer now: tell the user exactly what failed and what they can do, and give any legs already read.`;
+                        }
+                        // Screenshots that turned out to be prop slips: the Outlier steps come with them.
+                        if (tool.name === "read_screenshots" && !outlierNote && /Prop legs found/i.test(String(result))) {
+                            outlierNote = outlierToolNote(tools, [{ role: "user", content: "props" }]);
+                            if (outlierNote) result = `${result}\n\n${outlierNote}`;
+                        }
                         // A short note of each step stays with the reply, so a follow-up can ask about it.
                         if (ctx.toolLog) {
                             ctx.toolLog.push(`${step} → ${String(result).replace(/\s+/g, " ").slice(0, MAX_HISTORY_TOOL_CHARS)}`);
@@ -3148,7 +3222,7 @@
                         }
                     }
                     // A researched list of legs is one line each: let a long list through whole.
-                    const limit = call.function?.name === "outlier_research_list" ? MAX_TOOL_RESULT_CHARS * 6 : MAX_TOOL_RESULT_CHARS;
+                    const limit = /^(outlier_research_list|read_screenshots)$/.test(call.function?.name) ? MAX_TOOL_RESULT_CHARS * 6 : MAX_TOOL_RESULT_CHARS;
                     messages.push({ role: "tool", tool_call_id: call.id, name: call.function?.name || "unknown", content: String(result).slice(0, limit) });
                 }
             }
@@ -3161,7 +3235,13 @@
         // Files are converted in the browser when picked: images are downscaled to
         // base64 JPEG, PDFs become text (or page images when scanned), and videos
         // are sampled into still frames, because the model takes images, not video.
-        const MAX_IMAGES_PER_MESSAGE = 3;
+        // Up to 50 images in one message: the vision model reads them 3 at a time (Groq's
+        // limit per request) and the agent gets its notes. A video gives 3 frames.
+        const MAX_IMAGES_PER_MESSAGE = 50;
+        const MAX_VIDEO_FRAMES = 3;
+        const MAX_SCANNED_PDF_PAGES = 10;
+        // Claude takes this many images straight into its tool loop; more go through the notes.
+        const ANTHROPIC_DIRECT_IMAGES = 20;
         const MAX_IMAGE_EDGE = 1280;
         const MAX_PDF_CHARS = 40000;
         const MAX_FILE_BYTES = { image: 20 * 1024 * 1024, pdf: 25 * 1024 * 1024, video: 100 * 1024 * 1024 };
@@ -3201,7 +3281,7 @@
                 if (file.size > MAX_FILE_BYTES[kind]) { alert(`${file.name} is too large (limit ${MAX_FILE_BYTES[kind] / 1024 / 1024} MB for ${kind}s).`); continue; }
                 if (kind !== "pdf" && imageBudgetLeft() === 0) { alert(`Up to ${MAX_IMAGES_PER_MESSAGE} images or video frames can go in one message.`); continue; }
                 const att = { id: ++attachmentSeq, name: file.name, kind, images: [], text: "", thumb: "", processing: true, reservedImages: kind === "image" ? 1 : 0 };
-                if (kind === "video") att.reservedImages = imageBudgetLeft();
+                if (kind === "video") att.reservedImages = Math.min(MAX_VIDEO_FRAMES, imageBudgetLeft());
                 pendingAttachments.push(att);
                 renderAttachmentTray();
                 try {
@@ -3287,6 +3367,388 @@
             }
         }
 
+        // SCREENSHOT FOLDERS
+        // 📸 picks a folder of screenshots (or, on a phone, a set of them) that the agents
+        // read with read_screenshots, the way you'd point Gemini at a folder. A folder in
+        // the project works too: the Windows app's project folder (its read_image tool) or
+        // the folder connected in Project Files. A vision model reads the images, in
+        // groups of 3 (Groq's limit per request), and turns prop slips into legs that
+        // outlier_research_list takes as they are.
+        const SCREENSHOT_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"];
+        const MAX_SCREENSHOTS = 100;
+        const SCREENSHOT_EDGE = 1600;
+        const VISION_BATCH = 3;
+        // The vision model's notes on a message's attached images, read once for all its agents.
+        const imageNotesCache = new WeakMap();
+        let screenshotFolder = null;
+        let ctxStep = null;   // shows read_screenshots' progress on the agent's card   // { name, handle } from the folder picker, or { name, files } from the file picker
+        // What the vision model read on each screenshot, by file, size and date, so asking
+        // again only reads the screenshots that are new since last time.
+        const SCREENSHOT_NOTES_KEY = "codev_screenshot_notes";
+        const MAX_CACHED_SCREENSHOT_NOTES = 300;
+
+        // The picked folder is kept in IndexedDB, so it's still there after a restart.
+        function screenshotFolderStore(op, value) {
+            return new Promise(resolve => {
+                try {
+                    const open = indexedDB.open("codev-screenshots", 1);
+                    open.onupgradeneeded = () => open.result.createObjectStore("folder");
+                    open.onerror = () => resolve(null);
+                    open.onsuccess = () => {
+                        const store = open.result.transaction("folder", op === "get" ? "readonly" : "readwrite").objectStore("folder");
+                        const req = op === "get" ? store.get("current") : store.put(value, "current");
+                        req.onsuccess = () => resolve(req.result ?? null);
+                        req.onerror = () => resolve(null);
+                    };
+                } catch (err) { resolve(null); }
+            });
+        }
+
+        // A folder named by its full path (G:\My Drive\...) is read by the Windows app or
+        // CoDev's server (desktop/image-folder.js), so it needs no picker and no permission.
+        const SCREENSHOT_PATH_KEY = "codev_screenshot_path";
+        const ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\\\\|\/|~(?:[\\/]|$))/;
+
+        function canReadImagePaths() {
+            return Boolean(window.codevDesktop?.imageFolder)
+                || (!window.codevDesktop && location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname));
+        }
+
+        async function imageFolderRequest(req) {
+            if (window.codevDesktop?.imageFolder) return window.codevDesktop.imageFolder(req);
+            const response = await fetch("/screenshots", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) });
+            if (response.status === 404) return { ok: false, error: "this copy of CoDev's server is too old to read folders by path: update CoDev and restart start-codev.bat" };
+            return response.ok ? response.json() : { ok: false, error: `CoDev's server answered ${response.status}` };
+        }
+
+        function folderBaseName(folder) {
+            return String(folder).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || folder;
+        }
+
+        function useScreenshotPath(folder) {
+            screenshotFolder = { name: folderBaseName(folder), path: folder };
+            try { localStorage.setItem(SCREENSHOT_PATH_KEY, folder); } catch (err) { /* kept for this session only */ }
+            showScreenshotFolder();
+        }
+
+        async function restoreScreenshotFolder() {
+            let saved = "";
+            try { saved = localStorage.getItem(SCREENSHOT_PATH_KEY) || ""; } catch (err) { /* none */ }
+            if (saved && canReadImagePaths() && !screenshotFolder) {
+                screenshotFolder = { name: folderBaseName(saved), path: saved };
+                showScreenshotFolder();
+                logConsoleActivity(`[Screenshots] Remembered folder: ${saved}.`);
+                return;
+            }
+            const handle = await screenshotFolderStore("get");
+            if (!handle || screenshotFolder) return;
+            screenshotFolder = { name: handle.name, handle };
+            showScreenshotFolder();
+            logConsoleActivity(`[Screenshots] Remembered folder: ${handle.name}.`);
+        }
+
+        // After a restart the browser asks once more before CoDev reads the folder. It can
+        // only ask right after a click or Enter, so sendChatMessage calls this first.
+        async function screenshotFolderAccess(ask) {
+            const handle = screenshotFolder?.handle;
+            if (!handle || !handle.queryPermission) return true;
+            try {
+                if ((await handle.queryPermission({ mode: "read" })) === "granted") return true;
+                return ask ? (await handle.requestPermission({ mode: "read" })) === "granted" : false;
+            } catch (err) { return false; }
+        }
+
+        function isScreenshotName(name) {
+            const lower = String(name).toLowerCase();
+            return !isSecretName(lower.split("/").pop()) && SCREENSHOT_EXTENSIONS.some(ext => lower.endsWith(ext));
+        }
+
+        function showScreenshotFolder() {
+            const btn = document.getElementById("screenshotFolderBtn");
+            btn.classList.toggle("active", Boolean(screenshotFolder));
+            btn.title = screenshotFolder
+                ? `Screenshots: ${screenshotFolder.path || screenshotFolder.name}. Ask an agent to read them, like "look at my screenshots and research the props". Click to pick another folder.`
+                : "Pick a folder of screenshots (like Dabble slips) for the agents to read";
+        }
+
+        async function pickScreenshotFolder() {
+            if (window.codevDesktop?.imageFolder) {
+                // The Windows app's own folder dialog: CoDev keeps the path, so it never asks again.
+                const picked = await window.codevDesktop.imageFolder({ op: "pick" });
+                if (!picked?.ok) return;
+                useScreenshotPath(picked.folder);
+            } else if (window.showDirectoryPicker) {
+                try {
+                    const handle = await window.showDirectoryPicker({ id: "codev-screenshots", mode: "read" });
+                    screenshotFolder = { name: handle.name, handle };
+                    screenshotFolderStore("put", handle);
+                    try { localStorage.removeItem(SCREENSHOT_PATH_KEY); } catch (err) { /* nothing saved */ }
+                } catch (err) {
+                    if (err.name !== "AbortError") alert("Couldn't open that folder: " + err.message);
+                    return;
+                }
+            } else {
+                // Phones have no folder picker: pick the screenshots themselves.
+                const files = await new Promise(resolve => {
+                    const picker = document.createElement("input");
+                    picker.type = "file";
+                    picker.multiple = true;
+                    picker.accept = "image/*";
+                    picker.onchange = () => resolve(Array.from(picker.files || []));
+                    picker.click();
+                });
+                const images = files.filter(f => f.type.startsWith("image/") || isScreenshotName(f.name));
+                if (!images.length) return;
+                screenshotFolder = { name: `${images.length} picked screenshot${images.length === 1 ? "" : "s"}`, files: images.map(file => ({ path: file.name, file })) };
+            }
+            showScreenshotFolder();
+            logConsoleActivity(`[Screenshots] Agents can read ${screenshotFolder.path || screenshotFolder.name} with read_screenshots.`);
+            appendMessageToActiveSession("📸 Screenshots", `Ready: ${screenshotFolder.name}. Ask something like "look at my screenshots and research these props", and the agent reads them. New screenshots saved in the folder are picked up each time, and CoDev remembers the folder after a restart.`);
+        }
+
+        // The image files under a folder handle, as { path, file } (sub-folders included).
+        async function walkImageHandle(dirHandle, prefix, found) {
+            for await (const [name, handle] of dirHandle.entries()) {
+                if (found.length >= 500 || isSecretName(name)) continue;
+                if (handle.kind === "directory") { if (!WORKSPACE_SKIPPED_DIRS.has(name)) await walkImageHandle(handle, `${prefix}${name}/`, found); }
+                else if (isScreenshotName(name)) found.push({ path: prefix + name, file: await handle.getFile(), handle });
+            }
+            return found;
+        }
+
+        async function subfolderHandle(root, folder) {
+            let dir = root;
+            for (const part of normalizeWorkspacePath(folder).split("/").filter(Boolean)) dir = await dir.getDirectoryHandle(part);
+            return dir;
+        }
+
+        // The images to read for a folder name ("" = the 📸 folder, or the project's root),
+        // newest first, as { path, modified, load() → data URL }.
+        async function findScreenshots(folder) {
+            // A full path: read there (and remember it for "my screenshots" next time).
+            if (ABSOLUTE_PATH.test(String(folder).trim())) {
+                if (!canReadImagePaths()) throw new Error("this copy of CoDev can't open folders by their path (only the Windows app and CoDev opened from start-codev.bat can). Click 📸 and pick the folder instead");
+                const images = await screenshotsAtPath(String(folder).trim());
+                useScreenshotPath(String(folder).trim());
+                return images;
+            }
+            if (screenshotFolder?.path && (!folder || folder.toLowerCase() === screenshotFolder.name.toLowerCase())) return screenshotsAtPath(screenshotFolder.path);
+            const wanted = normalizeWorkspacePath(folder);
+            if (folder && !wanted) throw new Error(`"${folder}" isn't a folder CoDev can read (hidden folders and .. are off limits).`);
+            const fromFiles = (files, base) => files
+                .filter(f => !base || f.path === base || f.path.startsWith(base + "/"))
+                .map(f => ({ path: f.path, modified: f.file.lastModified || 0, key: `${f.path}|${f.file.size}|${f.file.lastModified}`,
+                    // A fresh File each try: an online-only cloud file (Google Drive, OneDrive) downloads as it's read.
+                    load: async () => fileToJpeg(f.handle ? await f.handle.getFile() : f.file) }));
+            const sources = [];
+            // The 📸 folder: by its name, a sub-folder of it, or when no folder is named.
+            if (screenshotFolder) {
+                const named = wanted && wanted.toLowerCase() === screenshotFolder.name.toLowerCase();
+                const base = named ? "" : wanted;
+                sources.push(async () => {
+                    if (screenshotFolder.files) return fromFiles(screenshotFolder.files, base);
+                    if (!(await screenshotFolderAccess(false))) throw new Error(`CoDev needs your OK to read "${screenshotFolder.name}" again`);
+                    const dir = base ? await subfolderHandle(screenshotFolder.handle, base).catch(() => null) : screenshotFolder.handle;
+                    return dir ? fromFiles(await walkImageHandle(dir, "", []), "") : [];
+                });
+            }
+            // The Windows app's project folder.
+            const readImage = (await fetchDesktopMcpTools()).find(t => t.name === "read_image");
+            if (readImage) sources.push(async () => {
+                const listed = await callMcpTool({ ...readImage, name: "list_files" }, wanted ? { path: wanted } : {});
+                if (/^Error: /.test(listed)) return [];
+                return listed.split("\n").filter(isScreenshotName).map(path => ({ path, modified: 0, load: () => desktopImage(path) }));
+            });
+            // The folder connected in Project Files.
+            if (connectedDirectoryHandle) sources.push(async () => {
+                const dir = wanted ? await subfolderHandle(connectedDirectoryHandle, wanted).catch(() => null) : connectedDirectoryHandle;
+                return dir ? fromFiles(await walkImageHandle(dir, wanted ? `${wanted}/` : "", []), "") : [];
+            });
+            for (const source of sources) {
+                const images = await source().catch(err => { logConsoleActivity(`[Screenshots] ${err.message}`); return []; });
+                // Newest first: by date when known, else by name (phones name screenshots by time).
+                if (images.length) return images.sort((a, b) => (b.modified - a.modified) || b.path.localeCompare(a.path));
+            }
+            return null;
+        }
+
+        async function screenshotsAtPath(folder) {
+            const listed = await imageFolderRequest({ op: "list", folder });
+            if (!listed?.ok) throw new Error(listed?.error || `couldn't open ${folder}`);
+            if (!listed.images.length) return null;
+            return listed.images.map(image => ({
+                path: image.name, modified: image.modified, key: `${listed.folder}|${image.name}|${image.size}|${image.modified}`,
+                load: async () => {
+                    const read = await imageFolderRequest({ op: "read", path: image.path });
+                    if (!read?.ok) throw new Error(read?.error || `couldn't read ${image.name}`);
+                    return dataUrlToJpeg(`data:${read.mimeType};base64,${read.data}`);
+                }
+            }));
+        }
+
+        async function desktopImage(path) {
+            const reply = await window.codevDesktop.mcp({ jsonrpc: "2.0", id: ++mcpRequestId, method: "tools/call", params: { name: "read_image", arguments: { path } } });
+            const image = (reply.result?.content || []).find(c => c.type === "image");
+            if (reply.error || reply.result?.isError || !image) throw new Error(reply.error?.message || mcpContentToText(reply.result?.content) || `couldn't read ${path}`);
+            return dataUrlToJpeg(`data:${image.mimeType};base64,${image.data}`);
+        }
+
+        async function fileToJpeg(file) {
+            let bytes;
+            try { bytes = await file.arrayBuffer(); } catch (err) {
+                throw new Error(`couldn't read the file (${err.message}); if it's an online-only Google Drive or OneDrive file, it may still be downloading`);
+            }
+            const url = URL.createObjectURL(new Blob([bytes], { type: file.type || "image/png" }));
+            try { return await dataUrlToJpeg(url); } finally { URL.revokeObjectURL(url); }
+        }
+
+        async function dataUrlToJpeg(url) {
+            const img = await loadImageElement(url);
+            return sourceToJpeg(img, img.naturalWidth, img.naturalHeight, SCREENSHOT_EDGE, 0.9);
+        }
+
+        const SCREENSHOT_READER_PROMPT = `You read screenshots for CoDev and write down exactly what they show, for another agent that can't see them.
+For each image, start with a line "### " and the image's name.
+- A betting or DFS slip, pick'em board or prop list (Dabble, PrizePicks, Underdog, Sleeper, a sportsbook): put the line "Prop legs found in the screenshots:" and then every leg on its own line as
+  Player | Stat | Line | Side | Sport | Game
+  Keep the stat exactly as shown, quarter or half included ("1st Quarter Points", "1H Rush Yds"). Side is Over or Under (More or Higher = Over, Less or Lower = Under). Game is the opponent or matchup and start time when shown; leave it blank otherwise. After the legs, one line with the entry amount, payout or multiplier if shown.
+- Any other image: transcribe its text and describe what matters in it.
+Copy names and numbers exactly. Write [unreadable] for anything you can't read; never guess.`;
+
+        // Reads images ({ name, url }) with the vision model and returns its notes as text.
+        async function readImagesWithVision(images, question) {
+            const notes = [];
+            for (let i = 0; i < images.length; i += VISION_BATCH) {
+                const batch = images.slice(i, i + VISION_BATCH);
+                const text = await groqChat({
+                    model: VISION_MODEL,
+                    temperature: 0.0,
+                    messages: [
+                        { role: "system", content: SCREENSHOT_READER_PROMPT },
+                        { role: "user", content: [
+                            { type: "text", text: `${question ? `The user asked: ${question}\n` : ""}The images, in order: ${batch.map(img => img.name).join(", ")}.` },
+                            ...batch.map(img => ({ type: "image_url", image_url: { url: img.url } }))
+                        ] }
+                    ]
+                });
+                notes.push(String(text || "").trim() || batch.map(img => `### ${img.name}\n[the vision model returned nothing]`).join("\n"));
+            }
+            return notes.join("\n\n");
+        }
+
+        // Tries a screenshot up to 3 times: a cloud file that's still downloading often works a moment later.
+        async function loadScreenshot(item) {
+            for (let attempt = 1; ; attempt++) {
+                try { return await item.load(); } catch (err) {
+                    if (attempt >= 3) throw err;
+                    logConsoleActivity(`[Screenshots] ${item.path}: ${err.message}. Trying again…`);
+                    await new Promise(resolve => setTimeout(resolve, 1500 * attempt));
+                }
+            }
+        }
+
+        function loadScreenshotNotes() {
+            try { return JSON.parse(localStorage.getItem(SCREENSHOT_NOTES_KEY) || "{}") || {}; } catch (err) { return {}; }
+        }
+
+        function saveScreenshotNotes(notes) {
+            const keys = Object.keys(notes);
+            for (const key of keys.slice(0, Math.max(0, keys.length - MAX_CACHED_SCREENSHOT_NOTES))) delete notes[key];
+            try { localStorage.setItem(SCREENSHOT_NOTES_KEY, JSON.stringify(notes)); } catch (err) { /* storage full: read them again next time */ }
+        }
+
+        // The vision model's notes split per image, by its "### name" headings.
+        function notesByImage(text, names) {
+            const found = {};
+            for (const section of String(text).split(/^(?=###\s)/m)) {
+                const heading = /^###\s*(.+)/.exec(section);
+                const name = heading && names.find(n => heading[1].toLowerCase().includes(n.toLowerCase().split("/").pop()));
+                if (name && !found[name]) found[name] = section.trim();
+            }
+            return found;
+        }
+
+        // Every "Player | Stat | Line | Side | Sport | Game" line, once each: the same leg on
+        // several screenshots counts once, with the screenshots it was on.
+        function collectPropLegs(notes) {
+            const legs = new Map();
+            let current = "";
+            let total = 0;
+            for (const raw of String(notes).split("\n")) {
+                const line = raw.trim();
+                const heading = /^###\s*(.+)$/.exec(line);
+                if (heading) { current = heading[1].trim(); continue; }
+                const cells = line.replace(/^[-*•]\s*/, "").replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+                if (cells.length < 4 || !cells[0] || /^player$/i.test(cells[0]) || !/\d/.test(cells[2])) continue;
+                total++;
+                const key = cells.slice(0, 4).map(c => c.toLowerCase().replace(/[^a-z0-9.]+/g, " ").trim()).join("|");
+                const leg = legs.get(key) || { cells: cells.slice(0, 6), from: [] };
+                for (let i = 4; i < 6; i++) if (cells[i] && !leg.cells[i]) leg.cells[i] = cells[i];
+                if (current && !leg.from.includes(current)) leg.from.push(current);
+                legs.set(key, leg);
+            }
+            return { legs: [...legs.values()], total };
+        }
+
+        function formatPropLegs(legs, total) {
+            return `Prop legs found in the screenshots: ${legs.length} different leg(s)${total > legs.length ? ` (${total - legs.length} repeat(s) on more than one screenshot counted once)` : ""}.\nPlayer | Stat | Line | Side | Sport | Game | Screenshots\n`
+                + legs.map(leg => [...leg.cells, "", ""].slice(0, 6).concat(leg.from.join(", ")).join(" | ")).join("\n");
+        }
+
+        async function readScreenshotsTool({ folder = "", question = "", limit } = {}) {
+            let found;
+            try { found = await findScreenshots(String(folder || "")); } catch (err) { return `Couldn't read the screenshots: ${err.message}.`; }
+            if (!found && screenshotFolder?.handle && !(await screenshotFolderAccess(false))) {
+                return `CoDev remembers the screenshots folder "${screenshotFolder.name}", but after a restart the browser needs the user's OK to read it again. Tell the user to send the message again and click Allow (or click 📸 and pick the folder).`;
+            }
+            if (!found) {
+                return folder
+                    ? `No images found in "${folder}". Tell the user to click 📸 next to the chat box and pick that folder (on a phone, pick the screenshots), then ask again.`
+                    : "No screenshots folder is picked. Ask the user for the folder's full path (like G:\\My Drive\\Screenshots) and call read_screenshots again with it as folder, or tell them to click 📸 next to the chat box and pick it (on a phone, pick the screenshots).";
+            }
+            const count = Math.max(1, Math.min(MAX_SCREENSHOTS, Number(limit) || MAX_SCREENSHOTS));
+            const chosen = found.slice(0, count);
+            // Screenshots read before (same name, size and date) aren't sent to the vision model again.
+            const cache = loadScreenshotNotes();
+            const known = chosen.filter(item => item.key && cache[item.key]);
+            const fresh = chosen.filter(item => !(item.key && cache[item.key]));
+            logConsoleActivity(`[Screenshots] ${chosen.length} of ${found.length} image(s): ${fresh.length} to read, ${known.length} read before.`);
+            const images = [];
+            const failed = [];
+            for (const item of fresh) {
+                if (ctxStep) ctxStep(`📸 Opening screenshot ${images.length + failed.length + 1} of ${fresh.length}: ${item.path}`);
+                try { images.push({ item, name: item.path, url: await loadScreenshot(item) }); } catch (err) { failed.push(`${item.path} (${err.message})`); }
+            }
+            if (!images.length && !known.length) return `Couldn't open any of the images: ${failed.join("; ")}`;
+            const parts = {};
+            for (let i = 0; i < images.length; i += VISION_BATCH) {
+                const batch = images.slice(i, i + VISION_BATCH);
+                if (ctxStep) ctxStep(`📸 Reading screenshots ${i + 1}-${i + batch.length} of ${images.length} with the vision model`);
+                const text = await readImagesWithVision(batch, String(question || ""));
+                const split = notesByImage(text, batch.map(img => img.name));
+                for (const img of batch) {
+                    parts[img.name] = split[img.name] || (batch.length === 1 ? text : "");
+                    if (img.item.key && split[img.name]) cache[img.item.key] = split[img.name];
+                }
+                // A batch that didn't split by image still counts, under its first image.
+                if (batch.every(img => !split[img.name]) && batch.length > 1) parts[batch[0].name] = text;
+            }
+            known.forEach(item => { parts[item.path] = cache[item.key]; });
+            saveScreenshotNotes(cache);
+            const notes = chosen.map(item => parts[item.path]).filter(Boolean).join("\n\n");
+            const { legs, total } = collectPropLegs(notes);
+            const header = `Read ${images.length + known.length} screenshot(s), newest first (${known.length} from earlier reads, unchanged)`
+                + `${found.length > chosen.length ? `; ${found.length - chosen.length} older one(s) not read, pass a bigger limit for more` : ""}.`;
+            if (!legs.length) return [header, failed.length ? `Couldn't open: ${failed.join("; ")}` : "", notes].filter(Boolean).join("\n\n");
+            const otherNotes = notes.split("\n").filter(line => !line.includes("|") && !/^Prop legs found/i.test(line.trim())).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+            return [header,
+                failed.length ? `Couldn't open (say so to the user): ${failed.join("; ")}` : "",
+                formatPropLegs(legs, total),
+                otherNotes ? `[Other notes from the screenshots]\n${otherNotes.slice(0, 6000)}` : "",
+                "To research these legs, call outlier_research_list once with every leg above (player, stat, line, side), the sport and the day; with legs from several sports, call it once per sport. Say which legs came out [unreadable]."
+            ].filter(Boolean).join("\n\n");
+        }
+
         function waitForEvent(target, name, timeoutMs = 15000) {
             return new Promise((resolve, reject) => {
                 const timer = setTimeout(() => { cleanup(); reject(new Error(`timed out waiting for video ${name}`)); }, timeoutMs);
@@ -3363,7 +3825,7 @@
 
             // Scanned PDFs have no text layer; send the first pages as images instead.
             if (text.replace(/--- Page \d+ ---|\s/g, "").length < 10) {
-                const pagesToRender = Math.min(pdf.numPages, imageBudgetLeft(att.id));
+                const pagesToRender = Math.min(pdf.numPages, MAX_SCANNED_PDF_PAGES, imageBudgetLeft(att.id));
                 if (pagesToRender === 0) throw new Error(`it looks scanned (no text), and the ${MAX_IMAGES_PER_MESSAGE}-image limit for this message is already used`);
                 for (let pageNo = 1; pageNo <= pagesToRender; pageNo++) {
                     const page = await pdf.getPage(pageNo);
@@ -4763,10 +5225,37 @@
 4. GROUNDING: Blocks marked [Workspace ...], [Web Search Snippets] or [Attached ...] in the user message are your sources of truth. For code syntax, API names, signatures, versions and technical facts, rely on them first; when they conflict with your memory, follow the sources.
 5. NO GUESSING: Never invent functions, classes, parameters, packages, versions, settings or URLs. If the sources and well-established knowledge don't confirm something, say plainly that you could not verify it instead of guessing. This rule is about facts, not about analysis: when the task gives you data (odds, a board JSON, workspace files, tool results), work through it and compute what was asked from that data.
 6. CITATIONS: When a statement relies on a web snippet, cite it inline as [n] using that snippet's number. Never cite a source that was not provided. Workspace files are cited by file name.
-7. TOOLS: When tools are available, use them on your own initiative. Call web_search before answering about any API, library, engine feature, syntax, version or error message you are not certain about, and for any code implementation that is unfamiliar. Call list_workspace_files and read_workspace_file (or list_files and read_file) to check the user's real code instead of assuming. When the user asks you to change, create, run or test code and file or command tools (write_workspace_file, write_file, edit_file, run_command, run_approved_command) are available, do it with those tools directly instead of only showing code, then verify by reading the file back or running it. Never claim you searched, read, ran or verified something unless a tool result in this conversation shows it.`;
+7. TOOLS: When tools are available, use them on your own initiative. Call web_search before answering about any API, library, engine feature, syntax, version or error message you are not certain about, and for any code implementation that is unfamiliar. When the task is about the user's code or files, call list_workspace_files and read_workspace_file (or list_files and read_file) to check their real code instead of assuming; for questions, research, props or anything else that isn't about their files, don't list, search or read the project folder. When the user asks you to change, create, run or test code and file or command tools (write_workspace_file, write_file, edit_file, run_command, run_approved_command) are available, do it with those tools directly instead of only showing code, then verify by reading the file back or running it. Never claim you searched, read, ran or verified something unless a tool result in this conversation shows it.`;
             
             const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}`;
-            const images = options.images || [];
+            let images = options.images || [];
+            // Attached images and tools together: Claude takes both at once; the other
+            // providers' tool models can't see images, so the vision model reads them first
+            // and its notes go in as text (once per message, shared by every agent).
+            if (images.length && options.tools) {
+                if (currentBackend === "anthropic" && images.length <= ANTHROPIC_DIRECT_IMAGES) {
+                    const messages = [{ role: "system", content: fullSystemPrompt }, ...(options.history || []), { role: "user", content: [
+                        ...images.map(url => ({ type: "image_url", image_url: { url } })), { type: "text", text: userMessage }] }];
+                    try { return await runToolLoop(messages, options.tools); } catch (err) {
+                        if (!/tool|function/i.test(err.message)) throw err;
+                        logConsoleActivity(`[Tool] Tool loop failed (${err.message}); answering without tools.`);
+                    }
+                } else {
+                    try {
+                        if (!imageNotesCache.has(images)) {
+                            logConsoleActivity(`[Vision] Reading ${images.length} image(s) so the agent can use its tools with them.`);
+                            imageNotesCache.set(images, readImagesWithVision(images.map((url, n) => ({ name: `Attached image ${n + 1}`, url })), userMessage.slice(0, 600)));
+                        }
+                        const notes = await imageNotesCache.get(images);
+                        const { legs, total } = collectPropLegs(notes);
+                        userMessage += `\n\n[Attached images, read by the vision model]\n${notes}` + (legs.length ? `\n\n${formatPropLegs(legs, total)}` : "");
+                        images = [];
+                    } catch (err) {
+                        imageNotesCache.delete(images);
+                        logConsoleActivity(`[Vision] Couldn't read the images first (${err.message}); sending them without tools.`);
+                    }
+                }
+            }
             const history = options.history || [];
             if (history.length) logConsoleActivity(`[Chat] Sending ${history.length} earlier message(s) as context.`);
 
@@ -4786,6 +5275,12 @@
                 return groqChat({ model: TEXT_MODEL, temperature: 0.0, messages });
             }
 
+            // More images than one vision request takes: answer from the vision model's notes.
+            if (images.length > VISION_BATCH && currentBackend !== "anthropic") {
+                const notes = await readImagesWithVision(images.map((url, n) => ({ name: `Attached image ${n + 1}`, url })), userMessage.slice(0, 600));
+                return groqChat({ model: TEXT_MODEL, temperature: 0.0, messages: [{ role: "system", content: fullSystemPrompt }, ...history,
+                    { role: "user", content: `${userMessage}\n\n[Attached images, read by the vision model]\n${notes}` }] });
+            }
             logConsoleActivity(`[Vision] Sending ${images.length} image(s) to ${{ groq: VISION_MODEL, openrouter: openRouterModel, anthropic: ANTHROPIC_MODEL }[currentBackend]}.`);
             return groqChat({
                 model: VISION_MODEL,
@@ -4833,12 +5328,51 @@
             return DEV_ROLES[agent?.devRole] ? agent.devRole : "architect";
         }
 
-        function agentSystemPrompt(agent, workspaceNote, memory) {
-            const general = agentDevRole(agent) === "general";
+        // REQUEST TYPE
+        // CoDev does many kinds of work, so each request is sorted before an agent runs.
+        // Only a code or file task gets the project's files put in the prompt and the
+        // "act on the project" rules; a question, research, a prop list or screenshots go
+        // to their own tools instead of a trip through the project folder.
+        const CODE_TASK_STRONG = /```|@[\w./-]+\.\w+|\b[\w./-]+\.(?:js|mjs|cjs|ts|tsx|jsx|py|cs|gd|tscn|html|css|json|java|kt|gradle|xml|ya?ml|toml|md|sh|bat|ps1|c|h|cpp|hpp|rs|go|rb|php|lua|sql|txt)\b|\b(?:code|coding|codebase|repo|repository|function|method|class|variable|bug|debug|stack ?trace|exception|compile|compiler|build|lint|refactor|implement|script|endpoint|component|commit|deploy|godot|gdscript|javascript|typescript|python|kotlin|html|css|npm|gradle|apk|syntax)\b/i;
+        const CODE_TASK_WEAK = /\b(?:project|folder|files?|tests?|app|program|page|website|site|error|crash|feature|install)\b/i;
+        const IMAGE_TASK = /\b(?:screenshots?|screen ?shots?|screen ?caps?|images?|pictures?|pics?|photos?)\b/i;
+        const PROPS_TASK = /\b(?:outlier|parl[ae]ys?|parley|tickets?|props?|underdog|dabble|prizepicks|slips?|legs?|pick'?em|sportsbooks?|over\/under|odds|betting)\b/i;
+        const REQUEST_KIND_LABELS = { code: "code or project files", props: "sports props research", images: "reading screenshots or images", general: "a general question or task" };
+
+        // "code", "props", "images" or "general". A short follow-up ("now fix it", "why?")
+        // keeps the type of the message before it.
+        function classifyRequest(text, previousText = "", hasImages = false) {
+            const t = String(text || "");
+            let kind = PROPS_TASK.test(t) ? "props"
+                : CODE_TASK_STRONG.test(t) ? "code"
+                : IMAGE_TASK.test(t) || hasImages ? "images"
+                : CODE_TASK_WEAK.test(t) ? "code" : "general";
+            if (kind === "general" && previousText && t.length < 80) {
+                const before = classifyRequest(previousText);
+                if (before !== "general") kind = before;
+            }
+            return kind;
+        }
+
+        const CODEV_IDENTITY = "[CoDev] You are CoDev, a multi-purpose agent: you write and fix code, answer questions, research on the web, analyze sports props on Outlier, read screenshots, images and documents, and help with writing and planning. "
+            + "Before acting, work out what kind of request this is and use only the tools it needs. Touch the user's project files only when the task is about them or the user asks.";
+        const REQUEST_KIND_NOTES = {
+            props: "[Request type] Sports props and betting research, not a coding task. Use the Outlier tools, read_screenshots for slip screenshots, and web_search. Don't list, search or read the project files unless the user asks about a file.",
+            images: "[Request type] A request about screenshots or images. Read a folder of them with read_screenshots, or use the attached images. If they turn out to be prop slips, research the legs like any prop list. Don't browse the project's code for this.",
+            general: "[Request type] A general question or task, not about the project files. Answer it directly, using web_search for facts you aren't sure of. List, search or read the project files only if the user asks about them."
+        };
+
+        function agentSystemPrompt(agent, workspaceNote, memory, kind = "code") {
+            const coding = kind === "code";
+            // Outside a code task, the coding roles answer as the general agent does: they
+            // aren't told to treat the message as a job on the project.
+            const role = coding || agentDevRole(agent) === "self_healing" ? agentDevRole(agent) : "general";
+            const general = role === "general";
             // A general agent isn't told to treat every message as a coding job, or to nag about
             // a missing project folder when the task may not need one.
             if (general && /^\[Workspace status\] No project/.test(workspaceNote)) workspaceNote = "[Workspace status] No project folder is connected. That only matters if the task is about project files.";
-            return [DEV_ROLES[agentDevRole(agent)].prompt, general ? null : AUTONOMY_RULES, workspaceNote,
+            else if (!coding && workspaceNote) workspaceNote = "[Workspace status] A project folder is connected; its files only matter if the user asks about them.";
+            return [CODEV_IDENTITY, DEV_ROLES[role].prompt, general ? null : AUTONOMY_RULES, coding ? null : REQUEST_KIND_NOTES[kind], workspaceNote,
                 agent.instructions && `[Agent instructions] ${agent.instructions}`, memory].filter(Boolean).join("\n\n");
         }
 
@@ -5302,8 +5836,8 @@
         // One agent's turn. The workspace is indexed again for every agent, since the
         // agent before it may have changed files.
         async function runAgentStep(session, agent, task, opts) {
-            const { extraContext = "", aiOptions = {}, webSources = [], memory = "", notes = "", title, dispatch } = opts;
-            appendMessageToSession(session, `🤖 ${agent.name} (Working...)`, dispatch ? "🧪 Starting a sandbox…" : "📁 Indexing the workspace…");
+            const { extraContext = "", aiOptions = {}, webSources = [], memory = "", notes = "", title, dispatch, kind = "code" } = opts;
+            appendMessageToSession(session, `🤖 ${agent.name} (Working...)`, dispatch ? "🧪 Starting a sandbox…" : kind === "code" ? "📁 Indexing the workspace…" : "Working on it…");
             const placeholder = session.messages[session.messages.length - 1];
             placeholder.task = task;
             setAgentState(agent.id, "thinking");
@@ -5325,10 +5859,11 @@
                     logConsoleActivity(`[Workspace] ${err.message}`);
                     return null;
                 });
-                const context = await buildWorkspaceContext(task, ws);
-                if (ws) logConsoleActivity(`[Workspace] ${agent.name}: tree of ${context.total} files${context.files.length ? ` + ${context.files.join(", ")}` : ""}.`);
+                // Only a code or file task carries the project's files; the tools can still read them.
+                const context = kind === "code" ? await buildWorkspaceContext(task, ws) : { text: "", files: [], total: 0 };
+                if (ws && kind === "code") logConsoleActivity(`[Workspace] ${agent.name}: tree of ${context.total} files${context.files.length ? ` + ${context.files.join(", ")}` : ""}.`);
                 placeholder.text = "Working on it…";
-                const response = await callAI(agentSystemPrompt(agent, workspaceNote(ws), memory), task + context.text + extraContext + notes, { ...aiOptions, tools });
+                const response = await callAI(agentSystemPrompt(agent, workspaceNote(ws), memory, kind), task + context.text + extraContext + notes, { ...aiOptions, tools });
                 finish(title ? title(agent) : `🤖 ${agent.name}`, response, tools.sources);
                 setAgentState(agent.id, "success");
                 return { ok: true, agent, response, changes: tools.changes, commands: tools.commands };
@@ -5354,19 +5889,22 @@
             if (changes.length) {
                 logConsoleActivity(`[Self-Healing Loop] Verifying ${changes.length} changed file(s): ${changes.join(", ")}`);
                 const notes = `\n\n[Changes to verify]\n${changes.join("\n")}` + (commands.length ? `\n\n[Commands already run]\n${commands.join("\n")}` : "") + reports;
-                return runAgentStep(session, healer, `Verify and repair the changes just made for this task: ${task}`, { ...opts, notes, title: a => `🛡️ ${a.name}` });
+                return runAgentStep(session, healer, `Verify and repair the changes just made for this task: ${task}`, { ...opts, kind: "code", notes, title: a => `🛡️ ${a.name}` });
             }
             if (!done.some(r => r.response.includes("```"))) {
                 logConsoleActivity("[Self-Healing Loop] No file changes or code to check.");
                 return null;
             }
             logConsoleActivity("[Self-Healing Loop] Auditing the code in the reply for compiler traps and syntax bugs...");
-            return runAgentStep(session, healer, `Audit the code in these replies to "${task}" for syntax errors, API mismatches and claims the sources don't support. Reply with the corrected code, or say it is clean. Don't change project files for this.`, { ...opts, notes: reports, title: a => `🛡️ ${a.name} (code audit)` });
+            return runAgentStep(session, healer, `Audit the code in these replies to "${task}" for syntax errors, API mismatches and claims the sources don't support. Reply with the corrected code, or say it is clean. Don't change project files for this.`, { ...opts, kind: "code", notes: reports, title: a => `🛡️ ${a.name} (code audit)` });
         }
 
         async function sendChatMessage() {
             let inputField = document.getElementById("userInput");
             let userText = inputField.value.trim();
+            // Right after the click or Enter: the only moment the browser lets CoDev ask to read
+            // a remembered screenshots folder again.
+            if (screenshotFolder?.handle && (IMAGE_TASK.test(userText) || PROPS_TASK.test(userText))) await screenshotFolderAccess(true);
             if (pendingAttachments.some(a => a.processing)) {
                 alert("Attachments are still being prepared. Try again in a moment.");
                 return;
@@ -5393,6 +5931,9 @@
             const session = chatSessions.find(s => s.id === activeChatId);
             // Earlier turns of this chat, taken before this message joins it.
             aiOptions.history = chatHistoryForModel(session);
+            const lastAsked = [...aiOptions.history].reverse().find(m => m.role === "user");
+            const requestKind = classifyRequest(userText, lastAsked ? lastAsked.content : "", aiOptions.images.length > 0);
+            logConsoleActivity(`[Request] Sorted as ${REQUEST_KIND_LABELS[requestKind]}.`);
             appendMessageToActiveSession("👤 You", userText, attachments.map(a => ({ name: a.name, kind: a.kind, thumb: a.thumb })));
             inputField.value = "";
             clearAttachments();
@@ -5444,7 +5985,7 @@
 
             // 🧪 Sandbox: the agents' edits are staged and reviewed (finishSandboxDispatch) before they are saved.
             const dispatch = sandboxModeActive() ? CodevAgentClient.createSandboxDispatch(agentInfra.client, { task: userText }) : null;
-            const stepOptions = { extraContext: injectedContext, aiOptions, webSources, memory: collectiveMemory, dispatch };
+            const stepOptions = { extraContext: injectedContext, aiOptions, webSources, memory: collectiveMemory, dispatch, kind: requestKind };
 
             if (isBackground) {
                 document.getElementById("isBackgroundWorkerCheckbox").checked = false;
@@ -5496,6 +6037,7 @@
             updateWorkspaceGrid();
             updateMobileTabs();
             initAgentInfra();
+            restoreScreenshotFolder();
             // The live view is there wherever agents have a browser (Windows app, npm start).
             setupLiveInput();
             fetchBrowserMcpTools().then(tools => {

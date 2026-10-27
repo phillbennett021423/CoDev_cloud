@@ -38,40 +38,85 @@ const STATS = {
     'fg made': ['fg made', 'fgm', 'field goals made'], 'free throws made': ['free throws made', 'ftm'],
     '3pt attempted': ['3pt attempted', '3pa', '3 pointers attempted', 'three pointers attempted'],
     fantasy: ['fantasy points', 'fantasy score', 'fantasy'], 'double double': ['double double'],
-    'passing yards': ['passing yards', 'pass yds'], 'rushing yards': ['rushing yards', 'rush yds'], 'receiving yards': ['receiving yards', 'rec yds'],
+    'passing yards': ['passing yards', 'pass yds', 'pass yards', 'passing yds'], 'rushing yards': ['rushing yards', 'rush yds', 'rush yards', 'rushing yds'],
+    'receiving yards': ['receiving yards', 'rec yds', 'rec yards', 'receiving yds'],
+    'rush rec yards': ['rush rec yards', 'rush rec yds', 'rushing receiving yards', 'rushing and receiving yards', 'rush and rec yds'],
+    'pass rush yards': ['pass rush yards', 'pass rush yds', 'passing rushing yards', 'passing and rushing yards'],
+    'rush attempts': ['rush attempts', 'rushing attempts', 'carries', 'rush att'], 'pass attempts': ['pass attempts', 'passing attempts', 'pass att'],
+    completions: ['completions', 'pass completions', 'passing completions'], 'passing tds': ['passing tds', 'passing touchdowns', 'pass tds', 'pass td'],
+    interceptions: ['interceptions', 'interceptions thrown', 'ints'], sacks: ['sacks'], 'tackles assists': ['tackles assists', 'tackles and assists', 'tackles ast'],
+    'longest reception': ['longest reception', 'long reception'], 'longest rush': ['longest rush', 'long rush'],
     receptions: ['receptions', 'rec'], strikeouts: ['strikeouts', 'ks', 'pitcher strikeouts'], 'total bases': ['total bases', 'tb'],
     hits: ['hits'], 'shots on goal': ['shots on goal', 'sog', 'shots']
 };
 const normWords = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+// A player's name as apps write it differently: "A.J. Brown" and "AJ Brown",
+// "Marvin Harrison Jr." and "Marvin Harrison", "Luka Dončić" and "Luka Doncic".
+const nameKey = t => normWords(t).replace(/\b([a-z]) (?=[a-z]\b)/g, '$1').replace(/ (jr|sr|ii|iii|iv|v)$/, '').trim();
+const sameName = (a, b) => {
+    const x = nameKey(a), y = nameKey(b);
+    if (!x || !y) return false;
+    if (x === y) return true;
+    // "C. Lamb" for "CeeDee Lamb": a lone first initial and the same last name.
+    const [xf, ...xl] = x.split(' '), [yf, ...yl] = y.split(' ');
+    return xl.length > 0 && xl.join(' ') === yl.join(' ') && (xf.length === 1 || yf.length === 1) && xf[0] === yf[0];
+};
 // "Pts+Rebs+Asts" -> every way a board might write it.
+// A quarter, half, period or first innings of a market ("1st Quarter Receiving
+// Yards", "1H Rush Yds"), by its usual names; null for the full game.
+const PERIODS = {
+    q1: ['1st quarter', 'first quarter', '1q', 'q1', '1st qtr', '1qtr'], q2: ['2nd quarter', 'second quarter', '2q', 'q2', '2nd qtr', '2qtr'],
+    q3: ['3rd quarter', 'third quarter', '3q', 'q3', '3rd qtr', '3qtr'], q4: ['4th quarter', 'fourth quarter', '4q', 'q4', '4th qtr', '4qtr'],
+    h1: ['1st half', 'first half', '1h', 'h1', '1st 1 2'], h2: ['2nd half', 'second half', '2h', 'h2', '2nd 1 2'],
+    p1: ['1st period', 'first period', 'p1'], p2: ['2nd period', 'second period', 'p2'], p3: ['3rd period', 'third period', 'p3'],
+    f5: ['first 5 innings', '1st 5 innings', 'first five innings', 'f5'], f3: ['first 3 innings', '1st 3 innings', 'f3']
+};
+const PERIOD = /\b(1st|2nd|3rd|4th|first|second|third|fourth) (quarter|half|period|inning|innings|5|3 minutes)\b|\b(1q|2q|3q|4q|1h|2h|q1|q2|q3|q4|h1|h2|f5)\b|\bquarter\b|\bhalf\b/;
+function periodOf(text) {
+    const t = ` ${normWords(text)} `;
+    const hit = Object.entries(PERIODS).find(([, names]) => names.some(n => t.includes(` ${n} `)));
+    return hit ? hit[0] : PERIOD.test(t) ? 'other' : null;
+}
+// The market without its period: "1st Quarter Receiving Yards" -> "receiving yards".
+function withoutPeriod(text) {
+    let t = ` ${normWords(text)} `;
+    for (const n of Object.values(PERIODS).flat().sort((a, b) => b.length - a.length)) t = t.split(` ${n} `).join(' ');
+    return t.replace(/\b(quarter|half|period|qtr)\b/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// A stat's words, without its period (the period is matched on its own).
 function statWords(stat) {
-    const key = normWords(stat);
+    const key = withoutPeriod(stat);
     if (!key) return [];
     const entry = Object.entries(STATS).find(([name, words]) => name === key || words.includes(key));
     return entry ? [...new Set([entry[0], ...entry[1]])] : [key];
 }
 
-// A board market is this leg's stat for the full game: its words are there, it isn't
-// a quarter or half ("1st Quarter Points"), and it isn't a combo or another stat that
-// holds them ("Pts+Rebs+Asts", "Fantasy Points") unless the leg is that combo.
-const PERIOD = /\b(1st|2nd|3rd|4th|first|second|third|fourth) (quarter|half|period|inning|innings|5|3 minutes)\b|\b(1q|2q|3q|4q|1h|2h|q1|q2|q3|q4|h1|h2|f5)\b|\bquarter\b|\bhalf\b/;
-// The words of the markets that hold this stat's words but aren't it (quarters, halves,
+// The names of the stat's own period, which its card must show (none for the full game).
+const periodWords = stat => PERIODS[periodOf(stat)] || [];
+
+// The words of the markets that hold this stat's words but aren't it (other periods,
 // combos, fantasy), for telling a card apart in the page.
 function avoidWords(stat) {
     const words = statWords(stat);
     if (!words.length) return [];
     const mine = new Set(words.flatMap(w => w.split(' ')));
     const other = Object.values(STATS).flat().filter(o => o.length >= 3 && !words.includes(o) && o.split(' ').some(t => !mine.has(t)) && o.split(' ').some(t => mine.has(t)));
-    const period = PERIOD.test(` ${normWords(stat)} `) ? [] : ['1st quarter', '1st half', 'first quarter', 'first half', '1q', '1h', 'quarter', 'half'];
+    const own = periodOf(stat);
+    const period = Object.entries(PERIODS).filter(([k]) => k !== own).flatMap(([, names]) => names).concat(own ? [] : ['quarter', 'half']);
     return [...new Set([...other, ...period])];
 }
 
+// A board market is this leg's stat for the same part of the game: its words are
+// there, its quarter or half is the leg's ("1st Quarter Receiving Yards" for a 1Q
+// leg, none for a full-game one), and it isn't a combo or another stat that holds
+// them ("Pts+Rebs+Asts", "Fantasy Points") unless the leg is that combo.
 function sameMarket(market, stat) {
     const words = statWords(stat);
     if (!words.length) return true;
-    const m = ` ${normWords(market)} `;
+    if (periodOf(market) !== periodOf(stat)) return false;
+    const m = ` ${withoutPeriod(market)} `;
     if (!words.some(w => m.includes(` ${w} `))) return false;
-    if (PERIOD.test(m) && !PERIOD.test(` ${normWords(stat)} `)) return false;
     const mine = new Set(words.flatMap(w => w.split(' ')));
     for (const [, others] of Object.entries(STATS)) {
         for (const o of others) {
@@ -133,20 +178,60 @@ function gameTeams(text) {
 }
 
 // Runs inside the page: scrolls the window and any scrolling panel down a
-// screen. False when nothing moved (the end).
+// screen. False when nothing moved (the end). The board's scrolling panel is
+// found once and marked (data-codev-scroller), so a step doesn't check every
+// element on a page of thousands; with a card open, its own panel is looked for.
 const scrollStep = () => {
     const before = window.scrollY;
     window.scrollBy(0, window.innerHeight * 0.9);
     let any = window.scrollY !== before;
-    for (const el of document.querySelectorAll('*')) {
-        if (el.scrollHeight > el.clientHeight + 50 && /(auto|scroll)/.test(getComputedStyle(el).overflowY)) {
-            const top = el.scrollTop;
-            el.scrollTop += el.clientHeight * 0.9;
-            if (el.scrollTop !== top) any = true;
-        }
+    const scrolls = el => el.scrollHeight > el.clientHeight + 50 && /(auto|scroll)/.test(getComputedStyle(el).overflowY);
+    const dialog = document.querySelector('[role="dialog"], [aria-modal="true"]');
+    let panels = dialog ? [] : [...document.querySelectorAll('[data-codev-scroller]')].filter(scrolls);
+    if (!panels.length) {
+        panels = [...document.querySelectorAll('*')].filter(scrolls);
+        if (!dialog) panels.forEach(el => el.setAttribute('data-codev-scroller', '1'));
+    }
+    for (const el of panels) {
+        const top = el.scrollTop;
+        el.scrollTop += el.clientHeight * 0.9;
+        if (el.scrollTop !== top) any = true;
     }
     return any;
 };
+
+// Runs inside the page: where the board is scrolled to (the window and each marked
+// panel), so a row seen there can be found again by jumping straight back.
+const scrollPlace = () => ({ y: window.scrollY, tops: [...document.querySelectorAll('[data-codev-scroller]')].map(el => el.scrollTop) });
+
+// Runs inside the page: back to a place scrollPlace noted, back screens above it.
+const scrollToPlace = ([place, back]) => {
+    window.scrollTo(0, Math.max(0, place.y - back * window.innerHeight * 0.9));
+    [...document.querySelectorAll('[data-codev-scroller]')].forEach((el, i) => {
+        if (place.tops[i] != null) el.scrollTop = Math.max(0, place.tops[i] - back * el.clientHeight * 0.9);
+    });
+};
+
+// After a scroll: waits until the new rows have been drawn (the page stops changing
+// for a moment), at most maxMs, instead of a fixed pause every step.
+async function settleAfterScroll(page, maxMs = 600) {
+    await page.evaluate(max => new Promise(resolve => {
+        let quiet = null;
+        const done = () => { observer.disconnect(); clearTimeout(quiet); resolve(); };
+        const observer = new MutationObserver(() => { clearTimeout(quiet); quiet = setTimeout(done, 120); });
+        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+        quiet = setTimeout(done, 250);
+        setTimeout(done, max);
+    }), maxMs).catch(() => {});
+}
+
+// The board place (from a board read's places) where the player's row showed, or null.
+function placeOf(places, player) {
+    const name = normWords(player);
+    if (!name) return null;
+    const hit = (places || []).find(p => ` ${normWords(p.text)} `.includes(` ${name} `));
+    return hit ? hit.place : null;
+}
 
 // Runs inside the page: marks the best clickable element whose own label is one of
 // labels (a tab, chip or menu item, not a block of text that mentions it) with
@@ -454,10 +539,12 @@ async function navigate(page, { section, sport, market, game, player, day } = {}
 // add button around it.
 // stats/line: the leg's stat words and line; with them, the name on that stat's
 // prop card wins (best.stat true), else any card of his.
-function markPlayer({ name, stats = [], line = null, avoid = [] }) {
+function markPlayer({ name, stats = [], line = null, avoid = [], need = [] }) {
     document.querySelectorAll('[data-codev-player]').forEach(el => el.removeAttribute('data-codev-player'));
     const norm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
-    const full = norm(name);
+    // "A.J. Brown" and "AJ Brown", "Marvin Harrison Jr." and "Marvin Harrison" (as nameKey).
+    const key = t => norm(t).replace(/\b([a-z]) (?=[a-z]\b)/g, '$1').replace(/ (jr|sr|ii|iii|iv|v)\b/g, '');
+    const full = key(name);
     const parts = full.split(' ');
     const short = parts.length > 1 ? `${parts[0][0]} ${parts.slice(1).join(' ')}` : null;
     const NEVER = /\b(submit|place|enter|confirm|add|pick|slip|deposit|withdraw|remove|delete|more|less|over|under|higher|lower)\b/i;
@@ -467,7 +554,7 @@ function markPlayer({ name, stats = [], line = null, avoid = [] }) {
     for (const el of document.querySelectorAll('body *')) {
         const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
         if (!text || text.length > 60 || !visible(el)) continue;
-        const own = ` ${norm(text)} `;
+        const own = ` ${key(text)} `;
         if (!own.includes(` ${full} `) && !(short && own.includes(` ${short} `))) continue;
         if (NEVER.test(text)) continue;
         // A prop card that opens on click shows Over/Under itself; one that adds a pick doesn't open.
@@ -480,7 +567,8 @@ function markPlayer({ name, stats = [], line = null, avoid = [] }) {
         for (let up = el.parentElement; up && up !== document.body && (up.innerText || '').length <= 400 && props(up.innerText || '') <= 2; up = up.parentElement) card = up;
         const cardText = ` ${norm(card.innerText)} `;
         // A quarter, half or combo market ("1st Quarter Points", "Pts+Rebs+Asts") isn't the stat.
-        const stat = stats.some(w => cardText.includes(` ${w} `)) && !avoid.some(w => cardText.includes(` ${w} `));
+        // A quarter or half leg needs its period on the card ("1st Quarter").
+        const stat = stats.some(w => cardText.includes(` ${w} `)) && !avoid.some(w => cardText.includes(` ${w} `)) && (!need.length || need.some(w => cardText.includes(` ${w} `)));
         const score = (stat ? 2 : 0) + (line != null && cardText.includes(` ${norm(String(line))} `) ? 1 : 0);
         if (!best || score > best.score || (score === best.score && text.length < best.text.length)) best = { el, text, score, stat };
     }
@@ -503,12 +591,52 @@ function readLines() {
     return out;
 }
 
+// Runs inside the page: marks Outlier's player search box (data-codev-search) and
+// returns its label, or null. Only a field labelled for searching; never one in a
+// pick slip, a login or a payment form.
+function markSearchBox() {
+    document.querySelectorAll('[data-codev-search]').forEach(el => el.removeAttribute('data-codev-search'));
+    const NEVER = /\b(promo|code|amount|stake|wager|entry|email|password|card number|deposit|withdraw|pick|slip|bet)\b/i;
+    const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+    for (const el of document.querySelectorAll('input, [role="searchbox"], [role="combobox"]')) {
+        if (!visible(el) || el.disabled || el.readOnly || /^(password|email|number|tel|checkbox|radio|hidden|submit|button)$/i.test(el.type || '')) continue;
+        const label = [el.getAttribute('placeholder'), el.getAttribute('aria-label'), el.getAttribute('name'), el.id].filter(Boolean).join(' ');
+        if (!(el.type === 'search' || el.getAttribute('role') === 'searchbox' || /search|find|player/i.test(label))) continue;
+        if (NEVER.test(label) || el.closest('[class*="slip" i], [id*="slip" i], [class*="checkout" i], [class*="login" i]')) continue;
+        el.setAttribute('data-codev-search', '1');
+        return label || 'search';
+    }
+    return null;
+}
+
+// Types the player's name into Outlier's search box (never presses Enter, never
+// clicks a result) so the board shows only his props. Returns the box's label, or
+// null when the page has no search box.
+async function searchPlayer(page, player, { settleMs = 800 } = {}) {
+    const box = await page.evaluate(markSearchBox).catch(() => null);
+    if (!box) return null;
+    const field = page.locator('[data-codev-search="1"]').first();
+    await field.fill('');
+    await field.fill(String(player));
+    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+    await settleAfterScroll(page, Math.max(600, settleMs));
+    return box;
+}
+
+// Empties the search box again, so the whole board is back.
+async function clearSearch(page) {
+    const field = page.locator('[data-codev-search="1"]').first();
+    if (!await field.count().catch(() => 0)) return;
+    await field.fill('').catch(() => {});
+    await settleAfterScroll(page);
+}
+
 // Opens the player's Market Details / player card from the board on page,
 // scrolling down to find the name. Returns the label clicked or throws.
 // stat/line: open his card for that stat (a "Rebounds" leg opens the rebounds
 // prop, not the points one) when the board shows it, else any card of his.
-async function openPlayer(page, player, { settleMs = 1500, stat = null, line = null } = {}) {
-    const hints = { stats: statWords(stat), line: line == null ? null : String(line), avoid: avoidWords(stat) };
+async function openPlayer(page, player, { settleMs = 1500, stat = null, line = null, place = null } = {}) {
+    const hints = { stats: statWords(stat), line: line == null ? null : String(line), avoid: avoidWords(stat), need: periodWords(stat) };
     const toTop = () => page.evaluate(() => { window.scrollTo(0, 0); for (const el of document.querySelectorAll('*')) if (el.scrollTop) el.scrollTop = 0; });
     const open = async label => {
         await clickPast(page, '[data-codev-player="1"]');
@@ -516,9 +644,22 @@ async function openPlayer(page, player, { settleMs = 1500, stat = null, line = n
         await page.waitForTimeout(settleMs);
         return label;
     };
+    let anyCard = false;
+    // Where the board read saw him: straight there (a screen above, in case rows
+    // shifted), a few screens down, instead of scrolling from the top.
+    if (place) {
+        await page.evaluate(scrollToPlace, [place, 1]).catch(() => {});
+        await settleAfterScroll(page);
+        for (let i = 0; i < 4; i++) {
+            const found = await page.evaluate(markPlayer, { name: String(player), ...hints });
+            if (found && (found.stat || !hints.stats.length)) return open(found.text);
+            if (found) anyCard = true;
+            if (!await page.evaluate(scrollStep)) break;
+            await settleAfterScroll(page, 400);
+        }
+    }
     // From the top of the board: the last read may have left it scrolled down.
     await toTop().catch(() => {});
-    let anyCard = false;
     for (let i = 0; i < 40; i++) {
         const found = await page.evaluate(markPlayer, { name: String(player), ...hints });
         if (found && (found.stat || !hints.stats.length)) return open(found.text);
@@ -555,7 +696,7 @@ async function readDetails(page, { scrolls = 12, maxChars = 12000 } = {}) {
             lines.push(line);
         }
         if (i === scrolls || !await page.evaluate(scrollStep)) break;
-        await page.waitForTimeout(600);
+        await settleAfterScroll(page);
     }
     const text = lines.join('\n');
     return text.length > maxChars ? `${text.slice(0, maxChars)}\n… (cut)` : text;
@@ -585,7 +726,7 @@ function legSummary(text, max = 420) {
 // Matchup, Injuries, Odds Movement...). Only real tabs (role=tab, a tab list) or
 // buttons in the card's dialog, never one in a header, nav, slip or My Picks, and
 // never a pick, bet or slip button. Marked data-codev-tab; returns their labels.
-const CARD_TABS = /^(supporting stats|stats|player stats|game ?logs?|splits|home ?\/ ?away|matchup|defen[cs]e( vs\.? position)?|vs\.? (defense|position)|injur(y|ies)|injury report|odds movement|line movement|line history|public( betting)?|bet splits|betting splits|news|minutes|usage|shooting|advanced|opportunit(y|ies)|play ?types?|shot chart|lineups?)$/i;
+const CARD_TABS = /^(supporting stats|stats|player stats|game ?logs?|splits|home ?\/ ?away|matchup|defen[cs]e( vs\.? position)?|vs\.? (defense|position)|injur(y|ies)|injury report|odds movement|line movement|line history|public( betting)?|bet splits|betting splits|news|minutes|usage|shooting|advanced|opportunit(y|ies)|play ?types?|shot chart|lineups?|snaps|targets|routes|red ?zone|receiving|rushing|passing|pitching|batting|time on ice|efficiency|trends|vs\.? opponent|team stats|statistics|insights|[a-z0-9+ ]{2,20} vs\.? [a-z]{2,4}|key [a-z]{2,4} [a-z+ ]{2,30} defen[cs]e)$/i;
 function markCardTabs(source) {
     const re = new RegExp(source, 'i');
     const bad = /pick|slip|add|bet ?now|place|remove|entry|parlay|follow|share/i;
@@ -625,6 +766,85 @@ async function readCardTabs(page, { settleMs = 800, max = 6, maxChars = 4000, kn
         fresh.forEach(l => seen.add(l));
         if (fresh.length) tabs.push({ tab: label, text: fresh.join('\n') });
     }
+    return tabs;
+}
+
+// The small tabs and toggles inside the card's sections: the hit-rate windows
+// (H2H, L5, L10, L20, seasons), Average/Median, the position tabs of "Points vs
+// BOS" (All, PG...C) and of the opponent's defense (Overall, vs PG...), the shot
+// chart's shot types and seasons, the supporting stats (Minutes, Fouls, Field
+// Goals, 3pts...) and the two teams of Injuries. Never the stat tabs (1Q PTS,
+// PTS+AST: other props), the over/under button, alt lines, filters, share or a
+// pick. Runs inside the page: marks each data-codev-sub="n" and returns
+// [{ n, label, section }] (section: the title of the box it sits in).
+const SUB_TABS = '^(h2h|l5|l10|l15|l20|l25|l50|20\\d\\d(-\\d\\d)?|average|median|all|pg|sg|sf|pf|c|g|f|overall|vs\\.? (pg|sg|sf|pf|c|g|f|guards?|forwards?|centers?)|all fgs|3pt|2pt|ft|minutes|fouls|field goals|3pts|free throws|rebounds|assists|steals|blocks|turnovers|usage|touches|shots|targets|snaps|routes|carries|receptions|pitches|strikeouts|time on ice|shots on goal)$';
+function markSubTabs(source) {
+    const re = new RegExp(source, 'i');
+    const bad = /pick|slip|\badd\b|\bbet|place|remove|entry|parlay|follow|share|alt lines|filter|save|template|\bev\b|\b(over|under)\b/i;
+    document.querySelectorAll('[data-codev-sub]').forEach(el => el.removeAttribute('data-codev-sub'));
+    const root = document.querySelector('[role="dialog"], [aria-modal="true"]') || document.body;
+    // The box's title: the first line of the nearest box around it that isn't the
+    // row of tabs itself (a row reads like "H2HL5L10" or "AverageMedian").
+    const title = (el, label) => {
+        for (let up = el.parentElement, n = 0; up && up !== root && n < 8; up = up.parentElement, n++) {
+            const first = (up.innerText || '').split('\n').map(t => t.trim()).find(Boolean) || '';
+            if (first && first.length <= 40 && !re.test(first) && !first.includes(label)) return first;
+        }
+        return '';
+    };
+    const out = [];
+    let n = 0;
+    for (const el of root.querySelectorAll('button, [role="tab"], [role="button"], [role="radio"], [role="option"], a, div, span, li')) {
+        if (el.closest('header, nav, aside, [class*="slip" i], [class*="mypick" i]')) continue;
+        const tag = el.tagName;
+        const clickable = /^(BUTTON|A)$/.test(tag) || el.getAttribute('role') || (el.children.length <= 2 && getComputedStyle(el).cursor === 'pointer');
+        if (!clickable) continue;
+        const label = (el.innerText || '').split('\n').map(t => t.trim()).find(Boolean) || '';
+        if (!label || label.length > 20 || bad.test(label)) continue;
+        const section = title(el, label);
+        const team = /^[A-Z]{2,4}$/.test(label) && /injur/i.test(section);
+        if (!re.test(label) && !team) continue;
+        // One element per control: skip a wrapper whose clickable child carries the same label.
+        if ([...el.querySelectorAll('button, [role="tab"], [role="button"], [role="radio"]')].some(c => ((c.innerText || '').split('\n')[0] || '').trim() === label)) continue;
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        if (out.some(o => o.label === label && o.section === section)) continue;
+        el.setAttribute('data-codev-sub', String(n));
+        out.push({ n, label, section });
+        n++;
+    }
+    return out;
+}
+
+// Clicks each of those, in turn, and reads what it shows ("Points vs BOS > PG: ...").
+// The first window tab that was on when the card opened (L10 most often) is clicked
+// again at the end, so the card is left as it opened.
+async function readSubTabs(page, { settleMs = 800, max = 40, maxChars = 3000, known = '', stop = () => false } = {}) {
+    const seen = new Set(String(known).split('\n'));
+    const found = (await page.evaluate(markSubTabs, SUB_TABS).catch(() => [])).slice(0, max);
+    const active = await page.evaluate(() => {
+        const on = [...document.querySelectorAll('[aria-selected="true"], [aria-pressed="true"], [aria-checked="true"], [data-state="active"]')]
+            .map(el => (el.innerText || '').trim()).find(t => /^(H2H|L\d+|20\d\d)$/i.test(t));
+        return on || null;
+    }).catch(() => null);
+    const tabs = [];
+    const click = async ({ label, section }) => {
+        const now = await page.evaluate(markSubTabs, SUB_TABS).catch(() => []);
+        const hit = now.find(o => o.label === label && o.section === section);
+        if (!hit) return false;
+        return page.click(`[data-codev-sub="${hit.n}"]`, { timeout: 3000 }).then(() => true).catch(() => false);
+    };
+    for (const sub of found) {
+        if (stop()) break;
+        if (!await click(sub)) continue;
+        await page.waitForTimeout(settleMs);
+        if (stop()) break;
+        const fresh = (await readDetails(page, { scrolls: 0, maxChars })).split('\n').filter(l => !seen.has(l));
+        fresh.forEach(l => seen.add(l));
+        if (fresh.length) tabs.push({ tab: `${sub.section ? `${sub.section} > ` : ''}${sub.label}`, text: fresh.join('\n') });
+    }
+    const back = active && found.find(o => o.label.toLowerCase() === active.toLowerCase());
+    if (back && !stop()) { await page.waitForTimeout(settleMs); await click(back); }
     return tabs;
 }
 
@@ -826,7 +1046,18 @@ const OPPORTUNITY = [
     ['Target share', /^target share\b/i],
     ['Rush attempts', /^(rush attempts|rushing attempts|carries)\b/i],
     ['Snaps', /^(snaps|snap %|snap share)\b/i],
-    ['Plate appearances', /^(plate appearances|pa)\b/i]
+    ['Routes', /^(routes|routes run|route participation|route %|route share)\b/i],
+    ['Air yards', /^(air yards|air yds|air yards share)\b/i],
+    ['Red zone touches', /^(red ?zone (touches|targets|carries|opportunities|looks))\b/i],
+    ['Pass attempts', /^(pass attempts|passing attempts|pass att)\b/i],
+    ['Plate appearances', /^(plate appearances|pa)\b/i],
+    ['At bats', /^(at bats|ab)\b/i],
+    ['Batting order', /^(batting order|lineup spot|batting position)\b/i],
+    ['Pitch count', /^(pitch count|pitches|pitches thrown)\b/i],
+    ['Innings pitched', /^(innings pitched|ip)\b/i],
+    ['Batters faced', /^(batters faced|bf)\b/i],
+    ['Time on ice', /^(time on ice|toi)\b/i],
+    ['Power play time', /^(power ?play time|pp toi|pp time)\b/i]
 ];
 const WINDOW_RE = /\b(L\d{1,2}|Last \d{1,2}|H2H|Season|Szn|Avg|Average|20\d\d(?:[-/]\d\d)?)\b/gi;
 function cardNumbers(text) {
@@ -894,7 +1125,7 @@ function keepLegs(props, legs) {
     for (const leg of legs) {
         const name = normWords(leg.player);
         if (!name) continue;
-        const his = props.filter(p => normWords(p.player) === name || normWords(p.player).endsWith(` ${name.split(' ').slice(-1)[0]}`) && normWords(p.player)[0] === name[0]);
+        const his = props.filter(p => sameName(p.player, name) || normWords(p.player).endsWith(` ${name.split(' ').slice(-1)[0]}`) && normWords(p.player)[0] === name[0]);
         const words = statWords(leg.stat);
         const forStat = words.length ? his.filter(p => sameMarket(p.market, leg.stat)) : [];
         (forStat.length ? forStat : his).forEach(p => kept.add(p));
@@ -910,4 +1141,169 @@ function onlyGame(props, teams) {
     return props.filter(p => !p.game || p.game === key);
 }
 
-module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords };
+// ---- Outlier's filter panel ----
+// The panel (a sliders button on the board) holds: Only EV+, Players, Games, Hit
+// Rate (L5/L10/L20/H2H/season, a From-To range), Odds ("At least -300" by
+// default, which hides heavy favorites), Opponent Matchup, Over/Under, Include
+// alternative lines, then Save filters and Show N results. CoDev turns alt lines
+// on, opens the odds range all the way, ticks the game, and shows the results. It
+// never touches Only EV+, Save filters, Templates or anything on a slip.
+
+// Runs inside the page: marks one part of the filter panel with
+// data-codev-filter="1" and says what it found. what: 'open' (the button that
+// opens the panel), 'panel' (is it open), 'alt' (the alt-lines switch), 'odds'
+// (the Odds row), 'oddsFrom' (the low end of the odds range), 'game' (the game's
+// row, by its teams), 'show' (Show N results).
+function markFilter({ what, teams = [] }) {
+    document.querySelectorAll('[data-codev-filter]').forEach(el => el.removeAttribute('data-codev-filter'));
+    const NEVER = /\b(save|template|only ev|my picks|add to|submit|place|enter|deposit|withdraw|delete|remove)\b/i;
+    const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+    const textOf = el => ((el.innerText || '').trim() || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+    const mark = (el, out) => { el.setAttribute('data-codev-filter', '1'); return out; };
+    // The smallest visible element whose own text is label.
+    const labelEl = re => {
+        let best = null;
+        for (const el of document.querySelectorAll('body *')) {
+            const t = textOf(el);
+            if (!t || t.length > 60 || !re.test(t) || !visible(el)) continue;
+            if (!best || best.contains(el)) best = el;
+        }
+        return best;
+    };
+    const SWITCH = '[role="switch"], input[type="checkbox"], [aria-checked], [aria-pressed], button';
+    const isOn = el => el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true' || el.checked === true || /^(checked|on)$/i.test(el.getAttribute('data-state') || '');
+    // The switch or checkbox in the same row as a label.
+    const switchBy = label => {
+        for (let up = label, i = 0; up && i < 5; up = up.parentElement, i++) {
+            const found = [...up.querySelectorAll(SWITCH)].find(el => el !== label && !NEVER.test(textOf(el)));
+            if (found) return found;
+        }
+        return null;
+    };
+    if (what === 'panel') return Boolean(labelEl(/^include alt(ernative|ernate)? lines$/i));
+    if (what === 'open') {
+        for (const el of document.querySelectorAll('button, [role="button"], a, [aria-label], [title], [data-testid], [class*="filter" i]')) {
+            if (!visible(el) || NEVER.test(textOf(el))) continue;
+            const named = /^(filters?|filter props|current filters|open filters)$/i.test(textOf(el))
+                || /filter/i.test(`${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''} ${el.getAttribute('data-testid') || ''}`)
+                || (/filter/i.test(String(el.className || '')) && textOf(el).length <= 20 && el.matches('button, [role="button"]'));
+            if (named) return mark(el, textOf(el) || 'filters');
+        }
+        return null;
+    }
+    if (what === 'alt') {
+        const label = labelEl(/^include alt(ernative|ernate)? lines$/i);
+        const sw = label && switchBy(label);
+        if (!sw) return null;
+        return mark(sw.matches('input') && !visible(sw) ? (sw.closest('label') || label) : sw, { on: isOn(sw) });
+    }
+    if (what === 'odds') {
+        const label = labelEl(/^odds$/i);
+        return label ? mark(label, textOf(label.parentElement || label)) : null;
+    }
+    if (what === 'oddsFrom') {
+        const label = labelEl(/^odds$/i);
+        const stop = labelEl(/^opponent matchup$/i);
+        if (!label) return null;
+        const after = el => label.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING;
+        const before = el => !stop || (el.compareDocumentPosition(stop) & Node.DOCUMENT_POSITION_FOLLOWING);
+        const slider = [...document.querySelectorAll('[role="slider"], input[type="range"]')].find(el => visible(el) && after(el) && before(el));
+        if (!slider) return null;
+        return mark(slider, { range: slider.matches('input'), min: slider.getAttribute('aria-valuemin') || slider.min || null, now: slider.getAttribute('aria-valuenow') || slider.value || null });
+    }
+    if (what === 'game') {
+        // teams: each team's names (["DAL", "cowboys", "dallas"]); a row names both.
+        const names = teams.map(t => [].concat(t).map(w => String(w).toLowerCase()));
+        if (!names.length) return null;
+        const has = (text, w) => new RegExp(`(^|[^a-z0-9])${w.replace(/[^a-z0-9 ]/g, '')}($|[^a-z0-9])`).test(text);
+        for (const box of document.querySelectorAll('input[type="checkbox"], [role="checkbox"]')) {
+            for (let up = box.parentElement, i = 0; up && i < 4; up = up.parentElement, i++) {
+                const t = textOf(up).toLowerCase();
+                if (t.length > 120) break;
+                if (names.every(alts => alts.some(w => has(t, w)))) return mark(visible(box) ? box : up, { on: isOn(box), text: textOf(up) });
+            }
+        }
+        return null;
+    }
+    if (what === 'show') {
+        for (const el of document.querySelectorAll('button, [role="button"], a')) {
+            if (visible(el) && /^(show|see|view|apply)\b.*\b(results?|props?)$|^apply( filters)?$|^done$/i.test(textOf(el)) && !NEVER.test(textOf(el))) return mark(el, textOf(el));
+        }
+        return null;
+    }
+    return null;
+}
+
+// Opens Outlier's filter panel and sets it for researching a list: alternative
+// lines on (the user's line is often an alt line), the odds range opened to its
+// lowest end (the default "At least -300" hides heavy favorites), the game ticked
+// when one was asked for, then Show results. Returns what it set, as steps; a
+// board without the panel returns [] and the board is read as it is.
+async function setFilters(page, { altLines = true, widenOdds = true, teams = null, sport = null } = {}, { settleMs = 800 } = {}) {
+    const did = [];
+    if (teams) teams = teams.map(t => [t, ...teamTokens(t, String(sport || '').toLowerCase())]);
+    const find = (what, extra = {}) => page.evaluate(markFilter, { what, ...extra }).catch(() => null);
+    const click = () => clickPast(page, '[data-codev-filter="1"]').then(() => page.waitForTimeout(Math.min(settleMs, 600)), () => {});
+    if (!await find('panel')) {
+        if (!await find('open')) return did;
+        await click();
+        if (!await find('panel')) { await page.keyboard.press('Escape').catch(() => {}); return did; }
+    }
+    if (altLines) {
+        const alt = await find('alt');
+        if (alt && !alt.on) {
+            await click();
+            const now = await find('alt');
+            did.push(now && now.on ? 'alt lines on' : 'alt lines (switch didn\'t turn on)');
+        } else if (alt) did.push('alt lines on');
+    }
+    if (widenOdds) {
+        let from = await find('oddsFrom');
+        if (!from && await find('odds')) { await click(); from = await find('oddsFrom'); }
+        if (from) {
+            const handle = page.locator('[data-codev-filter="1"]').first();
+            if (from.range) {
+                await handle.evaluate(el => {
+                    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, el.min);
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }).catch(() => {});
+            } else {
+                await handle.focus().catch(() => {});
+                await page.keyboard.press('Home').catch(() => {});
+            }
+            let after = await find('oddsFrom');
+            // A slider that ignores the Home key: drag its handle to the far left.
+            if (after && after.min != null && after.now !== after.min) {
+                const box = await page.locator('[data-codev-filter="1"]').first().boundingBox().catch(() => null);
+                if (box) {
+                    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+                    await page.mouse.down();
+                    await page.mouse.move(1, box.y + box.height / 2, { steps: 8 });
+                    await page.mouse.up();
+                    after = await find('oddsFrom');
+                }
+            }
+            did.push(after && (after.min == null || after.now === after.min) ? `odds from ${after && after.now != null ? after.now : 'the lowest'}` : 'odds range (couldn\'t move it)');
+        }
+    }
+    if (teams && teams.length) {
+        let game = await find('game', { teams });
+        if (!game) {
+            await page.evaluate(() => {
+                const el = [...document.querySelectorAll('body *')].find(e => /^games$/i.test((e.innerText || '').trim()) && e.getBoundingClientRect().height > 0);
+                if (el) el.setAttribute('data-codev-filter', '1');
+            }).catch(() => {});
+            await click();
+            game = await find('game', { teams });
+        }
+        if (game && !game.on) { await click(); did.push(`game ${game.text.slice(0, 60)}`); } else if (game) did.push(`game ${game.text.slice(0, 60)}`);
+    }
+    if (await find('show')) await click();
+    else await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+    await settleAfterScroll(page, Math.max(600, settleMs));
+    return did;
+}
+
+module.exports = { SUB_TABS, markSubTabs, readSubTabs, sameName, nameKey, setFilters, markFilter, navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords, periodOf, withoutPeriod, scrollStep, scrollPlace, scrollToPlace, settleAfterScroll, placeOf, markSearchBox, searchPlayer, clearSearch };
