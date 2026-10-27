@@ -273,7 +273,13 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // else a browser of its own that closes after. While the user is browsing it,
     // the scrape runs in a background tab and closes it after, so the user's tab and
     // control are never touched.
-    async function openForVisit(cfg) {
+    // here: the user set Outlier up by hand in CoDev's browser (filters, game, search):
+    // the shown tab is read as it is, never reloaded and never closed.
+    async function openForVisit(cfg, { here = false } = {}) {
+        if (here && shared && !cfg.showBrowser) {
+            const session = await shared.manager.get(SESSION);
+            return { page: session.page, shared: true, here: true, done: async () => {} };
+        }
         if (shared && !cfg.showBrowser) {
             const page = await shared.manager.workPage(SESSION);
             const session = shared.manager.peek(SESSION);
@@ -294,7 +300,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // same visit (researching legs), its result kept as extra.
     async function visitPages({ snapshot = false, pages: only = null, onPage = null } = {}) {
         const cfg = only ? { ...config(), pages: only } : config();
-        const browser = await openForVisit(cfg);
+        const browser = await openForVisit(cfg, { here: cfg.pages.some(p => p.here) });
         const pages = [];
         const saved = [];
         try {
@@ -307,19 +313,26 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     try { api.push({ url: response.url(), body: await response.json() }); } catch { /* not JSON after all */ }
                 };
                 page.on('response', onResponse);
-                await gotoChecked(page, target.url, { pausable: browser.shared });
-                await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+                // The user's own Outlier page, set up by hand: read as it is, no reload.
+                const asSet = target.here && (() => { try { return /(^|\.)outlier\.bet$/i.test(new URL(page.url()).hostname); } catch { return false; } })();
+                if (target.here && browser.here && !asSet) {
+                    throw new Error('CoDev\'s browser isn\'t on Outlier. Ask the user to open Outlier in the 📈 Outlier tab\'s browser, set the filters, and ask again.');
+                }
+                if (!asSet) {
+                    await gotoChecked(page, target.url, { pausable: browser.shared });
+                    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+                }
                 await page.waitForTimeout(cfg.settleMs);
                 // An agent asked for a sport, stat or game: click there first (tabs,
                 // filters and game cards only, never a pick).
-                let nav = null;
-                if (target.nav) {
+                let nav = target.here ? { steps: ['your page as you set it (filters kept, nothing reloaded)'], game: null, teams: null } : null;
+                if (target.nav && !target.here) {
                     const signedOut = await page.evaluate(() => Boolean(document.querySelector('input[type="password"]')));
                     if (looksSignedOut(page, { passwordField: signedOut })) signInNeeded(page, browser);
                     nav = await navigate(page, target.nav, { settleMs: cfg.settleMs, onProps: rememberProps });
                 }
                 // Outlier's filter panel: alt lines on, the whole odds range, the game.
-                if (target.filters && nav) {
+                if (target.filters && nav && !target.here) {
                     const set = await setFilters(page, { ...target.filters, teams: nav.teams, sport: target.nav.sport }, { settleMs: cfg.settleMs }).catch(() => []);
                     if (set.length) nav.steps.push(`filters: ${set.join(', ')}`);
                 }
@@ -1073,7 +1086,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // Every leg on a list ({ player, stat, line, side }) in one visit: the game's
     // board is reached once, read and audited for just these legs, and the players'
     // cards are opened on that same page.
-    async function researchList({ url = null, sport, game, day, legs = [], maxCards = 12 } = {}) {
+    async function researchList({ url = null, sport, game, day, legs = [], maxCards = 12, here = false } = {}) {
         const nav = { ...Object.fromEntries(Object.entries({ sport, game, day }).filter(([, v]) => v)), player: legs[0] && legs[0].player };
         // Asked again after a crash or a restart: the board read a few minutes ago and
         // the cards already read are used as they are, and Outlier isn't opened again
@@ -1102,13 +1115,15 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         };
         let boardRead = null;
         const run = await scrape({
-            pages: [{ kind: 'props', url: url || boardStart(sport), nav, filters: { altLines: true, widenOdds: true }, scrolls: 400, until, progress }], keep: legs,
+            pages: [{ kind: 'props', url: url || boardStart(sport), nav, here, filters: { altLines: true, widenOdds: true }, scrolls: 400, until, progress }], keep: legs,
             onPage: async (page, { collected }) => {
                 boardRead = { screens: collected.screens || 1, rows: collected.cards.length + collected.tables.length + collected.configured.length, seconds: Math.round((collected.readMs || 0) / 1000), legsSeen: found.size };
                 const boardProps = parseCollected([{ kind: 'props', url: page.url(), collected }]).props;
                 // The board without an open card's ?market=…&outcome=… in its address.
                 const board = (() => { const u = new URL(page.url()); ['market', 'outcome', 'split'].forEach(k => u.searchParams.delete(k)); return u.href; })();
                 const restore = async () => {
+                    // On the user's own page a reload would wipe their filters: close the card only.
+                    if (here) { await page.keyboard.press('Escape').catch(() => {}); await page.waitForTimeout(500); return; }
                     await page.goto(board, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
                     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
                     await navigate(page, nav, { settleMs: config().settleMs });
@@ -1579,7 +1594,8 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                 sport: { type: 'string', description: 'The sport tab, e.g. "NBA".' },
                 game: { type: 'string', description: 'The game by teams and/or start time, e.g. "Wizards vs Hornets", "7pm". Only when the user named one: leave it out for a list that may span games, and the sport\'s whole board is read.' },
                 day: { type: 'string', description: '"today", "tomorrow" or a weekday, when the games aren\'t today (optional).' },
-                url: { type: 'string', description: 'An app.outlier.bet page to start from (optional).' }
+                url: { type: 'string', description: 'An app.outlier.bet page to start from (optional).' },
+                here: { type: 'boolean', description: 'true when the user set Outlier up by hand in CoDev\'s browser (filters, game, search) and wants it read as it is: no reload, no tab or filter clicks. Use it when the user says they set the page or the filters themselves.' }
             }, required: ['legs'], additionalProperties: false }
         }, {
             name: 'outlier_simulate_ticket',
@@ -1677,7 +1693,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     const nav = Object.fromEntries(Object.entries({ sport: args.sport, game: args.game, day }).filter(([, v]) => v && String(v).trim()).map(([k, v]) => [k, String(v).trim()]));
                     // One visit: the board read and audited for just these legs, then
                     // the players' cards on that same page.
-                    const { steps, research, board: boardRead } = await outlier.researchList({ url, ...nav, legs });
+                    const { steps, research, board: boardRead } = await outlier.researchList({ url, ...nav, legs, here: args.here === true });
                     const result = outlier.state().result;
                     const audit = auditText(result);
                     let props = [];
