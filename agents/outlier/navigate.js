@@ -1038,4 +1038,169 @@ function onlyGame(props, teams) {
     return props.filter(p => !p.game || p.game === key);
 }
 
-module.exports = { navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords, periodOf, withoutPeriod, scrollStep, scrollPlace, scrollToPlace, settleAfterScroll, placeOf, markSearchBox, searchPlayer, clearSearch };
+// ---- Outlier's filter panel ----
+// The panel (a sliders button on the board) holds: Only EV+, Players, Games, Hit
+// Rate (L5/L10/L20/H2H/season, a From-To range), Odds ("At least -300" by
+// default, which hides heavy favorites), Opponent Matchup, Over/Under, Include
+// alternative lines, then Save filters and Show N results. CoDev turns alt lines
+// on, opens the odds range all the way, ticks the game, and shows the results. It
+// never touches Only EV+, Save filters, Templates or anything on a slip.
+
+// Runs inside the page: marks one part of the filter panel with
+// data-codev-filter="1" and says what it found. what: 'open' (the button that
+// opens the panel), 'panel' (is it open), 'alt' (the alt-lines switch), 'odds'
+// (the Odds row), 'oddsFrom' (the low end of the odds range), 'game' (the game's
+// row, by its teams), 'show' (Show N results).
+function markFilter({ what, teams = [] }) {
+    document.querySelectorAll('[data-codev-filter]').forEach(el => el.removeAttribute('data-codev-filter'));
+    const NEVER = /\b(save|template|only ev|my picks|add to|submit|place|enter|deposit|withdraw|delete|remove)\b/i;
+    const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+    const textOf = el => ((el.innerText || '').trim() || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+    const mark = (el, out) => { el.setAttribute('data-codev-filter', '1'); return out; };
+    // The smallest visible element whose own text is label.
+    const labelEl = re => {
+        let best = null;
+        for (const el of document.querySelectorAll('body *')) {
+            const t = textOf(el);
+            if (!t || t.length > 60 || !re.test(t) || !visible(el)) continue;
+            if (!best || best.contains(el)) best = el;
+        }
+        return best;
+    };
+    const SWITCH = '[role="switch"], input[type="checkbox"], [aria-checked], [aria-pressed], button';
+    const isOn = el => el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true' || el.checked === true || /^(checked|on)$/i.test(el.getAttribute('data-state') || '');
+    // The switch or checkbox in the same row as a label.
+    const switchBy = label => {
+        for (let up = label, i = 0; up && i < 5; up = up.parentElement, i++) {
+            const found = [...up.querySelectorAll(SWITCH)].find(el => el !== label && !NEVER.test(textOf(el)));
+            if (found) return found;
+        }
+        return null;
+    };
+    if (what === 'panel') return Boolean(labelEl(/^include alt(ernative|ernate)? lines$/i));
+    if (what === 'open') {
+        for (const el of document.querySelectorAll('button, [role="button"], a, [aria-label], [title], [data-testid], [class*="filter" i]')) {
+            if (!visible(el) || NEVER.test(textOf(el))) continue;
+            const named = /^(filters?|filter props|current filters|open filters)$/i.test(textOf(el))
+                || /filter/i.test(`${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''} ${el.getAttribute('data-testid') || ''}`)
+                || (/filter/i.test(String(el.className || '')) && textOf(el).length <= 20 && el.matches('button, [role="button"]'));
+            if (named) return mark(el, textOf(el) || 'filters');
+        }
+        return null;
+    }
+    if (what === 'alt') {
+        const label = labelEl(/^include alt(ernative|ernate)? lines$/i);
+        const sw = label && switchBy(label);
+        if (!sw) return null;
+        return mark(sw.matches('input') && !visible(sw) ? (sw.closest('label') || label) : sw, { on: isOn(sw) });
+    }
+    if (what === 'odds') {
+        const label = labelEl(/^odds$/i);
+        return label ? mark(label, textOf(label.parentElement || label)) : null;
+    }
+    if (what === 'oddsFrom') {
+        const label = labelEl(/^odds$/i);
+        const stop = labelEl(/^opponent matchup$/i);
+        if (!label) return null;
+        const after = el => label.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING;
+        const before = el => !stop || (el.compareDocumentPosition(stop) & Node.DOCUMENT_POSITION_FOLLOWING);
+        const slider = [...document.querySelectorAll('[role="slider"], input[type="range"]')].find(el => visible(el) && after(el) && before(el));
+        if (!slider) return null;
+        return mark(slider, { range: slider.matches('input'), min: slider.getAttribute('aria-valuemin') || slider.min || null, now: slider.getAttribute('aria-valuenow') || slider.value || null });
+    }
+    if (what === 'game') {
+        // teams: each team's names (["DAL", "cowboys", "dallas"]); a row names both.
+        const names = teams.map(t => [].concat(t).map(w => String(w).toLowerCase()));
+        if (!names.length) return null;
+        const has = (text, w) => new RegExp(`(^|[^a-z0-9])${w.replace(/[^a-z0-9 ]/g, '')}($|[^a-z0-9])`).test(text);
+        for (const box of document.querySelectorAll('input[type="checkbox"], [role="checkbox"]')) {
+            for (let up = box.parentElement, i = 0; up && i < 4; up = up.parentElement, i++) {
+                const t = textOf(up).toLowerCase();
+                if (t.length > 120) break;
+                if (names.every(alts => alts.some(w => has(t, w)))) return mark(visible(box) ? box : up, { on: isOn(box), text: textOf(up) });
+            }
+        }
+        return null;
+    }
+    if (what === 'show') {
+        for (const el of document.querySelectorAll('button, [role="button"], a')) {
+            if (visible(el) && /^(show|see|view|apply)\b.*\b(results?|props?)$|^apply( filters)?$|^done$/i.test(textOf(el)) && !NEVER.test(textOf(el))) return mark(el, textOf(el));
+        }
+        return null;
+    }
+    return null;
+}
+
+// Opens Outlier's filter panel and sets it for researching a list: alternative
+// lines on (the user's line is often an alt line), the odds range opened to its
+// lowest end (the default "At least -300" hides heavy favorites), the game ticked
+// when one was asked for, then Show results. Returns what it set, as steps; a
+// board without the panel returns [] and the board is read as it is.
+async function setFilters(page, { altLines = true, widenOdds = true, teams = null, sport = null } = {}, { settleMs = 800 } = {}) {
+    const did = [];
+    if (teams) teams = teams.map(t => [t, ...teamTokens(t, String(sport || '').toLowerCase())]);
+    const find = (what, extra = {}) => page.evaluate(markFilter, { what, ...extra }).catch(() => null);
+    const click = () => clickPast(page, '[data-codev-filter="1"]').then(() => page.waitForTimeout(Math.min(settleMs, 600)), () => {});
+    if (!await find('panel')) {
+        if (!await find('open')) return did;
+        await click();
+        if (!await find('panel')) { await page.keyboard.press('Escape').catch(() => {}); return did; }
+    }
+    if (altLines) {
+        const alt = await find('alt');
+        if (alt && !alt.on) {
+            await click();
+            const now = await find('alt');
+            did.push(now && now.on ? 'alt lines on' : 'alt lines (switch didn\'t turn on)');
+        } else if (alt) did.push('alt lines on');
+    }
+    if (widenOdds) {
+        let from = await find('oddsFrom');
+        if (!from && await find('odds')) { await click(); from = await find('oddsFrom'); }
+        if (from) {
+            const handle = page.locator('[data-codev-filter="1"]').first();
+            if (from.range) {
+                await handle.evaluate(el => {
+                    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, el.min);
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }).catch(() => {});
+            } else {
+                await handle.focus().catch(() => {});
+                await page.keyboard.press('Home').catch(() => {});
+            }
+            let after = await find('oddsFrom');
+            // A slider that ignores the Home key: drag its handle to the far left.
+            if (after && after.min != null && after.now !== after.min) {
+                const box = await page.locator('[data-codev-filter="1"]').first().boundingBox().catch(() => null);
+                if (box) {
+                    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+                    await page.mouse.down();
+                    await page.mouse.move(1, box.y + box.height / 2, { steps: 8 });
+                    await page.mouse.up();
+                    after = await find('oddsFrom');
+                }
+            }
+            did.push(after && (after.min == null || after.now === after.min) ? `odds from ${after && after.now != null ? after.now : 'the lowest'}` : 'odds range (couldn\'t move it)');
+        }
+    }
+    if (teams && teams.length) {
+        let game = await find('game', { teams });
+        if (!game) {
+            await page.evaluate(() => {
+                const el = [...document.querySelectorAll('body *')].find(e => /^games$/i.test((e.innerText || '').trim()) && e.getBoundingClientRect().height > 0);
+                if (el) el.setAttribute('data-codev-filter', '1');
+            }).catch(() => {});
+            await click();
+            game = await find('game', { teams });
+        }
+        if (game && !game.on) { await click(); did.push(`game ${game.text.slice(0, 60)}`); } else if (game) did.push(`game ${game.text.slice(0, 60)}`);
+    }
+    if (await find('show')) await click();
+    else await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+    await settleAfterScroll(page, Math.max(600, settleMs));
+    return did;
+}
+
+module.exports = { setFilters, markFilter, navigate, parseTime, pickGame, gameTeams, sportLabels, teamsNamed, onlyGame, markByLabel, listGames, listLabels, chooseOption, clock, PROPS_SECTIONS, sportPropsPath, markPlayer, openPlayer, readDetails, readCardTabs, markCardTabs, readBars, parseBar, hitsAtLine, readAltLines, readWithout, injuredTeammates, cardNumbers, opportunityTrend, opportunityLine, OPPORTUNITY, dismissOverlays, markPropsLink, statWords, sameMarket, dayLabels, legSummary, keepLegs, onTools, normWords, periodOf, withoutPeriod, scrollStep, scrollPlace, scrollToPlace, settleAfterScroll, placeOf, markSearchBox, searchPlayer, clearSearch };

@@ -832,6 +832,77 @@ test('NFL quarter and half legs: each player is looked up by name, matched to th
     assert.match(text, /looked up by name in Outlier's search/);
 });
 
+test('Outlier\'s filter panel: alt lines on, the odds range opened past -300, the game ticked, never Only EV+ or Save filters', async t => {
+    if (!hasPython) return t.skip('Python 3 is not installed');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const { createService } = require('../agents/outlier');
+    // Rows: player, market, line, odds, alt line?, game. The board hides odds under
+    // the odds floor (-300 by default) and alt lines until they're switched on.
+    const rows = [
+        ['Jalen Hurts', 'Passing Yards', 220.5, -115, false, 'DAL @ PHI'], ['Jalen Hurts', 'Passing Yards', 180.5, -450, true, 'DAL @ PHI'],
+        ['CeeDee Lamb', 'Receptions', 3.5, -520, false, 'DAL @ PHI'], ['Jordan Love', 'Passing Yards', 240.5, -110, false, 'CAR @ GB']
+    ];
+    const page = `<!doctype html><body><button id="fb" aria-label="Filters">☰</button><div class="betslip"><input placeholder="Entry amount"></div><main id="b"></main>
+        <div id="panel" hidden><h3>Current filters</h3>
+          <div class="row"><span>Only EV+</span><button role="switch" id="ev" aria-checked="false"></button></div>
+          <div class="row"><span>Games</span></div>
+          <label><input type="checkbox" id="g1"><span>Today 7:15 PM</span> <span>Cowboys @ Eagles</span></label>
+          <label><input type="checkbox" id="g2"><span>Thursday 7:15 PM</span> <span>Panthers @ Packers</span></label>
+          <div class="row" id="oddsrow"><span>Odds</span><span id="oddsat">At least -300</span></div>
+          <div id="oddsbox" hidden><div role="slider" tabindex="0" id="from" aria-valuemin="-16500" aria-valuemax="16000" aria-valuenow="-300" style="width:20px;height:20px">||</div></div>
+          <div class="row"><span>Opponent Matchup</span></div>
+          <div class="row"><span>Include alternative lines</span><button role="switch" id="alt" aria-checked="false"></button></div>
+          <button id="save">SAVE FILTERS</button><button id="show">SHOW 3109 RESULTS</button>
+        </div><script>
+        const rows = ${JSON.stringify(rows)}; const state = { alt: false, floor: -300, game: null };
+        const b = document.getElementById('b'), panel = document.getElementById('panel');
+        function draw() { b.innerHTML = rows.filter(r => (state.alt || !r[4]) && r[3] >= state.floor && (!state.game || r[5] === state.game)).map(r => '<div><div class="pn" style="cursor:pointer">' + r[0] + '</div><div>' + r[5] + '</div><div>' + r[1] + '</div><div>Over ' + r[2] + '</div><div>FanDuel ' + r[3] + '</div><div>L5 80% L10 70%</div></div>').join(''); }
+        draw();
+        document.getElementById('fb').onclick = () => { panel.hidden = false; };
+        document.getElementById('alt').onclick = e => { e.target.setAttribute('aria-checked', String(e.target.getAttribute('aria-checked') !== 'true')); };
+        document.getElementById('ev').onclick = () => { state.floor = 1e9; draw(); };
+        document.getElementById('save').onclick = () => { state.floor = 1e9; draw(); };
+        document.getElementById('oddsrow').onclick = () => { document.getElementById('oddsbox').hidden = false; };
+        document.getElementById('from').addEventListener('keydown', e => { if (e.key === 'Home') { e.target.setAttribute('aria-valuenow', '-16500'); document.getElementById('oddsat').textContent = 'At least -16500'; } });
+        document.getElementById('show').onclick = () => {
+            state.alt = document.getElementById('alt').getAttribute('aria-checked') === 'true';
+            state.floor = Number(document.getElementById('from').getAttribute('aria-valuenow'));
+            state.game = document.getElementById('g1').checked ? 'DAL @ PHI' : null;
+            panel.hidden = true; draw();
+        };
+        b.addEventListener('click', e => {
+            if (!e.target.classList.contains('pn')) return;
+            const p = document.createElement('div'); p.setAttribute('role', 'dialog');
+            p.innerHTML = '<h2>' + e.target.textContent + ' ' + e.target.parentElement.children[2].textContent + '</h2><p>L5 80% L10 70%</p>';
+            document.body.appendChild(p);
+        });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') { document.querySelectorAll('[role=dialog]').forEach(d => d.remove()); panel.hidden = true; } });
+    </script></body>`;
+    const server = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(page); });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const url = `http://127.0.0.1:${server.address().port}/NFL/props`;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-outlier-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
+    t.after(() => pipeline.close());
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, backoffMs: [100, 100] }));
+    const service = createService({}, { pipeline });
+    const legs = [
+        { player: 'Jalen Hurts', stat: 'Passing Yards', line: 180.5, side: 'Over' },
+        { player: 'CeeDee Lamb', stat: 'Receptions', line: 3.5, side: 'Over' }
+    ];
+    const out = await service.callTool('outlier_research_list', { sport: 'NFL', game: 'Cowboys Eagles', legs });
+    const text = out.content[0].text;
+    assert.equal(out.isError, undefined, text);
+    assert.match(text, /filters: alt lines on, odds from -16500, game Today 7:15 PM Cowboys @ Eagles/, 'the steps say what was set');
+    assert.match(text, /1\. Jalen Hurts Over 180\.5 Passing Yards\n {3}Outlier 180\.5 Passing Yards/, 'his alt line shows once alt lines are on');
+    assert.match(text, /2\. CeeDee Lamb Over 3\.5 Receptions\n {3}Outlier 3\.5 Receptions \(over -520\)/, 'a -520 line shows once the odds range is opened');
+    assert.doesNotMatch(text, /Jordan Love/, 'the other game is filtered out');
+});
+
 test('a long board that only draws the rows on screen: each card opens by jumping back to where the board read saw the player', async t => {
     if (!hasPython) return t.skip('Python 3 is not installed');
     const launched = await launchBrowser();
