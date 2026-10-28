@@ -348,7 +348,8 @@ test("the agent's card shows its browser live, and the user can drive it from th
     await sendPrompt(page, 'Open the test page in your browser');
     await waitForChat(page, /Opened the page\./);
 
-    // The live picture appears in the selected agent's own card.
+    // The live picture appears in the selected agent's own card (the agent list starts folded away).
+    await page.evaluate(() => { if (isAgentCollapsed) toggleAgentSidebar(); });
     const viewport = page.locator(`.agent-card[data-agent-id="${agentId}"] .agent-browser-panel #agentViewport`);
     await viewport.waitFor({ state: 'visible', timeout: 20000 });
     await page.waitForFunction(() => (document.getElementById('agentViewport').getAttribute('src') || '').startsWith('blob:'), null, { timeout: 20000 });
