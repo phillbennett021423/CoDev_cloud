@@ -511,6 +511,12 @@
         return out.join("\n") + "\n";
     }
 
+    // 🌿 A "what if" scene names the scene it branched from and the line it left at.
+    function branchInfo(p, e, ids) {
+        const parent = e.fields.branch_of && p.entries.find(x => x.kind === "scene" && sameName(x.name, e.fields.branch_of));
+        return parent ? { branch_of: ids.get(parent), branch_from: `n${Number(e.fields.branch_at) || 1}` } : {};
+    }
+
     // format: all | json | gdscript | dialogue | scenes | markdown. Returns { "path": content }.
     function exportFiles(p, format = "all", folder = "game_data") {
         const base = String(folder || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
@@ -533,7 +539,7 @@
                 const cast = String(e.fields.characters || "").split(/\s*,\s*/).filter(Boolean);
                 files[at(`scenes/${ids.get(e)}.json`)] = JSON.stringify({ format: "codev-cutscene", version: 1, id: data.id, title: e.name,
                     location: e.fields.location || "", characters: cast.map(name => ({ name, id: (p.entries.find(c => c.kind === "character" && sameName(c.name, name)) && ids.get(p.entries.find(c => c.kind === "character" && sameName(c.name, name)))) || slug(name) })),
-                    goal: e.fields.goal || "", start: data.lines.length ? "n1" : "", beats: data.lines }, null, 2) + "\n";
+                    goal: e.fields.goal || "", start: data.lines.length ? "n1" : "", ...branchInfo(p, e, ids), beats: data.lines }, null, 2) + "\n";
             }
         }
         return files;
@@ -596,6 +602,48 @@
             + `Write the next ${count > 1 ? `${count} lines` : "line"}${opts.speaker ? `, spoken by ${opts.speaker}` : ", spoken by whoever should speak next"}. `
             + (count > 1 ? `Answer with only a JSON array: [{"speaker": "Name", "text": "what they say", "emotion": "word"}]`
                 : `Answer with only JSON: {"speaker": "Name", "text": "what they say", "emotion": "word"}`);
+    }
+
+    // 🎤 Interview questions that dig into a character.
+    const INTERVIEW_QUESTIONS = [
+        "What's your earliest memory?", "What do you fear more than anything?", "Who do you trust, and why?", "What's the worst thing you've ever done?",
+        "What do you want more than anything?", "What would make you betray your friends?", "Who taught you how to fight, or how to survive?",
+        "What do you do when no one is watching?", "What's a secret you've never told anyone?", "Who do you hate, and what did they do?",
+        "What would you change about your past?", "What makes you laugh?", "Where do you feel at home?", "What do people get wrong about you?",
+        "What would you die for?", "How do you want to be remembered?", "What's in your pockets right now?", "What's your biggest regret?",
+        "What do you think of the people in charge?", "What keeps you going on the worst days?"
+    ];
+
+    // 🔍 Lore checker: the entry or scene to check against the rest of the bible.
+    function loreCheckPrompt(p, target, maxChars = 10000) {
+        const targets = Array.isArray(target) ? target : [target];
+        const text = targets.map(t => describeEntry(t)).join("\n\n").toLowerCase();
+        const rest = p.entries.filter(e => !targets.includes(e))
+            .map(e => ({ e, score: (text.includes(e.name.toLowerCase()) ? 10 : 0) + (["character", "event", "lore", "faction", "ability", "location"].includes(e.kind) ? 1 : 0) }))
+            .sort((a, b) => b.score - a.score);
+        const bible = [];
+        let used = 0;
+        for (const { e } of rest) {
+            const d = describeEntry(e);
+            if (used + d.length > maxChars) continue;
+            bible.push(d);
+            used += d.length;
+        }
+        return [
+            { role: "system", content: `You check the story bible of the game "${p.name}" for contradictions. Compare what is being checked with the bible and with itself: names, ages, dates and the order of events, powers and their limits, who knows what, relationships, places, who is alive or dead. `
+                + "Report only real contradictions or clear inconsistencies, not style or missing detail. Answer with only a JSON array, empty if there are none: "
+                + '[{"problem": "what contradicts what, in one sentence", "conflicts_with": "the bible entry name, or \"itself\"", "suggestion": "one way to fix it"}]' },
+            { role: "user", content: `[Story bible]\n${bible.join("\n\n") || "(nothing else yet)"}\n\n[Check this]\n${targets.map(t => describeEntry(t)).join("\n\n")}` }
+        ];
+    }
+
+    function parseIssues(text) {
+        const match = String(text || "").match(/\[[\s\S]*\]/);
+        if (!match) return null;
+        try {
+            const list = JSON.parse(match[0]);
+            return Array.isArray(list) ? list.filter(i => i && i.problem).slice(0, 20).map(i => ({ problem: clean(i.problem, 400), conflicts_with: clean(i.conflicts_with, 120), suggestion: clean(i.suggestion, 400) })) : null;
+        } catch (err) { return null; }
     }
 
     // "[angry] Get out." -> { mood: "angry", text: "Get out." }
@@ -823,6 +871,8 @@
 .gs-beat.s-written { border-left-color: var(--warning); }
 .gs-beat.s-in_game { border-left-color: var(--success); }
 .gs-beat .gs-btn, .gs-beat select { padding: 3px 7px; font-size: 0.72rem; }
+.gs-issues { display: flex; flex-direction: column; gap: 6px; }
+.gs-issue { background: var(--bg-card); border-left: 3px solid var(--warning); border-radius: 6px; padding: 8px 10px; font-size: 0.85rem; display: flex; flex-direction: column; gap: 3px; }
 .gs-speak { background: none; border: none; cursor: pointer; font-size: 0.85rem; padding: 0 2px; opacity: 0.75; }
 .gs-send input { flex: 1; min-width: 0; }
 @media (max-width: 600px) { .gs-line { grid-template-columns: 1fr; } .gs-grid { grid-template-columns: 1fr; } }
@@ -858,7 +908,7 @@
     // canWriteFolder() -> bool, pickFile() -> text, confirm(text) -> bool
     function mount(container, store, deps = {}) {
         if (!document.getElementById(STYLE_ID)) document.head.append(el("style", { id: STYLE_ID, text: CSS }));
-        const ui = { section: "bible", kindFilter: "", search: "", editing: null, talkWith: "", talkLog: [], sceneId: "", sceneSetup: false, sceneCalls: {}, busy: false };
+        const ui = { section: "bible", kindFilter: "", search: "", editing: null, talkWith: "", talkLog: [], sceneId: "", sceneSetup: false, sceneCalls: {}, loreResults: {}, asked: new Set(), busy: false };
         const confirmFn = deps.confirm || (text => window.confirm(text));
         let msgTimer = null;
 
@@ -963,7 +1013,8 @@
             const askBtn = el("button", { class: "gs-btn", type: "button", text: "🤖 Ask an agent", onclick: () => sendToAgent(p, ask.value) });
             ask.addEventListener("keydown", e => { if (e.key === "Enter") sendToAgent(p, ask.value); });
             return el("div", { class: "gs" }, chips, el("div", { class: "gs-bar" }, search, add),
-                el("div", { class: "gs-send" }, ask, askBtn), grid);
+                el("div", { class: "gs-send" }, ask, askBtn), grid,
+                p.entries.length > 1 ? loreChecker(p, p.entries.filter(e => !["dialogue", "scene"].includes(e.kind)), `all:${p.id}`, "🔍 Check the whole bible for contradictions") : null);
         }
 
         function sendToAgent(p, text, entry) {
@@ -1067,7 +1118,8 @@
                 entry.locked ? el("div", { class: "gs-note", text: "Locked: nothing can change it, not even an agent, until you unlock it. Chats and scenes with it never change it either way." }) : null,
                 art, faces, voiceBox, el("div", { class: "gs-row" }, el("label", {}, "Name", name), el("label", {}, "Kind", kindSelect)),
                 el("label", {}, "Summary", summary), fieldNodes, kind.lines ? el("label", {}, "Lines", linesBox) : null,
-                linkBox, el("label", {}, "Tags", tags), msg, entry.locked ? null : el("div", { class: "gs-row" }, save, remove), help);
+                linkBox, el("label", {}, "Tags", tags), msg,
+                !isNew ? loreChecker(p, [entry], entry.id) : null, entry.locked ? null : el("div", { class: "gs-row" }, save, remove), help);
             if (entry.locked) {
                 form.querySelectorAll("input, textarea, select").forEach(node => { if (!node.closest(".gs-send")) node.disabled = true; });
                 form.querySelectorAll(".gs-art button, .gs-line button, .gs-lines > button, .gs-faces button").forEach(node => { if (!node.dataset.keep) node.disabled = true; });
@@ -1374,6 +1426,36 @@
                 arcs.length ? el("div", { class: "gs-board" }, arcs.map(column)) : el("div", { class: "gs-note", text: "No arcs yet." }));
         }
 
+        // 🔍 One model call that compares entries with the rest of the bible. It only reports;
+        // nothing is changed. Results stay until the next check of the same thing.
+        function loreChecker(p, targets, key, label = "🔍 Check for contradictions") {
+            const out = el("div", { class: "gs-issues" });
+            const show = () => {
+                const result = ui.loreResults[key];
+                out.replaceChildren();
+                if (!result) return;
+                if (result.error) return out.append(el("div", { class: "gs-msg bad", text: result.error }));
+                if (!result.issues.length) return out.append(el("div", { class: "gs-note", text: "✅ No contradictions found with the story bible." }));
+                out.append(...result.issues.map(i => el("div", { class: "gs-issue" },
+                    el("b", { text: `⚠️ ${i.problem}` }),
+                    i.conflicts_with ? el("div", { class: "gs-note", text: `Conflicts with: ${i.conflicts_with}` }) : null,
+                    i.suggestion ? el("div", { class: "gs-note", text: `Idea: ${i.suggestion}` }) : null)));
+            };
+            const btn = el("button", { class: "gs-btn", type: "button", "data-keep": "1", text: label, disabled: !deps.chat, onclick: async () => {
+                btn.disabled = true;
+                btn.textContent = "Checking…";
+                try {
+                    const issues = parseIssues(await deps.chat(loreCheckPrompt(p, targets)));
+                    ui.loreResults[key] = issues ? { issues } : { error: "The check didn't come back in a form CoDev could read. Try again." };
+                } catch (err) { ui.loreResults[key] = { error: `Couldn't check: ${err.message}` }; }
+                btn.disabled = false;
+                btn.textContent = label;
+                show();
+            } });
+            show();
+            return el("div", { class: "gs" }, el("div", { class: "gs-row" }, btn, el("span", { class: "gs-note", text: "Compares it with the rest of the story bible. It only reports; nothing is changed." })), out);
+        }
+
         function elevenLabsBox() {
             const key = el("input", { type: "password", value: deps.getElevenLabsKey ? deps.getElevenLabsKey() : "", placeholder: "ElevenLabs API key", "aria-label": "ElevenLabs API key", autocomplete: "off" });
             return el("details", { class: "gs-section" }, el("summary", { text: "🎙️ ElevenLabs voices (optional, paid)" }),
@@ -1435,6 +1517,7 @@
                 ui.busy = false;
                 draw();
                 keep.disabled = !ui.talkLog.length;
+                keepNotes.disabled = !ui.talkLog.some(m => m.role === "assistant");
             };
             input.addEventListener("keydown", e => { if (e.key === "Enter") send(); });
             const keep = el("button", { class: "gs-btn", type: "button", text: "💾 Save as dialogue", disabled: !ui.talkLog.length, onclick: () => {
@@ -1447,9 +1530,25 @@
                 say(msg, saved.error || `Saved as "${saved.entry.name}" in the story bible.`, !!saved.error);
             } });
             const clear = el("button", { class: "gs-btn", type: "button", text: "Clear", onclick: () => { ui.talkLog = []; render(); } });
+            // 🎤 Interview: questions that dig into the character; the answers can be kept as notes.
+            const fresh = INTERVIEW_QUESTIONS.filter(q => !ui.asked.has(`${character.id}:${q}`));
+            const question = el("select", { "aria-label": "Interview question" }, (fresh.length ? fresh : INTERVIEW_QUESTIONS).map(q => el("option", { value: q, text: q })));
+            const ask = q => { ui.asked.add(`${character.id}:${q}`); input.value = q; send(); };
+            const keepNotes = el("button", { class: "gs-btn", type: "button", text: "📝 Keep the answers as notes", disabled: !ui.talkLog.some(m => m.role === "assistant"), onclick: () => {
+                const qa = [];
+                ui.talkLog.forEach((m, n) => { if (m.role === "user" && ui.talkLog[n + 1]) qa.push(`Q: ${m.content}\nA: ${splitMood(ui.talkLog[n + 1].content).text}`); });
+                const saved = store.saveEntry(p.id, { kind: "lore", name: uniqueName(p, `Interview with ${character.name}`, "lore"), summary: `What ${character.name} said in an interview.`, fields: { details: qa.join("\n\n") }, links: [{ to: character.id, type: "other" }] });
+                say(msg, saved.error || `Kept as the lore note "${saved.entry.name}". ${character.name}'s card is unchanged.`, !!saved.error);
+            } });
+            const interview = el("details", { class: "gs-section", open: !!ui.interviewOpen, ontoggle: e => { ui.interviewOpen = e.target.open; } },
+                el("summary", { text: "🎤 Interview mode" }),
+                el("div", { class: "gs-note", text: `Ask ${character.name} questions that dig into who they are. Nothing they say changes their card; keep the answers as notes if you like them.` }),
+                el("div", { class: "gs-send" }, question, el("button", { class: "gs-btn", type: "button", text: "Ask", onclick: () => ask(question.value) }),
+                    el("button", { class: "gs-btn", type: "button", text: "🎲", title: "Ask a random question", "aria-label": "Ask a random question", onclick: () => { const pool = fresh.length ? fresh : INTERVIEW_QUESTIONS; ask(pool[Math.floor(Math.random() * pool.length)]); } })),
+                keepNotes);
             const auto = deps.speak ? el("label", { class: "gs-chip", style: "display: inline-flex; gap: 6px; align-items: center;" },
                 el("input", { type: "checkbox", checked: !!ui.speakReplies, onchange: e => { ui.speakReplies = e.target.checked; if (!ui.speakReplies && deps.stopSpeaking) deps.stopSpeaking(); } }), "🔊 Speak replies") : null;
-            return el("div", { class: "gs" }, log, el("div", { class: "gs-send" }, input, el("button", { class: "gs-btn primary", type: "button", text: "Send", onclick: send })), el("div", { class: "gs-row" }, keep, clear, auto));
+            return el("div", { class: "gs" }, log, el("div", { class: "gs-send" }, input, el("button", { class: "gs-btn primary", type: "button", text: "Send", onclick: send })), el("div", { class: "gs-row" }, keep, clear, auto), interview);
         }
 
         function uniqueName(p, base, kind) {
@@ -1470,8 +1569,8 @@
                 el("div", { class: "gs-note", text: "Act out a scene with your characters: pick where it happens, who is in it and what's at stake. Agents play each character in turn while you direct, step in, rewind or redo lines. The script is saved to the story bible and exports to your game as a cutscene." }),
                 el("div", { class: "gs-bar" }, el("button", { class: "gs-btn primary", type: "button", text: "＋ New scene", onclick: () => { ui.sceneId = ""; ui.sceneSetup = true; render(); } })),
                 el("div", { class: "gs-grid" }, scenes.length ? scenes.map(s => el("button", { type: "button", class: "gs-card", onclick: () => { ui.sceneId = s.id; ui.sceneSetup = false; render(); } },
-                    el("span", { class: "gs-icon", text: "🎬" }),
-                    el("div", {}, el("b", { text: s.name }), el("span", { class: "gs-sum", text: `${(s.lines || []).length} lines · ${s.fields.location || "no place set"}` }))))
+                    el("span", { class: "gs-icon", text: s.fields.branch_of ? "🌿" : "🎬" }),
+                    el("div", {}, el("b", { text: s.name }), el("span", { class: "gs-sum", text: s.fields.branch_of ? `What if, from "${s.fields.branch_of}" line ${s.fields.branch_at}` : `${(s.lines || []).length} lines · ${s.fields.location || "no place set"}` }))))
                     : el("div", { class: "gs-note", text: "No scenes yet." })));
         }
 
@@ -1553,6 +1652,21 @@
                         if (i === lines().length - 1) return;
                         setLines(lines().slice(0, i + 1));
                         draw();
+                    } }),
+                    el("button", { class: "gs-btn", type: "button", text: "🌿 What if…", title: "Try a different direction from this line, in a copy; this scene stays as it is", onclick: () => {
+                        const what = el("input", { type: "text", placeholder: `What if… (like "${cast[1] ? cast[1].name : "she"} says no")`, "aria-label": "What if" });
+                        const go = () => {
+                            const name = uniqueName(p, `${scene.name}: what if`, "scene");
+                            const branch = lines().slice(0, i + 1).map(x => Object.assign({}, x));
+                            if (what.value.trim()) branch.push({ type: "direction", text: `What if: ${what.value.trim()}` });
+                            const saved = store.saveEntry(p.id, { kind: "scene", name, fields: Object.assign({}, scene.fields, { branch_of: scene.name, branch_at: String(i + 1) }), lines: branch });
+                            if (saved.error) return say(msg, saved.error, true);
+                            ui.sceneId = saved.entry.id;
+                            render();
+                        };
+                        what.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+                        row.append(el("div", { class: "gs-send", style: "margin-top: 6px;" }, what, el("button", { class: "gs-btn primary", type: "button", text: "🌿 Branch", onclick: go })));
+                        what.focus();
                     } }),
                     !l.type && deps.makeArt ? el("button", { class: "gs-btn", type: "button", text: "🎨 Storyboard", title: `Concept art of this moment (up to ${MAX_SCENE_FRAMES} per scene)`, onclick: async event => {
                         if (lines().filter(x => x.frame).length >= MAX_SCENE_FRAMES && !l.frame) return say(msg, `Up to ${MAX_SCENE_FRAMES} storyboard pictures per scene, to keep it light.`, true);
@@ -1664,7 +1778,8 @@
                 el("b", { text: scene.name }),
                 el("button", { class: "gs-btn", type: "button", text: "⚙️ Setup", onclick: () => { ui.sceneSetup = true; render(); } }),
                 el("button", { class: "gs-btn", type: "button", text: "🤖 Ask an agent", title: "Have an agent in the chat finish or polish this scene", onclick: () => sendToAgent(p, `Continue or polish the scene "${scene.name}" (read it with studio_read, then save the result with studio_save as the same scene).`) }));
-            const info = el("div", { class: "gs-note", text: `Where: ${f.location || "not set"} · Who: ${f.characters || "not set"} · Goal: ${f.goal || "not set"}` });
+            const info = el("div", { class: "gs-note", text: `Where: ${f.location || "not set"} · Who: ${f.characters || "not set"} · Goal: ${f.goal || "not set"}${f.branch_of ? ` · 🌿 What if, from "${f.branch_of}" line ${f.branch_at}` : ""}` });
+            const checker = loreChecker(p, [store.findEntry(p, scene.id) || scene], scene.id);
             draw();
             if (scene.locked) {
                 log.querySelectorAll("button:not(.gs-speak)").forEach(b => { b.disabled = true; });
@@ -1675,7 +1790,8 @@
                 el("div", { class: "gs-row" }, next, four, reroll, undo, play, meter),
                 el("div", { class: "gs-send" }, as, mine, el("button", { class: "gs-btn", type: "button", text: "Add", onclick: add })),
                 msg,
-                el("div", { class: "gs-note", text: "Saved automatically to the story bible. Export it from 📦 Export to your game." }));
+                el("div", { class: "gs-note", text: "Saved automatically to the story bible. Export it from 📦 Export to your game." }),
+                checker);
         }
 
         function exportView(p) {
@@ -1718,7 +1834,7 @@
     return {
         STORE_KEY, KINDS, KIND_NAMES, SECTIONS, STUDIO_TASK,
         createStudioStore, buildStudioTools, studioPromptBlock, isStudioTask, exportFiles, toJson, toGdscript, toMarkdown,
-        MOODS, moodFor, portraitFor, normalizeVoice, splitMood, LINK_TYPES, BEAT_STATUS, timelineOrder,
+        MOODS, moodFor, portraitFor, normalizeVoice, splitMood, LINK_TYPES, BEAT_STATUS, timelineOrder, INTERVIEW_QUESTIONS, loreCheckPrompt, parseIssues,
         describeEntry, characterSystemPrompt, sceneDirectorPrompt, sceneTurnMessage, framePrompt, parseSceneLines, normalizeKind, slug, mount
     };
 });

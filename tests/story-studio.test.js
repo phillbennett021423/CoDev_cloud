@@ -401,3 +401,70 @@ test('in the page: link two characters and see the web, reorder the timeline, an
     assert.deepEqual(arc.beats, [{ text: 'He refuses the crown', status: 'written' }]);
     assert.deepEqual(errors, []);
 });
+
+// ---------- Part 4: interview mode, what-if branches, lore checker ----------
+
+test('the lore check sends the related entries first and reads back issues; a what-if scene exports where it branched', () => {
+    const { store } = sampleStore();
+    const p = store.project('Skyfall');
+    const mara = store.findEntry(p, 'Mara Vex');
+    const messages = Studio.loreCheckPrompt(p, [mara], 60);
+    assert.match(messages[0].content, /contradictions/);
+    assert.match(messages[1].content, /\[Story bible\]\n(Character|Place): /);
+    assert.match(messages[1].content, /\[Check this\]\nCharacter: Mara Vex/);
+    assert.deepEqual(Studio.parseIssues('Found: [{"problem": "Mara is 20 here but 30 in The Flood", "conflicts_with": "The Flood", "suggestion": "Pick one"}]'),
+        [{ problem: 'Mara is 20 here but 30 in The Flood', conflicts_with: 'The Flood', suggestion: 'Pick one' }]);
+    assert.deepEqual(Studio.parseIssues('[]'), []);
+    assert.equal(Studio.parseIssues('no idea'), null);
+
+    store.saveEntry('', { kind: 'scene', name: 'Duel', fields: { characters: 'Mara Vex' }, lines: [{ speaker: 'Mara Vex', text: 'A' }, { speaker: 'Mara Vex', text: 'B' }] });
+    store.saveEntry('', { kind: 'scene', name: 'Duel: what if', fields: { characters: 'Mara Vex', branch_of: 'Duel', branch_at: '1' }, lines: [{ speaker: 'Mara Vex', text: 'A' }, { type: 'direction', text: 'What if: she runs' }] });
+    const branch = JSON.parse(Studio.exportFiles(p, 'scenes')['game_data/scenes/duel_what_if.json']);
+    assert.equal(branch.branch_of, 'duel');
+    assert.equal(branch.branch_from, 'n1');
+});
+
+test('in the page: an interview kept as notes, a what-if branch, and a lore check that changes nothing', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { page, errors } = await openStudioPage(t, []);
+    await page.evaluate(() => {
+        window.groqChatMessage = async body => {
+            const system = body.messages[0].content;
+            if (/check the story bible/.test(system)) return { role: 'assistant', content: '[{"problem": "Rook is called an only child, but Vel is his sister", "conflicts_with": "Vel", "suggestion": "Make Vel a cousin"}]' };
+            return { role: 'assistant', content: '[sad] Fire. Always fire.' };
+        };
+        storyStudio.createProject({ name: 'Ashen Crown' });
+        storyStudio.saveEntry('', { kind: 'character', name: 'Rook', summary: 'An only child.' });
+        storyStudio.saveEntry('', { kind: 'character', name: 'Vel', summary: 'Rook\'s sister.' });
+        storyStudio.saveEntry('', { kind: 'scene', name: 'Ashes', fields: { characters: 'Rook, Vel' }, lines: [{ speaker: 'Vel', text: 'One.' }, { speaker: 'Rook', text: 'Two.' }, { speaker: 'Vel', text: 'Three.' }] });
+        switchView('studio');
+    });
+    const before = await page.evaluate(() => JSON.stringify(storyStudio.findEntry(storyStudio.active(), 'Rook')));
+
+    await page.click('#view-studio .gs-tabs button:has-text("Talk")');
+    await page.click('#view-studio summary:has-text("Interview mode")');
+    await page.selectOption('#view-studio select[aria-label="Interview question"]', 'What do you fear more than anything?');
+    await page.click('#view-studio .gs-section button:has-text("Ask")');
+    await page.waitForSelector('#view-studio .gs-bubble:has-text("Fire. Always fire.")');
+    await page.click('#view-studio button:has-text("Keep the answers as notes")');
+    const notes = await page.evaluate(() => storyStudio.findEntry(storyStudio.active(), 'Interview with Rook'));
+    assert.equal(notes.kind, 'lore');
+    assert.equal(notes.fields.details, 'Q: What do you fear more than anything?\nA: Fire. Always fire.');
+
+    await page.click('#view-studio .gs-tabs button:has-text("Scene Builder")');
+    await page.click('#view-studio .gs-card:has-text("Ashes")');
+    await page.locator('#view-studio [data-line="1"] button:has-text("What if")').click();
+    await page.fill('#view-studio input[aria-label="What if"]', 'Rook walks away');
+    await page.click('#view-studio button:has-text("🌿 Branch")');
+    const branch = await page.evaluate(() => storyStudio.findEntry(storyStudio.active(), 'Ashes: what if'));
+    assert.deepEqual(branch.lines.map(l => l.text), ['One.', 'Two.', 'What if: Rook walks away']);
+    assert.equal(branch.fields.branch_of, 'Ashes');
+    assert.equal((await page.evaluate(() => storyStudio.findEntry(storyStudio.active(), 'Ashes'))).lines.length, 3, 'the original scene is untouched');
+
+    await page.click('#view-studio .gs-tabs button:has-text("Story bible")');
+    await page.click('#view-studio button:has-text("Check the whole bible")');
+    await page.waitForSelector('#view-studio .gs-issue');
+    assert.match(await page.textContent('#view-studio .gs-issue'), /only child[\s\S]*Conflicts with: Vel[\s\S]*Make Vel a cousin/);
+    assert.equal(await page.evaluate(() => JSON.stringify(storyStudio.findEntry(storyStudio.active(), 'Rook'))), before, 'Rook was never changed');
+    assert.deepEqual(errors, []);
+});
