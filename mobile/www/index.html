@@ -991,6 +991,14 @@
     </nav>
 
     <!-- Settings Modal / First-Launch Onboarding Wizard -->
+    <!-- The Odds API line viewer: a saved line's movement by sportsbook and the books side by side (agent-ui/odds-api.js). -->
+    <div class="modal-overlay" id="oddsViewerModal" onclick="if (event.target === this) this.style.display = 'none'">
+        <div class="modal" style="width: 640px; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); overflow: auto;">
+            <h3 style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">📉 Tracked lines <button class="btn-secondary" type="button" onclick="document.getElementById('oddsViewerModal').style.display = 'none'">Close</button></h3>
+            <div id="oddsViewer"></div>
+        </div>
+    </div>
+
     <div class="modal-overlay" id="settingsModal">
         <div class="modal" style="width: 520px;">
             <h3 style="display: flex; align-items: center; gap: 8px;">⚡ Welcome to CoDev Studio Pro</h3>
@@ -1130,6 +1138,9 @@
             <!-- Filled in by agent-ui/google-apps.js. -->
             <details class="settings-extra" id="googleSettings"></details>
 
+            <!-- Filled in by agent-ui/odds-api.js. -->
+            <details class="settings-extra" id="oddsSettings"></details>
+
             <details class="settings-extra" id="browserSettings" style="display: none;">
                 <summary>🌐 Agents' web browser & saved logins</summary>
                 <div id="browserVaultStatus" style="font-size: 0.8rem; color: var(--text-muted); white-space: pre-line; overflow-wrap: anywhere;"></div>
@@ -1183,6 +1194,7 @@
     <script src="agent-ui/outlier-view.js"></script>
     <script src="media-tools.js"></script>
     <script src="agent-ui/google-apps.js"></script>
+    <script src="agent-ui/odds-api.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
         // text boxes stop taking clicks and typing until the window is refocused.
@@ -3669,6 +3681,31 @@
             if (el) CodevGoogleApps.mountSettings(el, { transport: googleTransport, apps: googleApps, storage: localStorage, openWindow: window.codevDesktop ? null : () => window.open("about:blank", "_blank") });
         });
 
+        // THE ODDS API: every sportsbook's lines and props, saved as snapshots for line
+        // movement, and the list of props worth looking up on Outlier (agent-ui/odds-api.js).
+        // The user's free key is kept in this page; without it agents read odds on Outlier.
+        let oddsViewer = null;
+        const oddsTracker = CodevOddsApi.createOddsTracker({
+            storage: localStorage,
+            http: CodevOddsApi.detectHttp(window),
+            log: logConsoleActivity,
+            onChart: filter => openOddsViewer(filter)
+        });
+        function openOddsViewer(filter) {
+            const el = document.getElementById("oddsViewer");
+            if (!el) return;
+            if (!oddsViewer) oddsViewer = CodevOddsApi.mountViewer(el, { tracker: oddsTracker });
+            oddsViewer.open(filter || {});
+            document.getElementById("oddsViewerModal").style.display = "flex";
+        }
+        document.addEventListener("DOMContentLoaded", () => {
+            const el = document.getElementById("oddsSettings");
+            if (el) CodevOddsApi.mountSettings(el, { tracker: oddsTracker, storage: localStorage, openViewer: openOddsViewer });
+            // Re-snapshots the lines agents looked at, a few times a day, within the credit limits.
+            setTimeout(() => oddsTracker.autoTrack().catch(() => {}), 60000);
+            setInterval(() => oddsTracker.autoTrack().catch(() => {}), 15 * 60000);
+        });
+
         async function buildLocalTools(ctx) {
             const tools = [
                 {
@@ -3746,6 +3783,7 @@
             try {
                 for (const tool of await googleApps.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             } catch (err) { logConsoleActivity(`[Google] ${err.message}`); }
+            for (const tool of oddsTracker.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             if (ctx && ctx.sandbox) return buildSandboxTools(tools, ctx);
             const mcpTools = await fetchAllMcpTools();
             // The folder connected in the page gets its own tools. When the Windows app or the
@@ -3893,6 +3931,8 @@
             const name = split > 0 ? fullName.slice(split + 2) : fullName;
             const googleStep = googleApps.describe(name, args);
             if (googleStep) return googleStep;
+            const oddsStep = oddsTracker.describe(name, args);
+            if (oddsStep) return oddsStep;
             if (name === "mcp_list_resources") return "📚 Listing MCP resources";
             if (name === "read_attachment") return `📄 Reading ${args.name || "the attached file"}${args.pages ? `, pages ${args.pages}` : args.query ? ` for "${args.query}"` : ""}`;
             if (name === "query_table") return `📊 ${{ stats: "Measuring", group: "Totaling", search: "Searching", columns: "Looking over" }[args.action] || "Reading rows of"} ${args.name || "the spreadsheet"}${args.group_by ? ` by ${args.group_by}` : ""}`;
@@ -3980,6 +4020,23 @@
             return `[Outlier] The Outlier scan isn't available here. If the request is about Outlier, don't search the project files for it. ${why}`;
         }
 
+        // With an Odds API key, agents start from every sportsbook's lines and know what to
+        // look up on Outlier; without one (or out of credits) they read odds on Outlier itself.
+        const ODDS_TASK = /\b(odds|lines?|spreads?|totals?|moneyline|sportsbooks?|books?|juice|vig|movement|moved|sharp)\b/i;
+        function oddsToolNote(tools, askedText) {
+            if (!OUTLIER_TASK.test(askedText) && !ODDS_TASK.test(askedText)) return "";
+            if (!tools.some(t => t.name === "odds_lookup_list")) {
+                return tools.some(t => t.name === "odds_status")
+                    ? "[Odds] The Odds API isn't set up, so read odds and line movement on Outlier (or the web) as usual. If the user asks to track lines across sportsbooks, tell them they can add a free key under Settings > Odds API (line tracking)."
+                    : "";
+            }
+            return "[Odds] The Odds API gives you every sportsbook's current lines and props and how they moved since CoDev saved them. "
+                + "For props, tickets or line tracking, call odds_lookup_list first (sport, and the game when the user named one): it returns the players, stats, lines and books worth checking, with the reason for each and the legs ready for outlier_research_list. Then research those legs on Outlier, or the user's own legs if they gave a list (use odds_player_props for their prices at every book). "
+                + "Use odds_player_props and odds_game_lines to compare books (best price, fair chance with the margin removed), odds_line_movement for how a line moved (free), and odds_show_chart when the user wants to see it. "
+                + "Odds calls spend the user's free monthly credits: ask for one game and only the stats you need, don't pass refresh unless the user asks for the latest, and don't call the same tool twice with the same input. "
+                + "If an odds tool says it couldn't fetch (no credits left today, or an error), say so in one line and read the odds on Outlier in the browser instead. Never present these numbers as picks: they're the market's view, an input to the research.";
+        }
+
         // Runs the model ↔ tool loop until the model answers in plain text.
         async function runToolLoop(messages, ctx) {
             // The prompt before the notes below, which a resumed run adds again fresh.
@@ -4009,6 +4066,8 @@
                 try { outlierNote += "\n\n[Outlier guide]\n" + String(await guideTool.run({}, ctx)).slice(0, 16000); } catch (err) { /* the note alone */ }
             }
             if (outlierNote && messages[0]?.role === "system") messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + outlierNote };
+            const oddsNote = oddsToolNote(tools, askedText);
+            if (oddsNote && messages[0]?.role === "system") messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + oddsNote };
             // Two failed Outlier calls in one request stop the tools: the agent answers with
             // what failed instead of retrying and spending the user's time and usage.
             let outlierFailures = 0;
@@ -6474,7 +6533,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         const CODEV_IDENTITY = "[CoDev] You are CoDev, a capable general assistant and agent: you write and fix code, answer any question, research on the web and read pages, analyze sports props on Outlier, read screenshots, images and documents, drive a browser, remember what the user asks you to keep, and help with writing, planning and anything else the user needs. "
             + "Before acting, work out what kind of request this is and use only the tools it needs. Touch the user's project files only when the task is about them or the user asks.";
         const REQUEST_KIND_NOTES = {
-            props: "[Request type] Sports props and betting research, not a coding task. Use the Outlier tools, read_screenshots for slip screenshots, and web_search. Don't list, search or read the project files unless the user asks about a file.",
+            props: "[Request type] Sports props and betting research, not a coding task. Use the Odds API tools (when offered) to find what to look up, the Outlier tools, read_screenshots for slip screenshots, and web_search. Don't list, search or read the project files unless the user asks about a file.",
             images: "[Request type] A request about screenshots or images. Read a folder of them with read_screenshots, or use the attached images. If they turn out to be prop slips, research the legs like any prop list. Don't browse the project's code for this.",
             general: "[Request type] A general question or task, not about the project files. Answer it directly, using web_search for facts you aren't sure of. List, search or read the project files only if the user asks about them."
         };

@@ -36,7 +36,7 @@ Settings are read by `config.js` from the environment or `.env`:
 | `ANTHROPIC_API_KEY` | Anthropic relay (`sk-ant-...`) |
 | `OPENROUTER_API_KEY` | OpenRouter (`sk-or-...`) |
 | `MANUS_API_KEY` | Q tasks |
-| `ODDS_API_KEY` | free-tier market odds in the Outlier tab (the-odds-api.com) |
+| `ODDS_API_KEY` | free-tier market odds in the Outlier tab's scrape (the-odds-api.com); agents' line tracking uses the key in Settings instead (see below) |
 | `CODEV_WORKSPACE` | the project folder agents work in; `start-codev.bat C:\path\to\project` sets it too |
 | `CODEV_DATA_DIR` | where `.codev` goes |
 | `CODEV_VAULT_KEY` | passphrase for the browser tools' saved logins |
@@ -66,6 +66,26 @@ The **📈 Outlier** tab (when CoDev runs on your computer with `npm start` or `
     It also moves around Outlier for you. Ask "NBA props for the 8pm game" (or "the 3 o'clock game", "Lakers tonight", "Points for the Celtics game") and the agent passes the sport, game and stat to the tool. The scan clicks Outlier's sport tab, any stat filter and the game card with that start time or those teams, reads that game's board and builds tickets from that game's props only. Times are your computer's local time, as Outlier shows them. If it can't find the game, it lists the games it saw so the agent can ask you which one. It only clicks tabs, filters and game cards, never a pick or an entry button, and it never enters anything on Outlier, Underdog or Dabble: the ticket comes back as the agent's reply in chat.
 
 The parser doesn't depend on Outlier's markup, but if it misses props, **Save page snapshot** stores the page (HTML and the data it loaded) in the same folder so selectors can be added to `config.json` there. Agents can read the latest entries with the read-only `outlier_slips` tool. Automated reading may be against Outlier's terms; that's your call. The numbers are estimates, not guarantees.
+
+## Line tracking with The Odds API
+
+Agents can compare every sportsbook's lines and player props, follow how they move, and get a short list of what to look up on Outlier. It works on the phone, the Windows app and the browser page alike.
+
+**Set it up (about 2 minutes):**
+
+1. Go to [the-odds-api.com](https://the-odds-api.com/#get-access) and sign up for the free plan. You only need an email address; they email you a key.
+2. In CoDev, open **Settings > 🎯 Odds API (line tracking)** and paste the key. That's it.
+
+**What agents can do with it:**
+
+- `odds_lookup_list`: the players, props and lines worth checking on Outlier for a game: props whose line or odds moved, props where the books disagree, and props the juice leans on, each with the reason and every book's price. It ends with the legs ready for `outlier_research_list`, so an agent asked for a ticket goes straight to those players on Outlier.
+- `odds_player_props` and `odds_game_lines`: one game's props, or a sport's moneylines, spreads and totals, side by side at every book, with the best price for each side and the fair chance with the book's margin taken out.
+- `odds_line_movement`: how a line moved, snapshot by snapshot, book by book.
+- `odds_show_chart`, or **📉 View tracked lines** in Settings: a chart of a line at each book over time and a table comparing the books.
+
+**Credits.** The free plan has 500 credits a month. Listing games is free; a sport's game lines cost about 3 credits; a game's props cost 1 credit per stat (3 for the default stats). CoDev keeps them safe on its own: it saves every answer and reuses it (lines for 30 minutes, props for an hour), spreads the month's credits over its days, always keeps 25 back, and stops before going over. Settings shows how many are left. Each extra group of sportsbooks you tick (DFS apps, Pinnacle in Europe...) multiplies a call's cost. With **Re-check** on, CoDev takes a new snapshot of the lines agents looked at every few hours while it's open, using at most half of the day's credits, so movement builds up by itself.
+
+Without a key, or once the day's credits are used, agents read the odds on Outlier in the browser as before. The numbers are what the sportsbooks show, not picks.
 
 ## Agents start blank
 

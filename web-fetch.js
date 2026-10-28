@@ -4,6 +4,7 @@
 // http(s) addresses are fetched, never this computer or the local network.
 const DDG_HTML_URL = 'https://html.duckduckgo.com/html/';
 const TIMEOUT_MS = 10000;
+const ODDS_API = /^https:\/\/api\.the-odds-api\.com\/v4\/sports(\/|\?)/;
 const MAX_BYTES = 3 * 1024 * 1024;
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
 
@@ -55,6 +56,15 @@ async function handleWebFetch(message) {
             const df = /^[dwm]$/.test(String(message.df || '')) ? `&df=${message.df}` : '';
             const page = await fetchText(`${DDG_HTML_URL}?q=${encodeURIComponent(query)}&kl=us-en${df}`);
             return { status: page.status, url: page.url, contentType: page.contentType, html: page.text };
+        }
+        // The Odds API for the page's line tracking, with its credit headers.
+        if (message?.kind === 'odds') {
+            const url = String(message.url || '');
+            if (!ODDS_API.test(url)) return { error: 'Only The Odds API is fetched this way.' };
+            const response = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+            const headers = {};
+            for (const name of ['x-requests-remaining', 'x-requests-used', 'x-requests-last']) if (response.headers.get(name) != null) headers[name] = response.headers.get(name);
+            return { status: response.status, url, contentType: response.headers.get('content-type') || '', html: await response.text(), headers };
         }
         if (message?.kind === 'page') {
             const page = await fetchText(String(message.url || ''));
