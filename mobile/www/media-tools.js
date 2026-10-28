@@ -15,9 +15,10 @@
 // With a Gemini key, Gemini watches the whole video with its sound; otherwise a
 // Groq key transcribes its sound with Whisper (both have free tiers).
 //
-// Images: generate_image makes pictures with Gemini (Nano Banana) when a Gemini
-// key is set, or OpenRouter's image models when an OpenRouter key is set, and
-// otherwise with Pollinations, which is free and needs no key. Each task makes at
+// Images: generate_image makes pictures with Pollinations (Flux), which is free
+// and needs no key, unless Settings picks Gemini (Nano Banana) or OpenRouter.
+// Those cost money: Gemini's free tier has no image models, so a free Gemini key
+// is for video, audio and scanned PDFs, never pictures. Each task makes at
 // most MAX_IMAGES_PER_TASK and each day at most the daily limit in Settings.
 // Pictures are kept in IndexedDB; the chat keeps a small preview.
 
@@ -32,6 +33,9 @@ const GEMINI_IMAGE_MODELS = {
 };
 const DEFAULT_OPENROUTER_IMAGE_MODEL = "google/gemini-2.5-flash-image";
 const POLLINATIONS_URL = "https://image.pollinations.ai/prompt/";
+
+// Pollinations without a key: about one picture every 15 to 45 seconds per address.
+const POLLINATIONS_RETRY_MAX_SECONDS = 50;
 
 // Long text past this goes in as its start and a summary; the rest through read_attachment.
 const INLINE_DOC_CHARS = 40000;
@@ -853,9 +857,7 @@ function imageService() {
     if (imageProvider === "off") return null;
     if (imageProvider === "gemini") return hasGeminiKey() ? "gemini" : null;
     if (imageProvider === "openrouter") return openRouterKey ? "openrouter" : null;
-    if (imageProvider === "free") return "free";
-    if (hasGeminiKey()) return "gemini";
-    if (openRouterKey) return "openrouter";
+    // Automatic is the free service: a Gemini or OpenRouter key alone never starts paid pictures.
     return "free";
 }
 
@@ -927,10 +929,17 @@ async function makeImageWithOpenRouter(prompt, aspect, references) {
 
 async function makeImageWithPollinations(prompt, aspect) {
     const [width, height] = ASPECT_SIZES[aspect] || ASPECT_SIZES["1:1"];
-    const url = `${POLLINATIONS_URL}${encodeURIComponent(prompt.slice(0, 1500))}?width=${width}&height=${height}&nologo=true&private=true&seed=${Math.floor(Math.random() * 1e9)}`;
+    const url = `${POLLINATIONS_URL}${encodeURIComponent(prompt.slice(0, 1500))}?model=flux&width=${width}&height=${height}&nologo=true&private=true&referrer=codev-studio&seed=${Math.floor(Math.random() * 1e9)}`;
     let response;
-    try { response = await fetch(url); } catch (err) { throw new Error(`couldn't reach the free image service at image.pollinations.ai (${err.message})`); }
-    if (!response.ok) throw new Error(`the free image service answered ${response.status}${response.status === 429 ? " (busy: try again in a minute, or add a Gemini key in Settings)" : ""}`);
+    for (let attempt = 0; ; attempt++) {
+        try { response = await fetch(url); } catch (err) { throw new Error(`couldn't reach the free image service at image.pollinations.ai (${err.message})`); }
+        // Its free limit (402 or 429): wait as long as it asks, once, rather than fail a second picture.
+        if (attempt > 0 || (response.status !== 402 && response.status !== 429)) break;
+        const wait = Math.min(POLLINATIONS_RETRY_MAX_SECONDS, Math.max(1, Number(response.headers.get("retry-after")) || 20));
+        logMediaActivity(`[Images] The free image service asked to wait ${wait}s; trying again then.`);
+        await new Promise(resolve => setTimeout(resolve, wait * 1000));
+    }
+    if (!response.ok) throw new Error(`the free image service answered ${response.status}${response.status === 402 || response.status === 429 ? " (its free limit is about one picture every 45 seconds: try again in a minute)" : ""}`);
     const blob = await response.blob();
     if (!blob.type.startsWith("image/")) throw new Error("the free image service didn't return a picture");
     return { url: `data:${blob.type};base64,${await blobToBase64(blob)}`, model: "pollinations", cost: 0 };
@@ -963,7 +972,7 @@ async function generateImageForTask(args, ctx) {
     if (!service) {
         return imageProvider === "off"
             ? "Image making is turned off in Settings > Images, video & big files. Tell the user they can turn it on there."
-            : `Image making is set to ${imageProvider === "gemini" ? "Gemini" : "OpenRouter"}, but there's no ${imageProvider === "gemini" ? "Gemini" : "OpenRouter"} key. Tell the user to add one in Settings > Images, video & big files, or pick "Automatic".`;
+            : `Image making is set to ${imageProvider === "gemini" ? "Gemini" : "OpenRouter"}, but there's no ${imageProvider === "gemini" ? "Gemini" : "OpenRouter"} key. Tell the user to add one in Settings > Images, video & big files, or pick the free service.`;
     }
     ctx.generatedImages = ctx.generatedImages || [];
     if (ctx.generatedImages.length >= MAX_IMAGES_PER_TASK) return `Not made: ${MAX_IMAGES_PER_TASK} pictures is the limit for one task, to keep usage down. Show the user what you made and ask before making more.`;
@@ -972,7 +981,7 @@ async function generateImageForTask(args, ctx) {
     const aspect = ASPECT_SIZES[args.aspect_ratio] ? args.aspect_ratio : "";
     const references = args.edit_attached_images && Array.isArray(ctx.attachedImages) ? ctx.attachedImages.slice(0, 3) : [];
     if (args.edit_attached_images && !references.length) return "There are no attached pictures in this message to edit. Make a new one without edit_attached_images, or ask the user to attach the picture.";
-    if (references.length && service === "free") return "The free image service can't edit pictures. Tell the user that editing an attached picture needs a Gemini key (free from Google AI Studio) in Settings > Images, video & big files.";
+    if (references.length && service === "free") return "The free image service can't edit pictures. Tell the user that editing an attached picture needs Gemini or OpenRouter picked under Make pictures with in Settings > Images, video & big files, and that both cost money (Gemini's free tier has no image models).";
     if (ctx.onStep) ctx.onStep(`🎨 Making a picture with ${IMAGE_SERVICE_NAMES[service]}…`);
     let made;
     try {
@@ -989,7 +998,7 @@ async function generateImageForTask(args, ctx) {
     const name = `${prompt.replace(/[^\w ]+/g, "").trim().split(/\s+/).slice(0, 5).join("-").toLowerCase() || "picture"}.${/png/.test(made.url.slice(5, 20)) ? "png" : "jpg"}`;
     ctx.generatedImages.push({ name, kind: "image", thumb, generatedId: id, fullUrl: made.url });
     logMediaActivity(`[Images] Made "${name}" with ${made.model}${made.cost ? ` ($${made.cost.toFixed(3)})` : ""}. Today: ${today.count} of ${dailyImageLimit}${today.cost ? `, about $${today.cost.toFixed(2)}` : ""}.`);
-    return `Made the picture "${name}" with ${IMAGE_SERVICE_NAMES[service]}; it is shown to the user with your reply. Don't paste links or data for it. In your reply, say briefly what you made${service === "free" ? " (with the free image service; a Gemini key in Settings gives better pictures and editing)" : ""}.`;
+    return `Made the picture "${name}" with ${IMAGE_SERVICE_NAMES[service]}; it is shown to the user with your reply. Don't paste links or data for it. In your reply, say briefly what you made${service === "free" ? " (with the free image service)" : ""}.`;
 }
 
 async function loadGeneratedImage(id) {
@@ -1103,7 +1112,7 @@ async function buildMediaTools(ctx) {
 function fillMediaSettings() {
     const set = (id, value) => { const el = document.getElementById(id); if (el) el[typeof value === "boolean" ? "checked" : "value"] = value; };
     set("modalGeminiKey", geminiKey);
-    set("modalImageProvider", imageProvider);
+    set("modalImageProvider", imageProvider === "free" ? "auto" : imageProvider);
     set("modalImageQuality", geminiImageQuality);
     set("modalOpenRouterImageModel", openRouterImageModel);
     set("modalDailyImageLimit", String(dailyImageLimit));
