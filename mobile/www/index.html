@@ -44,19 +44,25 @@
         .settings-btn:hover { background: var(--border-color); }
 
         /* Workspace Layout with Dynamic Grid Expansion */
-        .workspace { display: grid; grid-template-columns: 260px 260px 1fr 320px; flex: 1; overflow: hidden; position: relative; transition: grid-template-columns 0.3s ease; }
-        .workspace.menu-collapsed { grid-template-columns: 0px 260px 1fr 320px; }
-        .workspace.agent-collapsed { grid-template-columns: 260px 0px 1fr 320px; }
-        .workspace.editor-collapsed { grid-template-columns: 260px 260px 1fr 0px; }
-        .workspace.menu-and-agent-collapsed { grid-template-columns: 0px 0px 1fr 320px; }
-        .workspace.all-sidebars-collapsed { grid-template-columns: 0px 0px 1fr 0px; }
+        /* Columns: agent rail | menu & chats | agent list | chat | agent settings. Every panel but the rail starts folded away. */
+        .workspace { display: grid; grid-template-columns: 64px 0px 0px 1fr 0px; flex: 1; overflow: hidden; position: relative; transition: grid-template-columns 0.3s ease, margin-right 0.3s ease; }
 
-        /* Floating Reopen Tabs for Collapsed Sidebars */
-        .reopen-tab-left { position: absolute; left: 0; top: 70px; background: var(--bg-panel); border: 1px solid var(--border-color); border-left: none; padding: 8px 12px; border-radius: 0 6px 6px 0; cursor: pointer; z-index: 50; display: none; font-size: 0.85rem; color: var(--accent); box-shadow: 2px 0 10px rgba(0,0,0,0.3); transition: background 0.2s; }
-        .reopen-tab-left:hover { background: var(--bg-card); }
-
-        .reopen-tab-right { position: absolute; right: 0; top: 70px; background: var(--bg-panel); border: 1px solid var(--border-color); border-right: none; padding: 8px 12px; border-radius: 6px 0 0 6px; cursor: pointer; z-index: 50; display: none; font-size: 0.85rem; color: var(--accent); box-shadow: -2px 0 10px rgba(0,0,0,0.3); transition: background 0.2s; }
-        .reopen-tab-right:hover { background: var(--bg-card); }
+        /* Agent rail: always there on desktop, like Manus's sidebar folded down. Each avatar opens that agent's chat. */
+        .agent-rail { background: #0a0e19; border-right: 1px solid var(--border-color); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
+        .agent-rail::-webkit-scrollbar { display: none; }
+        .rail-btn { width: 42px; height: 42px; flex-shrink: 0; border-radius: 12px; border: 1px solid transparent; background: none; color: var(--text-muted); font-size: 1.1rem; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: background 0.2s, color 0.2s, border-color 0.2s; }
+        .rail-btn:hover { background: rgba(255,255,255,0.06); color: var(--text-main); }
+        .rail-btn.on { background: rgba(14, 165, 233, 0.15); color: var(--accent); border-color: rgba(14, 165, 233, 0.35); }
+        .rail-divider { width: 28px; height: 1px; background: var(--border-color); margin: 4px 0; flex-shrink: 0; }
+        .rail-agents { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+        .rail-agent { position: relative; width: 46px; height: 46px; flex-shrink: 0; border-radius: 14px; border: 2px solid transparent; background: var(--bg-card); cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; transition: border-color 0.2s, transform 0.15s; }
+        .rail-agent:hover { border-color: rgba(14, 165, 233, 0.5); transform: translateY(-1px); }
+        .rail-agent.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+        .rail-agent.active::before { content: ""; position: absolute; left: -11px; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
+        .rail-agent .agent-avatar { width: 32px; height: 35px; }
+        .rail-agent .rail-live { position: absolute; right: -2px; bottom: -2px; width: 11px; height: 11px; border-radius: 50%; background: var(--success); border: 2px solid #0a0e19; display: none; }
+        .rail-agent.has-computer .rail-live { display: block; }
+        .rail-add { border: 1px dashed var(--border-color); }
 
         /* CoDev Menu Navigation Sidebar */
         .menu-sidebar { background: #0c101d; border-right: 1px solid var(--border-color); padding: 15px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; overflow-x: hidden; white-space: nowrap; transition: all 0.3s ease; }
@@ -336,6 +342,42 @@
         .settings-extra summary { cursor: pointer; font-weight: bold; }
         .settings-extra .form-group, .settings-extra .checkbox-group { margin-top: 10px; }
 
+        /* Chat header: whose chat this is, with the agent's computer and settings beside it. */
+        .chat-agent-chip { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; background: none; border: none; color: inherit; cursor: pointer; padding: 2px 6px 2px 2px; border-radius: 10px; text-align: left; }
+        .chat-agent-chip:hover { background: rgba(255,255,255,0.05); }
+        #chatAgentAvatar { display: inline-flex; flex-shrink: 0; }
+        .chat-agent-chip .agent-avatar { width: 30px; height: 33px; }
+        body.computer-open #activeProviderLabel { display: none; }
+        .chat-agent-chip .group-icon { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; font-size: 1.2rem; }
+        .chat-agent-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+        .chat-agent-name { font-size: 0.92rem; font-weight: 600; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .chat-agent-sub { font-size: 0.72rem; font-weight: 400; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .pane-header-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+        .agent-icon-btn { position: relative; width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-main); font-size: 1.05rem; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: border-color 0.2s, background 0.2s, color 0.2s; }
+        .agent-icon-btn:hover { border-color: var(--accent); }
+        .agent-icon-btn.on { border-color: var(--accent); background: rgba(14, 165, 233, 0.15); color: var(--accent); }
+        .agent-icon-btn .live-dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 6px var(--success); display: none; }
+        .agent-icon-btn.has-computer .live-dot { display: block; }
+        .agent-icon-btn svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+        /* Agent settings panel */
+        .editor-head { display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color); }
+        .editor-head .agent-avatar { width: 44px; height: 48px; }
+        .editor-head-text { flex: 1; min-width: 0; }
+        .editor-head-name { font-size: 1rem; font-weight: 700; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .editor-head-role { font-size: 0.75rem; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .editor-section-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); font-weight: 700; margin-top: 2px; }
+        .editor-more { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 12px; }
+        .editor-more > summary { cursor: pointer; font-size: 0.8rem; font-weight: 700; color: var(--text-main); list-style: none; display: flex; justify-content: space-between; }
+        .editor-more > summary::-webkit-details-marker { display: none; }
+        .editor-more > summary::after { content: "▾"; color: var(--text-muted); }
+        .editor-more[open] > summary::after { content: "▴"; }
+        .editor-more[open] { gap: 12px; }
+        .editor-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+
+        .codev-toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(20px); max-width: min(520px, calc(100vw - 32px)); background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 10px; padding: 10px 16px; font-size: 0.85rem; line-height: 1.4; box-shadow: 0 10px 30px rgba(0,0,0,0.5); opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s; z-index: 2000; }
+        .codev-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
         /* Mobile-only elements are hidden on desktop */
         .mobile-only, .mobile-tabbar, .drawer-backdrop, .drawer-close-mobile { display: none; }
 
@@ -356,7 +398,7 @@
 
             /* Single column; side panels become drawers */
             .workspace, .workspace[class] { display: flex; flex-direction: column; grid-template-columns: none; transition: none; }
-            .reopen-tab-left, .reopen-tab-right { display: none !important; }
+            .agent-rail { display: none; }
 
             .menu-sidebar, .sidebar, .editor-sidebar,
             .workspace[class] .menu-sidebar, .workspace[class] .sidebar, .workspace[class] .editor-sidebar {
@@ -463,6 +505,24 @@
         .agent-browser-bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 0.7rem; color: var(--text-muted); }
         .agent-browser-bar button { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 2px 6px; cursor: pointer; font-size: 0.7rem; }
         .agent-browser-bar button.live-control-on { background: var(--warning); color: #111; border-color: var(--warning); font-weight: bold; }
+        @media (min-width: 901px) {
+            .live-panel { top: 60px; right: 0; bottom: 0; width: var(--computer-width); height: auto; border-radius: 0; border-top: none; border-right: none; box-shadow: -8px 0 24px rgba(0,0,0,0.35); }
+            .live-body { flex-direction: column; }
+            .live-side { width: auto; height: 34%; border-left: none; border-top: 1px solid var(--border-color); }
+            body.computer-open .workspace { margin-right: var(--computer-width); }
+            /* With the computer open, the side panels float over the chat instead of squeezing it. */
+            .workspace > .agent-rail { grid-column: 1; }
+            .workspace > .menu-sidebar { grid-column: 2; }
+            .workspace > .sidebar { grid-column: 3; }
+            .workspace > .center-pane { grid-column: 4; }
+            .workspace > .editor-sidebar { grid-column: 5; }
+            body.computer-open .workspace .menu-sidebar, body.computer-open .workspace .sidebar, body.computer-open .workspace .editor-sidebar { position: absolute; top: 0; bottom: 0; z-index: 60; box-shadow: 0 10px 30px rgba(0,0,0,0.55); }
+            body.computer-open .workspace:not(.hide-menu) .menu-sidebar { left: 64px; width: 260px; }
+            body.computer-open .workspace:not(.hide-agents) .sidebar { left: 64px; width: 260px; }
+            body.computer-open .workspace:not(.hide-menu):not(.hide-agents) .sidebar { left: 324px; }
+            body.computer-open .workspace:not(.hide-editor) .editor-sidebar { right: 0; width: 340px; }
+        }
+        :root { --computer-width: min(46vw, 760px); }
         @media (max-width: 900px) {
             .live-panel { top: 0; right: 0; width: 100vw; height: 100dvh; border-radius: 0; }
             .live-body { flex-direction: column; }
@@ -542,9 +602,14 @@
     </div>
 
     <div class="workspace" id="mainWorkspace">
-        <!-- Floating Reopen Buttons for Collapsed Sidebars -->
-        <div class="reopen-tab-left" id="reopenMenuBtn" onclick="toggleMenuSidebar()" title="Open Menu">☰ Menu</div>
-        <div class="reopen-tab-right" id="reopenEditorBtn" onclick="toggleEditorSidebar()" title="Open Agent Editor">⚙️ Config</div>
+        <!-- Column 0: Agent rail (desktop). Opens the menu, the agent list, or an agent's chat. -->
+        <nav class="agent-rail" id="agentRail" aria-label="Agents">
+            <button type="button" class="rail-btn" id="railMenuBtn" onclick="toggleMenuSidebar()" title="Menu and recent chats" aria-label="Menu and recent chats">☰</button>
+            <button type="button" class="rail-btn" id="railAgentsBtn" onclick="toggleAgentSidebar()" title="All agents" aria-label="All agents">👥</button>
+            <div class="rail-divider"></div>
+            <div class="rail-agents" id="railAgents"></div>
+            <button type="button" class="rail-btn rail-add" onclick="createNewAgent()" title="New agent" aria-label="New agent">＋</button>
+        </nav>
 
         <!-- Column 1: CoDev Navigation & History Sidebar -->
         <div class="menu-sidebar" id="menuSidebar">
@@ -601,11 +666,23 @@
         <div class="center-pane">
             <div id="view-chat" class="center-pane" style="display: flex; flex: 1; flex-direction: column; overflow: hidden;">
                 <div class="pane-header">
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <button class="sidebar-toggle-btn" onclick="toggleAgentSidebar()" title="Toggle Agents Bar">🤖</button>
-                        <span id="activeWorkspaceTitle">Active Chat Session</span>
+                    <button type="button" class="chat-agent-chip" id="chatAgentChip" onclick="toggleAgentSidebar()" title="Show all agents">
+                        <span id="chatAgentAvatar"></span>
+                        <span class="chat-agent-text">
+                            <span class="chat-agent-name" id="activeWorkspaceTitle">Active Chat Session</span>
+                            <span class="chat-agent-sub" id="chatAgentSub"></span>
+                        </span>
+                    </button>
+                    <div class="pane-header-right">
+                        <span style="font-size: 0.75rem; color: var(--text-muted); margin-right: 6px;" id="activeProviderLabel">Provider: Loading...</span>
+                        <button type="button" class="agent-icon-btn" id="agentComputerBtn" onclick="openAgentComputer()" title="Open this agent's computer: its browser, live" aria-label="Open this agent's computer">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+                            <span class="live-dot"></span>
+                        </button>
+                        <button type="button" class="agent-icon-btn" id="agentSettingsBtn" onclick="openAgentSettings()" title="This agent's name, instructions, memory and settings" aria-label="Agent settings">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+                        </button>
                     </div>
-                    <span style="font-size: 0.75rem; color: var(--text-muted);" id="activeProviderLabel">Provider: Loading...</span>
                 </div>
                 
                 <div class="chat-feed-wrap">
@@ -787,46 +864,58 @@
 
         <!-- Column 4: Right Sidebar (Agent Editor) -->
         <div class="editor-sidebar" id="editorPanel">
-            <h3>Agent Configuration <button class="close-sidebar-btn" onclick="toggleEditorSidebar()" title="Close Panel">✕</button></h3>
+            <div class="editor-head">
+                <span id="editorAgentAvatar"></span>
+                <div class="editor-head-text">
+                    <div class="editor-head-name" id="editorAgentName">Agent</div>
+                    <div class="editor-head-role" id="editorAgentRole"></div>
+                </div>
+                <button class="close-sidebar-btn" onclick="toggleEditorSidebar()" title="Close agent settings">✕</button>
+            </div>
             <div class="form-group">
-                <label>Agent Name</label>
+                <label>Name</label>
                 <input type="text" id="editName">
             </div>
             <div class="form-group">
-                <label>Developer Role (locked: sets the agent's persona and tools)</label>
-                <select id="editDevRole">
-                    <option value="general">General: adapts to any task or domain</option>
-                    <option value="architect">Architect: plans and implements</option>
-                    <option value="swarm">Swarm: builds on the team's changes</option>
-                    <option value="self_healing">Self-Healing: runs, verifies and fixes</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>Role / Specialty</label>
-                <input type="text" id="editRole">
-            </div>
-            <div class="form-group">
-                <label>Extra Instructions (added after the role's locked prompt)</label>
+                <label>Instructions (added after the role's locked prompt)</label>
                 <textarea id="editInstructions"></textarea>
             </div>
             <div class="form-group">
-                <label>Agent Memory / Context <button type="button" class="link-btn" onclick="clearSelectedAgentMemory()" title="Empty this agent's memory">Clear</button></label>
+                <label>Memory <button type="button" class="link-btn" onclick="clearSelectedAgentMemory()" title="Empty this agent's memory">Clear</button></label>
                 <textarea id="editMemory" placeholder="Empty: the agent starts with no assumptions about your project. Add facts it should always know."></textarea>
             </div>
 
-            <!-- Selective Cross-Agent Knowledge Toggles -->
-            <div class="knowledge-box">
-                <label class="checkbox-group" style="color: var(--accent); font-weight: bold;">
-                    <input type="checkbox" id="editCrossKnowledgeToggle" onchange="toggleCrossKnowledgeSection(this.checked)"> 🔗 Cross-Agent Knowledge Sharing
-                </label>
-                <div id="crossKnowledgeContainer" style="display: none;">
-                    <div style="font-size: 0.75rem; color: var(--text-muted);">Share memory channels with these agents:</div>
-                    <div class="knowledge-list" id="crossKnowledgeCheckboxes"></div>
+            <details class="editor-more" open>
+                <summary>Settings</summary>
+                <div class="form-group">
+                    <label>Developer role (sets the agent's persona and tools)</label>
+                    <select id="editDevRole">
+                        <option value="general">General: adapts to any task or domain</option>
+                        <option value="architect">Architect: plans and implements</option>
+                        <option value="swarm">Swarm: builds on the team's changes</option>
+                        <option value="self_healing">Self-Healing: runs, verifies and fixes</option>
+                    </select>
                 </div>
-            </div>
+                <div class="form-group">
+                    <label>Role / specialty</label>
+                    <input type="text" id="editRole">
+                </div>
+                <!-- Selective Cross-Agent Knowledge Toggles -->
+                <div class="knowledge-box">
+                    <label class="checkbox-group" style="color: var(--accent); font-weight: bold;">
+                        <input type="checkbox" id="editCrossKnowledgeToggle" onchange="toggleCrossKnowledgeSection(this.checked)"> 🔗 Share memory with other agents
+                    </label>
+                    <div id="crossKnowledgeContainer" style="display: none;">
+                        <div style="font-size: 0.75rem; color: var(--text-muted);">Share memory channels with these agents:</div>
+                        <div class="knowledge-list" id="crossKnowledgeCheckboxes"></div>
+                    </div>
+                </div>
+            </details>
 
-            <button class="btn-save-agent" onclick="saveCurrentAgentEdits()">💾 Save Agent Configuration</button>
-            <button class="btn-danger" onclick="deleteSelectedAgent()">Delete Agent</button>
+            <div class="editor-actions">
+                <button class="btn-save-agent" onclick="saveCurrentAgentEdits()">💾 Save agent</button>
+                <button class="btn-danger" onclick="deleteSelectedAgent()">Delete agent</button>
+            </div>
         </div>
     </div>
 
@@ -1526,10 +1615,10 @@
 
         let selectedAgentId = agents.some(a => a.id === savedWorkspace?.selectedAgentId) ? savedWorkspace.selectedAgentId : agents[0].id;
 
-        // Smart Sidebar Toggle Logic with Dynamic Grid & Reopen Tabs
-        let isMenuCollapsed = false;
-        let isAgentCollapsed = false;
-        let isEditorCollapsed = false;
+        // Side panels start folded away so the chat has the room; the agent rail opens them.
+        let isMenuCollapsed = true;
+        let isAgentCollapsed = true;
+        let isEditorCollapsed = true;
 
         const mobileLayoutQuery = window.matchMedia("(max-width: 900px)");
         function isMobileLayout() { return mobileLayoutQuery.matches; }
@@ -1540,9 +1629,11 @@
             ws.classList.toggle("hide-menu", isMenuCollapsed);
             ws.classList.toggle("hide-agents", isAgentCollapsed);
             ws.classList.toggle("hide-editor", isEditorCollapsed);
-            ws.style.gridTemplateColumns = `${isMenuCollapsed ? 0 : 260}px ${isAgentCollapsed ? 0 : 260}px 1fr ${isEditorCollapsed ? 0 : 320}px`;
-            document.getElementById("reopenMenuBtn").style.display = isMenuCollapsed ? "block" : "none";
-            document.getElementById("reopenEditorBtn").style.display = isEditorCollapsed ? "block" : "none";
+            const docked = document.body.classList.contains("computer-open");
+            ws.style.gridTemplateColumns = docked ? "64px 0px 0px 1fr 0px" : `64px ${isMenuCollapsed ? 0 : 260}px ${isAgentCollapsed ? 0 : 260}px 1fr ${isEditorCollapsed ? 0 : 340}px`;
+            document.getElementById("railMenuBtn").classList.toggle("on", !isMenuCollapsed);
+            document.getElementById("railAgentsBtn").classList.toggle("on", !isAgentCollapsed);
+            document.getElementById("agentSettingsBtn").classList.toggle("on", isMobileLayout() ? openDrawerName === "editor" : !isEditorCollapsed);
         }
 
         // Phone layout: side panels are slide-in drawers, one open at a time.
@@ -1562,6 +1653,7 @@
             document.getElementById("drawerBackdrop").classList.add("visible");
             openDrawerName = name;
             updateMobileTabs();
+            updateWorkspaceGrid();
             // Lets the Android back button close the drawer instead of leaving the app.
             if (!drawerHistoryPushed) {
                 try { history.pushState({ codevDrawer: true }, ""); drawerHistoryPushed = true; } catch (err) { /* history unavailable */ }
@@ -1573,6 +1665,7 @@
             document.getElementById("drawerBackdrop").classList.remove("visible");
             openDrawerName = null;
             updateMobileTabs();
+            updateWorkspaceGrid();
             if (drawerHistoryPushed) {
                 drawerHistoryPushed = false;
                 if (!fromHistory) { try { history.back(); } catch (err) { /* ignore */ } }
@@ -1729,7 +1822,7 @@
                 infoDiv.onclick = () => switchChatSession(session.id);
                 infoDiv.innerHTML = `
                     <div class="chat-item-title">${session.isGroup ? '🌐 ' : '👤 '}${escapeHtml(session.title)}</div>
-                    <div class="chat-item-meta">${escapeHtml(session.timestamp)}</div>
+                    <div class="chat-item-meta">${escapeHtml([!session.isGroup && agents.find(a => a.id === session.agentId)?.name, session.timestamp].filter(Boolean).join(" · "))}</div>
                 `;
                 item.appendChild(infoDiv);
 
@@ -1746,6 +1839,7 @@
                 container.appendChild(item);
             });
             renderActiveChatFeed();
+            renderChatHeader();
             scheduleChatSave();
         }
 
@@ -1758,6 +1852,7 @@
             const isGroup = document.getElementById("isGroupChatCheckbox").checked;
             chatSessions.unshift(newChatSession(newId, isGroup ? `Group Swarm #${chatSessions.length + 1}` : `New Session #${chatSessions.length + 1}`,
                 isGroup, isGroup ? "Group Swarm Chat initialized." : "New chat initialized."));
+            if (!isGroup) chatSessions[0].agentId = selectedAgentId;
             activeChatId = newId;
             switchView('chat');
             renderChatList();
@@ -1820,8 +1915,39 @@
             const session = chatSessions.find(s => s.id === id);
             if (session) {
                 document.getElementById("isGroupChatCheckbox").checked = session.isGroup;
+                // A one-agent chat brings its agent back with it.
+                if (!session.isGroup && session.agentId && session.agentId !== selectedAgentId && agents.some(a => a.id === session.agentId)) selectAgent(session.agentId);
             }
             switchView('chat');
+            renderChatList();
+        }
+
+        // Like Manus: tapping an agent opens the chat you had with it (the latest one),
+        // or starts one. An empty chat nobody has used yet is taken over instead.
+        function openAgentChat(id) {
+            const agent = agents.find(a => a.id === id);
+            if (!agent) return;
+            selectAgent(id, true);
+            const existing = chatSessions.find(s => !s.isGroup && s.agentId === id);
+            if (existing) {
+                if (existing.id !== activeChatId) switchChatSession(existing.id);
+                else switchView("chat");
+                return;
+            }
+            document.getElementById("isGroupChatCheckbox").checked = false;
+            const current = chatSessions.find(s => s.id === activeChatId);
+            if (current && !current.agentId && !current.messages.some(m => m.sender === "👤 You")) {
+                current.isGroup = false;
+                current.agentId = id;
+                current.title = `Chat with ${agent.name}`;
+            } else {
+                if (chatSessions.length >= 30) chatSessions.pop();
+                const session = newChatSession("chat_" + Date.now(), `Chat with ${agent.name}`, false, `New chat with ${agent.name}.`);
+                session.agentId = id;
+                chatSessions.unshift(session);
+                activeChatId = session.id;
+            }
+            switchView("chat");
             renderChatList();
         }
 
@@ -2925,6 +3051,9 @@
             const panel = document.getElementById("livePanel");
             const open = force ?? !panel.classList.contains("open");
             panel.classList.toggle("open", open);
+            document.body.classList.toggle("computer-open", open);
+            updateWorkspaceGrid();
+            markAgentComputers();
             if (open && !live.stop) watchLiveAgent(live.agentId);
             else if (open) renderLiveFrame();
             if (open && !live.outlier && window.codevDesktop?.outlierRequest) {
@@ -2961,6 +3090,7 @@
             renderLiveFrame();
             live.stop = openLiveStream(live.agentId, onLiveUpdate);
             placeCardLiveView();
+            markAgentComputers();
         }
 
         // Every agent's browser, open or not, plus the Outlier one when the server has it.
@@ -2987,6 +3117,7 @@
                 // an open one when the watched browser closes, unless the user picked this one.
                 if (known.length && !known.includes(live.agentId) && !live.picked) return watchLiveAgent(known.includes(String(selectedAgentId)) ? String(selectedAgentId) : known[0]);
                 placeCardLiveView();
+                markAgentComputers();
                 return;
             }
             // A dead link, redirect or parked page: that browser is left open and handed to the
@@ -5515,11 +5646,10 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             clearTimeout(agentStateTimers[agentId]);
             agentStates[agentId] = state;
             const agent = agents.find(a => a.id === agentId);
-            const svg = document.querySelector(`.agent-avatar[data-agent-id="${CSS.escape(agentId)}"]`);
-            if (svg) {
+            document.querySelectorAll(`.agent-avatar[data-agent-id="${CSS.escape(agentId)}"]`).forEach(svg => {
                 svg.setAttribute("data-state", state);
                 if (agent) svg.setAttribute("aria-label", `${agent.name} is ${state}`);
-            }
+            });
             // Every finished agent run passes through "success", so the chime hangs off it.
             if (state === "success") {
                 playCompletionChime();
@@ -5586,16 +5716,99 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                     <div class="agent-instructions-preview">${escapeHtml(agent.instructions)}</div>
                 `;
                 card.dataset.agentId = agent.id;
-                // The whole card selects the agent; the checkbox only toggles swarm membership.
-                card.onclick = () => selectAgent(agent.id, true);
+                // The whole card opens the agent's chat; the checkbox only toggles swarm membership.
+                card.onclick = () => openAgentChat(agent.id);
                 const groupBox = card.querySelector('input[type="checkbox"]');
                 groupBox.onclick = (e) => e.stopPropagation();
                 groupBox.onchange = () => toggleAgentGroup(agent.id, groupBox.checked);
                 list.appendChild(card);
             });
+            renderAgentRail();
             placeCardLiveView();
             loadAgentIntoEditor();
             updateActiveAgentIndicator();
+        }
+
+        function renderAgentRail() {
+            const rail = document.getElementById("railAgents");
+            rail.innerHTML = "";
+            agents.forEach(agent => {
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = `rail-agent${agent.id === selectedAgentId ? " active" : ""}`;
+                btn.dataset.agentId = agent.id;
+                btn.title = `${agent.name}: open its chat`;
+                btn.setAttribute("aria-label", `Open ${agent.name}'s chat`);
+                btn.innerHTML = `${renderAgentAvatar(agent)}<span class="rail-live"></span>`;
+                btn.onclick = () => openAgentChat(agent.id);
+                rail.appendChild(btn);
+            });
+            markAgentComputers();
+        }
+
+        // Whose chat is open, with that agent's computer and settings icons beside it.
+        function renderChatHeader() {
+            const session = chatSessions.find(s => s.id === activeChatId);
+            const agent = agents.find(a => a.id === selectedAgentId);
+            const group = !!session?.isGroup;
+            document.getElementById("chatAgentAvatar").innerHTML = group ? `<span class="group-icon">🌐</span>` : agent ? renderAgentAvatar(agent) : "";
+            document.getElementById("activeWorkspaceTitle").textContent = group ? (session.title || "Group Swarm") : agent ? agent.name : "Chat";
+            document.getElementById("chatAgentSub").textContent = group
+                ? `${agents.filter(a => a.selectedForGroup).length} agents · led by ${agent ? agent.name : "the first agent"}`
+                : [agent && DEV_ROLES[agentDevRole(agent)].label, session?.title].filter(Boolean).join(" · ");
+            const name = agent ? agent.name : "this agent";
+            document.getElementById("agentComputerBtn").title = `Open ${name}'s computer: its browser, live`;
+            document.getElementById("agentSettingsBtn").title = `${name}'s name, instructions, memory and settings`;
+            markAgentComputers();
+        }
+
+        // A green dot on each agent whose browser is open right now.
+        function markAgentComputers() {
+            const open = new Set((live.sessions || []).map(s => String(s.agentId)));
+            document.querySelectorAll(".rail-agent").forEach(btn => btn.classList.toggle("has-computer", open.has(btn.dataset.agentId)));
+            const btn = document.getElementById("agentComputerBtn");
+            btn.classList.toggle("has-computer", open.has(String(selectedAgentId)));
+            btn.classList.toggle("on", document.getElementById("livePanel").classList.contains("open") && live.agentId === String(selectedAgentId));
+        }
+
+        function openAgentSettings() {
+            loadAgentIntoEditor();
+            if (isMobileLayout()) return toggleDrawer("editor");
+            toggleEditorSidebar();
+        }
+
+        // The computer icon: the agent's own browser, docked beside the chat.
+        let liveViewAvailable = false;
+        function openAgentComputer() {
+            const id = String(selectedAgentId);
+            const panel = document.getElementById("livePanel");
+            if (panel.classList.contains("open") && live.agentId === id) return toggleLiveView(false);
+            if (!liveViewAvailable) {
+                showToast("An agent's computer opens in the CoDev Windows app, or when CoDev runs on your computer (start-codev.bat or npm start). This version has no browser for the agents.");
+                return;
+            }
+            live.picked = true;
+            if (live.agentId !== id || !live.stop) watchLiveAgent(id);
+            renderLiveAgents();
+            // The computer takes the side panels' room, so the chat keeps a usable width.
+            if (!isMobileLayout()) { isMenuCollapsed = isAgentCollapsed = isEditorCollapsed = true; updateWorkspaceGrid(); }
+            toggleLiveView(true);
+        }
+
+        let toastTimer = null;
+        function showToast(text) {
+            let toast = document.getElementById("codevToast");
+            if (!toast) {
+                toast = document.createElement("div");
+                toast.id = "codevToast";
+                toast.className = "codev-toast";
+                toast.setAttribute("role", "status");
+                document.body.appendChild(toast);
+            }
+            toast.textContent = text;
+            toast.classList.add("show");
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => toast.classList.remove("show"), 5000);
         }
 
         function selectAgent(id, fromTap) {
@@ -5615,6 +5828,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const agent = agents.find(a => a.id === selectedAgentId);
             const indicator = document.getElementById("activeAgentIndicator");
             if (agent && indicator) indicator.innerText = `Active: ${agent.name}`;
+            renderChatHeader();
         }
 
         function loadAgentIntoEditor() {
@@ -5625,7 +5839,10 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             document.getElementById("editRole").value = agent.role;
             document.getElementById("editInstructions").value = agent.instructions;
             document.getElementById("editMemory").value = agent.memory;
-            
+            document.getElementById("editorAgentAvatar").innerHTML = renderAgentAvatar(agent);
+            document.getElementById("editorAgentName").textContent = agent.name;
+            document.getElementById("editorAgentRole").textContent = `${DEV_ROLES[agentDevRole(agent)].label} · ${agent.role}`;
+
             const toggle = document.getElementById("editCrossKnowledgeToggle");
             toggle.checked = agent.crossKnowledgeEnabled;
             toggleCrossKnowledgeSection(agent.crossKnowledgeEnabled);
@@ -6963,6 +7180,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 logConsoleActivity(`Selected agent not found; falling back to ${activeAgent.name}.`);
                 selectedAgentId = activeAgent.id;
             }
+            if (session && !isGroup && !session.agentId) { session.agentId = activeAgent.id; renderChatList(); }
             // Only memory someone actually wrote: an empty slate adds nothing to the prompt.
             const memoryLine = (label, text) => (String(text || "").trim() ? `[${label}]: ${text.trim()}` : "");
             let collectiveMemory = memoryLine("Memory", activeAgent.memory);
@@ -7046,6 +7264,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // and Settings opens only from the ⚙️ button.
         window.addEventListener('DOMContentLoaded', async () => {
             document.getElementById("settingsModal").style.display = "none";
+            // The mode toggles start folded away too, to leave room for the chat.
+            toggleChatControls();
             await checkServerAnthropic();
             if (!pickProviderWithKey()) logConsoleActivity("No API key saved yet. Add a Groq, OpenRouter or Anthropic key under ⚙️ Settings to chat with the agents.");
             updateStatusDisplay();
@@ -7066,10 +7286,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             fetchBrowserMcpTools().then(tools => {
                 if (!tools.some(t => t.name.startsWith("browser_"))) return;
                 document.getElementById("liveViewBtn").style.display = "";
+                liveViewAvailable = true;
                 watchLiveAgent("");
             });
-            // Phones start with the mode toggles folded away to leave room for the chat.
-            if (isMobileLayout()) toggleChatControls();
         });
     </script>
 </body>

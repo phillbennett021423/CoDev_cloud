@@ -55,6 +55,8 @@ async function openPage(browser, baseUrl, { steps = [], selfHeal = false, mcpSer
     }, null, { timeout: 15000 });
     await page.evaluate(({ steps, selfHeal }) => {
         document.getElementById('settingsModal').style.display = 'none';
+        // The mode toggles start folded away; the tests use them, so open them.
+        if (document.getElementById('chatControlsContainer').style.display === 'none') toggleChatControls();
         document.getElementById('isSelfHealCheckbox').checked = selfHeal;
         const queue = steps.slice();
         window.__modelCalls = [];
