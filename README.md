@@ -83,6 +83,14 @@ One free key adds the rest: get a Gemini API key at [aistudio.google.com/apikey]
 
 Ask for a picture ("make a logo for my team", "draw this as a cartoon") and the agent's `generate_image` tool makes it: with Gemini (Nano Banana; pick the quality in Settings) when its key is set, else OpenRouter when that key is set, else the free Pollinations service, which needs no key. Editing an attached picture needs Gemini or OpenRouter. Pictures show under the reply; tap one to see it full size and download it. To keep usage down, one task makes at most 4 pictures and a day at most the limit in Settings (20 to start), and the Settings section shows today's count.
 
+## Tripo 3D models
+
+Ask for a 3D model ("make a 3D treasure chest for my game", or attach a picture and say "turn this into a 3D model") and the agent's `generate_3d_model` tool has [Tripo](https://www.tripo3d.ai) build it as a textured `.glb`. It shows under the reply: tap it to open it in the Project Files 3D viewer or download it for Godot, Blender or printing.
+
+It uses your Tripo API key: sign in at [developers.tripo3d.com](https://developers.tripo3d.com/en/keys), open **API Keys**, choose **Create Key**, copy it (it's shown only once) and paste it in **⚙️ Settings > 🧊 Tripo 3D models**; **Check** shows your credit balance. The API has its own credits, bought on Tripo's [pricing page](https://developers.tripo3d.com/en/pricing), about 1 cent each. By Tripo's price list a model costs 20 credits from a description with textures (30 from a picture), 10 less without textures and 10 more for detailed textures; failed tasks aren't charged. Tripo can also make the pictures for `generate_image` (5 credits each) if you pick it under 🖼️ Images.
+
+To keep the cost down, CoDev checks each request before sending it: the quality in Settings is the most an agent can pick, a task makes at most 2 models and a day spends at most 100 credits (about $1) to start, all changeable in Settings, which also shows what was spent today. Tripo doesn't answer web pages directly, so its calls go through the Android app, the Windows app or `server.js` (`desktop/tripo-relay.js`), with your key sent along each time and kept only on your device.
+
 ## Google apps (YouTube, Maps, Gmail, Drive)
 
 Agents can search YouTube, find places and directions, and read Gmail and Google

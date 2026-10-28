@@ -51,7 +51,7 @@ const DEFAULT_DAILY_IMAGE_LIMIT = 20;
 const MAX_KEPT_ATTACHMENTS = 40;
 
 let geminiKey = String(localStorage.getItem("codev_gemini_key") || "").replace(/[\s​-‍﻿"'`]+/g, "");
-let imageProvider = localStorage.getItem("codev_image_provider") || "auto";   // auto | gemini | openrouter | free | off
+let imageProvider = localStorage.getItem("codev_image_provider") || "auto";   // auto | gemini | openrouter | tripo | free | off
 let geminiImageQuality = localStorage.getItem("codev_image_quality") || "lite";
 let openRouterImageModel = localStorage.getItem("codev_openrouter_image_model") || DEFAULT_OPENROUTER_IMAGE_MODEL;
 let dailyImageLimit = Number(localStorage.getItem("codev_daily_image_limit")) || DEFAULT_DAILY_IMAGE_LIMIT;
@@ -853,13 +853,14 @@ function imageService() {
     if (imageProvider === "off") return null;
     if (imageProvider === "gemini") return hasGeminiKey() ? "gemini" : null;
     if (imageProvider === "openrouter") return openRouterKey ? "openrouter" : null;
+    if (imageProvider === "tripo") return typeof hasTripoKey === "function" && hasTripoKey() ? "tripo" : null;
     if (imageProvider === "free") return "free";
     if (hasGeminiKey()) return "gemini";
     if (openRouterKey) return "openrouter";
     return "free";
 }
 
-const IMAGE_SERVICE_NAMES = { gemini: "Gemini (Nano Banana)", openrouter: "OpenRouter", free: "Pollinations (free)" };
+const IMAGE_SERVICE_NAMES = { gemini: "Gemini (Nano Banana)", openrouter: "OpenRouter", tripo: "Tripo", free: "Pollinations (free)" };
 
 function imageUsageToday() {
     try {
@@ -963,21 +964,24 @@ async function generateImageForTask(args, ctx) {
     if (!service) {
         return imageProvider === "off"
             ? "Image making is turned off in Settings > Images, video & big files. Tell the user they can turn it on there."
+            : imageProvider === "tripo" ? "Image making is set to Tripo, but there's no Tripo key. Tell the user to add one in Settings > Tripo 3D models, or pick another service in Settings > Images, video & big files."
             : `Image making is set to ${imageProvider === "gemini" ? "Gemini" : "OpenRouter"}, but there's no ${imageProvider === "gemini" ? "Gemini" : "OpenRouter"} key. Tell the user to add one in Settings > Images, video & big files, or pick "Automatic".`;
     }
     ctx.generatedImages = ctx.generatedImages || [];
-    if (ctx.generatedImages.length >= MAX_IMAGES_PER_TASK) return `Not made: ${MAX_IMAGES_PER_TASK} pictures is the limit for one task, to keep usage down. Show the user what you made and ask before making more.`;
+    if (ctx.generatedImages.filter(a => a.kind === "image").length >= MAX_IMAGES_PER_TASK) return `Not made: ${MAX_IMAGES_PER_TASK} pictures is the limit for one task, to keep usage down. Show the user what you made and ask before making more.`;
     const usage = imageUsageToday();
     if (usage.count >= dailyImageLimit) return `Not made: today's limit of ${dailyImageLimit} pictures is reached (Settings > Images, video & big files changes it). Tell the user.`;
     const aspect = ASPECT_SIZES[args.aspect_ratio] ? args.aspect_ratio : "";
     const references = args.edit_attached_images && Array.isArray(ctx.attachedImages) ? ctx.attachedImages.slice(0, 3) : [];
     if (args.edit_attached_images && !references.length) return "There are no attached pictures in this message to edit. Make a new one without edit_attached_images, or ask the user to attach the picture.";
     if (references.length && service === "free") return "The free image service can't edit pictures. Tell the user that editing an attached picture needs a Gemini key (free from Google AI Studio) in Settings > Images, video & big files.";
+    if (references.length && service === "tripo") return "CoDev can't edit pictures with Tripo yet. Make a new picture without edit_attached_images, or tell the user that editing needs Gemini or OpenRouter in Settings > Images, video & big files.";
     if (ctx.onStep) ctx.onStep(`🎨 Making a picture with ${IMAGE_SERVICE_NAMES[service]}…`);
     let made;
     try {
         made = service === "gemini" ? await makeImageWithGemini(prompt, aspect, references)
             : service === "openrouter" ? await makeImageWithOpenRouter(prompt, aspect, references)
+            : service === "tripo" ? await makeImageWithTripo(prompt, aspect)
             : await makeImageWithPollinations(prompt, aspect);
     } catch (err) {
         return `Error: the picture couldn't be made: ${err.message}.`;
@@ -985,9 +989,10 @@ async function generateImageForTask(args, ctx) {
     const today = countImageMade(made.cost);
     const id = `img_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const thumb = await shrinkDataUrl(made.url, 360, 0.78);
-    await mediaStore("images", "readwrite", store => store.put({ id, url: made.url, prompt, model: made.model, at: Date.now() }));
+    await mediaStore("images", "readwrite", store => store.put({ id, url: made.url, prompt, model: made.model, tripoTaskId: made.tripoTaskId, at: Date.now() }));
     const name = `${prompt.replace(/[^\w ]+/g, "").trim().split(/\s+/).slice(0, 5).join("-").toLowerCase() || "picture"}.${/png/.test(made.url.slice(5, 20)) ? "png" : "jpg"}`;
-    ctx.generatedImages.push({ name, kind: "image", thumb, generatedId: id, fullUrl: made.url });
+    // A Tripo picture's task id lets generate_3d_model build on it without uploading it again.
+    ctx.generatedImages.push({ name, kind: "image", thumb, generatedId: id, fullUrl: made.url, tripoTaskId: made.tripoTaskId });
     logMediaActivity(`[Images] Made "${name}" with ${made.model}${made.cost ? ` ($${made.cost.toFixed(3)})` : ""}. Today: ${today.count} of ${dailyImageLimit}${today.cost ? `, about $${today.cost.toFixed(2)}` : ""}.`);
     return `Made the picture "${name}" with ${IMAGE_SERVICE_NAMES[service]}; it is shown to the user with your reply. Don't paste links or data for it. In your reply, say briefly what you made${service === "free" ? " (with the free image service; a Gemini key in Settings gives better pictures and editing)" : ""}.`;
 }
@@ -999,6 +1004,8 @@ async function loadGeneratedImage(id) {
 
 // Full-size view of a made picture, with a download button.
 async function openGeneratedImage(id) {
+    // 3D models made with Tripo sit in the same list (tripo-tools.js).
+    if (String(id).startsWith("mdl_") && typeof openGeneratedModel === "function") return openGeneratedModel(id);
     const saved = await loadGeneratedImage(id);
     const existing = document.getElementById("generatedImageViewer");
     if (existing) existing.remove();
@@ -1087,7 +1094,7 @@ async function buildMediaTools(ctx) {
         name: "generate_image",
         description: `Make a picture (illustration, photo-style image, logo, icon, diagram-like art, concept art) from a description, using ${IMAGE_SERVICE_NAMES[service]}. `
             + "Only call it when the user asks for a picture or image to be made or edited; it costs the user usage. Write a detailed prompt: subject, style, composition, colors, any text to show. "
-            + `At most ${MAX_IMAGES_PER_TASK} per task.` + (service === "free" ? " The free service can't edit attached pictures." : " Set edit_attached_images to change the pictures the user attached to this message."),
+            + `At most ${MAX_IMAGES_PER_TASK} per task.` + (service === "free" || service === "tripo" ? ` ${service === "free" ? "The free service" : "Tripo (5 Tripo credits a picture)"} can't edit attached pictures.` : " Set edit_attached_images to change the pictures the user attached to this message."),
         inputSchema: { type: "object", properties: {
             prompt: { type: "string", description: "A detailed description of the picture, or of the change to make to the attached picture." },
             aspect_ratio: { type: "string", enum: Object.keys(ASPECT_SIZES), description: "Optional: the shape. Default 1:1." },
@@ -1095,6 +1102,8 @@ async function buildMediaTools(ctx) {
         }, required: ["prompt"] },
         run: async (args, toolCtx) => generateImageForTask(args, toolCtx || ctx)
     });
+    // 3D models with the user's Tripo key (tripo-tools.js).
+    if (typeof buildTripoTools === "function") tools.push(...buildTripoTools());
     return tools;
 }
 
@@ -1128,7 +1137,7 @@ function saveMediaSettings() {
     const newKey = value("modalGeminiKey").replace(/[\s​-‍﻿"'`]+/g, "");
     if (newKey && !GEMINI_KEY_PATTERN.test(newKey)) return "That doesn't look like a Gemini API key (they start with AIza). Copy it again from aistudio.google.com/apikey.";
     geminiKey = newKey;
-    imageProvider = ["auto", "gemini", "openrouter", "free", "off"].includes(value("modalImageProvider")) ? value("modalImageProvider") : "auto";
+    imageProvider = ["auto", "gemini", "openrouter", "tripo", "free", "off"].includes(value("modalImageProvider")) ? value("modalImageProvider") : "auto";
     geminiImageQuality = GEMINI_IMAGE_MODELS[value("modalImageQuality")] ? value("modalImageQuality") : "lite";
     openRouterImageModel = value("modalOpenRouterImageModel") || DEFAULT_OPENROUTER_IMAGE_MODEL;
     dailyImageLimit = Math.max(0, Math.min(500, Math.round(Number(value("modalDailyImageLimit")) || DEFAULT_DAILY_IMAGE_LIMIT)));

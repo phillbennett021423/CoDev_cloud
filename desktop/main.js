@@ -11,6 +11,7 @@ const { createSandbox } = require('./sandbox');
 const { createBrowserService } = require('./browser');
 const { createOutlierBridge } = require('./outlier-bridge');
 const { createGoogleConnect } = require('./google-connect');
+const { handleTripoRequest } = require('./tripo-relay');
 const { pathToFileURL } = require('url');
 
 const WWW = path.join(__dirname, 'www');
@@ -136,6 +137,8 @@ app.whenReady().then(() => {
     const getProjectDir = () => (desktopSettings.projectDir && fs.existsSync(desktopSettings.projectDir) ? desktopSettings.projectDir : '');
     const handleMcp = createMcpTools(getProjectDir);
     ipcMain.handle('codev:mcp', (_event, message) => handleMcp(message));
+    // Tripo 3D, which doesn't answer the page itself (see tripo-relay.js).
+    ipcMain.handle('codev:tripo', (_event, message) => handleTripoRequest(message));
 
     // The Google account for the YouTube, Maps, Gmail and Drive tools, encrypted
     // with safeStorage when Windows offers it. Sign-in opens in the normal browser.

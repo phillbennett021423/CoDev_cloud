@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     refocus: () => ipcRenderer.send('codev:refocus'),
     // The Google account for the YouTube, Maps, Gmail and Drive tools: { op, ... } (see google-connect.js).
     google: req => ipcRenderer.invoke('codev:google', req),
+    // Tripo 3D models and pictures: { op: "api" | "upload" | "download", ... } (see tripo-relay.js).
+    tripo: req => ipcRenderer.invoke('codev:tripo', req),
     // Built-in MCP tools for the chosen project folder.
     mcp: message => ipcRenderer.invoke('codev:mcp', message),
     mcpFolder: () => ipcRenderer.invoke('codev:mcp-folder'),

@@ -905,6 +905,7 @@
                         <option value="auto">Automatic: Gemini if its key is set, then OpenRouter, else the free service</option>
                         <option value="gemini">Gemini (Nano Banana)</option>
                         <option value="openrouter">OpenRouter (uses your OpenRouter credit)</option>
+                        <option value="tripo">Tripo (uses your Tripo credits: 5 a picture)</option>
                         <option value="free">Pollinations (free, no key, can't edit pictures)</option>
                         <option value="off">Off</option>
                     </select>
@@ -926,6 +927,37 @@
                     <input type="number" id="modalDailyImageLimit" min="0" max="500" step="1">
                 </div>
                 <div id="mediaStatus" style="font-size: 0.8rem; color: var(--text-muted); white-space: pre-line;"></div>
+            </details>
+
+            <details class="settings-extra" id="tripoSettings">
+                <summary>🧊 Tripo 3D models</summary>
+                <div style="font-size: 0.8rem; color: var(--text-muted);">With your Tripo API key, agents can turn a description or a picture into a 3D model (.glb) that opens in the Project Files 3D viewer and downloads for Godot, Blender or printing. It spends your Tripo credits, so CoDev stops at the limits below.</div>
+                <a href="https://developers.tripo3d.com/en/keys" target="_blank" rel="noopener" style="font-size: 0.85rem; color: var(--accent);">🔑 Get a Tripo API key</a>
+                <div style="font-size: 0.8rem; color: var(--text-muted);">Sign in with your Tripo account, open <b>API Keys</b>, choose <b>Create Key</b> and copy it straight away (Tripo shows it only once). The API has its own credit balance, topped up on Tripo's <a href="https://developers.tripo3d.com/en/pricing" target="_blank" rel="noopener" style="color: var(--accent);">pricing page</a>; a credit is about 1 cent. A model costs 10 to 40 credits: 20 from a description with textures, 30 from a picture, +10 for detailed textures, 10 less with no textures. A Tripo picture costs 5. Failed tasks aren't charged.</div>
+                <div class="form-group">
+                    <label>Tripo API key</label>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="modalTripoKey" placeholder="tsk_... or sk-..." style="font-family: monospace; flex: 1;" autocomplete="off">
+                        <button class="btn-secondary" type="button" onclick="checkTripoBalance()">Check</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Model quality (agents can only go cheaper)</label>
+                    <select id="modalTripoQuality" style="width: 100%;">
+                        <option value="draft">Draft: shape only, no colors (cheapest)</option>
+                        <option value="standard">Standard texture</option>
+                        <option value="detailed">Detailed texture (+10 credits)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Most 3D models per task (0 turns them off)</label>
+                    <input type="number" id="modalTripoPerTask" min="0" max="10" step="1">
+                </div>
+                <div class="form-group">
+                    <label>Most Tripo credits per day (100 is about $1)</label>
+                    <input type="number" id="modalTripoDailyCredits" min="0" max="10000" step="10">
+                </div>
+                <div id="tripoStatus" style="font-size: 0.8rem; color: var(--text-muted); white-space: pre-line;"></div>
             </details>
 
             <details class="settings-extra" id="memorySettings">
@@ -1034,6 +1066,7 @@
     <script src="agent-ui/diff-review.js"></script>
     <script src="agent-ui/outlier-view.js"></script>
     <script src="media-tools.js"></script>
+    <script src="tripo-tools.js"></script>
     <script src="agent-ui/google-apps.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
@@ -3971,7 +4004,7 @@
         function renderMessageAttachments(attachments) {
             if (!attachments || !attachments.length) return "";
             return `<div class="msg-attachments">${attachments.map(a => a.generatedId && !a.thumb
-                ? `<span class="file-pill generated-pill" onclick="openGeneratedImage('${escapeHtml(a.generatedId)}')">🎨 ${escapeHtml(a.name)}</span>`
+                ? `<span class="file-pill generated-pill" onclick="openGeneratedImage('${escapeHtml(a.generatedId)}')">${a.kind === "model" ? "🧊" : "🎨"} ${escapeHtml(a.name)}</span>`
                 : a.generatedId
                 ? `<img class="generated" src="${a.thumb}" alt="${escapeHtml(a.name)}" title="${escapeHtml(a.name)}: tap to open full size" loading="lazy" onclick="openGeneratedImage('${escapeHtml(a.generatedId)}')">`
                 : a.thumb
@@ -5111,6 +5144,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             document.getElementById("modalMemoryOn").checked = savedMemoryEnabled;
             renderSavedMemories();
             fillMediaSettings();
+            fillTripoSettings();
             document.getElementById("modalChime").checked = chimeEnabled;
             document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
             document.getElementById("modalMcpServers").value = mcpServersConfig;
@@ -5269,6 +5303,12 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (mediaProblem) {
                 document.getElementById("mediaSettings").open = true;
                 showSettingsError(mediaProblem, "modalGeminiKey");
+                return;
+            }
+            const tripoProblem = saveTripoSettings();
+            if (tripoProblem) {
+                document.getElementById("tripoSettings").open = true;
+                showSettingsError(tripoProblem, "modalTripoKey");
                 return;
             }
             if (backend === "openrouter" && newOpenRouterKey.length < 10) {

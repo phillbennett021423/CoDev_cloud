@@ -23,7 +23,7 @@
     "appId": "com.codev.studio",
     "productName": "CoDev Studio",
     "artifactName": "CoDev-Studio-Setup.${ext}",
-    "files": ["main.js", "preload.js", "mcp-tools.js", "image-folder.js", "mcp-hub.js", "outlier-bridge.js", "google-connect.js", "sandbox/**/*", "!sandbox/test/**", "browser/**/*", "www/**/*", "bundle/**/*"],
+    "files": ["main.js", "preload.js", "mcp-tools.js", "image-folder.js", "mcp-hub.js", "outlier-bridge.js", "google-connect.js", "tripo-relay.js", "sandbox/**/*", "!sandbox/test/**", "browser/**/*", "www/**/*", "bundle/**/*"],
     "asarUnpack": ["node_modules/playwright-core/**", "bundle/tools/**"],
     "directories": { "output": "dist", "buildResources": "build" },
     "win": { "icon": "build/icon.png", "target": "nsis" },

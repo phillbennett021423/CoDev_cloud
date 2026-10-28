@@ -21,6 +21,7 @@ const { checkDocker } = require('./scripts/checks');
 const { handleImageFolder } = require('./desktop/image-folder');
 const { handleWebFetch } = require('./web-fetch');
 const { createGoogleConnect } = require('./desktop/google-connect');
+const { handleTripoRequest } = require('./desktop/tripo-relay');
 
 const config = loadConfig();
 const fatal = config.problems.filter(problem => problem.level === 'error');
@@ -227,6 +228,11 @@ const server = http.createServer(async (req, res) => {
     if (req.url === '/google') {
         if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
         return readJsonBody(req, res, async message => sendJson(res, 200, await google.handle(message)));
+    }
+    // Tripo 3D models and pictures, with the key the page sends: CoDev's own page only.
+    if (req.url === '/tripo') {
+        if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
+        return readJsonBody(req, res, async message => sendJson(res, 200, await handleTripoRequest(message)));
     }
     if (req.url === '/agent/status') {
         if (req.method !== 'GET' || !isOwnPageCall(req)) return sendJson(res, 403, { error: 'Forbidden' });
