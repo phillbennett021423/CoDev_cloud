@@ -307,6 +307,14 @@
         .attachment-chip button { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 4px 6px; }
         .msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
         .msg-attachments img { width: 72px; height: 72px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border-color); }
+        .msg-attachments img.generated { width: 280px; max-width: 100%; height: auto; cursor: zoom-in; }
+        .msg-attachments .generated-pill { cursor: pointer; }
+        .generated-viewer { position: fixed; inset: 0; z-index: 3000; background: rgba(0, 0, 0, 0.8); display: flex; align-items: center; justify-content: center; padding: 16px; }
+        .generated-viewer-box { position: relative; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px; max-width: min(96vw, 1100px); max-height: 94vh; display: flex; flex-direction: column; gap: 8px; align-items: center; overflow: auto; color: var(--text-main); }
+        .generated-viewer-box img { max-width: 100%; max-height: 74vh; object-fit: contain; border-radius: 6px; }
+        .generated-viewer-caption { font-size: 0.8rem; color: var(--text-muted); max-width: 100%; overflow-wrap: anywhere; }
+        .generated-viewer-box a { text-decoration: none; padding: 6px 14px; border-radius: 6px; }
+        .generated-viewer-close { position: absolute; top: 6px; right: 6px; background: none; border: none; color: var(--text-main); font-size: 1.1rem; cursor: pointer; min-width: 36px; min-height: 36px; }
         .msg-attachments .file-pill { font-size: 0.75rem; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 8px; align-self: center; }
 
         .btn-ghost { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; display: inline-flex; align-items: center; gap: 6px; }
@@ -644,12 +652,12 @@
                         </div>
 
                         <div class="attachment-tray" id="attachmentTray"></div>
-                        <input type="file" id="attachmentInput" multiple accept="image/*,application/pdf,.pdf,video/*" style="display: none;" onchange="handleAttachmentPick(this)">
+                        <input type="file" id="attachmentInput" multiple accept="image/*,application/pdf,.pdf,video/*,audio/*,.csv,.tsv,.xlsx,.xlsm,.xls,.txt,.md,.json,.jsonl,.log,.xml,.html,.yaml,.yml,.srt,.vtt" style="display: none;" onchange="handleAttachmentPick(this)">
                         <div class="chat-input-row">
                             <span id="activeAgentIndicator" onclick="openAgentPicker()" title="Choose agent" style="font-size: 0.75rem; color: var(--accent); white-space: nowrap; cursor: pointer;">Active: Architect</span>
                             <input type="text" id="userInput" enterkeyhint="send" placeholder="Ask your agents anything or type @filename to reference local file..." onkeydown="if(event.key==='Enter' && !event.isComposing) { event.preventDefault(); sendChatMessage(); }">
                             <button id="micBtn" class="mic-btn" onclick="toggleSpeechRecognition()" title="Voice Input (STT)">🎤</button>
-                            <button id="attachBtn" class="tool-btn" onclick="document.getElementById('attachmentInput').click()" title="Attach images, PDFs or short videos">📎</button>
+                            <button id="attachBtn" class="tool-btn" onclick="document.getElementById('attachmentInput').click()" title="Attach images, PDFs, spreadsheets, text files, videos or audio">📎</button>
                             <button id="screenshotFolderBtn" class="tool-btn" onclick="pickScreenshotFolder()" title="Pick a folder of screenshots (like Dabble slips) for the agents to read">📸</button>
                             <button id="webSearchBtn" class="tool-btn" onclick="toggleWebSearch()" title="Search the web for every message: off (technical questions are searched automatically)" aria-pressed="false">🔎</button>
                             <button class="send-btn" onclick="sendChatMessage()">Send Task</button>
@@ -881,6 +889,43 @@
                 </div>
             </div>
 
+            <details class="settings-extra" id="mediaSettings">
+                <summary>🖼️ Images, video &amp; big files</summary>
+                <div style="font-size: 0.8rem; color: var(--text-muted);">Long PDFs, spreadsheets (CSV, XLSX) and text files work with no key. One free Gemini key adds whole videos with sound, audio files, scanned PDFs and better pictures.</div>
+                <a href="https://aistudio.google.com/apikey" target="_blank" style="font-size: 0.85rem; color: var(--accent);">🔑 Get a free Gemini API key (Google AI Studio)</a>
+                <div class="form-group">
+                    <label>Gemini API key (optional, starts with AIza)</label>
+                    <input type="text" id="modalGeminiKey" placeholder="AIza..." style="font-family: monospace;" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label>Make pictures with</label>
+                    <select id="modalImageProvider" style="width: 100%;">
+                        <option value="auto">Automatic: Gemini if its key is set, then OpenRouter, else the free service</option>
+                        <option value="gemini">Gemini (Nano Banana)</option>
+                        <option value="openrouter">OpenRouter (uses your OpenRouter credit)</option>
+                        <option value="free">Pollinations (free, no key, can't edit pictures)</option>
+                        <option value="off">Off</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Gemini picture quality</label>
+                    <select id="modalImageQuality" style="width: 100%;">
+                        <option value="lite">Nano Banana 2 Lite (cheapest)</option>
+                        <option value="standard">Nano Banana 2</option>
+                        <option value="pro">Nano Banana Pro (best, costs the most)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>OpenRouter picture model</label>
+                    <input type="text" id="modalOpenRouterImageModel" placeholder="google/gemini-2.5-flash-image" style="font-family: monospace;">
+                </div>
+                <div class="form-group">
+                    <label>Most pictures per day (keeps usage down)</label>
+                    <input type="number" id="modalDailyImageLimit" min="0" max="500" step="1">
+                </div>
+                <div id="mediaStatus" style="font-size: 0.8rem; color: var(--text-muted); white-space: pre-line;"></div>
+            </details>
+
             <details class="settings-extra" id="memorySettings">
                 <summary>🧠 Memory (kept across all chats)</summary>
                 <label class="checkbox-group">
@@ -976,6 +1021,7 @@
     <script src="agent-ui/agent-client.js"></script>
     <script src="agent-ui/diff-review.js"></script>
     <script src="agent-ui/outlier-view.js"></script>
+    <script src="media-tools.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
         // text boxes stop taking clicks and typing until the window is refocused.
@@ -3315,6 +3361,8 @@
                     try { return await readScreenshotsTool(args); } finally { ctxStep = null; }
                 }
             });
+            // Long attached files and image making (media-tools.js).
+            tools.push(...await buildMediaTools(ctx));
             if (ctx && ctx.sandbox) return buildSandboxTools(tools, ctx);
             const mcpTools = await fetchAllMcpTools();
             // The folder connected in the page gets its own tools. When the Windows app or the
@@ -3461,6 +3509,9 @@
             const split = fullName.indexOf("__");
             const name = split > 0 ? fullName.slice(split + 2) : fullName;
             if (name === "mcp_list_resources") return "📚 Listing MCP resources";
+            if (name === "read_attachment") return `📄 Reading ${args.name || "the attached file"}${args.pages ? `, pages ${args.pages}` : args.query ? ` for "${args.query}"` : ""}`;
+            if (name === "query_table") return `📊 ${{ stats: "Measuring", group: "Totaling", search: "Searching", columns: "Looking over" }[args.action] || "Reading rows of"} ${args.name || "the spreadsheet"}${args.group_by ? ` by ${args.group_by}` : ""}`;
+            if (name === "generate_image") return `🎨 Making a picture: ${String(args.prompt || "").slice(0, 80)}`;
             if (name === "mcp_read_resource") return `📄 Reading ${args.uri}`;
             if (name === "web_search") return `🔎 Searching: ${args.query}`;
             if (name === "read_webpage") return `🌐 Reading ${args.url}`;
@@ -3662,15 +3713,16 @@
         // base64 JPEG, PDFs become text (or page images when scanned), and videos
         // are sampled into still frames, because the model takes images, not video.
         // Up to 50 images in one message: the vision model reads them 3 at a time (Groq's
-        // limit per request) and the agent gets its notes. A video gives 3 frames.
+        // limit per request) and the agent gets its notes. A video gives 3 to 12 frames
+        // by length. Long PDFs, spreadsheets, text, audio and a video's sound are
+        // handled in media-tools.js.
         const MAX_IMAGES_PER_MESSAGE = 50;
-        const MAX_VIDEO_FRAMES = 3;
+        const MAX_VIDEO_FRAMES = 12;
         const MAX_SCANNED_PDF_PAGES = 10;
         // Claude takes this many images straight into its tool loop; more go through the notes.
         const ANTHROPIC_DIRECT_IMAGES = 20;
         const MAX_IMAGE_EDGE = 1280;
-        const MAX_PDF_CHARS = 40000;
-        const MAX_FILE_BYTES = { image: 20 * 1024 * 1024, pdf: 25 * 1024 * 1024, video: 100 * 1024 * 1024 };
+        const MAX_FILE_BYTES = { image: 20 * 1024 * 1024, pdf: 100 * 1024 * 1024, video: 500 * 1024 * 1024, sheet: 60 * 1024 * 1024, text: 30 * 1024 * 1024, audio: 200 * 1024 * 1024 };
         let pendingAttachments = [];
         let attachmentSeq = 0;
         let webSearchEnabled = false;
@@ -3689,8 +3741,8 @@
         function attachmentKind(file) {
             if (file.type.startsWith("image/")) return "image";
             if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) return "pdf";
-            if (file.type.startsWith("video/")) return "video";
-            return null;
+            if (file.type.startsWith("video/") || /\.(mp4|mov|webm|mkv|avi|m4v)$/i.test(file.name)) return "video";
+            return extraAttachmentKind(file);
         }
 
         function imageBudgetLeft(exceptId) {
@@ -3703,16 +3755,19 @@
             input.value = "";
             for (const file of files) {
                 const kind = attachmentKind(file);
-                if (!kind) { alert(`${file.name}: only images, PDFs and videos can be attached.`); continue; }
+                if (!kind) { alert(`${file.name}: CoDev can read images, PDFs, spreadsheets (CSV, XLSX), text files, videos and audio.`); continue; }
                 if (file.size > MAX_FILE_BYTES[kind]) { alert(`${file.name} is too large (limit ${MAX_FILE_BYTES[kind] / 1024 / 1024} MB for ${kind}s).`); continue; }
-                if (kind !== "pdf" && imageBudgetLeft() === 0) { alert(`Up to ${MAX_IMAGES_PER_MESSAGE} images or video frames can go in one message.`); continue; }
+                if ((kind === "image" || kind === "video") && imageBudgetLeft() === 0) { alert(`Up to ${MAX_IMAGES_PER_MESSAGE} images or video frames can go in one message.`); continue; }
                 const att = { id: ++attachmentSeq, name: file.name, kind, images: [], text: "", thumb: "", processing: true, reservedImages: kind === "image" ? 1 : 0 };
-                if (kind === "video") att.reservedImages = Math.min(MAX_VIDEO_FRAMES, imageBudgetLeft());
+                if (kind === "video") att.reservedImages = Math.min(3, imageBudgetLeft());
                 pendingAttachments.push(att);
                 renderAttachmentTray();
                 try {
                     if (kind === "image") await prepareImage(file, att);
                     else if (kind === "pdf") await preparePdf(file, att);
+                    else if (kind === "sheet") await prepareSheet(file, att);
+                    else if (kind === "text") await prepareTextFile(file, att);
+                    else if (kind === "audio") await prepareAudio(file, att);
                     else await prepareVideo(file, att);
                     logConsoleActivity(`Prepared ${kind} ${file.name}.`);
                 } catch (err) {
@@ -3720,6 +3775,7 @@
                     alert(`Couldn't read ${file.name}: ${err.message || err}`);
                 }
                 att.processing = false;
+                att.status = "";
                 renderAttachmentTray();
             }
         }
@@ -3734,14 +3790,18 @@
             renderAttachmentTray();
         }
 
-        const ATTACHMENT_ICONS = { image: "🖼️", pdf: "📄", video: "🎬" };
+        const ATTACHMENT_ICONS = { image: "🖼️", pdf: "📄", video: "🎬", sheet: "📊", text: "📝", audio: "🎧" };
 
         function renderAttachmentTray() {
             const tray = document.getElementById("attachmentTray");
             tray.replaceChildren(...pendingAttachments.map(a => {
                 const chip = document.createElement("div");
                 chip.className = "attachment-chip" + (a.processing ? " processing" : "");
-                const detail = a.processing ? " (preparing…)" : a.kind === "video" ? ` (${a.images.length} frames)` : a.kind === "pdf" && a.images.length ? ` (${a.images.length} page images)` : "";
+                const detail = a.processing ? ` (${a.status || "preparing…"})`
+                    : a.kind === "video" ? ` (${a.images.length} frames${a.watched === "Gemini" ? " + sound, by Gemini" : a.watched ? " + sound" : ""})`
+                    : a.kind === "pdf" && a.images.length ? ` (${a.images.length} page images)`
+                    : a.kind === "pdf" && a.pageCount ? ` (${a.pageCount} pages)`
+                    : a.kind === "sheet" && a.sheets ? ` (${a.sheets.reduce((n, s) => n + s.rows.length, 0).toLocaleString("en-US")} rows)` : "";
                 chip.innerHTML = `${a.thumb ? `<img src="${a.thumb}" alt="">` : `<span>${ATTACHMENT_ICONS[a.kind]}</span>`}<span class="chip-name">${escapeHtml(a.name + detail)}</span>`;
                 const remove = document.createElement("button");
                 remove.textContent = "✕";
@@ -3755,7 +3815,11 @@
 
         function renderMessageAttachments(attachments) {
             if (!attachments || !attachments.length) return "";
-            return `<div class="msg-attachments">${attachments.map(a => a.thumb
+            return `<div class="msg-attachments">${attachments.map(a => a.generatedId && !a.thumb
+                ? `<span class="file-pill generated-pill" onclick="openGeneratedImage('${escapeHtml(a.generatedId)}')">🎨 ${escapeHtml(a.name)}</span>`
+                : a.generatedId
+                ? `<img class="generated" src="${a.thumb}" alt="${escapeHtml(a.name)}" title="${escapeHtml(a.name)}: tap to open full size" loading="lazy" onclick="openGeneratedImage('${escapeHtml(a.generatedId)}')">`
+                : a.thumb
                 ? `<img src="${a.thumb}" alt="${escapeHtml(a.name)}" title="${escapeHtml(a.name)}" loading="lazy">`
                 : `<span class="file-pill">${ATTACHMENT_ICONS[a.kind] || "📎"} ${escapeHtml(a.name)}</span>`).join("")}</div>`;
         }
@@ -4187,7 +4251,6 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         }
 
         async function prepareVideo(file, att) {
-            const frameCount = Math.max(1, Math.min(att.reservedImages, imageBudgetLeft(att.id)));
             const url = URL.createObjectURL(file);
             const video = document.createElement("video");
             video.muted = true;
@@ -4197,6 +4260,10 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 video.src = url;
                 await waitForEvent(video, "loadeddata");
                 const duration = isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+                // One frame per 10 seconds, 3 to MAX_VIDEO_FRAMES, within the message's image budget.
+                const wanted = Math.min(MAX_VIDEO_FRAMES, Math.max(3, Math.ceil(duration / 10)));
+                const frameCount = Math.max(1, Math.min(wanted, imageBudgetLeft(att.id)));
+                att.reservedImages = frameCount;
                 const frames = [];
                 for (let i = 0; i < frameCount; i++) {
                     // Spread samples across the clip, avoiding the very first and last frame.
@@ -4209,12 +4276,13 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 }
                 att.images = frames;
                 att.thumb = sourceToJpeg(video, video.videoWidth, video.videoHeight, 160, 0.7);
-                att.text = `Video clip "${file.name}", ${duration.toFixed(1)}s long. The ${frames.length} attached image(s) are frames sampled evenly through it, in order. Audio is not included.`;
+                att.text = `Video clip "${file.name}", ${duration.toFixed(1)}s long. The ${frames.length} attached image(s) are frames sampled evenly through it, in order.`;
             } finally {
                 video.removeAttribute("src");
                 video.load();
                 URL.revokeObjectURL(url);
             }
+            await addVideoUnderstanding(file, att, isFinite(video.duration) ? video.duration : 0);
         }
 
         // pdf.js ships with the app (vendor/pdfjs) so PDFs work offline in the APK.
@@ -4240,16 +4308,17 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const pdfjsLib = await loadPdfJs();
             // isEvalSupported:false blocks the font-eval path behind CVE-2024-4367.
             const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer(), isEvalSupported: false }).promise;
-            let text = "";
-            for (let pageNo = 1; pageNo <= pdf.numPages && text.length < MAX_PDF_CHARS; pageNo++) {
-                const page = await pdf.getPage(pageNo);
-                const content = await page.getTextContent();
-                text += `\n--- Page ${pageNo} ---\n` + content.items.map(item => item.str + (item.hasEOL ? "\n" : " ")).join("");
-            }
-            const truncated = text.length > MAX_PDF_CHARS;
-            if (truncated) text = text.slice(0, MAX_PDF_CHARS);
+            // Every page's text: a long PDF goes in as its start, and the agent reads on with read_attachment.
+            att.status = `reading ${pdf.numPages} pages…`;
+            renderAttachmentTray();
+            const { fullText: text, pagesRead, cut } = await extractPdfText(pdf);
+            att.pageCount = pdf.numPages;
 
-            // Scanned PDFs have no text layer; send the first pages as images instead.
+            // Scanned PDFs have no text layer: Gemini reads them when there's a key; otherwise the first pages go as images.
+            if (text.replace(/--- Page \d+ ---|\s/g, "").length < 10 && await readScannedPdfWithGemini(file, att, pdf.numPages)) {
+                pdf.destroy();
+                return;
+            }
             if (text.replace(/--- Page \d+ ---|\s/g, "").length < 10) {
                 const pagesToRender = Math.min(pdf.numPages, MAX_SCANNED_PDF_PAGES, imageBudgetLeft(att.id));
                 if (pagesToRender === 0) throw new Error(`it looks scanned (no text), and the ${MAX_IMAGES_PER_MESSAGE}-image limit for this message is already used`);
@@ -4263,9 +4332,10 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                     await page.render({ canvasContext: canvas.getContext("2d"), viewport: scaled }).promise;
                     att.images.push(canvas.toDataURL("image/jpeg", 0.85));
                 }
-                att.text = `Scanned PDF "${file.name}" (${pdf.numPages} pages). The first ${pagesToRender} page(s) are attached as images.`;
+                att.text = `Scanned PDF "${file.name}" (${pdf.numPages} pages). The first ${pagesToRender} page(s) are attached as images.`
+                    + (pdf.numPages > pagesToRender ? " A free Gemini key in Settings > Images, video & big files lets CoDev read every page of scanned PDFs." : "");
             } else {
-                att.text = `PDF "${file.name}" (${pdf.numPages} pages)${truncated ? `, truncated to the first ${MAX_PDF_CHARS} characters` : ""}:\n${text}`;
+                describeLongText(att, `PDF "${file.name}" (${pdf.numPages} pages)`, text, cut ? ` (text kept for the first ${pagesRead} pages)` : "");
             }
             pdf.destroy();
         }
@@ -4882,6 +4952,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
             document.getElementById("modalMemoryOn").checked = savedMemoryEnabled;
             renderSavedMemories();
+            fillMediaSettings();
             document.getElementById("modalChime").checked = chimeEnabled;
             document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
             document.getElementById("modalMcpServers").value = mcpServersConfig;
@@ -5034,6 +5105,12 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             }
             if (backend === "groq" && !newGroqKey.startsWith("gsk_")) {
                 showSettingsError("Please enter a valid Groq API key starting with 'gsk_'.", "modalGroqKey");
+                return;
+            }
+            const mediaProblem = saveMediaSettings();
+            if (mediaProblem) {
+                document.getElementById("mediaSettings").open = true;
+                showSettingsError(mediaProblem, "modalGeminiKey");
                 return;
             }
             if (backend === "openrouter" && newOpenRouterKey.length < 10) {
@@ -5701,7 +5778,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 10. STYLE: Answer directly in plain words. Match the length to the question: a short question gets a short answer. Use lists or code blocks only when they help.
 
-11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; web search and reading full web pages; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots, images, PDFs and video frames. For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
+11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; web search and reading full web pages; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); making and editing pictures (generate_image). For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
 
 12. ENGINE-SPECIFIC RULES:${godotRules || " none for this task."}`;
             
@@ -6339,6 +6416,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             placeholder.runId = runId;
             setAgentState(agent.id, "thinking");
             const tools = createToolContext(session, placeholder, agent, webSources);
+            // The pictures attached to this message, for generate_image to edit.
+            tools.attachedImages = aiOptions.images || [];
             if (resume?.toolLog) tools.toolLog.push(...resume.toolLog);
             // The same list as the run's, so a crash mid-run still leaves what was done.
             placeholder.toolLog = tools.toolLog;
@@ -6347,7 +6426,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 dropRunCheckpoint(runId);
                 const at = session.messages.indexOf(placeholder);
                 if (at >= 0) session.messages.splice(at, 1);
-                appendMessageToSession(session, sender, text, null, sources);
+                // Pictures generate_image made go under the reply (previews; full size in IndexedDB).
+                const made = (tools.generatedImages || []).map(({ fullUrl, ...kept }) => kept);
+                appendMessageToSession(session, sender, text, made, sources);
                 const reply = session.messages[session.messages.length - 1];
                 if (reply && tools.toolLog.length) {
                     reply.toolLog = tools.toolLog.slice(-MAX_HISTORY_TOOL_STEPS);
@@ -6465,6 +6546,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (attachments.length) logConsoleActivity(`Sending ${attachments.length} attachment(s) with ${aiOptions.images.length} image(s).`);
 
             const session = chatSessions.find(s => s.id === activeChatId);
+            // Long files stay readable (read_attachment, query_table) for the rest of this chat.
+            if (session && attachments.length) await keepAttachmentsForChat(session.id, attachments);
             // "continue" right after a run a crash cut off resumes that run itself.
             const cutOff = session && !attachments.length && RESUME_REQUEST.test(userText)
                 && [...session.messages].reverse().find(m => m.runId && /^⚠️ Interrupted/.test(m.sender));
