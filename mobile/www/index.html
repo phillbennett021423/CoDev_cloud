@@ -5701,7 +5701,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 10. STYLE: Answer directly in plain words. Match the length to the question: a short question gets a short answer. Use lists or code blocks only when they help.
 
-11. ENGINE-SPECIFIC RULES:${godotRules || " none for this task."}`;
+11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; web search and reading full web pages; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots, images, PDFs and video frames. For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
+
+12. ENGINE-SPECIFIC RULES:${godotRules || " none for this task."}`;
             
             // A resumed run: the conversation it had saved, from where it stopped.
             if (options.resumeMessages) {
@@ -5910,6 +5912,12 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             };
         }
 
+        // What the agent tells the user when they want code run and no command tool is on.
+        // Both routes already exist; they're just off in that setup.
+        const HOW_TO_RUN_CODE = "If the user wants code, tests or builds run, tell them the two ways to turn it on: "
+            + "(1) install and start Docker Desktop (docker.com/products/docker-desktop), then ask again: agents then run commands in their own sandbox container and every change still goes through review; "
+            + "or (2) in the CoDev Windows app, untick 🧪 Sandbox & Review Changes and choose a project folder under ⚙️ Settings > Web grounding & local tools: agents then run commands directly in that folder, with no review step.";
+
         function workspaceNote(ws) {
             if (!ws) {
                 return "[Workspace status] No project is connected, so there are no files to work on. Say so in one line and tell the user how to connect one (📁 Connect Local Folder in Project Files, or the project folder under ⚙️ Settings in the Windows app), then still do everything you can without it.";
@@ -5919,7 +5927,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 ? " (these files were picked, not a folder, so edits stay in CoDev until the user saves them from Project Files)" : ", which saves them to disk";
             return [`[Workspace status] Project: ${ws.label}.`,
                 ws.canWrite ? `Edits: use ${ws.writeTools}${savedWhere}.` : "Edits: no write tool is connected (the desktop helper is read-only without --autonomous), so give the exact changes as code.",
-                ws.canRun ? "Running code: use run_command (or run_approved_command) to run, build and test." : "Running code: no command tool is connected here, so you can't run code. Never claim you ran it; check your edits by reading the files back."
+                ws.canRun ? "Running code: use run_command (or run_approved_command) to run, build and test." : `Running code: no command tool is connected here, so you can't run code. Never claim you ran it; check your edits by reading the files back. ${HOW_TO_RUN_CODE}`
             ].join("\n");
         }
 
@@ -6187,7 +6195,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const canRun = tools.some(t => t.name === "run_command");
             return `[Sandbox] You are working in an isolated copy of the user's project${canRun ? " with your own Docker container" : ""}. `
                 + "Use list_files, read_file and search_files to read it, and write_file, edit_file and delete_file to change it. "
-                + (canRun ? "Run code, tests and builds with run_command (Linux sh, in /workspace). " : "No command tool is available, so you can't run code; never claim you did. ")
+                + (canRun ? "Run code, tests and builds with run_command (Linux sh, in /workspace). " : `No command tool is available, so you can't run code; never claim you did. ${HOW_TO_RUN_CODE} `)
                 + "Every change is staged: the user reviews the diff before anything is saved to their disk, and files that fail the syntax check can't be saved. "
                 + "Before you finish, check sandbox_diff and fix any failed checks, then call submit_changes with a short summary.";
         }
