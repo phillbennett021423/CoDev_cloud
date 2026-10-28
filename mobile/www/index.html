@@ -6138,11 +6138,39 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             return tools;
         }
 
-        async function callAgentTool(name, args, sandbox) {
-            const result = await agentInfra.client.callTool(name, args, { agentId: sandbox.agentId, sandboxId: sandbox.id }) || {};
+        async function callAgentTool(name, args, sandbox, { hostAllowed = false } = {}) {
+            const result = await agentInfra.client.callTool(name, args, { agentId: sandbox.agentId, sandboxId: sandbox.id, hostAllowed }) || {};
             let text = mcpContentToText(result.content);
             if (!text && result.structuredContent) text = JSON.stringify(result.structuredContent, null, 2);
             return (result.isError ? "Error: " : "") + (text || "(no output)");
+        }
+
+        // RUNNING CODE WITHOUT DOCKER
+        // With Docker, run_command runs in the agent's own container. Without it, the
+        // sandbox runs the command on this computer, in the sandbox copy of the project
+        // (not the real folder), with no container around it. So the user is asked
+        // first, except for a plain test, build or run step of the project's own tooling
+        // with no shell operators, which runs straight away while "Run file edits and
+        // commands without asking me first" is on.
+        const SAFE_HOST_COMMAND = /^(?:npm (?:test|t|ci|run (?:test|build|lint|check|typecheck|start)[\w:.-]*)|npx (?:jest|vitest|mocha|tsc|eslint|prettier --check)|yarn (?:test|build|lint)|pnpm (?:test|build|lint)|pytest|python3? -m (?:pytest|unittest|py_compile)|py -m (?:pytest|unittest)|tsc|dotnet (?:build|test)|cargo (?:build|test|check)|go (?:build|test|vet)|\.?[\\/]?gradlew(?:\.bat)? (?:build|test|assemble\w*)|git (?:status|diff|log))(?:\s+[\w./\\:=@,+-]+)*\s*$/i;
+
+        function isSafeHostCommand(command) {
+            return SAFE_HOST_COMMAND.test(String(command || "").trim());
+        }
+
+        async function runHostCommand(args, ctx) {
+            const command = String(args?.command || "").trim();
+            if (!command) return "run_command needs a 'command' string.";
+            const auto = toolsAutoRun && isSafeHostCommand(command);
+            if (!auto) {
+                const ok = confirm(`${ctx?.agentName || "An agent"} wants to run this command on your computer:\n\n${command.slice(0, 600)}${args.cwd ? `\n\n(in ${args.cwd})` : ""}\n\nIt runs in CoDev's copy of your project, not your real folder, but Docker isn't running, so it isn't walled off from the rest of your computer. Allow it?`);
+                if (!ok) {
+                    logConsoleActivity(`[Sandbox] You declined: ${command.slice(0, 120)}`);
+                    return "The user declined to run this command. Don't run it again; explain what you wanted to check and continue without it, or ask the user.";
+                }
+            }
+            logConsoleActivity(`[Sandbox] Running on this computer${auto ? " (a plain test/build step)" : " (you approved it)"}: ${command.slice(0, 120)}`);
+            return callAgentTool("run_command", args, ctx.sandbox, { hostAllowed: true });
         }
 
         // The tool list in sandbox mode: web search, the sandbox's file and command tools,
@@ -6158,7 +6186,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                     name: tool.name,
                     description: `[Sandbox] ${tool.description || tool.title || tool.name}`,
                     inputSchema: schema(tool),
-                    run: async args => callAgentTool(tool.name, args, ctx.sandbox)
+                    run: async args => tool.name === "run_command" && !agentInfra.status?.docker?.available
+                        ? runHostCommand(args, ctx)
+                        : callAgentTool(tool.name, args, ctx.sandbox)
                 });
             }
             for (const tool of await fetchAllMcpTools()) {
@@ -6195,7 +6225,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const canRun = tools.some(t => t.name === "run_command");
             return `[Sandbox] You are working in an isolated copy of the user's project${canRun ? " with your own Docker container" : ""}. `
                 + "Use list_files, read_file and search_files to read it, and write_file, edit_file and delete_file to change it. "
-                + (canRun ? "Run code, tests and builds with run_command (Linux sh, in /workspace). " : `No command tool is available, so you can't run code; never claim you did. ${HOW_TO_RUN_CODE} `)
+                + (canRun && !agentInfra.status?.docker?.available ? "Run code, tests and builds with run_command. Docker isn't running, so commands run on the user's computer in your sandbox copy: plain test and build steps run straight away, anything else asks the user first, so keep commands simple and explain why you need them. "
+                    : canRun ? "Run code, tests and builds with run_command (Linux sh, in /workspace). " : `No command tool is available, so you can't run code; never claim you did. ${HOW_TO_RUN_CODE} `)
                 + "Every change is staged: the user reviews the diff before anything is saved to their disk, and files that fail the syntax check can't be saved. "
                 + "Before you finish, check sandbox_diff and fix any failed checks, then call submit_changes with a short summary.";
         }
@@ -6209,7 +6240,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 read: path => callAgentTool("read_file", { path }, sandbox),
                 canWrite: true,
                 writeTools: "edit_file and write_file",
-                canRun: Boolean(agentInfra.status?.docker?.available)
+                canRun: Boolean(agentInfra.status?.docker?.available || agentInfra.status?.hostCommands || agentInfra.status?.services?.sandbox?.hostCommands)
             };
         }
 
