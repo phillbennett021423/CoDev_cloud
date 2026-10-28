@@ -193,6 +193,7 @@ test('chats survive a reload, and a run cut off by a crash comes back as a note 
     assert.ok(!restored.some(m => /Working\.\.\./.test(m.sender)), 'no run left spinning');
     await page.evaluate(() => {
         document.getElementById('settingsModal').style.display = 'none';
+        if (document.getElementById('chatControlsContainer').style.display === 'none') toggleChatControls();
         window.__modelCalls = [];
         window.groqChatMessage = async body => {
             window.__modelCalls.push(body.messages.slice(1).map(m => ({ role: m.role, content: String(m.content) })));
@@ -238,6 +239,7 @@ test('a run cut off by a crash resumes from its last step, and agents and settin
     assert.equal(after.selfHeal, false, 'the toggles come back as they were left');
     await page.evaluate(() => {
         document.getElementById('settingsModal').style.display = 'none';
+        if (document.getElementById('chatControlsContainer').style.display === 'none') toggleChatControls();
         window.__sent = [];
         window.groqChatMessage = async body => {
             window.__sent.push(body.messages.map(m => ({ role: m.role, content: String(m.content), tool_call_id: m.tool_call_id })));
@@ -282,6 +284,7 @@ test('saying "continue" after a crash resumes the cut-off run, and a call left m
     await page.waitForSelector('.resume-btn');
     await page.evaluate(() => {
         document.getElementById('settingsModal').style.display = 'none';
+        if (document.getElementById('chatControlsContainer').style.display === 'none') toggleChatControls();
         window.__sent = [];
         window.groqChatMessage = async body => {
             window.__sent.push(body.messages.map(m => ({ role: m.role, content: String(m.content), tool_call_id: m.tool_call_id })));
