@@ -115,7 +115,7 @@ On a computer (the Windows app, or `server.js`), agents can work in a sandbox in
 - **A container per agent.** `run_command` runs inside the agent's own Docker container, which sees only the staging copy, mounted at `/workspace`. Containers have no network (unless allowed), no Linux capabilities, a read-only system, 2 GB of memory, 2 CPUs and at most 256 processes. They're removed when the review is done, after 15 idle minutes, and when CoDev closes. The default image is `node:22-bookworm-slim`; set `CODEV_SANDBOX_IMAGE` (for example `python:3.12-slim`) or `CODEV_SANDBOX_NETWORK=bridge` to change that.
 - **Review before anything reaches the disk.** CoDev shows the changes as a git diff, file by file, with a syntax check for each: JSON is parsed, JavaScript goes through `node --check`, the inline scripts of HTML pages too, and Python through `ast.parse`. Nothing is executed for the check. You approve or reject files; a file whose check failed can't be approved. A file is also held back if it changed in the sandbox after you reviewed it, or if you changed it on disk since the agent started.
 
-Without Docker, the staging copy and the review still work, but agents can't run commands in the sandbox; the status says whether Docker is missing or just not running. The Android app and the web version have no sandbox, since a phone or a browser tab can't run Docker.
+Without Docker, the staging copy and the review still work, and `run_command` runs on your computer instead, in the staging copy (never your real folder), with CoDev's own keys removed from its environment. There's no container around it, so CoDev asks you before each command unless it's a plain test, build or check step of the project's own tooling (`npm test`, `npm run build`, `pytest`, `dotnet build`, `cargo test`, `git status` and the like, with no `&&`, pipes or redirects) and **Run file edits and commands without asking me first** is on. Docker stays the safer choice: when it's running, commands go to the container as before. The status says whether Docker is missing or just not running. The Android app and the web version have no sandbox, since a phone or a browser tab can't run Docker.
 
 Tests: `node --test desktop/sandbox/test/sandbox.test.js` (the container tests run when Docker is running).
 
@@ -139,7 +139,7 @@ When CoDev runs from `npm start` (or the Windows app) with a project folder, the
 
 - After a task, a review screen lists every changed file with its diff and syntax check. Files that fail the check can't be approved; untick any file you don't want.
 - **Approve & save** writes the ticked files, **Reject all** throws the changes away, and **Keep for later** leaves them waiting under **📝 Review changes** in the header.
-- Without Docker, agents still edit the staging copy, but can't run code. On Android and on the web the mode is greyed out and agents edit as before.
+- Without Docker, agents still edit the staging copy and run code on your computer in that copy, asking you first for anything but a plain test or build step. On Android and on the web the mode is greyed out and agents edit as before.
 
 The page code is `mobile/www/agent-ui/` (`agent-client.js` talks to the `/agent/*` routes and `/agent-tools`, `diff-review.js` is the review screen).
 
