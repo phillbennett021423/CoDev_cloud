@@ -83,6 +83,16 @@ One free key adds the rest: get a Gemini API key at [aistudio.google.com/apikey]
 
 Ask for a picture ("make a logo for my team", "draw this as a cartoon") and the agent's `generate_image` tool makes it: with Gemini (Nano Banana; pick the quality in Settings) when its key is set, else OpenRouter when that key is set, else the free Pollinations service, which needs no key. Editing an attached picture needs Gemini or OpenRouter. Pictures show under the reply; tap one to see it full size and download it. To keep usage down, one task makes at most 4 pictures and a day at most the limit in Settings (20 to start), and the Settings section shows today's count.
 
+## Google apps (YouTube, Maps, Gmail, Drive)
+
+Agents can search YouTube, find places and directions, and read Gmail and Google
+Drive. YouTube and Maps work with no setup through free basic versions (web
+search and OpenStreetMap). A Google API key gives full YouTube and Google Maps
+results, and signing in with Google adds Gmail and Drive. Sending email and saving
+to Drive are off unless you turn them on, and CoDev asks before each one. The
+one-time Google Cloud setup is in [docs/google-apps.md](docs/google-apps.md); then
+use **Settings > Google apps**.
+
 ## Memory, web reading and self-checks
 
 - **Memory across chats.** Say "remember that I use Windows 11" (or any fact or preference) and the agent saves it. Saved notes go with every chat, even after **New task**; see, add or delete them in ⚙️ Settings > 🧠 Memory, or turn them off there. Ask "forget that I use Windows 11" to remove one. Keys and passwords are never saved.
