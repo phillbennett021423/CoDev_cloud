@@ -496,6 +496,43 @@
         .live-log .warn { color: var(--warning); }
         .live-log .error { color: var(--danger); }
         .live-log .muted { color: var(--text-muted); }
+        /* The agent's computer: header, what it's doing, the browser in a frame, take over at the foot. */
+        .computer-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--border-color); }
+        .computer-avatar { display: inline-flex; flex-shrink: 0; }
+        .computer-avatar .agent-avatar { width: 30px; height: 33px; }
+        .computer-title-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+        .computer-title { font-size: 0.95rem; font-weight: 700; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .computer-head select { align-self: flex-start; max-width: 100%; background: none; border: none; color: var(--text-muted); font-size: 0.72rem; padding: 0; cursor: pointer; }
+        .computer-icon { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-main); cursor: pointer; font-size: 0.85rem; display: inline-flex; align-items: center; justify-content: center; }
+        .computer-icon:hover, .computer-icon.on { border-color: var(--accent); color: var(--accent); }
+        .computer-status { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+        .computer-app { flex-shrink: 0; font-size: 0.72rem; font-weight: 600; color: var(--text-main); background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 999px; padding: 4px 10px; }
+        .computer-doing { min-width: 0; flex: 1; }
+        .computer-doing-line { font-size: 0.82rem; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .computer-step { font-size: 0.74rem; color: var(--text-muted); font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .computer-step:empty { display: none; }
+        .computer-status.working .computer-app { border-color: var(--accent); color: var(--accent); }
+        .computer-frame { flex: 1; min-height: 0; display: flex; flex-direction: column; margin: 0 12px 10px; border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; background: #000; box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
+        .computer-frame .live-bar { background: var(--bg-card); border-bottom: 1px solid var(--border-color); flex-wrap: nowrap; padding: 6px 8px; }
+        .computer-frame .live-bar button { background: none; border: none; padding: 4px 6px; color: var(--text-muted); }
+        .computer-frame .live-bar button:hover { color: var(--text-main); }
+        .computer-frame .live-bar input { border-radius: 999px; padding: 5px 12px; background: var(--bg-dark); min-width: 0; }
+        .computer-dots { display: inline-flex; gap: 5px; margin-right: 4px; }
+        .computer-dots i { width: 9px; height: 9px; border-radius: 50%; background: #4b5563; }
+        .computer-dots i:nth-child(1) { background: #f87171; } .computer-dots i:nth-child(2) { background: #fbbf24; } .computer-dots i:nth-child(3) { background: #34d399; }
+        .computer-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--border-color); }
+        .computer-live { display: inline-flex; align-items: center; gap: 8px; font-size: 0.78rem; color: var(--text-muted); }
+        .computer-live i { width: 8px; height: 8px; border-radius: 50%; background: #4b5563; }
+        .computer-live.on i { background: var(--success); box-shadow: 0 0 8px var(--success); animation: computerPulse 1.6s ease-in-out infinite; }
+        .computer-live.on { color: var(--text-main); }
+        .computer-live.you i { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
+        @keyframes computerPulse { 50% { opacity: 0.35; } }
+        .computer-takeover { background: var(--accent); color: var(--bg-dark); border: none; border-radius: 999px; padding: 8px 16px; font-weight: 700; font-size: 0.82rem; cursor: pointer; }
+        .computer-takeover.live-control-on { background: var(--warning); color: #111; }
+        .live-panel .live-side { display: none; }
+        .live-panel.show-devtools .live-side { display: flex; }
+        .live-panel .live-body { flex-direction: column; }
+        .live-panel .live-side { width: auto; height: 32%; border-left: none; border-top: 1px solid var(--border-color); }
         /* The same live view, embedded in the card of the agent whose browser is open. */
         .agent-browser-panel { position: relative; background: #000; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; outline: none; cursor: default; }
         .agent-browser-panel:focus-visible, .agent-browser-panel:focus { border-color: var(--accent); }
@@ -571,23 +608,40 @@
         </div>
     </header>
 
-    <div class="live-panel" id="livePanel" role="dialog" aria-label="Live view of an agent's browser">
-        <div class="live-bar">
-            <select id="liveAgent" onchange="live.picked = true; watchLiveAgent(this.value)" title="Whose browser: any agent's (opens when you type an address) or the signed-in Outlier one"></select>
-            <button type="button" onclick="liveControl({ op: 'back' })" title="Back">◀</button>
-            <button type="button" onclick="liveControl({ op: 'forward' })" title="Forward">▶</button>
-            <button type="button" onclick="liveControl({ op: 'reload' })" title="Reload">⟳</button>
-            <input type="text" id="liveUrl" placeholder="Address or search" autocomplete="off" onkeydown="if (event.key === 'Enter') liveControl({ op: 'navigate', url: this.value })">
-            <button type="button" id="liveTakeoverBtn" onclick="toggleLiveTakeover()" title="Pause the agent and use its browser yourself">✋ Take over</button>
-            <button type="button" onclick="closeLiveBrowser()" title="Close this browser. A browser you've used stays open until you close it here, even when no agent is using it.">⏻ Close browser</button>
-            <button type="button" onclick="forgetBrowserSignIns()" title="Sign-ins in the agents' browsers are kept between sessions. This deletes this agent's (cookies, local storage); Outlier's has its own button in the Outlier tab.">🧹 Forget sign-ins</button>
-            <button type="button" onclick="toggleLiveView(false)" title="Close">✕</button>
+    <div class="live-panel" id="livePanel" role="dialog" aria-label="The agent's computer">
+        <!-- The agent's computer: who it is and what it's doing, its browser in a frame, and take over / hand back. -->
+        <div class="computer-head">
+            <span class="computer-avatar" id="computerAvatar"></span>
+            <div class="computer-title-wrap">
+                <div class="computer-title" id="computerTitle">Agent's computer</div>
+                <select id="liveAgent" onchange="live.picked = true; watchLiveAgent(this.value)" title="Whose browser: any agent's (opens when you type an address) or the signed-in Outlier one"></select>
+            </div>
+            <button type="button" class="computer-icon" id="liveDevtoolsBtn" onclick="toggleLiveDevtools()" title="Console, network and page changes" aria-label="Developer tools">⌘</button>
+            <button type="button" class="computer-icon" onclick="toggleLiveView(false)" title="Close the computer" aria-label="Close">✕</button>
+        </div>
+        <div class="computer-status" id="computerStatus">
+            <span class="computer-app" id="computerApp">🌐 Browser</span>
+            <div class="computer-doing">
+                <div class="computer-doing-line" id="computerDoing">Not open yet</div>
+                <div class="computer-step" id="computerStep"></div>
+            </div>
         </div>
         <div class="live-body">
-            <div class="live-screen" id="liveScreen" tabindex="0">
-                <img id="liveFrame" alt="The agent's browser" style="display: none;">
-                <div class="live-note" id="liveNote">No browser open yet. Pick one above and type an address or a search to open it, or wait for an agent to open a page.</div>
-                <div class="live-banner" id="liveBanner" style="display: none;">You have control. Agents work in a background tab until you hand back.</div>
+            <div class="computer-frame">
+                <div class="live-bar">
+                    <span class="computer-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                    <button type="button" onclick="liveControl({ op: 'back' })" title="Back" aria-label="Back">◀</button>
+                    <button type="button" onclick="liveControl({ op: 'forward' })" title="Forward" aria-label="Forward">▶</button>
+                    <button type="button" onclick="liveControl({ op: 'reload' })" title="Reload" aria-label="Reload">⟳</button>
+                    <input type="text" id="liveUrl" placeholder="Address or search" autocomplete="off" onkeydown="if (event.key === 'Enter') liveControl({ op: 'navigate', url: this.value })">
+                    <button type="button" onclick="closeLiveBrowser()" title="Close this browser. A browser you've used stays open until you close it here, even when no agent is using it." aria-label="Close browser">⏻</button>
+                    <button type="button" onclick="forgetBrowserSignIns()" title="Sign-ins in the agents' browsers are kept between sessions. This deletes this agent's (cookies, local storage); Outlier's has its own button in the Outlier tab." aria-label="Forget sign-ins">🧹</button>
+                </div>
+                <div class="live-screen" id="liveScreen" tabindex="0">
+                    <img id="liveFrame" alt="The agent's browser" style="display: none;">
+                    <div class="live-note" id="liveNote">No browser open yet. Pick one above and type an address or a search to open it, or wait for an agent to open a page.</div>
+                    <div class="live-banner" id="liveBanner" style="display: none;">You have control. Agents work in a background tab until you hand back.</div>
+                </div>
             </div>
             <div class="live-side">
                 <div class="live-tabs">
@@ -598,6 +652,10 @@
                 </div>
                 <div class="live-log" id="liveLog"></div>
             </div>
+        </div>
+        <div class="computer-foot">
+            <span class="computer-live" id="computerLive"><i></i><span id="computerLiveText">Idle</span></span>
+            <button type="button" class="computer-takeover" id="liveTakeoverBtn" onclick="toggleLiveTakeover()" title="Pause the agent and use its browser yourself">✋ Take over</button>
         </div>
     </div>
 
@@ -3091,6 +3149,7 @@
             live.stop = openLiveStream(live.agentId, onLiveUpdate);
             placeCardLiveView();
             markAgentComputers();
+            renderComputerHead();
         }
 
         // Every agent's browser, open or not, plus the Outlier one when the server has it.
@@ -3118,6 +3177,7 @@
                 if (known.length && !known.includes(live.agentId) && !live.picked) return watchLiveAgent(known.includes(String(selectedAgentId)) ? String(selectedAgentId) : known[0]);
                 placeCardLiveView();
                 markAgentComputers();
+                renderComputerHead();
                 return;
             }
             // A dead link, redirect or parked page: that browser is left open and handed to the
@@ -3246,6 +3306,50 @@
             btn.textContent = live.userControl ? "↩️ Hand back" : "✋ Take over";
             btn.classList.toggle("live-control-on", live.userControl);
             renderCardLiveFrame();
+            renderComputerHead();
+        }
+
+        // What each agent is doing right now, from its tool steps, for its computer's status line.
+        const computerSteps = {};
+        function noteComputerStep(agentId, step) {
+            if (!agentId) return;
+            if (step) computerSteps[String(agentId)] = step;
+            else delete computerSteps[String(agentId)];
+            if (String(agentId) === live.agentId) renderComputerHead();
+        }
+
+        function liveAgentName(id) {
+            if (id && id === live.outlier) return "Outlier";
+            const agent = agents.find(a => String(a.id) === id);
+            return agent ? agent.name : id || "Agent";
+        }
+
+        function renderComputerHead() {
+            const id = live.agentId;
+            const agent = agents.find(a => String(a.id) === id);
+            const name = liveAgentName(id);
+            const open = live.sessions.some(s => s.agentId === id);
+            const step = computerSteps[id] || "";
+            document.getElementById("computerAvatar").innerHTML = agent ? renderAgentAvatar(agent) : `<span style="font-size: 1.3rem;">${id === live.outlier && id ? "📈" : "🖥️"}</span>`;
+            document.getElementById("computerTitle").textContent = id ? `${name}'s computer` : "Agent's computer";
+            const doing = live.userControl ? `You're using ${name}'s browser`
+                : step ? `${name} is using the browser`
+                : open ? `${name}'s browser is open`
+                : id ? `${name} hasn't opened a browser yet` : "No browser picked";
+            document.getElementById("computerDoing").textContent = doing;
+            document.getElementById("computerStep").textContent = live.userControl ? "The agent works in a background tab until you hand back." : step || (live.frame ? live.frame.url : "");
+            document.getElementById("computerStatus").classList.toggle("working", !!step && !live.userControl);
+            const badge = document.getElementById("computerLive");
+            badge.classList.toggle("on", open && !live.userControl);
+            badge.classList.toggle("you", live.userControl);
+            document.getElementById("computerLiveText").textContent = live.userControl ? "You have control" : open ? (step ? "Live: agent working" : "Live") : "Not open";
+        }
+
+        function toggleLiveDevtools() {
+            const panel = document.getElementById("livePanel");
+            const on = panel.classList.toggle("show-devtools");
+            document.getElementById("liveDevtoolsBtn").classList.toggle("on", on);
+            if (on) renderLiveLog();
         }
 
         function renderCardLiveFrame() {
@@ -3947,6 +4051,7 @@
                         logConsoleActivity(`[Tool] ${step}`);
                         const show = text => { if (ctx.onStep) ctx.onStep(progressView(text)); };
                         show(step);
+                        noteComputerStep(ctx.agentId, step);
                         const signature = `${tool.name} ${call.function?.arguments || ""}`;
                         callCounts.set(signature, (callCounts.get(signature) || 0) + 1);
                         // A long Outlier read says where it is (board screen, card, tab) while it runs.
@@ -5645,6 +5750,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (!AVATAR_STATES.includes(state)) state = "idle";
             clearTimeout(agentStateTimers[agentId]);
             agentStates[agentId] = state;
+            // The run is over: its computer stops saying what it's doing.
+            if (state === "success" || state === "idle") noteComputerStep(agentId, null);
             const agent = agents.find(a => a.id === agentId);
             document.querySelectorAll(`.agent-avatar[data-agent-id="${CSS.escape(agentId)}"]`).forEach(svg => {
                 svg.setAttribute("data-state", state);
