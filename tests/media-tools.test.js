@@ -235,7 +235,23 @@ test('generate_image makes a picture with the free service when no key is set, a
     assert.deepEqual(errors, []);
 });
 
-test('with a Gemini key, pictures come from Nano Banana, and the per-task and daily limits hold', async t => {
+test('the free image service asks for Flux, and waits once when it says to slow down', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { page, errors } = await openPlainPage(t, []);
+    const requested = [];
+    await page.route('https://image.pollinations.ai/**', route => {
+        requested.push(route.request().url());
+        if (requested.length === 1) return route.fulfill({ status: 402, contentType: 'application/json', headers: { 'access-control-allow-origin': '*', 'retry-after': '1' }, body: '{"code":"FREE_LIMIT"}' });
+        route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX, headers: { 'access-control-allow-origin': '*' } });
+    });
+    const made = await page.evaluate(() => makeImageWithPollinations('A lighthouse at dusk', '1:1'));
+    assert.equal(requested.length, 2);
+    assert.match(requested[1], /model=flux&width=1024&height=1024/);
+    assert.match(made.url, /^data:image\/png;base64,/);
+    assert.deepEqual(errors, []);
+});
+
+test('a Gemini key alone keeps pictures free; picked in Settings, pictures come from Nano Banana, and the per-task and daily limits hold', async t => {
     if (launched.skip) return t.skip(launched.skip);
     const { page, errors } = await openPlainPage(t, []);
     const bodies = [];
@@ -246,6 +262,9 @@ test('with a Gemini key, pictures come from Nano Banana, and the per-task and da
     });
     const result = await page.evaluate(async () => {
         geminiKey = 'AIzaTestKeyForCoDevMediaTools123';
+        // A Gemini key alone keeps pictures free: Gemini makes them only when picked.
+        const automatic = imageService();
+        imageProvider = 'gemini';
         const ctx = { attachedImages: ['data:image/jpeg;base64,AAAA'] };
         const tools = await buildMediaTools(ctx);
         const tool = tools.find(t => t.name === 'generate_image');
@@ -254,8 +273,9 @@ test('with a Gemini key, pictures come from Nano Banana, and the per-task and da
         for (let i = 0; i < 4; i++) outs.push(await tool.run({ prompt: `Picture ${i}` }, ctx));
         dailyImageLimit = 4;
         const daily = await tool.run({ prompt: 'One more' }, { });
-        return { description: tool.description, outs, made: ctx.generatedImages.length, daily };
+        return { automatic, description: tool.description, outs, made: ctx.generatedImages.length, daily };
     });
+    assert.equal(result.automatic, 'free');
     assert.match(result.description, /Gemini \(Nano Banana\)/);
     assert.match(result.outs[0], /Made the picture/);
     assert.match(result.outs[4], /4 pictures is the limit for one task/);

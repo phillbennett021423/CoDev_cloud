@@ -1042,7 +1042,7 @@
 
             <details class="settings-extra" id="mediaSettings">
                 <summary>🖼️ Images, video &amp; big files</summary>
-                <div style="font-size: 0.8rem; color: var(--text-muted);">Long PDFs, spreadsheets (CSV, XLSX) and text files work with no key. One free Gemini key adds whole videos with sound, audio files, scanned PDFs and better pictures.</div>
+                <div style="font-size: 0.8rem; color: var(--text-muted);">Long PDFs, spreadsheets (CSV, XLSX) and text files work with no key. One free Gemini key adds whole videos with sound, audio files and scanned PDFs. Pictures are free with no key; Gemini and OpenRouter pictures cost money (Gemini's free tier has no image models).</div>
                 <a href="https://aistudio.google.com/apikey" target="_blank" style="font-size: 0.85rem; color: var(--accent);">🔑 Get a free Gemini API key (Google AI Studio)</a>
                 <div class="form-group">
                     <label>Gemini API key (optional, starts with AIza)</label>
@@ -1051,10 +1051,9 @@
                 <div class="form-group">
                     <label>Make pictures with</label>
                     <select id="modalImageProvider" style="width: 100%;">
-                        <option value="auto">Automatic: Gemini if its key is set, then OpenRouter, else the free service</option>
-                        <option value="gemini">Gemini (Nano Banana)</option>
+                        <option value="auto">Free: Pollinations (Flux), no key (best free choice, can't edit pictures)</option>
+                        <option value="gemini">Gemini Nano Banana (paid: needs billing on your Gemini key)</option>
                         <option value="openrouter">OpenRouter (uses your OpenRouter credit)</option>
-                        <option value="free">Pollinations (free, no key, can't edit pictures)</option>
                         <option value="off">Off</option>
                     </select>
                 </div>
