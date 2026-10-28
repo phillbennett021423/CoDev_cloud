@@ -187,14 +187,15 @@ test('a file changed in the sandbox after review needs a new review', async () =
     }
 });
 
-test('without Docker, run_command is withheld and exec says why', async () => {
-    const { sandbox, call, cleanup } = setup({ 'a.txt': 'a\n' }, { containerOptions: { dockerPath: 'docker-not-installed-here' } });
+test('without Docker and with host commands off, run_command is withheld and exec says why', async () => {
+    const { sandbox, call, cleanup } = setup({ 'a.txt': 'a\n' }, { containerOptions: { dockerPath: 'docker-not-installed-here' }, hostCommands: false });
     try {
         const tools = (await sandbox.handleMcp({ jsonrpc: '2.0', id: 1, method: 'tools/list' })).result.tools.map(t => t.name);
         assert.ok(!tools.includes('run_command'));
         assert.ok(tools.includes('write_file'));
         const status = (await sandbox.handleRequest('GET', '/agent/status')).body;
         assert.strictEqual(status.docker.available, false);
+        assert.strictEqual(status.hostCommands, false);
         assert.match(status.docker.error, /isn't installed/);
         const box = (await sandbox.handleRequest('POST', '/agent/sandboxes', {}, { agentId: 'a1' })).body;
         assert.strictEqual(box.container.running, false);
@@ -202,6 +203,44 @@ test('without Docker, run_command is withheld and exec says why', async () => {
         assert.strictEqual(exec.status, 503);
         assert.match((await call('run_command', { command: 'echo hi' })).content[0].text, /Unknown tool|Nothing was run/);
     } finally {
+        await cleanup();
+    }
+});
+
+test('without Docker, run_command runs on this computer in the staging copy, only when the page allowed it', async () => {
+    const { project, sandbox, call, cleanup } = setup({ 'a.txt': 'a\n' }, { containerOptions: { dockerPath: 'docker-not-installed-here' } });
+    const before = process.env.CODEV_TEST_API_KEY;
+    process.env.CODEV_TEST_API_KEY = 'sk-secret-value';
+    try {
+        const listed = (await sandbox.handleMcp({ jsonrpc: '2.0', id: 1, method: 'tools/list' })).result.tools;
+        const run = listed.find(t => t.name === 'run_command');
+        assert.ok(run, 'offered without Docker');
+        assert.match(run.description, /on the user's computer, in your sandbox copy/);
+        assert.strictEqual((await sandbox.handleRequest('GET', '/agent/status')).body.hostCommands, true);
+
+        // An agent can't allow itself: without the page's mark nothing runs.
+        const refused = await call('run_command', { command: 'echo hi > made.txt', _approved_by_user: true, hostAllowed: true });
+        assert.strictEqual(refused.isError, true);
+        assert.match(refused.content[0].text, /did not approve/);
+
+        const allowed = async command => (await sandbox.handleMcp({ jsonrpc: '2.0', id: 2, method: 'tools/call',
+            params: { name: 'run_command', arguments: { command }, _meta: { 'codev/agent': 'a1', 'codev/workspace': 'ws1', 'codev/hostAllowed': true } } })).result;
+        const ran = await allowed(process.platform === 'win32' ? 'echo hi> made.txt && type a.txt' : 'echo hi > made.txt && cat a.txt');
+        assert.strictEqual(ran.isError, false);
+        assert.match(ran.content[0].text, /^Exit code: 0/);
+        assert.match(ran.content[0].text, /--- stdout ---\na/);
+        // The command ran in the staging copy: the real project is untouched, the change is staged.
+        assert.strictEqual(fs.existsSync(path.join(project, 'made.txt')), false);
+        assert.match((await call('sandbox_diff', {})).content[0].text, /made\.txt/);
+        // CoDev's own keys never reach the command.
+        const env = await allowed(process.platform === 'win32' ? 'set' : 'env');
+        assert.doesNotMatch(env.content[0].text, /sk-secret-value/);
+        const failed = await allowed('exit 3');
+        assert.match(failed.content[0].text, /^Exit code: 3/);
+        const outside = await sandbox.callTool('run_command', { command: 'echo x', cwd: '../..' }, { agentId: 'a1', workspace: 'ws1', hostAllowed: true });
+        assert.match(outside.content[0].text, /outside the project/);
+    } finally {
+        if (before === undefined) delete process.env.CODEV_TEST_API_KEY; else process.env.CODEV_TEST_API_KEY = before;
         await cleanup();
     }
 });

@@ -13,8 +13,9 @@
 //  exposed as a tool) writes to the real disk, and only files whose checks
 //  didn't fail.
 //
-// Without Docker the file tools still work in the staging copy, and
-// run_command is left out of the tool list; status() says why.
+// Without Docker, run_command runs on this computer in the staging copy instead
+// (host-runner.js), and only commands CoDev's page marked as allowed: a plain
+// test, build or run step, or one the user approved.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -22,6 +23,7 @@ const { createContainerManager, WORKDIR } = require('./container-manager');
 const { createStaging, StagingError } = require('./staging');
 const { unifiedDiff, diffStats } = require('./diff');
 const { validateFile } = require('./validate');
+const { runOnHost } = require('./host-runner');
 
 const MAX_READ_CHARS = 100000;
 const MAX_LISTED_FILES = 500;
@@ -32,12 +34,15 @@ const MAX_DIFF_CHARS_FOR_AGENT = 30000;
 const MAX_DIFF_CHARS_PER_FILE = 400000;
 const META_AGENT = 'codev/agent';
 const META_WORKSPACE = 'codev/workspace';
+// Set by CoDev's page on a run_command it allowed to run outside a container.
+const META_HOST_ALLOWED = 'codev/hostAllowed';
 
 class ToolError extends Error {}
 
 // getProjectDir() -> the real project folder (or ''). stagingRoot: where scratch
 // copies go (default: the OS temp folder).
-function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOptions, stagingLimits } = {}) {
+// hostCommands: without Docker, offer run_command on this computer (default on).
+function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOptions, stagingLimits, hostCommands = true } = {}) {
     const containers = createContainerManager(containerOptions);
     const staging = createStaging({ getProjectDir, root: stagingRoot, limits: stagingLimits });
     const sandboxes = new Map(); // id -> { id, agents, task, createdAt }; one staging copy each
@@ -154,19 +159,24 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
         return `Deleted ${rel} in the sandbox (staged for the user's review).`;
     }
 
+    // ctx.hostAllowed: set by CoDev's page (never by the agent's own arguments) once the
+    // user approved this command or it is a plain test, build or run step.
     async function runCommand({ command, cwd, timeout_seconds: timeoutSeconds } = {}, ctx) {
         if (typeof command !== 'string' || !command.trim()) throw new ToolError("run_command needs a 'command' string");
         const ws = workspaceFor(ctx);
         if (ws.lazy) throw new ToolError(`Nothing was run: ${largeProjectReason() || 'the project is too big to copy into a container.'}`);
         const docker = await containers.detect();
-        if (!docker.available) throw new ToolError(`Nothing was run: ${docker.reason}`);
+        if (!docker.available && !hostCommands) throw new ToolError(`Nothing was run: ${docker.reason}`);
+        if (!docker.available && ctx.hostAllowed !== true) throw new ToolError('Nothing was run: the user did not approve this command.');
         let result;
         try {
-            result = await containers.exec(ctx.agentId, ctx.workspace, ws.work, command, { cwd, timeoutSeconds });
+            result = docker.available
+                ? await containers.exec(ctx.agentId, ctx.workspace, ws.work, command, { cwd, timeoutSeconds })
+                : await runOnHost(ws.work, command, { cwd, timeoutSeconds });
         } catch (err) {
             throw new ToolError(err.message);
         }
-        log(`[Sandbox] ${ctx.agentId}: ${command.slice(0, 120)} -> exit ${result.exitCode}`);
+        log(`[Sandbox] ${ctx.agentId}: ${command.slice(0, 120)} -> exit ${result.exitCode}${docker.available ? '' : ' (on this computer)'}`);
         return `Exit code: ${result.exitCode}${result.timedOut ? ' (timed out)' : ''}\n--- stdout ---\n${result.stdout.slice(-MAX_OUTPUT_CHARS)}\n--- stderr ---\n${result.stderr.slice(-MAX_OUTPUT_CHARS)}`;
     }
 
@@ -232,18 +242,22 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
           inputSchema: { type: 'object', properties: { summary: { type: 'string', description: 'What you changed and why, in a few lines.' } }, required: ['summary'] } }
     ];
 
+    const HOST_RUN_DESCRIPTION = `Run a shell command (${process.platform === 'win32' ? 'cmd.exe on Windows' : 'sh'}) on the user's computer, in your sandbox copy of the project (not their real folder), to run code, tests, builds and scripts. `
+        + 'Docker isn\'t running, so there is no container around it: the user is asked to approve any command that isn\'t a plain test, build or run step. File changes it makes stay in the sandbox copy until the user approves the diff.';
+
     async function listTools() {
         if (!enabled || !getProjectDir()) return [];
         const docker = await containers.detect();
-        const canRun = docker.available && !largeProjectReason();
-        return TOOLS.filter(t => !t.needsDocker || canRun).map(({ run, needsDocker, ...t }) => t);
+        const canRun = (docker.available || hostCommands) && !largeProjectReason();
+        return TOOLS.filter(t => !t.needsDocker || canRun).map(({ run, needsDocker, ...t }) => (
+            t.name === 'run_command' && !docker.available ? { ...t, description: HOST_RUN_DESCRIPTION, annotations: { ...t.annotations, destructiveHint: true } } : t));
     }
 
     // MCP CallToolResult for one tool call. ctx = { agentId, workspace }.
     async function callTool(name, args, ctx = {}) {
         const tool = TOOLS.find(t => t.name === name);
         if (!tool || !enabled) return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
-        const context = { agentId: cleanId(ctx.agentId), workspace: cleanId(ctx.workspace || ctx.agentId) };
+        const context = { agentId: cleanId(ctx.agentId), workspace: cleanId(ctx.workspace || ctx.agentId), hostAllowed: ctx.hostAllowed === true || ctx.meta?.[META_HOST_ALLOWED] === true };
         try {
             const text = await tool.run(args || {}, context);
             return { content: [{ type: 'text', text }], isError: false };
@@ -271,7 +285,7 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
         if (msg.method === 'tools/call') {
             const meta = msg.params?._meta || {};
             if (!TOOLS.some(t => t.name === msg.params?.name)) return { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown tool: ${msg.params?.name}` } };
-            return ok(await callTool(msg.params.name, msg.params.arguments, { agentId: meta[META_AGENT] || meta['codev/agentId'], workspace: meta[META_WORKSPACE] }));
+            return ok(await callTool(msg.params.name, msg.params.arguments, { agentId: meta[META_AGENT] || meta['codev/agentId'], workspace: meta[META_WORKSPACE], hostAllowed: meta[META_HOST_ALLOWED] === true }));
         }
         return { jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${msg.method}` } };
     }
@@ -388,6 +402,8 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
             enabled,
             workspace: getProjectDir() || null,
             docker: docker.available ? { available: true, version: docker.version } : { available: false, error: docker.reason },
+            // Without Docker, run_command runs on this computer (with the user's approval).
+            hostCommands: !docker.available && hostCommands && !largeProjectReason(),
             container: containers.getConfig(),
             // Set when the project is too big to copy: files are staged as agents change them, and commands don't run.
             largeProject: largeProjectReason(),

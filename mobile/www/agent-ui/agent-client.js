@@ -188,11 +188,13 @@
             },
             // MCP tools/call. The agent and sandbox go in _meta, under both names the
             // sandbox and browser services read.
-            callTool: async (name, args, { agentId, sandboxId } = {}) => {
+            // hostAllowed: the user let this run_command run on their computer (no Docker).
+            callTool: async (name, args, { agentId, sandboxId, hostAllowed } = {}) => {
                 await initialize();
                 const meta = {};
                 if (agentId) { meta["codev/agent"] = agentId; meta["codev/agentId"] = agentId; }
                 if (sandboxId) meta["codev/workspace"] = sandboxId;
+                if (hostAllowed === true) meta["codev/hostAllowed"] = true;
                 return rpc("tools/call", { name, arguments: args || {}, _meta: meta });
             }
         };
