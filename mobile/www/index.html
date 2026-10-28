@@ -529,6 +529,8 @@
         @keyframes computerPulse { 50% { opacity: 0.35; } }
         .computer-takeover { background: var(--accent); color: var(--bg-dark); border: none; border-radius: 999px; padding: 8px 16px; font-weight: 700; font-size: 0.82rem; cursor: pointer; }
         .computer-takeover.live-control-on { background: var(--warning); color: #111; }
+        /* The status line and the footer already say who has control. */
+        .live-panel .live-banner { display: none !important; }
         .live-panel .live-side { display: none; }
         .live-panel.show-devtools .live-side { display: flex; }
         .live-panel .live-body { flex-direction: column; }
@@ -3424,6 +3426,7 @@
                         : await postJson("/browser/live/control", { agentId, control });
                 } catch (err) { reply = { error: err.message }; }
                 if (reply?.error && control.op !== "move") logConsoleActivity(`[Live] ${reply.error}`);
+                if (reply?.error && (control.op === "open" || control.op === "navigate")) showToast(`The browser didn't open: ${reply.error}`);
             });
             return live.sending;
         }
@@ -5886,6 +5889,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
         // The computer icon: the agent's own browser, docked beside the chat.
         let liveViewAvailable = false;
+        const COMPUTER_START_PAGE = "https://duckduckgo.com/";
         function openAgentComputer() {
             const id = String(selectedAgentId);
             const panel = document.getElementById("livePanel");
@@ -5900,6 +5904,13 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             // The computer takes the side panels' room, so the chat keeps a usable width.
             if (!isMobileLayout()) { isMenuCollapsed = isAgentCollapsed = isEditorCollapsed = true; updateWorkspaceGrid(); }
             toggleLiveView(true);
+            // Like Manus, the browser is yours to use with no task running: one that isn't open
+            // yet starts on a search page. Its sign-ins stay, and the agent picks it up from
+            // there once you hand it back.
+            if (!live.sessions.some(s => s.agentId === id)) {
+                liveControl({ op: "open", url: COMPUTER_START_PAGE });
+                setTimeout(() => document.getElementById("liveUrl").focus(), 50);
+            }
         }
 
         let toastTimer = null;
