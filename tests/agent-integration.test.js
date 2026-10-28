@@ -18,7 +18,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const { spawn, execFile } = require('child_process');
-const { launchBrowser, openPage, sendPrompt, waitForReview, waitForChat } = require('./helpers/page-driver');
+const { launchBrowser, openPage, sendPrompt, waitForReview, waitForChat, answerApprovals } = require('./helpers/page-driver');
 
 const ROOT = path.join(__dirname, '..');
 const SERVER_TIMEOUT_MS = 60000;
@@ -255,6 +255,8 @@ test('a coding prompt through the page is staged, reviewed and saved', async t =
         'Built the greeter page in site/.'
     ];
     const { page, errors } = await openPage(launched.browser, ctx.server.url, { steps });
+    // Without Docker, "ls site" runs on this computer only with the user's OK: declined here.
+    await answerApprovals(page, () => false);
     await sendPrompt(page, 'Build a small greeter page in site/ that says hello to the name typed in');
     const rows = await waitForReview(page, 120000);
     const offered = (await page.evaluate(() => window.__modelCalls))[0].tools;
@@ -343,6 +345,7 @@ test("the agent's card shows its browser live, and the user can drive it from th
         steps: [[{ name: 'browser_navigate', arguments: { url } }], 'Opened the page.']
     });
     page.on('dialog', dialog => dialog.accept());
+    await answerApprovals(page);
     const agentId = await page.evaluate(() => String(selectedAgentId));
     t.after(() => ctx.tool('browser_close', {}, agentId).catch(() => {}));
     await sendPrompt(page, 'Open the test page in your browser');

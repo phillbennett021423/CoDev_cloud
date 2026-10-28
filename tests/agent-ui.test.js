@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createMockBackend } = require('./fixtures/mock-agent-backend');
-const { launchBrowser, openPage, sendPrompt, waitForReview, waitForChat } = require('./helpers/page-driver');
+const { launchBrowser, openPage, sendPrompt, waitForReview, waitForChat, answerApprovals } = require('./helpers/page-driver');
 
 const CODING_STEPS = [
     [{ name: 'list_files' }, { name: 'read_file', arguments: { path: 'README.md' } }],
@@ -313,10 +313,9 @@ test('in sandbox mode, MCP servers that write or run on this computer are kept o
         mcpServers: { helper: { url: 'http://127.0.0.1:8787/mcp', type: 'http' } },
         steps: [[{ name: 'helper__lookup' }], [{ name: 'helper__deploy' }], 'Done looking.']
     });
-    // Turn "run without asking" on to show the sandbox asks anyway; decline the dialog.
+    // Turn "run without asking" on to show the sandbox asks anyway; decline the card.
     await page.evaluate(() => { toolsAutoRun = true; });
-    const dialogs = [];
-    page.on('dialog', dialog => { dialogs.push(dialog.message()); dialog.dismiss(); });
+    const dialogs = await answerApprovals(page, () => false);
     await sendPrompt(page, 'Look something up');
     await waitForChat(page, /Done looking\./);
     const offered = (await page.evaluate(() => window.__modelCalls))[0].tools;
@@ -335,6 +334,7 @@ test('agents start as a blank slate, and a new task clears what the old one left
     t.after(() => backend.close());
     const { page, errors } = await openPage(launched.browser, url, { steps: ['Here is the 4-leg parlay breakdown.'] });
     page.on('dialog', dialog => dialog.accept());
+    await answerApprovals(page);
 
     // Built-in and newly created agents: no memory, no shared links, nothing project-specific.
     const defaults = await page.evaluate(() => {
@@ -437,6 +437,7 @@ test('an Outlier prompt goes straight to the Outlier scan, and says how to get i
         steps: [[{ name: 'outlier_scan_board', arguments: { sport: 'NBA', game: '8pm' } }], 'Here is your 4-leg ticket.']
     });
     page.on('dialog', dialog => dialog.accept());
+    await answerApprovals(page);
     await sendPrompt(page, 'Go to Outlier and build me a 4-leg NBA ticket for the 8pm game');
     await waitForChat(page, /Here is your 4-leg ticket\./);
     const calls = await page.evaluate(() => window.__modelCalls);
@@ -514,6 +515,7 @@ test('read_screenshots reads the whole 📸 folder, counts a leg on two screensh
         'Same legs as before.'
     ] });
     page.on('dialog', dialog => dialog.accept());
+    await answerApprovals(page);
     // No screenshots picked yet: the tool says how to pick them.
     assert.match(await page.evaluate(() => readScreenshotsTool({})), /click 📸/);
     await page.evaluate(async () => {
@@ -561,6 +563,7 @@ test('📎 takes more than 3 screenshots: the vision model reads them 3 at a tim
         'Here is the slip.'
     ] });
     page.on('dialog', dialog => dialog.accept());
+    await answerApprovals(page);
     const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
     await page.setInputFiles('#attachmentInput', [1, 2, 3, 4, 5].map(n => ({ name: `IMG_28${n}.PNG`, mimeType: 'image/png', buffer: png })));
     await page.waitForFunction(() => pendingAttachments.length === 5 && pendingAttachments.every(a => !a.processing));
@@ -595,6 +598,7 @@ test('a folder named by its full path is read without a picker or an upload, and
         'Read them again.'
     ] });
     page.on('dialog', dialog => dialog.accept());
+    await answerApprovals(page);
     await page.exposeFunction('__imageFolder', req => handleImageFolder(req));
     await page.evaluate(() => { localStorage.removeItem(SCREENSHOT_NOTES_KEY); window.imageFolderRequest = req => window.__imageFolder(req); });
     await sendPrompt(page, `Look in ${dir} and research the props`);
@@ -611,5 +615,74 @@ test('a folder named by its full path is read without a picker or an upload, and
     calls = await page.evaluate(() => window.__modelCalls);
     assert.equal(calls.length, 6, 'no new vision requests');
     assert.match(calls[5].messages.find(m => m.role === 'tool' && /5 from earlier reads/.test(m.content)).content, /LeBron James/);
+    assert.deepEqual(errors, []);
+});
+
+test('while an agent works and waits for an OK, the user can still switch chats, scroll old messages and open settings', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const workspace = makeWorkspace();
+    const backend = createMockBackend({ workspace });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const { page, errors } = await openPage(launched.browser, url, {
+        steps: [[{ name: 'write_workspace_file', arguments: { name: 'notes.txt', content: 'hi' } }], 'All written.']
+    });
+    // No native dialog may open: one would freeze the whole window until answered.
+    const nativeDialogs = [];
+    page.on('dialog', dialog => { nativeDialogs.push(dialog.message()); dialog.dismiss(); });
+    await page.uncheck('#isSandboxCheckbox');
+    // An older chat with plenty to scroll through.
+    const oldChat = await page.evaluate(() => {
+        toolsAutoRun = false;
+        const session = newChatSession('chat_old', 'Last week', false, 'Older chat.');
+        for (let i = 0; i < 60; i++) session.messages.push({ sender: i % 2 ? '🤖 Architect' : '👤 You', text: `Old message ${i}\n`.repeat(3) });
+        chatSessions.push(session);
+        renderChatList();
+        return session.id;
+    });
+    const runChat = await page.evaluate(() => activeChatId);
+
+    await sendPrompt(page, 'Write my notes file');
+    await page.waitForSelector('.approval-card');
+    assert.match(await page.textContent('.approval-card'), /wants to write notes\.txt/);
+    assert.notEqual(await page.evaluate(() => document.activeElement?.className || ''), 'approval-allow', "the card doesn't take the keyboard");
+
+    // A step update redraws only the working message, not the chat around it.
+    const kept = await page.evaluate(() => {
+        const session = chatSessions.find(s => s.id === activeChatId);
+        const first = document.querySelector('#chatFeed > .message');
+        const working = session.messages.find(m => /\(Working\.\.\.\)$/.test(m.sender));
+        working.text = '▶ Now: still writing';
+        refreshChatMessage(session, working);
+        return { same: first.isConnected, text: document.getElementById('chatFeed').textContent.includes('still writing') };
+    });
+    assert.deepEqual(kept, { same: true, text: true });
+
+    // Open the menu and switch to the old chat by clicking it.
+    await page.click('#railMenuBtn');
+    await page.click(`.chat-item-info >> text=Last week`);
+    assert.equal(await page.evaluate(() => activeChatId), oldChat, 'switched chats mid-run');
+    // Scroll up through its old messages with the mouse wheel.
+    await page.evaluate(() => jumpChatToLatest());
+    const before = await page.evaluate(() => document.getElementById('chatFeed').scrollTop);
+    await page.hover('#chatFeed');
+    await page.mouse.wheel(0, -600);
+    await page.waitForFunction(top => document.getElementById('chatFeed').scrollTop < top, before, { timeout: 3000 });
+    // Settings open and close.
+    await page.evaluate(() => openSettingsModal());
+    assert.equal(await page.evaluate(() => document.getElementById('settingsModal').style.display), 'flex');
+    await page.evaluate(() => closeSettingsModal());
+    // The page answers at once the whole time.
+    const started = Date.now();
+    await page.evaluate(() => 1);
+    assert.ok(Date.now() - started < 1000, 'the page answers while the agent waits');
+    assert.equal(await page.locator('.approval-card').count(), 1, 'the question is still waiting');
+
+    // Allowing it lets the agent finish, in the chat it was asked in.
+    await page.click('.approval-allow');
+    await page.waitForFunction(id => chatSessions.find(s => s.id === id).messages.some(m => m.text === 'All written.'), runChat, { timeout: 15000 });
+    assert.equal(await page.evaluate(() => activeChatId), oldChat, 'the user stays where they went');
+    assert.equal(await page.locator('.approval-card').count(), 0);
+    assert.deepEqual(nativeDialogs, []);
     assert.deepEqual(errors, []);
 });

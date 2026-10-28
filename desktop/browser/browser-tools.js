@@ -188,8 +188,9 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
             const dir = path.join(screenshotDir, ctx.agentId.replace(/[^A-Za-z0-9_-]/g, '_'));
             file = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}.png`);
         }
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, image);
+        // Written asynchronously: this runs in the app's main process, beside the window's input.
+        await fs.promises.mkdir(path.dirname(file), { recursive: true });
+        await fs.promises.writeFile(file, image);
         return { content: [
             { type: 'image', data: image.toString('base64'), mimeType: 'image/png' },
             { type: 'text', text: `Screenshot of ${selector || (fullPage ? 'the whole page' : 'the visible page')} at ${page.url()}, saved to ${file}.` }
