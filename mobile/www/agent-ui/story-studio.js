@@ -31,6 +31,8 @@
     const MAX_FIELD_CHARS = 6000;
     const MAX_SUMMARY_CHARS = 400;
     const MAX_LINES = 200;
+    const MAX_LINKS = 40;
+    const MAX_BEATS = 40;
     const MAX_SCENE_LINES = 60;        // lines in one scene
     const MAX_SCENE_CALLS = 30;        // model calls per scene in one sitting, to keep its cost down
     const MAX_SCENE_FRAMES = 4;        // storyboard pictures per scene
@@ -58,8 +60,16 @@
             ["description", "Description"], ["effect", "Effect and stats"], ["where", "Where to find it"]] },
         dialogue: { label: "Dialogue", plural: "Dialogue", icon: "💬", lines: true, fields: [["scene", "When it plays"]] },
         scene: { label: "Scene", plural: "Scenes", icon: "🎬", lines: true, fields: [
-            ["location", "Where"], ["characters", "Who is in it"], ["goal", "Goal or conflict"]] }
+            ["location", "Where"], ["characters", "Who is in it"], ["goal", "Goal or conflict"]] },
+        arc: { label: "Story arc", plural: "Story arcs", icon: "📈", beats: true, fields: [
+            ["characters", "Whose arc"], ["goal", "Where it starts and where it ends"], ["stakes", "What's at stake"]] }
     };
+
+    // 🕸 Relationship types for the web, with their colors.
+    const LINK_TYPES = [["ally", "Ally", "#10b981"], ["enemy", "Enemy", "#ef4444"], ["rival", "Rival", "#f59e0b"], ["family", "Family", "#a855f7"],
+        ["love", "Love", "#ec4899"], ["mentor", "Mentor", "#38bdf8"], ["member", "Member of", "#94a3b8"], ["other", "Other", "#64748b"]];
+    // 📈 Where a beat of an arc stands.
+    const BEAT_STATUS = [["idea", "💡 Idea"], ["written", "✍️ Written"], ["in_game", "🎮 In the game"]];
     const KIND_NAMES = Object.keys(KINDS);
 
     // 🎭 Mood faces: one portrait per mood, picked by a line's emotion word.
@@ -215,7 +225,10 @@
                 p.entries.push(entry);
             }
             if (kind) entry.kind = kind;
-            if (name) entry.name = name;
+            if (name && name !== entry.name) {
+                entry.name = name;
+                p.entries.forEach(e => (e.links || []).forEach(l => { if (l.to === entry.id) l.name = name; }));
+            }
             if (data.summary != null) entry.summary = clean(data.summary, MAX_SUMMARY_CHARS);
             if (data.fields && typeof data.fields === "object") {
                 for (const [k, v] of Object.entries(data.fields)) {
@@ -226,6 +239,25 @@
             }
             if (Array.isArray(data.tags)) entry.tags = data.tags.map(t => clean(t, 40)).filter(Boolean).slice(0, 20);
             if (Array.isArray(data.lines)) entry.lines = normalizeLines(data.lines);
+            if (Array.isArray(data.links)) {
+                // Each link points at another entry by id (or by name, from an agent).
+                const seen = new Set();
+                entry.links = data.links.map(l => {
+                    const target = l && (p.entries.find(e => e.id === l.to) || p.entries.find(e => sameName(e.name, l.to || l.name)));
+                    if (!target || target === entry) return null;
+                    const type = LINK_TYPES.some(([t]) => t === l.type) ? l.type : "other";
+                    const key = `${target.id}:${type}`;
+                    if (seen.has(key)) return null;
+                    seen.add(key);
+                    return { to: target.id, name: target.name, type, ...(l.note ? { note: clean(l.note, 200) } : {}) };
+                }).filter(Boolean).slice(0, MAX_LINKS);
+                if (!entry.links.length) delete entry.links;
+            }
+            if (Array.isArray(data.beats)) {
+                entry.beats = data.beats.slice(0, MAX_BEATS).map(b => ({ text: clean(b && b.text, 600), status: BEAT_STATUS.some(([k]) => k === (b && b.status)) ? b.status : "idea",
+                    ...(b && b.scene ? { scene: clip(b.scene, 80) } : {}) })).filter(b => b.text);
+            }
+            if (data.order !== undefined) entry.order = Number.isFinite(Number(data.order)) ? Number(data.order) : undefined;
             if (typeof data.locked === "boolean") entry.locked = data.locked || undefined;
             if (data.art !== undefined) entry.art = data.art && isPicture(data.art.thumb) ? { id: clip(data.art.id, 80), thumb: String(data.art.thumb) } : undefined;
             if (data.voice !== undefined) entry.voice = normalizeVoice(data.voice);
@@ -248,6 +280,7 @@
             const entry = findEntry(p, nameOrId);
             if (!entry || entry.locked) return null;
             p.entries = p.entries.filter(e => e !== entry);
+            p.entries.forEach(e => { if (e.links) { e.links = e.links.filter(l => l.to !== entry.id); if (!e.links.length) delete e.links; } });
             p.updatedAt = now();
             save();
             return entry;
@@ -299,6 +332,8 @@
         return `${l.speaker || "?"}${l.emotion ? ` (${l.emotion})` : ""}: ${l.text}`;
     }
 
+    function linkLabel(type) { return (LINK_TYPES.find(([t]) => t === type) || LINK_TYPES[LINK_TYPES.length - 1])[1]; }
+
     function describeEntry(entry) {
         const kind = KINDS[entry.kind] || KINDS.lore;
         const out = [`${kind.label}: ${entry.name}${entry.locked ? " (locked: the user keeps it exactly as it is)" : ""}`];
@@ -306,6 +341,8 @@
         const order = kind.fields.map(([k]) => k);
         const keys = Object.keys(entry.fields || {}).sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
         for (const k of keys) out.push(`${fieldLabel(entry.kind, k)}: ${entry.fields[k]}`);
+        if (entry.links && entry.links.length) out.push(`Relationships: ${entry.links.map(l => `${linkLabel(l.type)} of ${l.name}${l.note ? ` (${l.note})` : ""}`).join("; ")}`);
+        if (entry.beats && entry.beats.length) out.push("Beats:", ...entry.beats.map((b, i) => `${i + 1}. [${b.status}] ${b.text}`));
         if (entry.tags && entry.tags.length) out.push(`Tags: ${entry.tags.join(", ")}`);
         if (entry.lines && entry.lines.length) {
             out.push("Lines:");
@@ -355,7 +392,7 @@
 
     // ---------- Exports ----------
 
-    const GD_CONSTANTS = { character: "CHARACTERS", faction: "FACTIONS", ability: "ABILITIES", location: "LOCATIONS", event: "TIMELINE", lore: "LORE", quest: "QUESTS", item: "ITEMS", dialogue: "DIALOGUE", scene: "SCENES" };
+    const GD_CONSTANTS = { character: "CHARACTERS", faction: "FACTIONS", ability: "ABILITIES", location: "LOCATIONS", event: "TIMELINE", lore: "LORE", quest: "QUESTS", item: "ITEMS", dialogue: "DIALOGUE", scene: "SCENES", arc: "ARCS" };
 
     // One entry as plain data: id, name, summary, its fields at the top level, tags, lines.
     function entryData(entry, ids) {
@@ -363,6 +400,16 @@
         if (entry.summary) data.summary = entry.summary;
         Object.assign(data, entry.fields || {});
         if (entry.tags && entry.tags.length) data.tags = entry.tags.slice();
+        if (entry.links && entry.links.length) {
+            const byId = new Map();
+            ids.forEach((id, e) => byId.set(e.id, { id, kind: e.kind }));
+            data.links = entry.links.filter(l => byId.has(l.to)).map(l => ({ to: byId.get(l.to).id, to_kind: byId.get(l.to).kind, type: l.type, ...(l.note ? { note: l.note } : {}) }));
+        }
+        if (entry.beats && entry.beats.length) data.beats = entry.beats.map(b => {
+            const scene = b.scene && [...ids.keys()].find(e => e.id === b.scene);
+            return { text: b.text, status: b.status, ...(scene ? { scene: ids.get(scene) } : {}) };
+        });
+        if (entry.order !== undefined) data.order = entry.order;
         if (entry.kind === "dialogue" || entry.kind === "scene") {
             const byName = new Map();
             ids.forEach((id, e) => { if (e.kind === "character") byName.set(e.name.toLowerCase(), id); });
@@ -395,11 +442,16 @@
         return ids;
     }
 
+    // Timeline events in story order: by their order number, then as they were added.
+    function timelineOrder(list) {
+        return list.map((e, i) => ({ e, i })).sort((a, b) => (a.e.order ?? 1e9) - (b.e.order ?? 1e9) || a.i - b.i).map(x => x.e);
+    }
+
     function byKind(p) {
         const groups = {};
         for (const kind of KIND_NAMES) {
             const list = p.entries.filter(e => e.kind === kind);
-            if (list.length) groups[kind] = list;
+            if (list.length) groups[kind] = kind === "event" ? timelineOrder(list) : list;
         }
         return groups;
     }
@@ -622,7 +674,7 @@
                 name: "studio_save",
                 description: `Add or update an entry in a game project's story bible in CoDev's Story Studio. Kinds: ${kindList}. Saving an existing name updates it, and only the fields you pass change. `
                     + "Character fields: role, appearance, personality, backstory, powers, speaking_style, goals, relationships. Faction: purpose, members, territory, history. Ability: owner, effect, limits, gameplay. Place: description, history, inhabitants. "
-                    + "Timeline event: when, what, who, consequences. Lore: details. Quest: giver, objective, steps, reward. Item: description, effect, where. Dialogue: scene, plus lines. Scene (a cutscene script): location, characters (comma-separated names), goal, plus lines; lines can have type \"direction\" or \"narration\". Other field names are kept too. "
+                    + "Timeline event: when, what, who, consequences. Lore: details. Quest: giver, objective, steps, reward. Item: description, effect, where. Dialogue: scene, plus lines. Scene (a cutscene script): location, characters (comma-separated names), goal, plus lines; lines can have type \"direction\" or \"narration\". Story arc: characters, goal, stakes, plus beats. Other field names are kept too. "
                     + "Save everything you create for the user's game here (characters, scripts, dialogue), so it's remembered and can be exported to their game. If the project doesn't exist yet, it is created.",
                 inputSchema: { type: "object", properties: {
                     project: { type: "string", description: "The project's name. Leave it out for the one open in Story Studio." },
@@ -631,6 +683,11 @@
                     summary: { type: "string", description: "One or two sentences." },
                     fields: { type: "object", description: "Field name to text, like {\"personality\": \"...\", \"powers\": \"...\"}.", additionalProperties: { type: "string" } },
                     tags: { type: "array", items: { type: "string" } },
+                    links: { type: "array", description: "Relationships to other entries, for the relationship web. This replaces the entry's old links.", items: { type: "object", properties: {
+                        to: { type: "string", description: "The other entry's name." }, type: { type: "string", enum: LINK_TYPES.map(([t]) => t) }, note: { type: "string" } }, required: ["to", "type"] } },
+                    order: { type: "number", description: "Timeline events only: its place in story order (lower comes first)." },
+                    beats: { type: "array", description: "Story arcs only: the arc's beats in order. This replaces the old beats.", items: { type: "object", properties: {
+                        text: { type: "string" }, status: { type: "string", enum: BEAT_STATUS.map(([k]) => k) } }, required: ["text"] } },
                     lines: { type: "array", description: "Dialogue and scenes only: every line in order (this replaces the old lines).", items: { type: "object", properties: {
                         speaker: { type: "string" }, text: { type: "string" }, emotion: { type: "string" },
                         type: { type: "string", enum: ["line", "direction", "narration"], description: "Default line (spoken)." },
@@ -747,6 +804,25 @@
 .gs-said { display: flex; gap: 8px; align-items: flex-start; }
 .gs-said > img { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; flex: none; }
 .gs-bubble.playing { outline: 2px solid var(--warning); }
+.gs-web-box { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; }
+.gs-web { width: 100%; height: auto; max-height: 70vh; display: block; }
+.gs-web-node { cursor: pointer; }
+.gs-web-name, .gs-web-label { paint-order: stroke; stroke: var(--bg-panel); stroke-width: 4px; stroke-linejoin: round; }
+.gs-web-name { fill: var(--text-main); font-size: 14px; font-weight: bold; }
+.gs-web-label { font-size: 12px; }
+.gs-timeline { list-style: none; margin: 0; padding: 0 0 0 14px; border-left: 2px solid var(--border-color); display: flex; flex-direction: column; gap: 10px; }
+.gs-timeline li { display: flex; gap: 8px; align-items: center; position: relative; flex-wrap: wrap; }
+.gs-timeline li::before { content: ""; position: absolute; left: -21px; top: 50%; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); transform: translateY(-50%); }
+.gs-when { font-size: 0.75rem; color: var(--accent); min-width: 90px; }
+.gs-updown { display: flex; gap: 4px; }
+.gs-board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 6px; align-items: flex-start; }
+.gs-arc { flex: 0 0 280px; max-width: 85vw; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.gs-arc-head { background: none; border: none; text-align: left; color: var(--text-main); cursor: pointer; padding: 0; font: inherit; }
+.gs-arc-head .gs-sum { display: block; font-size: 0.75rem; color: var(--text-muted); }
+.gs-beat { background: var(--bg-card); border-radius: 8px; padding: 8px; font-size: 0.85rem; border-left: 3px solid var(--border-color); display: flex; flex-direction: column; gap: 6px; }
+.gs-beat.s-written { border-left-color: var(--warning); }
+.gs-beat.s-in_game { border-left-color: var(--success); }
+.gs-beat .gs-btn, .gs-beat select { padding: 3px 7px; font-size: 0.72rem; }
 .gs-speak { background: none; border: none; cursor: pointer; font-size: 0.85rem; padding: 0 2px; opacity: 0.75; }
 .gs-send input { flex: 1; min-width: 0; }
 @media (max-width: 600px) { .gs-line { grid-template-columns: 1fr; } .gs-grid { grid-template-columns: 1fr; } }
@@ -771,6 +847,9 @@
         { id: "bible", label: "📖 Story bible" },
         { id: "talk", label: "🗣️ Talk to a character" },
         { id: "scenes", label: "🎬 Scene Builder" },
+        { id: "web", label: "🕸️ Relationships" },
+        { id: "timeline", label: "⏳ Timeline" },
+        { id: "arcs", label: "📈 Story arcs" },
         { id: "export", label: "📦 Export to your game" }
     ];
 
@@ -822,6 +901,9 @@
             if (ui.section === "details") return projectForm(p);
             if (ui.section === "talk") return talkView(p);
             if (ui.section === "scenes") return scenesView(p);
+            if (ui.section === "web") return webView(p);
+            if (ui.section === "timeline") return timelineView(p);
+            if (ui.section === "arcs") return arcsView(p);
             if (ui.section === "export") return exportView(p);
             return ui.editing ? entryForm(p, ui.editing) : bibleView(p);
         }
@@ -968,6 +1050,7 @@
                 } }));
             }
             const faces = !isNew && entry.kind === "character" ? moodFaces(p, entry, msg) : null;
+            const linkBox = !isNew && !["dialogue", "scene", "arc"].includes(entry.kind) ? linkEditor(p, entry, msg) : null;
             const voiceBox = !isNew && entry.kind === "character" ? voicePicker(entry.voice, entry.locked, voice => store.saveEntry(p.id, { id: entry.id, voice }),
                 () => sampleLine(entry)) : null;
             const help = !isNew ? el("div", { class: "gs-send" },
@@ -984,7 +1067,7 @@
                 entry.locked ? el("div", { class: "gs-note", text: "Locked: nothing can change it, not even an agent, until you unlock it. Chats and scenes with it never change it either way." }) : null,
                 art, faces, voiceBox, el("div", { class: "gs-row" }, el("label", {}, "Name", name), el("label", {}, "Kind", kindSelect)),
                 el("label", {}, "Summary", summary), fieldNodes, kind.lines ? el("label", {}, "Lines", linesBox) : null,
-                el("label", {}, "Tags", tags), msg, entry.locked ? null : el("div", { class: "gs-row" }, save, remove), help);
+                linkBox, el("label", {}, "Tags", tags), msg, entry.locked ? null : el("div", { class: "gs-row" }, save, remove), help);
             if (entry.locked) {
                 form.querySelectorAll("input, textarea, select").forEach(node => { if (!node.closest(".gs-send")) node.disabled = true; });
                 form.querySelectorAll(".gs-art button, .gs-line button, .gs-lines > button, .gs-faces button").forEach(node => { if (!node.dataset.keep) node.disabled = true; });
@@ -1062,6 +1145,233 @@
                 el("div", { class: "gs-row" }, engine, name, eleven),
                 el("div", { class: "gs-row" }, el("label", { class: "gs-inline" }, "Speed", rate), el("label", { class: "gs-inline" }, "Pitch", pitch), test),
                 list.length || engine.value === "elevenlabs" ? null : el("div", { class: "gs-note", text: "On this device the voice is set by speed and pitch. Android uses its own text-to-speech voice." }));
+        }
+
+        // 🕸 The entry's relationships, edited in place. Saved at once; links show in the web.
+        function linkEditor(p, entry, msg) {
+            const others = p.entries.filter(e => e !== entry && !["dialogue", "scene", "arc"].includes(e.kind));
+            const links = (entry.links || []).map(l => Object.assign({}, l));
+            const saveLinks = list => {
+                const saved = store.saveEntry(p.id, { id: entry.id, links: list });
+                if (saved.error) return say(msg, saved.error, true);
+                ui.editing = saved.entry;
+                render();
+            };
+            const typeSelect = (value, onchange) => el("select", { "aria-label": "Relationship", onchange }, LINK_TYPES.map(([t, label]) => el("option", { value: t, selected: t === value, text: label })));
+            const rows = links.map((l, i) => {
+                const target = p.entries.find(e => e.id === l.to);
+                return el("div", { class: "gs-row" },
+                    el("b", { text: target ? target.name : l.name, style: "min-width: 100px;" }),
+                    typeSelect(l.type, e => { links[i].type = e.target.value; saveLinks(links); }),
+                    el("input", { type: "text", value: l.note || "", placeholder: "Note (optional)", "aria-label": "Note", onchange: e => { links[i].note = e.target.value; saveLinks(links); } }),
+                    el("button", { class: "gs-btn", type: "button", text: "✕", title: "Remove", onclick: () => { links.splice(i, 1); saveLinks(links); } }));
+            });
+            const who = el("select", { "aria-label": "Related to" }, el("option", { value: "", text: "Choose…" }), others.map(e => el("option", { value: e.id, text: `${(KINDS[e.kind] || KINDS.lore).icon} ${e.name}` })));
+            const type = typeSelect("ally");
+            const add = el("button", { class: "gs-btn", type: "button", text: "＋ Add", onclick: () => { if (who.value) saveLinks([...links, { to: who.value, type: type.value }]); } });
+            return el("details", { class: "gs-section", open: links.length > 0 },
+                el("summary", { text: `🕸️ Relationships${links.length ? ` (${links.length})` : ""}` }),
+                ...rows, others.length ? el("div", { class: "gs-row" }, entry.name, type, "of", who, add) : el("div", { class: "gs-note", text: "Add more entries to link them." }));
+        }
+
+        // 🕸 RELATIONSHIP WEB: every linked entry as a node, links colored by type.
+        function webView(p) {
+            const linked = new Set();
+            p.entries.forEach(e => (e.links || []).forEach(l => { if (p.entries.some(x => x.id === l.to)) { linked.add(e.id); linked.add(l.to); } }));
+            const nodes = p.entries.filter(e => linked.has(e.id) || (ui.webAll && (e.kind === "character" || e.kind === "faction")));
+            const legend = el("div", { class: "gs-kinds" }, LINK_TYPES.map(([, label, color]) => el("span", { class: "gs-chip", style: `border-color: ${color}; color: ${color};`, text: label })),
+                el("label", { class: "gs-chip", style: "display: inline-flex; gap: 6px; align-items: center;" }, el("input", { type: "checkbox", checked: !!ui.webAll, onchange: e => { ui.webAll = e.target.checked; render(); } }), "Show unlinked characters and factions"));
+            if (!nodes.length) return el("div", { class: "gs" }, legend, el("div", { class: "gs-note", text: "No relationships yet. Open a character and add some under 🕸️ Relationships, or ask an agent: \"link my characters by how they know each other\"." }));
+            // A taller, narrower drawing on a phone, so the names stay readable.
+            const [W, H] = window.innerWidth < 600 ? [420, 600] : [800, 560];
+            const pos = layoutWeb(nodes, p, W, H);
+            const NS = "http://www.w3.org/2000/svg";
+            const svg = document.createElementNS(NS, "svg");
+            svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+            svg.setAttribute("class", "gs-web");
+            svg.setAttribute("role", "img");
+            svg.setAttribute("aria-label", `Relationship web of ${p.name}`);
+            const add = (tag, attrs, text) => { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); if (text != null) n.textContent = text; svg.append(n); return n; };
+            const focus = ui.webFocus;
+            p.entries.forEach(e => (e.links || []).forEach(l => {
+                const a = pos.get(e.id), b = pos.get(l.to);
+                if (!a || !b) return;
+                const [, label, color] = LINK_TYPES.find(([t]) => t === l.type) || LINK_TYPES[LINK_TYPES.length - 1];
+                const dim = focus && focus !== e.id && focus !== l.to;
+                add("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: color, "stroke-width": dim ? 1 : 2.5, opacity: dim ? 0.15 : 0.9 });
+                if (!dim) add("text", { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 4, "text-anchor": "middle", class: "gs-web-label", fill: color }, label);
+            }));
+            for (const e of nodes) {
+                const { x, y } = pos.get(e.id);
+                const dim = focus && focus !== e.id && !(e.links || []).some(l => l.to === focus) && !(p.entries.find(o => o.id === focus)?.links || []).some(l => l.to === e.id);
+                const g = document.createElementNS(NS, "g");
+                g.setAttribute("class", "gs-web-node");
+                g.setAttribute("opacity", dim ? "0.25" : "1");
+                g.setAttribute("tabindex", "0");
+                g.setAttribute("role", "button");
+                g.setAttribute("aria-label", e.name);
+                g.addEventListener("click", () => { ui.webFocus = ui.webFocus === e.id ? "" : e.id; render(); });
+                svg.append(g);
+                const circle = document.createElementNS(NS, "circle");
+                Object.entries({ cx: x, cy: y, r: 26, fill: "var(--bg-card)", stroke: focus === e.id ? "var(--accent)" : "var(--border-color)", "stroke-width": 2 }).forEach(([k, v]) => circle.setAttribute(k, v));
+                g.append(circle);
+                const face = portraitFor(e, "");
+                if (face) {
+                    const clipId = `gsclip-${e.id}`;
+                    const defs = document.createElementNS(NS, "clipPath");
+                    defs.setAttribute("id", clipId);
+                    const c = document.createElementNS(NS, "circle");
+                    Object.entries({ cx: x, cy: y, r: 24 }).forEach(([k, v]) => c.setAttribute(k, v));
+                    defs.append(c);
+                    g.append(defs);
+                    const img = document.createElementNS(NS, "image");
+                    Object.entries({ href: face, x: x - 24, y: y - 24, width: 48, height: 48, "clip-path": `url(#${clipId})`, preserveAspectRatio: "xMidYMid slice" }).forEach(([k, v]) => img.setAttribute(k, v));
+                    g.append(img);
+                } else {
+                    const icon = document.createElementNS(NS, "text");
+                    Object.entries({ x, y: y + 7, "text-anchor": "middle", "font-size": 20 }).forEach(([k, v]) => icon.setAttribute(k, v));
+                    icon.textContent = (KINDS[e.kind] || KINDS.lore).icon;
+                    g.append(icon);
+                }
+                const name = document.createElementNS(NS, "text");
+                Object.entries({ x, y: y + 42, "text-anchor": "middle", class: "gs-web-name" }).forEach(([k, v]) => name.setAttribute(k, v));
+                name.textContent = clip(e.name, 22);
+                g.append(name);
+            }
+            const picked = focus && p.entries.find(e => e.id === focus);
+            const detail = picked ? el("div", { class: "gs-form" },
+                el("div", { class: "gs-row" }, el("b", { text: picked.name }), el("button", { class: "gs-btn", type: "button", text: "Open", onclick: () => { ui.section = "bible"; ui.editing = picked; ui.webFocus = ""; render(); } })),
+                ...relationsOf(p, picked).map(r => el("div", { class: "gs-note", text: r }))) : el("div", { class: "gs-note", text: "Tap a name to see only its relationships." });
+            return el("div", { class: "gs" }, legend, el("div", { class: "gs-web-box" }, svg), detail);
+        }
+
+        function relationsOf(p, entry) {
+            const out = (entry.links || []).map(l => `${entry.name} → ${linkLabel(l.type).toLowerCase()}: ${(p.entries.find(e => e.id === l.to) || l).name}${l.note ? ` (${l.note})` : ""}`);
+            p.entries.forEach(e => (e.links || []).forEach(l => { if (l.to === entry.id) out.push(`${e.name} → ${linkLabel(l.type).toLowerCase()}: ${entry.name}${l.note ? ` (${l.note})` : ""}`); }));
+            return out.length ? out : ["No relationships yet."];
+        }
+
+        // A small force layout: linked entries pull together, all of them push apart.
+        function layoutWeb(nodes, p, W, H) {
+            const pos = new Map(nodes.map((e, i) => [e.id, { x: W / 2 + Math.cos(i / nodes.length * 2 * Math.PI) * W * 0.35, y: H / 2 + Math.sin(i / nodes.length * 2 * Math.PI) * H * 0.35 }]));
+            const edges = [];
+            p.entries.forEach(e => (e.links || []).forEach(l => { if (pos.has(e.id) && pos.has(l.to)) edges.push([e.id, l.to]); }));
+            for (let step = 0; step < 220; step++) {
+                const force = new Map(nodes.map(e => [e.id, { x: 0, y: 0 }]));
+                for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+                    const a = pos.get(nodes[i].id), b = pos.get(nodes[j].id);
+                    let dx = a.x - b.x, dy = a.y - b.y;
+                    const d2 = Math.max(dx * dx + dy * dy, 100);
+                    const f = 18000 / d2, d = Math.sqrt(d2);
+                    dx = dx / d * f; dy = dy / d * f;
+                    force.get(nodes[i].id).x += dx; force.get(nodes[i].id).y += dy;
+                    force.get(nodes[j].id).x -= dx; force.get(nodes[j].id).y -= dy;
+                }
+                for (const [ia, ib] of edges) {
+                    const a = pos.get(ia), b = pos.get(ib);
+                    const dx = (b.x - a.x) * 0.02, dy = (b.y - a.y) * 0.02;
+                    force.get(ia).x += dx; force.get(ia).y += dy;
+                    force.get(ib).x -= dx; force.get(ib).y -= dy;
+                }
+                const cool = 1 - step / 240;
+                for (const e of nodes) {
+                    const q = pos.get(e.id), f = force.get(e.id);
+                    q.x += Math.max(-20, Math.min(20, f.x + (W / 2 - q.x) * 0.01)) * cool;
+                    q.y += Math.max(-20, Math.min(20, f.y + (H / 2 - q.y) * 0.01)) * cool;
+                }
+            }
+            // Stretch the result to fill the box, keeping room for the names.
+            const xs = [...pos.values()].map(q => q.x), ys = [...pos.values()].map(q => q.y);
+            const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+            for (const q of pos.values()) {
+                q.x = x1 - x0 < 1 ? W / 2 : 70 + (q.x - x0) / (x1 - x0) * (W - 140);
+                q.y = y1 - y0 < 1 ? H / 2 : 45 + (q.y - y0) / (y1 - y0) * (H - 110);
+            }
+            return pos;
+        }
+
+        // ⏳ TIMELINE: the project's events in story order; ↑ ↓ move one.
+        function timelineView(p) {
+            const msg = el("div", { class: "gs-msg" });
+            const events = timelineOrder(p.entries.filter(e => e.kind === "event"));
+            const move = (i, by) => {
+                const list = events.slice();
+                const [moved] = list.splice(i, 1);
+                list.splice(i + by, 0, moved);
+                const locked = list.find((e, n) => e.locked && (e.order ?? -1) !== (n + 1) * 10);
+                if (locked) return say(msg, `"${locked.name}" is locked, so the timeline can't move it.`, true);
+                list.forEach((e, n) => { if (e.order !== (n + 1) * 10) store.saveEntry(p.id, { id: e.id, order: (n + 1) * 10 }); });
+                render();
+            };
+            const title = el("input", { type: "text", placeholder: "What happened, like \"The Fall of the Spire\"", "aria-label": "New event" });
+            const when = el("input", { type: "text", placeholder: "When (optional), like \"Year 312\" or \"Before the game\"", "aria-label": "When" });
+            const add = el("button", { class: "gs-btn primary", type: "button", text: "＋ Add event", onclick: () => {
+                if (!title.value.trim()) return;
+                const saved = store.saveEntry(p.id, { kind: "event", name: title.value, fields: { when: when.value }, order: (events.length + 1) * 10 });
+                if (saved.error) return say(msg, saved.error, true);
+                render();
+            } });
+            return el("div", { class: "gs" },
+                el("div", { class: "gs-note", text: "Your world's history in order. Agents read it too, so new stories fit what already happened." }),
+                el("div", { class: "gs-row" }, title, when, add), msg,
+                events.length ? el("ol", { class: "gs-timeline" }, events.map((e, i) => el("li", {},
+                    el("div", { class: "gs-when", text: e.fields.when || "" }),
+                    el("button", { type: "button", class: "gs-card", style: "flex: 1;", onclick: () => { ui.section = "bible"; ui.editing = e; render(); } },
+                        el("div", {}, el("b", { text: `${e.locked ? "🔒 " : ""}${e.name}` }), el("span", { class: "gs-sum", text: e.summary || e.fields.what || "" }))),
+                    el("div", { class: "gs-updown" },
+                        el("button", { class: "gs-btn", type: "button", text: "↑", title: "Earlier", "aria-label": `Move ${e.name} earlier`, disabled: i === 0, onclick: () => move(i, -1) }),
+                        el("button", { class: "gs-btn", type: "button", text: "↓", title: "Later", "aria-label": `Move ${e.name} later`, disabled: i === events.length - 1, onclick: () => move(i, 1) })))))
+                    : el("div", { class: "gs-note", text: "No events yet." }));
+        }
+
+        // 📈 STORY ARCS BOARD: one column per arc, its beats in order, each marked idea,
+        // written or in the game, and optionally tied to a scene.
+        function arcsView(p) {
+            const msg = el("div", { class: "gs-msg" });
+            const arcs = p.entries.filter(e => e.kind === "arc");
+            const scenes = p.entries.filter(e => e.kind === "scene");
+            const saveBeats = (arc, beats) => {
+                const saved = store.saveEntry(p.id, { id: arc.id, beats });
+                if (saved.error) return say(msg, saved.error, true);
+                render();
+            };
+            const name = el("input", { type: "text", placeholder: "New arc, like \"Mara learns to trust\" or \"The war for the Spire\"", "aria-label": "New arc" });
+            const add = el("button", { class: "gs-btn primary", type: "button", text: "＋ New arc", onclick: () => {
+                if (!name.value.trim()) return;
+                const saved = store.saveEntry(p.id, { kind: "arc", name: name.value, beats: [] });
+                say(msg, saved.error || "", !!saved.error);
+                render();
+            } });
+            const column = arc => {
+                const beats = (arc.beats || []).map(b => Object.assign({}, b));
+                const done = beats.filter(b => b.status === "in_game").length;
+                const beatInput = el("input", { type: "text", placeholder: "Add a beat", "aria-label": `Add a beat to ${arc.name}` });
+                const addBeat = () => { if (beatInput.value.trim()) saveBeats(arc, [...beats, { text: beatInput.value.trim(), status: "idea" }]); };
+                beatInput.addEventListener("keydown", e => { if (e.key === "Enter") addBeat(); });
+                const cards = beats.map((b, i) => el("div", { class: `gs-beat s-${b.status}` },
+                    el("div", { text: b.text }),
+                    el("div", { class: "gs-row" },
+                        el("button", { class: "gs-btn", type: "button", text: BEAT_STATUS.find(([k]) => k === b.status)[1], title: "Change where it stands", disabled: !!arc.locked, onclick: () => {
+                            const n = BEAT_STATUS.findIndex(([k]) => k === b.status);
+                            beats[i].status = BEAT_STATUS[(n + 1) % BEAT_STATUS.length][0];
+                            saveBeats(arc, beats);
+                        } }),
+                        scenes.length ? el("select", { "aria-label": "Scene", disabled: !!arc.locked, onchange: e => { if (e.target.value) beats[i].scene = e.target.value; else delete beats[i].scene; saveBeats(arc, beats); } },
+                            el("option", { value: "", text: "No scene" }), scenes.map(sc => el("option", { value: sc.id, selected: b.scene === sc.id, text: `🎬 ${sc.name}` }))) : null,
+                        el("button", { class: "gs-btn", type: "button", text: "↑", "aria-label": "Earlier", disabled: i === 0 || !!arc.locked, onclick: () => { beats.splice(i - 1, 0, beats.splice(i, 1)[0]); saveBeats(arc, beats); } }),
+                        el("button", { class: "gs-btn", type: "button", text: "↓", "aria-label": "Later", disabled: i === beats.length - 1 || !!arc.locked, onclick: () => { beats.splice(i + 1, 0, beats.splice(i, 1)[0]); saveBeats(arc, beats); } }),
+                        el("button", { class: "gs-btn", type: "button", text: "✕", "aria-label": "Remove beat", disabled: !!arc.locked, onclick: () => { beats.splice(i, 1); saveBeats(arc, beats); } }))));
+                return el("div", { class: "gs-arc" },
+                    el("button", { type: "button", class: "gs-arc-head", onclick: () => { ui.section = "bible"; ui.editing = arc; render(); } },
+                        el("b", { text: `${arc.locked ? "🔒 " : ""}${arc.name}` }), el("span", { class: "gs-sum", text: `${done} of ${beats.length} in the game${arc.fields.characters ? ` · ${arc.fields.characters}` : ""}` })),
+                    ...cards,
+                    arc.locked ? null : el("div", { class: "gs-send" }, beatInput, el("button", { class: "gs-btn", type: "button", text: "＋", "aria-label": "Add beat", onclick: addBeat })),
+                    el("button", { class: "gs-btn", type: "button", text: "🤖 Ask an agent to plan the beats", onclick: () => sendToAgent(p, `Plan the beats of the story arc "${arc.name}" so it fits the story bible, and save them on the arc with studio_save.`, arc) }));
+            };
+            return el("div", { class: "gs" },
+                el("div", { class: "gs-note", text: "Plan each arc beat by beat, and mark which beats are written and which are already in the game." }),
+                el("div", { class: "gs-row" }, name, add), msg,
+                arcs.length ? el("div", { class: "gs-board" }, arcs.map(column)) : el("div", { class: "gs-note", text: "No arcs yet." }));
         }
 
         function elevenLabsBox() {
@@ -1408,7 +1718,7 @@
     return {
         STORE_KEY, KINDS, KIND_NAMES, SECTIONS, STUDIO_TASK,
         createStudioStore, buildStudioTools, studioPromptBlock, isStudioTask, exportFiles, toJson, toGdscript, toMarkdown,
-        MOODS, moodFor, portraitFor, normalizeVoice, splitMood,
+        MOODS, moodFor, portraitFor, normalizeVoice, splitMood, LINK_TYPES, BEAT_STATUS, timelineOrder,
         describeEntry, characterSystemPrompt, sceneDirectorPrompt, sceneTurnMessage, framePrompt, parseSceneLines, normalizeKind, slug, mount
     };
 });

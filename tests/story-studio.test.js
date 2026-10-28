@@ -330,3 +330,74 @@ test('in the page: mood faces show in chats, lines are spoken in each character\
     assert.equal(await page.locator('#view-studio .gs-said img').count(), 1, 'Rook\'s line shows his angry face; Vel has none');
     assert.deepEqual(errors, []);
 });
+
+// ---------- Part 3: relationship web, timeline, story arcs ----------
+
+test('links follow renames and deletions, the timeline keeps its order, arcs keep their beats, and all of it exports', async () => {
+    const { store } = sampleStore();
+    const p = store.project('Skyfall');
+    const tools = Object.fromEntries(Studio.buildStudioTools(store).map(t => [t.name, t]));
+    await tools.studio_save.run({ name: 'Mara Vex', links: [{ to: 'old tomas', type: 'mentor', note: 'Raised her' }, { to: 'Nobody', type: 'ally' }, { to: 'Mara Vex', type: 'ally' }] });
+    let mara = store.findEntry(p, 'Mara Vex');
+    assert.deepEqual(mara.links.map(l => [l.name, l.type]), [['Old Tomas', 'mentor']], 'unknown names and self-links are dropped');
+    assert.match(await tools.studio_read.run({ name: 'Mara Vex' }), /Relationships: Mentor of Old Tomas \(Raised her\)/);
+    const tomas = store.findEntry(p, 'Old Tomas');
+    store.saveEntry('', { id: tomas.id, name: 'Tomas the Elder' });
+    assert.equal(store.findEntry(p, 'Mara Vex').links[0].name, 'Tomas the Elder');
+
+    store.saveEntry('', { kind: 'event', name: 'The Flood', order: 20 });
+    store.saveEntry('', { kind: 'event', name: 'The Founding', order: 10 });
+    store.saveEntry('', { kind: 'event', name: 'Unplaced' });
+    assert.deepEqual(Studio.timelineOrder(p.entries.filter(e => e.kind === 'event')).map(e => e.name), ['The Founding', 'The Flood', 'Unplaced']);
+
+    await tools.studio_save.run({ kind: 'arc', name: 'Mara learns to trust', beats: [{ text: 'She works alone', status: 'in_game' }, { text: 'Tomas is taken', status: 'bogus' }, { text: '' }] });
+    assert.deepEqual(store.findEntry(p, 'Mara learns to trust').beats, [{ text: 'She works alone', status: 'in_game' }, { text: 'Tomas is taken', status: 'idea' }]);
+
+    const bible = JSON.parse(Studio.toJson(p));
+    assert.deepEqual(bible.entries_by_kind.characters[0].links, [{ to: 'tomas_the_elder', to_kind: 'character', type: 'mentor', note: 'Raised her' }]);
+    assert.deepEqual(bible.entries_by_kind.timeline.map(e => e.name), ['The Founding', 'The Flood', 'Unplaced']);
+    assert.equal(bible.entries_by_kind.arcs[0].beats.length, 2);
+    assert.match(Studio.toGdscript(p), /^const ARCS := \{/m);
+
+    store.removeEntry('', store.findEntry(p, 'Tomas the Elder').id);
+    assert.equal(store.findEntry(p, 'Mara Vex').links, undefined, 'a deleted entry\'s links go with it');
+});
+
+test('in the page: link two characters and see the web, reorder the timeline, and work an arc board', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { page, errors } = await openStudioPage(t, []);
+    await page.evaluate(() => {
+        storyStudio.createProject({ name: 'Ashen Crown' });
+        storyStudio.saveEntry('', { kind: 'character', name: 'Rook' });
+        storyStudio.saveEntry('', { kind: 'character', name: 'Vel' });
+        storyStudio.saveEntry('', { kind: 'event', name: 'The Burning', order: 10 });
+        storyStudio.saveEntry('', { kind: 'event', name: 'The Exile', order: 20 });
+        switchView('studio');
+    });
+    await page.click('#view-studio .gs-card:has-text("Rook")');
+    await page.click('#view-studio summary:has-text("Relationships")');
+    await page.selectOption('#view-studio select[aria-label="Related to"]', { label: '🧍 Vel' });
+    await page.selectOption('#view-studio .gs-section select[aria-label="Relationship"]', 'rival');
+    await page.click('#view-studio button:has-text("＋ Add")');
+    await page.waitForFunction(() => storyStudio.findEntry(storyStudio.active(), 'Rook').links?.[0]?.type === 'rival');
+
+    await page.click('#view-studio .gs-tabs button:has-text("Relationships")');
+    assert.equal(await page.locator('#view-studio svg.gs-web .gs-web-node').count(), 2);
+    assert.equal(await page.locator('#view-studio svg.gs-web line').count(), 1);
+    await page.click('#view-studio .gs-web-node[aria-label="Vel"]');
+    assert.match(await page.textContent('#view-studio .gs-form'), /Rook → rival: Vel/);
+
+    await page.click('#view-studio .gs-tabs button:has-text("Timeline")');
+    await page.click('#view-studio button[aria-label="Move The Exile earlier"]');
+    assert.deepEqual(await page.$$eval('#view-studio .gs-timeline b', bs => bs.map(b => b.textContent)), ['The Exile', 'The Burning']);
+
+    await page.click('#view-studio .gs-tabs button:has-text("Story arcs")');
+    await page.fill('#view-studio input[aria-label="New arc"]', 'Rook\'s redemption');
+    await page.click('#view-studio button:has-text("New arc")');
+    await page.fill('#view-studio input[aria-label="Add a beat to Rook\'s redemption"]', 'He refuses the crown');
+    await page.press('#view-studio input[aria-label="Add a beat to Rook\'s redemption"]', 'Enter');
+    await page.click('#view-studio .gs-beat button:has-text("Idea")');
+    const arc = await page.evaluate(() => storyStudio.findEntry(storyStudio.active(), 'Rook\'s redemption'));
+    assert.deepEqual(arc.beats, [{ text: 'He refuses the crown', status: 'written' }]);
+    assert.deepEqual(errors, []);
+});
