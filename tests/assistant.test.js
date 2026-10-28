@@ -120,6 +120,15 @@ test('the same call is not run a third time, and the reply lists every step with
     assert.deepEqual(errors, []);
 });
 
+test('without a command tool, the agent is told how the user turns running code on', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { page } = await openPlainPage(t, []);
+    const notes = await page.evaluate(() => [sandboxToolNote([]), workspaceNote({ label: 'x', canWrite: true, writeTools: 'w', canRun: false }), sandboxToolNote([{ name: 'run_command' }])]);
+    assert.match(notes[0], /Docker Desktop[\s\S]*Sandbox & Review Changes/);
+    assert.match(notes[1], /Docker Desktop/);
+    assert.doesNotMatch(notes[2], /Docker Desktop/);
+});
+
 test('the server reads only public web addresses', async () => {
     assert.equal(isPublicHost('example.com'), true);
     for (const host of ['localhost', '127.0.0.1', '10.1.2.3', '192.168.0.5', '172.20.0.1', '169.254.169.254', '[::1]', 'printer.local']) {
