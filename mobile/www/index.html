@@ -1040,6 +1040,20 @@
                 </div>
             </div>
 
+            <details class="settings-extra" id="spendSettings">
+                <summary>💰 Spending limits</summary>
+                <div style="font-size: 0.8rem; color: var(--text-muted);">CoDev adds up what each paid AI request costs (Claude, paid OpenRouter models and paid pictures; Groq's free tier is $0). At the daily limit it stops until tomorrow. At the per-task limit an agent stops and answers with what it found. 0 means no limit.</div>
+                <div class="form-group">
+                    <label>Most to spend per day ($)</label>
+                    <input type="number" id="modalDailySpendLimit" min="0" max="1000" step="0.05">
+                </div>
+                <div class="form-group">
+                    <label>Most to spend on one task ($)</label>
+                    <input type="number" id="modalTaskSpendLimit" min="0" max="100" step="0.05">
+                </div>
+                <div id="spendStatus" style="font-size: 0.8rem; color: var(--text-muted);"></div>
+            </details>
+
             <details class="settings-extra" id="mediaSettings">
                 <summary>🖼️ Images, video &amp; big files</summary>
                 <div style="font-size: 0.8rem; color: var(--text-muted);">Long PDFs, spreadsheets (CSV, XLSX) and text files work with no key. One free Gemini key adds whole videos with sound, audio files and scanned PDFs. Pictures are free with no key; Gemini and OpenRouter pictures cost money (Gemini's free tier has no image models).</div>
@@ -1217,6 +1231,71 @@
         // True when server.js (npm start) has ANTHROPIC_API_KEY and relays requests,
         // so the page itself needs no Anthropic key. Set by checkServerAnthropic().
         let anthropicViaServer = false;
+
+        // SPENDING LIMITS
+        // Every paid model call adds its cost to today's total, kept in this browser.
+        // Past the daily limit CoDev sends no more requests until tomorrow (or until the
+        // limit is raised in Settings > Spending limits); past the per-task limit an agent
+        // stops using tools and answers with what it has. 0 turns a limit off. Groq's
+        // free tier counts as $0; OpenRouter reports what each call cost.
+        // Claude Haiku 5.5, $ per million tokens. A prompt over 100K tokens is billed at
+        // the higher rates; cache writes cost 1.25x input and cache reads a tenth.
+        const HAIKU_PRICES = { input: 0.10, output: 0.50, longInput: 0.50, longOutput: 2.50, longAfter: 100000, perSearch: 0.01 };
+        const DEFAULT_DAILY_SPEND_LIMIT = 1;
+        const DEFAULT_TASK_SPEND_LIMIT = 0.25;
+        const readSpendLimit = (name, fallback) => {
+            const value = Number(localStorage.getItem(name) ?? fallback);
+            return Number.isFinite(value) && value >= 0 ? value : fallback;
+        };
+        let dailySpendLimit = readSpendLimit("codev_daily_spend_limit", DEFAULT_DAILY_SPEND_LIMIT);
+        let taskSpendLimit = readSpendLimit("codev_task_spend_limit", DEFAULT_TASK_SPEND_LIMIT);
+
+        function spendDay() {
+            const d = new Date();
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        }
+
+        function spendToday() {
+            let saved = null;
+            try { saved = JSON.parse(localStorage.getItem("codev_spend") || "null"); } catch (err) { /* start fresh */ }
+            return saved && saved.day === spendDay() ? saved : { day: spendDay(), usd: 0, requests: 0, inputTokens: 0, outputTokens: 0 };
+        }
+
+        // Adds one request's cost (in dollars) and token counts to today's total.
+        function recordSpend(usd, tokens = {}) {
+            const today = spendToday();
+            today.usd = Math.round((today.usd + (Number(usd) || 0)) * 1e6) / 1e6;
+            today.requests += 1;
+            today.inputTokens += tokens.input || 0;
+            today.outputTokens += tokens.output || 0;
+            try { localStorage.setItem("codev_spend", JSON.stringify(today)); } catch (err) { /* storage full: not counted */ }
+            return today;
+        }
+
+        function anthropicCost(usage = {}) {
+            const fresh = usage.input_tokens || 0, written = usage.cache_creation_input_tokens || 0, read = usage.cache_read_input_tokens || 0;
+            const long = fresh + written + read > HAIKU_PRICES.longAfter;
+            const inRate = (long ? HAIKU_PRICES.longInput : HAIKU_PRICES.input) / 1e6;
+            const outRate = (long ? HAIKU_PRICES.longOutput : HAIKU_PRICES.output) / 1e6;
+            return fresh * inRate + written * inRate * 1.25 + read * inRate * 0.1 + (usage.output_tokens || 0) * outRate
+                + (usage.server_tool_use?.web_search_requests || 0) * HAIKU_PRICES.perSearch;
+        }
+
+        const formatUsd = usd => `$${usd < 0.01 && usd > 0 ? usd.toFixed(4) : usd.toFixed(2)}`;
+
+        function dailySpendReached() {
+            return dailySpendLimit > 0 && spendToday().usd >= dailySpendLimit;
+        }
+
+        function checkDailySpend() {
+            if (!dailySpendReached()) return;
+            throw new Error(`CoDev has reached today's spending limit (${formatUsd(spendToday().usd)} of ${formatUsd(dailySpendLimit)}). It starts again tomorrow, or you can raise the limit in ⚙️ Settings > 💰 Spending limits.`);
+        }
+
+        function describeSpend() {
+            const today = spendToday();
+            return `Spent today: about ${formatUsd(today.usd)}${dailySpendLimit > 0 ? ` of your ${formatUsd(dailySpendLimit)} limit` : " (no daily limit)"}, over ${today.requests} request(s).`;
+        }
 
         function activeProviderKey() {
             if (currentBackend === "anthropic") return anthropicKey || (anthropicViaServer ? "server" : "");
@@ -4026,8 +4105,15 @@
                 ...done.slice(-PROGRESS_STEPS_SHOWN).map(d => `${d.ok ? "✓" : "⚠️"} ${d.step}${d.note ? ` → ${d.note}` : ""}`),
                 current ? `▶ Now: ${current}` : ""
             ].filter(Boolean).join("\n");
+            // What this task has cost so far; a spending limit ends the tool steps early.
+            ctx.cost = ctx.cost || 0;
+            let spendStop = "";
             for (let round = 0; round < MAX_TOOL_ROUNDS && outlierFailures < 2 && browserFailures < 3; round++) {
+                if (round > 0 && taskSpendLimit > 0 && ctx.cost >= taskSpendLimit) spendStop = `this task reached its spending limit of ${formatUsd(taskSpendLimit)}`;
+                else if (round > 0 && dailySpendReached()) spendStop = `CoDev reached today's spending limit of ${formatUsd(dailySpendLimit)}`;
+                if (spendStop) break;
                 const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" }, { sources: ctx.sources || [] });
+                ctx.cost += message.cost || 0;
                 // Searches Claude ran itself (its own web search) are steps too.
                 for (const search of message.web_searches || []) {
                     const step = `🔎 Claude searched: ${search.query}`;
@@ -4036,7 +4122,10 @@
                     if (ctx.toolLog) ctx.toolLog.push(`${step} → ${note}`);
                 }
                 const calls = message.tool_calls || [];
-                if (!calls.length) return message.content || "";
+                if (!calls.length) {
+                    logTaskSpend(ctx);
+                    return message.content || "";
+                }
                 messages.push({ role: "assistant", content: message.content || "", tool_calls: calls, anthropic_content: message.anthropic_content });
                 checkpoint();
                 // The agent's plan, written with its calls, stays on screen above each step.
@@ -4096,9 +4185,19 @@
                     checkpoint();
                 }
             }
-            // Out of rounds: ask for the answer with what was gathered.
-            const final = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "none" }, { sources: ctx.sources || [] });
+            // Out of rounds, or over a spending limit: ask for the answer with what was gathered.
+            if (spendStop) {
+                logConsoleActivity(`[Spend] Stopped the tool steps: ${spendStop}.`);
+                messages.push({ role: "user", content: `[CoDev] Stop here: ${spendStop}, so no more tools can run. Answer now with what you found, say in one line what is left undone, and tell the user they can raise the limit in Settings > Spending limits or say "continue".` });
+            }
+            const final = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "none" }, { sources: ctx.sources || [], wrapUp: Boolean(spendStop) });
+            ctx.cost += final.cost || 0;
+            logTaskSpend(ctx);
             return final.content || "";
+        }
+
+        function logTaskSpend(ctx) {
+            if (ctx.cost > 0) logConsoleActivity(`[Spend] This task cost about ${formatUsd(ctx.cost)}. ${describeSpend()}`);
         }
 
         // MULTIMEDIA ATTACHMENTS & LIVE WEB SEARCH
@@ -5346,6 +5445,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             document.getElementById("modalGoogleSearch").checked = googleSearchEnabled;
             document.getElementById("googleSearchNote").style.display = geminiSearchKey() ? "none" : "block";
             document.getElementById("modalClaudeWebSearch").checked = claudeWebSearchEnabled;
+            document.getElementById("modalDailySpendLimit").value = dailySpendLimit;
+            document.getElementById("modalTaskSpendLimit").value = taskSpendLimit;
+            document.getElementById("spendStatus").textContent = describeSpend();
             document.getElementById("modalMemoryOn").checked = savedMemoryEnabled;
             renderSavedMemories();
             fillMediaSettings();
@@ -5551,6 +5653,14 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             claudeWebSearchEnabled = document.getElementById("modalClaudeWebSearch").checked;
             localStorage.setItem("codev_claude_web_search", claudeWebSearchEnabled ? "1" : "0");
             claudeWebSearchFailed = false;
+            const spendLimit = (id, fallback) => {
+                const value = parseFloat(document.getElementById(id).value);
+                return Number.isFinite(value) && value >= 0 ? value : fallback;
+            };
+            dailySpendLimit = spendLimit("modalDailySpendLimit", dailySpendLimit);
+            taskSpendLimit = spendLimit("modalTaskSpendLimit", taskSpendLimit);
+            localStorage.setItem("codev_daily_spend_limit", String(dailySpendLimit));
+            localStorage.setItem("codev_task_spend_limit", String(taskSpendLimit));
             chimeEnabled = document.getElementById("modalChime").checked;
             localStorage.setItem("codev_chime", chimeEnabled ? "1" : "0");
             readAzureSettings();
@@ -6046,14 +6156,17 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // Groq's model names; with OpenRouter the model is swapped for the OpenRouter
         // model from Settings, which serves text, tools and images alike.
         // extras.sources: the run's source list, for Claude's web search citations.
-        async function groqChatMessage(body, extras) {
+        // extras.wrapUp: the last answer of a task that hit a spending limit, which may still go out.
+        async function groqChatMessage(body, extras = {}) {
+            if (!extras.wrapUp) checkDailySpend();
             if (currentBackend === "anthropic") return anthropicChatMessage(body, extras);
             const openRouter = currentBackend === "openrouter";
             const provider = openRouter
                 ? { name: "OpenRouter", host: "openrouter.ai", url: "https://openrouter.ai/api/v1/chat/completions", key: openRouterKey,
                     headers: { "HTTP-Referer": "https://github.com/phillbennett021423/CoDev_cloud", "X-Title": "CoDev Studio" } }
                 : { name: "Groq", host: "api.groq.com", url: "https://api.groq.com/openai/v1/chat/completions", key: groqKey, headers: {} };
-            if (openRouter) body = { ...body, model: openRouterModel };
+            // OpenRouter adds what the call cost to usage, for the spending limits.
+            if (openRouter) body = { ...body, model: openRouterModel, usage: { include: true } };
             let response;
             try {
                 response = await fetch(provider.url, {
@@ -6066,7 +6179,11 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 throw new Error(`Couldn't reach ${provider.name} at ${provider.host} (${err.message}). Check that this computer is online, and that a firewall, antivirus, VPN or ad blocker isn't blocking ${provider.host}.`);
             }
             const data = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } }));
-            if (data.choices && data.choices.length > 0) return data.choices[0].message;
+            if (data.choices && data.choices.length > 0) {
+                const cost = openRouter ? Number(data.usage?.cost) || 0 : 0;
+                recordSpend(cost, { input: data.usage?.prompt_tokens, output: data.usage?.completion_tokens });
+                return { ...data.choices[0].message, cost };
+            }
             const code = data.error?.code ? ` (${data.error.code})` : "";
             if (response.status === 401) {
                 throw new Error(`${provider.name} rejected the API key (401: ${data.error?.message || "unauthorized"}). CoDev sent ${describeKey(provider.key)}. Open Settings and check it matches your key from ${openRouter ? "openrouter.ai/keys" : "console.groq.com/keys"}.`);
@@ -6175,6 +6292,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 headers["anthropic-dangerous-direct-browser-access"] = "true";
             }
             const request = toAnthropicRequest(body);
+            let cost = 0;
             const send = async () => {
                 let response;
                 try {
@@ -6184,7 +6302,14 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                         ? `Couldn't reach CoDev's server to relay to Anthropic (${err.message}). Is npm start still running?`
                         : `Couldn't reach Anthropic at api.anthropic.com (${err.message}). Check that this device is online, and that a firewall, antivirus, VPN or ad blocker isn't blocking api.anthropic.com.`);
                 }
-                return { response, data: await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } })) };
+                const data = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } }));
+                if (data.usage) {
+                    const spent = anthropicCost(data.usage);
+                    cost += spent;
+                    const u = data.usage;
+                    recordSpend(spent, { input: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), output: u.output_tokens });
+                }
+                return { response, data };
             };
             let { response, data } = await send();
             // Web search not enabled for this account or model: CoDev's own web_search instead.
@@ -6220,7 +6345,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const calls = content.filter(b => b.type === "tool_use")
                 .map(b => ({ id: b.id, type: "function", function: { name: b.name, arguments: JSON.stringify(b.input || {}) } }));
             if (data.stop_reason === "max_tokens" && !calls.length) logConsoleActivity("[Anthropic] The reply hit the length limit and was cut short.");
-            const message = { role: "assistant", content: text, anthropic_content: content };
+            const message = { role: "assistant", content: text, anthropic_content: content, cost };
             if (calls.length) message.tool_calls = calls;
             if (searched.searches.length) message.web_searches = searched.searches;
             return message;
@@ -6320,7 +6445,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 5. CHECK YOUR OWN WORK: After every action that changes something (a click, typing, opening a page, a file edit, an Outlier read), look at what the result actually shows and compare it with what you expected: the right page, player, stat, line and game, filters still set, the page not reloaded, the file containing your change. If it doesn't match, say what is off and correct it with a different approach. Never repeat a call that just failed with the same input. After two failed attempts at the same step, stop and tell the user exactly what went wrong and what they can do.
 
-6. KEEP THE USER INFORMED: When a task takes several tool steps, start with a one or two line plan as your message text. In the final answer, lead with the result, then briefly say what you did and checked, anything that failed or is uncertain, and what is left for the user.
+6. KEEP THE USER INFORMED: When a task takes several tool steps, start with a one or two line plan as your message text. In the final answer, lead with the result, then say in a line or two what you did and checked, anything that failed or is uncertain, and what is left for the user.
 
 7. ALWAYS HELP: If you can't do something directly here (no tool for it, a site needs the user's sign-in, an action happens on their phone or account, a payment), say so in one line, then walk the user through doing it themselves with exact, numbered steps, or do the parts you can.
 
@@ -6328,7 +6453,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 9. CITATIONS: When a statement relies on a web result, cite it inline as [n] using that result's number. Never cite a source that wasn't provided. Workspace files are cited by file name.
 
-10. STYLE: Answer directly in plain words. Match the length to the question: a short question gets a short answer. Use lists or code blocks only when they help.
+10. BE BRIEF: Say what the user needs and stop. Lead with the answer in plain words. No preamble, no restating the question, no repeating what you already said, no closing summary or offers of more help. A simple question gets one to three sentences, and most answers fit in about 150 words. Go longer only when the task needs it: code, a report or deep research, step-by-step instructions, or when the user asks for detail; even then, cut anything that doesn't help. Use lists or code blocks only when they help.
 
 11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); making and editing pictures (generate_image). For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
 
