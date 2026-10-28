@@ -270,6 +270,50 @@ test('the phone links the computer\'s sign-in and calls Google itself', async ()
     assert.equal(store.size, 0);
 });
 
+// The Android app: Google's sign-in opens in the phone's browser and comes back to the
+// app's one-time listener on 127.0.0.1 (stood in for here), with no computer needed.
+test('the Android app signs in to Google on the phone itself', async () => {
+    const store = new Map();
+    const storage = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) };
+    const google = fakeGoogle();
+    let onRedirect = null;
+    const opened = [];
+    const loopback = {
+        addListener: async (name, f) => { assert.equal(name, 'loopback'); onRedirect = f; return { remove() {} }; },
+        loopbackStart: async () => ({ port: 41234 }),
+        loopbackStop: async () => {},
+        openExternal: async ({ url }) => { opened.push(url); }
+    };
+    const phone = Google.phoneTransport({ http: null, storage, fetchImpl: google.fetchImpl, loopback });
+    assert.equal(phone.canSignIn, true);
+    assert.match((await phone.handle({ op: 'signin' })).error, /client ID/);
+    const reply = await phone.handle({ op: 'signin', clientId: 'my-client', clientSecret: 'shh', allowWrite: false });
+    assert.equal(reply.opened, true);
+    const auth = new URL(opened[0]);
+    assert.equal(auth.origin + auth.pathname, 'https://accounts.google.com/o/oauth2/v2/auth');
+    assert.equal(auth.searchParams.get('redirect_uri'), 'http://127.0.0.1:41234');
+    assert.equal(auth.searchParams.get('code_challenge_method'), 'S256');
+    assert.doesNotMatch(auth.searchParams.get('scope'), /gmail\.send/);
+    assert.equal((await phone.handle({ op: 'status' })).signingIn, true);
+
+    // A redirect with the wrong state (another tab, an old link) is ignored.
+    await onRedirect({ port: 41234, query: 'code=good-code&state=wrong' });
+    assert.equal((await phone.handle({ op: 'status' })).signedIn, false);
+    await onRedirect({ port: 41234, query: `code=good-code&state=${auth.searchParams.get('state')}` });
+    const status = await phone.handle({ op: 'status' });
+    assert.equal(status.signedIn, true);
+    assert.equal(status.onPhone, true);
+    assert.equal(status.email, 'pb@example.com');
+    assert.equal(status.signingIn, false);
+    const exchange = google.calls.find(c => c.url === 'https://oauth2.googleapis.com/token');
+    assert.equal(new URLSearchParams(exchange.body).get('redirect_uri'), 'http://127.0.0.1:41234');
+
+    // Signing out of a sign-in made on the phone also removes CoDev's access.
+    await phone.handle({ op: 'signout' });
+    assert.ok(google.calls.some(c => c.url.startsWith('https://oauth2.googleapis.com/revoke')));
+    assert.equal((await phone.handle({ op: 'status' })).signedIn, false);
+});
+
 test('email helpers: headers, bodies and links', () => {
     assert.equal(Google.encodeHeader('Plain subject'), 'Plain subject');
     const encoded = Google.encodeHeader('Picks ✅');

@@ -1135,7 +1135,7 @@
                 <div id="browserVaultStatus" style="font-size: 0.8rem; color: var(--text-muted); white-space: pre-line; overflow-wrap: anywhere;"></div>
                 <div id="browserVaultList" style="display: flex; flex-direction: column; gap: 6px;"></div>
                 <div class="form-group">
-                    <label>Add a saved login. Agents can only use it on its own site, and CoDev asks you every time. It is encrypted on this computer; agents never see the password.</label>
+                    <label>Add a saved login. Agents can only use it on its own site, and CoDev asks you every time. It is encrypted on this device; agents never see the password.</label>
                     <input type="text" id="browserCredLabel" placeholder="Name, like GitHub work account" autocomplete="off">
                     <input type="text" id="browserCredUrl" placeholder="Sign-in page, like https://github.com/login" autocomplete="off" style="font-family: monospace;">
                     <input type="text" id="browserCredUser" placeholder="User name or email" autocomplete="off">
@@ -1183,6 +1183,7 @@
     <script src="agent-ui/outlier-view.js"></script>
     <script src="media-tools.js"></script>
     <script src="agent-ui/google-apps.js"></script>
+    <script src="agent-ui/phone-browser.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
         // text boxes stop taking clicks and typing until the window is refocused.
@@ -2987,17 +2988,28 @@
             box.textContent = lines.length ? lines.join("\n") : "No MCP servers set up yet. Add one below.";
         }
 
-        // AGENTS' HEADLESS BROWSER: each agent gets its own Chromium profile, run by the
-        // Windows app (desktop/browser, over IPC) or by server.js (POST /agent-tools,
-        // after npm run setup). Android and the web have no browser tools: a phone or a
-        // browser tab can't start Chromium.
+        // AGENTS' BROWSER: each agent gets its own Chromium profile, run by the Windows app
+        // (desktop/browser, over IPC) or by server.js (POST /agent-tools, after npm run
+        // setup). The Android app has its own: real Android browsers inside the app
+        // (agent-ui/phone-browser.js), with the same tools and live view. A plain browser
+        // tab with no server has none.
         // Saved logins and sessions are kept encrypted by the app or server, never here.
         // Using one always asks the user, even with "Run ... without asking" on: the
         // tool replies with a prompt CoDev wrote from the saved login, and only this
         // page's codev/approve, which agents can't call, carries it out.
         let browserMcpCache = { at: 0, tools: [] };
+        // The app that runs the agents' browsers in this page: { browserMcp, browserLive, onBrowserLive }.
+        const agentBrowserHost = window.codevDesktop?.browserMcp ? window.codevDesktop : (() => {
+            const cap = window.Capacitor;
+            const plugin = cap && cap.isNativePlatform && cap.isNativePlatform() && cap.Plugins && cap.Plugins.CodevBrowser;
+            if (!plugin || !window.CodevPhoneBrowser) return null;
+            try {
+                return CodevPhoneBrowser.createPhoneBrowser({ native: plugin, log: line => console.log(line), isHidden: () => document.hidden });
+            } catch (err) { return null; }
+        })();
+        const isPhoneBrowser = !!agentBrowserHost && agentBrowserHost !== window.codevDesktop;
         function hasAgentBrowser() {
-            return !!window.codevDesktop?.browserMcp || (location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname));
+            return !!agentBrowserHost || (location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname));
         }
 
         async function postJson(url, body) {
@@ -3008,8 +3020,8 @@
         }
 
         async function browserRpc(method, params) {
-            if (window.codevDesktop?.browserMcp) {
-                const reply = await window.codevDesktop.browserMcp({ jsonrpc: "2.0", id: ++mcpRequestId, method, params });
+            if (agentBrowserHost) {
+                const reply = await agentBrowserHost.browserMcp({ jsonrpc: "2.0", id: ++mcpRequestId, method, params });
                 if (reply.error) throw new Error(reply.error.message);
                 return reply.result;
             }
@@ -3044,7 +3056,7 @@
             let vault;
             try { vault = await browserRpc("codev/vault", { op: "list" }); } catch (err) { return; }
             section.style.display = "";
-            const protection = { safeStorage: "Windows' data protection (DPAPI)", dpapi: "Windows' data protection (DPAPI)",
+            const protection = { safeStorage: "Windows' data protection (DPAPI)", dpapi: "Windows' data protection (DPAPI)", androidKeystore: "a key in your phone's secure key store",
                 passphrase: "your CODEV_VAULT_KEY passphrase", keyfile: "a key file only your user can read" }[vault.protector] || vault.protector;
             document.getElementById("browserVaultStatus").textContent = `${vault.browser.available ? "✅" : "⚠️"} ${vault.browser.detail}\n` +
                 `${vault.open.length ? `Open now: ${vault.open.map(o => `${o.agentId} (${o.url || "blank"})`).join(", ")}\n` : ""}Saved logins are encrypted with ${protection}.`;
@@ -3117,7 +3129,7 @@
             else if (open) renderLiveFrame();
             if (open && !live.outlier && window.codevDesktop?.outlierRequest) {
                 window.codevDesktop.outlierRequest({ method: "GET", path: "/outlier/state" }).then(reply => { live.outlier = reply.body?.liveSession || ""; renderLiveAgents(); }).catch(() => {});
-            } else if (open && !live.outlier && !window.codevDesktop?.browserLive) {
+            } else if (open && !live.outlier && !agentBrowserHost) {
                 fetch("/outlier/state").then(r => (r.ok ? r.json() : null)).then(state => { live.outlier = state?.liveSession || ""; renderLiveAgents(); }).catch(() => {});
             }
         }
@@ -3129,10 +3141,10 @@
 
         // One stream at a time: the chosen agent's, or only the session list.
         function openLiveStream(agentId, onUpdate) {
-            if (window.codevDesktop?.browserLive) {
-                const off = window.codevDesktop.onBrowserLive(onUpdate);
-                window.codevDesktop.browserLive({ op: "watch", agentId });
-                return () => { off(); window.codevDesktop.browserLive({ op: "unwatch" }); };
+            if (agentBrowserHost) {
+                const off = agentBrowserHost.onBrowserLive(onUpdate);
+                agentBrowserHost.browserLive({ op: "watch", agentId });
+                return () => { off(); agentBrowserHost.browserLive({ op: "unwatch" }); };
             }
             const source = new EventSource(`/browser/live${agentId ? `?agent=${encodeURIComponent(agentId)}` : ""}`);
             source.onmessage = message => { try { onUpdate(JSON.parse(message.data)); } catch (err) { /* partial event */ } };
@@ -3214,8 +3226,10 @@
             if (update.type === "console") addLiveRow("console", `${time} ${update.level}: ${update.text}`, update.level === "error" ? "error" : update.level === "warning" ? "warn" : "");
             else if (update.type === "nav") { addLiveRow("console", `${time} → ${update.url}`, "muted"); addLiveRow("network", `${time} → navigated to ${update.url}`, "muted"); }
             else if (update.type === "network") {
-                if (update.phase === "request") return; // the response or failure line says more
-                const text = update.phase === "failed" ? `${time} ✕ ${update.method} ${update.url} (${update.error})` : `${time} ${update.status} ${update.method} ${update.url}`;
+                // The response or failure line says more; the phone's browser only reports
+                // failures and error codes, so there the requests themselves are listed.
+                if (update.phase === "request" && !isPhoneBrowser) return;
+                const text = update.phase === "request" ? `${time} → ${update.method} ${update.url}` : update.phase === "failed" ? `${time} ✕ ${update.method} ${update.url} (${update.error})` : `${time} ${update.status} ${update.method} ${update.url}`;
                 addLiveRow("network", text, update.phase === "failed" || update.status >= 400 ? "error" : "");
             } else if (update.type === "dom") {
                 addLiveRow("dom", `${time} +${update.added} −${update.removed} attrs ${update.attributes} text ${update.text}${update.samples.length ? "\n  " + update.samples.join("\n  ") : ""}`, "");
@@ -3420,8 +3434,8 @@
                 control = item.control;
                 let reply;
                 try {
-                    reply = window.codevDesktop?.browserLive
-                        ? await window.codevDesktop.browserLive({ op: "control", agentId, control })
+                    reply = agentBrowserHost
+                        ? await agentBrowserHost.browserLive({ op: "control", agentId, control })
                         : await postJson("/browser/live/control", { agentId, control });
                 } catch (err) { reply = { error: err.message }; }
                 if (reply?.error && control.op !== "move") logConsoleActivity(`[Live] ${reply.error}`);
@@ -3483,10 +3497,11 @@
             const agentId = live.agentId;
             if (!agentId) { logConsoleActivity("[Live] Pick an agent's browser first."); return; }
             if (agentId === live.outlier) { logConsoleActivity("[Live] Outlier's sign-in is cleared with Forget Outlier sign-in in the 📈 Outlier tab."); return; }
-            if (!confirm("Delete this agent's saved browser sign-ins (cookies and local storage)? Its browser closes.")) return;
+            if (!confirm(isPhoneBrowser ? "Delete the sign-ins (cookies and site data) of the agents' browser on this phone? The agents share it, so every agent's browser closes and is signed out."
+                : "Delete this agent's saved browser sign-ins (cookies and local storage)? Its browser closes.")) return;
             try {
-                const reply = window.codevDesktop?.browserLive
-                    ? await window.codevDesktop.browserLive({ op: "forget-signins", agentId })
+                const reply = agentBrowserHost
+                    ? await agentBrowserHost.browserLive({ op: "forget-signins", agentId })
                     : await postJson("/browser/forget-signins", { agentId });
                 logConsoleActivity(`[Live] ${reply.forgotten ? "Forgot this agent's browser sign-ins." : "This agent had no saved browser sign-ins."}`);
             } catch (err) { logConsoleActivity(`[Live] Couldn't forget sign-ins: ${err.message}`); }
