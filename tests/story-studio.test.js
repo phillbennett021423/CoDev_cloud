@@ -255,3 +255,78 @@ test('in the page: the studio fits a phone screen', async t => {
     assert.ok(tab, 'the Story tab is lit');
     assert.deepEqual(errors, []);
 });
+
+// ---------- Part 2: mood faces, voices, read-aloud ----------
+
+test('moods come from a line\'s emotion word, faces fall back to calm then concept art, voices are clamped', () => {
+    assert.equal(Studio.moodFor('cold'), 'angry');
+    assert.equal(Studio.moodFor('Amused'), 'happy');
+    assert.equal(Studio.moodFor('wary'), 'scared');
+    assert.equal(Studio.moodFor(''), 'neutral');
+    assert.deepEqual(Studio.splitMood('[Defiant] Never.'), { mood: 'defiant', text: 'Never.' });
+    assert.deepEqual(Studio.splitMood('No tag here'), { mood: '', text: 'No tag here' });
+    const pic = c => `data:image/jpeg;base64,${c}`;
+    assert.equal(Studio.portraitFor({ portraits: { angry: { thumb: pic('A') }, neutral: { thumb: pic('N') } } }, 'furious'), pic('A'));
+    assert.equal(Studio.portraitFor({ portraits: { neutral: { thumb: pic('N') } } }, 'sad'), pic('N'));
+    assert.equal(Studio.portraitFor({ art: { thumb: pic('C') } }, 'sad'), pic('C'));
+    assert.deepEqual(Studio.normalizeVoice({ engine: 'x', name: 'Ava', rate: 9, pitch: -1, elevenId: 'ab c!' }), { engine: 'device', name: 'Ava', rate: 2, pitch: 0, elevenId: 'abc' });
+
+    const { store } = sampleStore();
+    const mara = store.findEntry(store.project('Skyfall'), 'Mara Vex');
+    store.saveEntry('', { id: mara.id, portraits: { angry: { id: 'img_1', thumb: pic('A') }, bogus: { thumb: pic('B') }, sad: { thumb: 'https://evil.example/x.png' } }, voice: { name: 'Ava', rate: 1.2 } });
+    assert.deepEqual(Object.keys(store.findEntry(store.project('Skyfall'), 'Mara Vex').portraits), ['angry']);
+    store.saveEntry('', { id: mara.id, locked: true });
+    assert.equal(store.saveEntry('', { id: mara.id, portraits: { angry: null } }).locked, true, 'a locked character keeps its faces');
+});
+
+test('in the page: mood faces show in chats, lines are spoken in each character\'s voice, and a scene plays aloud', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { page, errors } = await openStudioPage(t, []);
+    const seeds = [];
+    // The free picture service: a 1px picture, noting the seed asked for.
+    await page.route('https://image.pollinations.ai/**', route => {
+        seeds.push(new URL(route.request().url()).searchParams.get('seed'));
+        route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64') });
+    });
+    await page.evaluate(() => {
+        window.groqChatMessage = async () => ({ role: 'assistant', content: '[angry] Leave. Now.' });
+        window.__spoken = [];
+        // Stands in for the voices: notes each line and its voice, done at once.
+        window.speakAsCharacter = async (text, voice) => { window.__spoken.push({ text, voice }); };
+        storyStudio.createProject({ name: 'Ashen Crown' });
+        storyStudio.saveEntry('', { kind: 'character', name: 'Rook', summary: 'A disgraced knight.', voice: { name: '', rate: 0.8, pitch: 0.6 } });
+        storyStudio.saveEntry('', { kind: 'character', name: 'Vel', summary: 'A fire witch.', voice: { rate: 1.3, pitch: 1.5 } });
+        storyStudio.updateProject(storyStudio.active().id, { narrator: { rate: 1, pitch: 1 } });
+        storyStudio.saveEntry('', { kind: 'scene', name: 'Ashes', fields: { characters: 'Rook, Vel' }, lines: [
+            { type: 'narration', text: 'Smoke rises.' }, { type: 'direction', text: 'Vel steps closer.' },
+            { speaker: 'Vel', text: 'You owe me.', emotion: 'smug' }, { speaker: 'Rook', text: 'I owe nothing.', emotion: 'cold' }] });
+        switchView('studio');
+    });
+    await page.click('#view-studio .gs-card:has-text("Rook")');
+    await page.click('#view-studio summary:has-text("Mood faces")');
+    await page.click('#view-studio .gs-face:has-text("Calm") button:has-text("Make")');
+    await page.waitForSelector('#view-studio .gs-face:has-text("Calm") img');
+    await page.click('#view-studio .gs-face:has-text("Angry") button:has-text("Make")');
+    await page.waitForSelector('#view-studio .gs-face:has-text("Angry") img');
+    assert.equal(seeds.length, 2);
+    assert.equal(seeds[0], seeds[1], 'both faces use the character\'s seed');
+
+    await page.click('#view-studio button:has-text("Talk to Rook")');
+    await page.check('#view-studio label:has-text("Speak replies") input');
+    await page.fill('#view-studio input[aria-label="Message"]', 'Hi');
+    await page.press('#view-studio input[aria-label="Message"]', 'Enter');
+    await page.waitForSelector('#view-studio .gs-said img');
+    assert.equal(await page.textContent('#view-studio .gs-said .gs-bubble small'), 'Rook (angry)🔊');
+    assert.equal(await page.textContent('#view-studio .gs-said .gs-bubble'), 'Rook (angry)🔊Leave. Now.');
+    const spoken = await page.evaluate(() => window.__spoken);
+    assert.deepEqual(spoken.map(s => [s.text, s.voice.pitch]), [['Leave. Now.', 0.6]]);
+
+    await page.click('#view-studio button:has-text("Scene Builder")');
+    await page.click('#view-studio .gs-card:has-text("Ashes")');
+    await page.click('#view-studio button:has-text("Play scene")');
+    await page.waitForFunction(() => window.__spoken.length === 4);
+    const played = await page.evaluate(() => window.__spoken.slice(1).map(s => [s.text, s.voice && s.voice.pitch]));
+    assert.deepEqual(played, [['Smoke rises.', 1], ['You owe me.', 1.5], ['I owe nothing.', 0.6]], 'the direction is skipped, each line in its own voice');
+    assert.equal(await page.locator('#view-studio .gs-said img').count(), 1, 'Rook\'s line shows his angry face; Vel has none');
+    assert.deepEqual(errors, []);
+});

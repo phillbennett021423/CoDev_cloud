@@ -1872,13 +1872,96 @@
             });
         }
 
-        // Concept art through generate_image's service, limits and picture store.
-        async function makeStudioArt(prompt) {
+        // Concept art through generate_image's service, limits and picture store. seed keeps
+        // the free service's faces alike; a paid service also draws from the reference picture.
+        async function makeStudioArt(prompt, { seed, referenceId } = {}) {
             const ctx = { onStep: step => logConsoleActivity(`[Studio] ${step}`) };
-            const said = await generateImageForTask({ prompt, aspect_ratio: "1:1" }, ctx);
+            const args = { prompt, aspect_ratio: "1:1", seed };
+            if (referenceId && imageService() !== "free") {
+                const reference = await loadGeneratedImage(referenceId);
+                if (reference) {
+                    ctx.attachedImages = [reference.url];
+                    args.edit_attached_images = true;
+                    args.prompt = `Keep this exact character (same face, hair, outfit and art style) and change only the expression. ${prompt}`;
+                }
+            }
+            const said = await generateImageForTask(args, ctx);
             const made = (ctx.generatedImages || [])[0];
             if (!made) return { error: String(said).replace(/^Error: /, "").replace(/\s*Tell the user[^.]*\.?/g, "").replace(/\s*Show the user[^.]*\.?/g, "").trim() };
             return { id: made.generatedId, thumb: await shrinkDataUrl(made.thumb, 240, 0.75) };
+        }
+
+        // 🔊 Character voices: this device's voices for free, or ElevenLabs with the user's key
+        // (paid per character, so CoDev caps it per day). Resolves when the line has been said.
+        const ELEVENLABS_KEY = "codev_elevenlabs_key";
+        const ELEVENLABS_DAILY_CHARS = 10000;
+        const elevenLabsKey = () => { try { return localStorage.getItem(ELEVENLABS_KEY) || ""; } catch (err) { return ""; } };
+
+        function studioVoices() {
+            if (getNativeSpeechPlugin("TextToSpeech") || !window.speechSynthesis) return [];
+            return window.speechSynthesis.getVoices().map(v => ({ name: v.name, lang: v.lang }));
+        }
+
+        async function speakWithElevenLabs(text, voiceId) {
+            let usage = { day: new Date().toDateString(), chars: 0 };
+            try { const saved = JSON.parse(localStorage.getItem("codev_elevenlabs_usage") || "{}"); if (saved.day === usage.day) usage = saved; } catch (err) { /* new day */ }
+            if (usage.chars + text.length > ELEVENLABS_DAILY_CHARS) throw new Error(`Today's ElevenLabs allowance in CoDev (${ELEVENLABS_DAILY_CHARS} characters) is used up. The device's own voice still works.`);
+            let response;
+            try {
+                response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_64`, {
+                    method: "POST", headers: { "xi-api-key": elevenLabsKey(), "Content-Type": "application/json", "Accept": "audio/mpeg" },
+                    body: JSON.stringify({ text, model_id: "eleven_flash_v2_5" })
+                });
+            } catch (err) { throw new Error(`couldn't reach ElevenLabs (${err.message})`); }
+            if (response.status === 401) throw new Error("ElevenLabs rejected the key. Check it in Story Studio > Project details.");
+            if (!response.ok) throw new Error(`ElevenLabs answered ${response.status}${response.status === 404 ? " (no voice with that ID)" : ""}`);
+            usage.chars += text.length;
+            try { localStorage.setItem("codev_elevenlabs_usage", JSON.stringify(usage)); } catch (err) { /* not counted */ }
+            await playAudioBlob(await response.blob());
+        }
+
+        function speakWebLine(chunk, voice, rate, pitch) {
+            return new Promise((resolve, reject) => {
+                const utterance = new SpeechSynthesisUtterance(chunk);
+                utterance.lang = (voice && voice.lang) || SPEECH_LANG;
+                if (voice) utterance.voice = voice;
+                utterance.rate = rate;
+                utterance.pitch = pitch;
+                utterance.onend = () => resolve();
+                utterance.onerror = event => event.error === "interrupted" || event.error === "canceled" ? resolve() : reject(new Error(event.error));
+                window.speechSynthesis.speak(utterance);
+            });
+        }
+
+        async function speakAsCharacter(text, voice) {
+            const clean = cleanTextForSpeech(text);
+            if (!clean) return;
+            stopSpeaking();
+            const runId = speechRunId;
+            isSpeaking = true;
+            const rate = voice ? voice.rate : 1, pitch = voice ? voice.pitch : 1;
+            try {
+                if (voice && voice.engine === "elevenlabs" && voice.elevenId && elevenLabsKey()) return await speakWithElevenLabs(clean, voice.elevenId);
+                const nativeTts = getNativeSpeechPlugin("TextToSpeech");
+                if (nativeTts) {
+                    for (const chunk of splitTextForSpeech(clean, 3000)) {
+                        if (runId !== speechRunId) return;
+                        await nativeTts.speak({ text: chunk, lang: SPEECH_LANG, rate, pitch, volume: 1.0 });
+                    }
+                    return;
+                }
+                if (!window.speechSynthesis) throw new Error("This browser can't speak text.");
+                await waitForWebVoices();
+                const picked = (voice && voice.name && window.speechSynthesis.getVoices().find(v => v.name === voice.name)) || lockedWebVoice;
+                await new Promise(r => setTimeout(r, 120));
+                window.speechSynthesis.resume();
+                for (const chunk of splitTextForSpeech(clean, picked && picked.localService ? 1200 : 220)) {
+                    if (runId !== speechRunId) return;
+                    await speakWebLine(chunk, picked, rate, pitch);
+                }
+            } finally {
+                if (runId === speechRunId) isSpeaking = false;
+            }
         }
 
         function showStudioView() {
@@ -1898,6 +1981,12 @@
                 pickFile: () => pickTextFileFromUser(),
                 writeFile: (path, content) => writeWorkspaceFile(path, content),
                 canWriteFolder: () => !!connectedDirectoryHandle,
+                voices: studioVoices,
+                speak: speakAsCharacter,
+                stopSpeaking: () => stopSpeaking(),
+                hasElevenLabs: () => !!elevenLabsKey(),
+                getElevenLabsKey: elevenLabsKey,
+                setElevenLabsKey: key => { try { if (key) localStorage.setItem(ELEVENLABS_KEY, key); else localStorage.removeItem(ELEVENLABS_KEY); } catch (err) { /* blocked storage */ } },
                 confirm: text => confirm(text)
             });
         }

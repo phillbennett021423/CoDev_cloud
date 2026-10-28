@@ -62,6 +62,36 @@
     };
     const KIND_NAMES = Object.keys(KINDS);
 
+    // 🎭 Mood faces: one portrait per mood, picked by a line's emotion word.
+    const MOODS = [["neutral", "Calm"], ["happy", "Happy"], ["angry", "Angry"], ["sad", "Sad"], ["scared", "Scared"], ["determined", "Determined"], ["surprised", "Surprised"]];
+    const MOOD_WORDS = {
+        happy: /happ|joy|glad|amus|laugh|smil|cheer|excit|warm|playful|smug|delight|relie/,
+        angry: /ang|rage|furi|mad\b|hostil|cold|irrit|annoy|snarl|bitter|defian|menac|threat/,
+        sad: /sad|grie|sorrow|tear|melanch|regret|hurt|guilt|tired|weary|lonel/,
+        scared: /scar|fear|afraid|panic|nerv|anxi|terr|wary|uneas/,
+        determined: /determin|resol|firm|confident|fierce|focus|serious|stern|proud|brave/,
+        surprised: /surpri|shock|amaz|stun|confus|disbel|startl/
+    };
+    function moodFor(emotion) {
+        const e = String(emotion || "").toLowerCase();
+        for (const [mood, pattern] of Object.entries(MOOD_WORDS)) if (pattern.test(e)) return mood;
+        return "neutral";
+    }
+    // The face for a line: that mood's portrait, else the calm one, else the concept art.
+    function portraitFor(entry, emotion) {
+        if (!entry) return "";
+        const faces = entry.portraits || {};
+        const face = faces[moodFor(emotion)] || faces.neutral || entry.art;
+        return face && face.thumb ? face.thumb : "";
+    }
+
+    // 🔊 A character's voice: the device's own voices (free), or ElevenLabs with the user's key.
+    function normalizeVoice(v) {
+        if (!v || typeof v !== "object") return undefined;
+        const num = (x, lo, hi, d) => { const n = Number(x); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n * 100) / 100)) : d; };
+        return { engine: v.engine === "elevenlabs" ? "elevenlabs" : "device", name: clip(v.name, 120), rate: num(v.rate, 0.5, 2, 1), pitch: num(v.pitch, 0, 2, 1), elevenId: clip(String(v.elevenId || "").replace(/[^\w-]/g, ""), 60) };
+    }
+
     // Requests that are about a game's story or design get the studio tools and index.
     // (Not "scene" or "script" alone: in Godot those are code.)
     const STUDIO_TASK = /\b(stor(y|ies)|storyline|lore|characters?|backstor(y|ies)|plot|dialog(ue)?s?|villains?|heroe?s?|factions?|quests?|npcs?|cutscenes?|story bible|story studio|timeline|world-?building)\b/i;
@@ -148,6 +178,7 @@
             }
             if (patch.engine != null) p.engine = clean(patch.engine, 40) || "Godot 4";
             if (patch.pitch != null) p.pitch = clean(patch.pitch, 1000);
+            if (patch.narrator !== undefined) p.narrator = normalizeVoice(patch.narrator);
             p.updatedAt = now();
             return save();
         }
@@ -197,6 +228,15 @@
             if (Array.isArray(data.lines)) entry.lines = normalizeLines(data.lines);
             if (typeof data.locked === "boolean") entry.locked = data.locked || undefined;
             if (data.art !== undefined) entry.art = data.art && isPicture(data.art.thumb) ? { id: clip(data.art.id, 80), thumb: String(data.art.thumb) } : undefined;
+            if (data.voice !== undefined) entry.voice = normalizeVoice(data.voice);
+            if (data.portraits && typeof data.portraits === "object") {
+                const faces = Object.assign({}, entry.portraits);
+                for (const [mood, face] of Object.entries(data.portraits)) {
+                    if (!MOODS.some(([m]) => m === mood)) continue;
+                    if (face && isPicture(face.thumb)) faces[mood] = { id: clip(face.id, 80), thumb: String(face.thumb) }; else delete faces[mood];
+                }
+                entry.portraits = Object.keys(faces).length ? faces : undefined;
+            }
             entry.updatedAt = now();
             p.updatedAt = now();
             const error = save();
@@ -459,7 +499,8 @@
         return [
             `You are ${character.name}, a character in the game "${p.name}". Stay in character for the whole conversation: speak only as ${character.name} would, in their voice, with their knowledge, attitude and way of talking. `
             + "Never mention being an AI or a model. Keep each reply short, a few sentences, like a line of game dialogue, unless the user asks for more. "
-            + `If the user writes "(ooc)" or "out of character", step out briefly and answer as a writing assistant, then go back to being ${character.name}.`,
+            + `If the user writes "(ooc)" or "out of character", step out briefly and answer as a writing assistant, then go back to being ${character.name}. `
+            + "Start every in-character reply with your mood in square brackets, one word, like [angry] or [amused].",
             `[Character card]\n${describeEntry(character)}`,
             p.pitch && `[The game] ${p.pitch}`,
             related.length && `[What ${character.name} knows about]\n${related.map(describeEntry).join("\n\n")}`
@@ -503,6 +544,12 @@
             + `Write the next ${count > 1 ? `${count} lines` : "line"}${opts.speaker ? `, spoken by ${opts.speaker}` : ", spoken by whoever should speak next"}. `
             + (count > 1 ? `Answer with only a JSON array: [{"speaker": "Name", "text": "what they say", "emotion": "word"}]`
                 : `Answer with only JSON: {"speaker": "Name", "text": "what they say", "emotion": "word"}`);
+    }
+
+    // "[angry] Get out." -> { mood: "angry", text: "Get out." }
+    function splitMood(reply) {
+        const m = /^\s*\[([^\]\n]{1,24})\]\s*/.exec(String(reply || ""));
+        return m ? { mood: m[1].trim().toLowerCase(), text: String(reply).slice(m[0].length).trim() } : { mood: "", text: String(reply || "").trim() };
     }
 
     function parseSceneLines(text, characters) {
@@ -652,7 +699,7 @@
 .gs-row > *, .gs-bar > * { min-width: 0; }
 .gs-row input[type=text], .gs-bar input[type=text] { flex: 1 1 180px; }
 .gs-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.gs-bar select, .gs input[type=text], .gs textarea, .gs select { background: var(--bg-dark); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 7px 9px; font-size: 0.85rem; font-family: inherit; max-width: 100%; }
+.gs-bar select, .gs input[type=text], .gs input[type=password], .gs textarea, .gs select { background: var(--bg-dark); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 7px 9px; font-size: 0.85rem; font-family: inherit; max-width: 100%; }
 .gs textarea { min-height: 64px; resize: vertical; width: 100%; box-sizing: border-box; }
 .gs input[type=text] { box-sizing: border-box; }
 .gs-btn { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 7px 12px; cursor: pointer; font-size: 0.82rem; white-space: nowrap; }
@@ -689,6 +736,18 @@
 .gs-bubble.them { align-self: flex-start; background: var(--bg-card); color: var(--text-main); }
 .gs-bubble small { display: block; font-weight: bold; font-size: 0.72rem; opacity: 0.8; margin-bottom: 2px; }
 .gs-send { display: flex; gap: 8px; }
+.gs-section { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 8px 12px; }
+.gs-section summary { cursor: pointer; font-weight: bold; font-size: 0.88rem; padding: 2px 0; }
+.gs-section > * + * { margin-top: 8px; }
+.gs-faces { display: flex; flex-wrap: wrap; gap: 8px; }
+.gs-face { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 84px; font-size: 0.75rem; }
+.gs-face img, .gs-face .gs-icon { width: 72px; height: 72px; border-radius: 10px; object-fit: cover; cursor: zoom-in; display: flex; align-items: center; justify-content: center; background: var(--bg-card); font-size: 1.6rem; }
+.gs-face .gs-btn { padding: 3px 8px; font-size: 0.72rem; }
+.gs-inline { flex-direction: row !important; align-items: center; gap: 6px !important; }
+.gs-said { display: flex; gap: 8px; align-items: flex-start; }
+.gs-said > img { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; flex: none; }
+.gs-bubble.playing { outline: 2px solid var(--warning); }
+.gs-speak { background: none; border: none; cursor: pointer; font-size: 0.85rem; padding: 0 2px; opacity: 0.75; }
 .gs-send input { flex: 1; min-width: 0; }
 @media (max-width: 600px) { .gs-line { grid-template-columns: 1fr; } .gs-grid { grid-template-columns: 1fr; } }
 `;
@@ -793,7 +852,11 @@
             const cancel = store.projects().length ? el("button", { class: "gs-btn", type: "button", text: "Cancel", onclick: () => { ui.section = "bible"; render(); } }) : null;
             return el("div", { class: "gs-form" }, el("b", { text: p ? `Project details: ${p.name}` : "New game project" }),
                 el("div", { class: "gs-row" }, el("label", {}, "Name", name), el("label", {}, "Engine", engine)),
-                el("label", {}, "About the game", pitch), msg, el("div", { class: "gs-row" }, save, cancel, remove));
+                el("label", {}, "About the game", pitch),
+                p ? voicePicker(p.narrator, false, narrator => store.updateProject(p.id, { narrator }), () => `This is the narrator of ${p.name}.`) : null,
+                p ? el("div", { class: "gs-note", text: "The voice above is the narrator's, for narration when a scene is read aloud." }) : null,
+                p && deps.setElevenLabsKey ? elevenLabsBox() : null,
+                msg, el("div", { class: "gs-row" }, save, cancel, remove));
         }
 
         function bibleView(p) {
@@ -904,6 +967,9 @@
                     render();
                 } }));
             }
+            const faces = !isNew && entry.kind === "character" ? moodFaces(p, entry, msg) : null;
+            const voiceBox = !isNew && entry.kind === "character" ? voicePicker(entry.voice, entry.locked, voice => store.saveEntry(p.id, { id: entry.id, voice }),
+                () => sampleLine(entry)) : null;
             const help = !isNew ? el("div", { class: "gs-send" },
                 el("input", { type: "text", placeholder: `Ask an agent, like "flesh out ${entry.name}'s backstory"`, "aria-label": "Ask an agent about this entry", onkeydown: e => { if (e.key === "Enter") sendToAgent(p, e.target.value, entry); } }),
                 el("button", { class: "gs-btn", type: "button", text: "🤖 Ask", onclick: e => sendToAgent(p, e.currentTarget.previousSibling.value, entry) })) : null;
@@ -916,14 +982,93 @@
             const form = el("div", { class: "gs-form" },
                 el("div", { class: "gs-row" }, back, el("b", { text: isNew ? `New ${kind.label.toLowerCase()}` : `${entry.locked ? "🔒 " : ""}${entry.name}` }), talk, lock),
                 entry.locked ? el("div", { class: "gs-note", text: "Locked: nothing can change it, not even an agent, until you unlock it. Chats and scenes with it never change it either way." }) : null,
-                art, el("div", { class: "gs-row" }, el("label", {}, "Name", name), el("label", {}, "Kind", kindSelect)),
+                art, faces, voiceBox, el("div", { class: "gs-row" }, el("label", {}, "Name", name), el("label", {}, "Kind", kindSelect)),
                 el("label", {}, "Summary", summary), fieldNodes, kind.lines ? el("label", {}, "Lines", linesBox) : null,
                 el("label", {}, "Tags", tags), msg, entry.locked ? null : el("div", { class: "gs-row" }, save, remove), help);
             if (entry.locked) {
                 form.querySelectorAll("input, textarea, select").forEach(node => { if (!node.closest(".gs-send")) node.disabled = true; });
-                form.querySelectorAll(".gs-art button, .gs-line button, .gs-lines > button").forEach(node => { node.disabled = true; });
+                form.querySelectorAll(".gs-art button, .gs-line button, .gs-lines > button, .gs-faces button").forEach(node => { if (!node.dataset.keep) node.disabled = true; });
             }
             return form;
+        }
+
+        function seedFor(entry) {
+            let h = 7;
+            for (const ch of entry.id) h = (h * 31 + ch.charCodeAt(0)) % 1000000007;
+            return h;
+        }
+
+        function sampleLine(entry) {
+            const style = (entry.fields || {}).speaking_style;
+            return `I'm ${entry.name}.${entry.summary ? ` ${entry.summary}` : ""}${style ? "" : " This is how I sound."}`;
+        }
+
+        // 🎭 One portrait per mood. The same seed (and, with a paid picture service, the calm
+        // face as a reference) keeps them looking like the same person.
+        function moodFaces(p, entry, msg) {
+            const faces = entry.portraits || {};
+            const f = entry.fields || {};
+            const box = el("div", { class: "gs-faces" });
+            const make = async mood => {
+                const label = MOODS.find(([m]) => m === mood)[1].toLowerCase();
+                const prompt = `Portrait headshot of ${entry.name}, a character from the video game${p.pitch ? ` "${clip(p.pitch, 150)}"` : ""}. ${clip(f.appearance || entry.summary || "", 300)}. `
+                    + `Facial expression: ${label}. Same character design every time, consistent face, hair and outfit, plain dark background, game portrait art.`;
+                const reference = mood !== "neutral" && faces.neutral ? faces.neutral.id : "";
+                return deps.makeArt(prompt.replace(/\s+/g, " "), { seed: seedFor(entry), referenceId: reference });
+            };
+            for (const [mood, label] of MOODS) {
+                const face = faces[mood];
+                box.append(el("div", { class: "gs-face" },
+                    face ? el("img", { src: face.thumb, alt: `${entry.name}, ${label}`, title: "Open full size", onclick: () => deps.openArt && deps.openArt(face.id) }) : el("span", { class: "gs-icon", text: "🙂" }),
+                    el("small", { text: label }),
+                    el("button", { class: "gs-btn", type: "button", text: face ? "Redo" : "Make", disabled: !deps.makeArt, onclick: async event => {
+                        const btn = event.currentTarget;
+                        btn.disabled = true;
+                        say(msg, `Drawing ${entry.name} looking ${label.toLowerCase()}… this can take up to a minute.`);
+                        const made = await make(mood);
+                        if (!made || made.error) { btn.disabled = false; return say(msg, (made && made.error) || "The picture couldn't be made.", true); }
+                        const saved = store.saveEntry(p.id, { id: entry.id, portraits: { [mood]: made } });
+                        if (saved.error) return say(msg, saved.error, true);
+                        ui.editing = saved.entry;
+                        render();
+                    } }),
+                    face ? el("button", { class: "gs-btn", type: "button", text: "✕", title: "Remove this face", onclick: () => { store.saveEntry(p.id, { id: entry.id, portraits: { [mood]: null } }); ui.editing = store.findEntry(p, entry.id); render(); } }) : null));
+            }
+            return el("details", { class: "gs-section", open: !!entry.portraits },
+                el("summary", { text: `🎭 Mood faces${entry.portraits ? ` (${Object.keys(faces).length})` : ""}` }),
+                el("div", { class: "gs-note", text: "Optional. Make the calm face first; the others are drawn to match it. They show next to the character's lines in chats and scenes, picked by each line's mood. Each one counts toward today's picture limit in Settings." }), box);
+        }
+
+        // 🔊 A voice: one of this device's voices (free), or an ElevenLabs voice when a key is set.
+        function voicePicker(current, locked, onSave, sample) {
+            const v = normalizeVoice(current) || { engine: "device", name: "", rate: 1, pitch: 1, elevenId: "" };
+            const list = deps.voices ? deps.voices() : [];
+            const engine = el("select", { "aria-label": "Voice service" }, el("option", { value: "device", text: "This device's voices (free)" }),
+                deps.hasElevenLabs && deps.hasElevenLabs() ? el("option", { value: "elevenlabs", selected: v.engine === "elevenlabs", text: "ElevenLabs (your key, paid)" }) : null);
+            const name = el("select", { "aria-label": "Voice" }, el("option", { value: "", text: "Default voice" }), list.map(x => el("option", { value: x.name, selected: x.name === v.name, text: `${x.name}${x.lang ? ` (${x.lang})` : ""}` })));
+            const eleven = el("input", { type: "text", value: v.elevenId, placeholder: "ElevenLabs voice ID", "aria-label": "ElevenLabs voice ID" });
+            const rate = el("input", { type: "range", min: "0.5", max: "2", step: "0.05", value: String(v.rate), "aria-label": "Speed" });
+            const pitch = el("input", { type: "range", min: "0", max: "2", step: "0.05", value: String(v.pitch), "aria-label": "Pitch" });
+            const read = () => ({ engine: engine.value, name: name.value, rate: Number(rate.value), pitch: Number(pitch.value), elevenId: eleven.value.trim() });
+            const sync = () => { const ev = engine.value === "elevenlabs"; name.style.display = ev || !list.length ? "none" : ""; eleven.style.display = ev ? "" : "none"; };
+            engine.addEventListener("change", sync);
+            sync();
+            const controls = [engine, name, eleven, rate, pitch];
+            controls.forEach(c => c.addEventListener("change", () => onSave(read())));
+            if (locked) controls.forEach(c => { c.disabled = true; });
+            const test = el("button", { class: "gs-btn", type: "button", "data-keep": "1", text: "▶ Test voice", disabled: !deps.speak, onclick: () => deps.speak(sample(), read()).catch(err => alert(err.message)) });
+            return el("details", { class: "gs-section", open: !!current },
+                el("summary", { text: "🔊 Voice" }),
+                el("div", { class: "gs-row" }, engine, name, eleven),
+                el("div", { class: "gs-row" }, el("label", { class: "gs-inline" }, "Speed", rate), el("label", { class: "gs-inline" }, "Pitch", pitch), test),
+                list.length || engine.value === "elevenlabs" ? null : el("div", { class: "gs-note", text: "On this device the voice is set by speed and pitch. Android uses its own text-to-speech voice." }));
+        }
+
+        function elevenLabsBox() {
+            const key = el("input", { type: "password", value: deps.getElevenLabsKey ? deps.getElevenLabsKey() : "", placeholder: "ElevenLabs API key", "aria-label": "ElevenLabs API key", autocomplete: "off" });
+            return el("details", { class: "gs-section" }, el("summary", { text: "🎙️ ElevenLabs voices (optional, paid)" }),
+                el("div", { class: "gs-note", text: "Free voices from this device always work. With an ElevenLabs key (elevenlabs.io, Profile > API keys), each character can use an ElevenLabs voice by its voice ID. ElevenLabs charges per character spoken, so CoDev stops at 10,000 characters a day." }),
+                el("div", { class: "gs-send" }, key, el("button", { class: "gs-btn", type: "button", text: "Save key", onclick: () => { deps.setElevenLabsKey(key.value.trim()); render(); } })));
         }
 
         function talkView(p) {
@@ -939,14 +1084,22 @@
                 chatBox(p, character, msg), msg);
         }
 
-        function bubble(who, text, mine) {
-            return el("div", { class: `gs-bubble ${mine ? "me" : "them"}` }, el("small", { text: who }), text);
+        // opts: face (a portrait), voice + say (adds a 🔊 button).
+        function bubble(who, text, mine, opts = {}) {
+            const speak = opts.voice !== undefined && deps.speak ? el("button", { class: "gs-speak", type: "button", text: "🔊", title: "Say it", "aria-label": `Say ${who}'s line`,
+                onclick: () => deps.speak(text, opts.voice).catch(err => alert(err.message)) }) : null;
+            const b = el("div", { class: `gs-bubble ${mine ? "me" : "them"}` }, el("small", {}, who, speak), text);
+            return opts.face ? el("div", { class: "gs-said", style: mine ? "align-self: flex-end;" : "" }, el("img", { src: opts.face, alt: "" }), b) : b;
         }
 
         function chatBox(p, character, msg) {
             const log = el("div", { class: "gs-chat", "aria-live": "polite" });
             const draw = () => {
-                log.replaceChildren(...ui.talkLog.map(m => bubble(m.role === "user" ? "You" : character.name, m.content, m.role === "user")));
+                log.replaceChildren(...ui.talkLog.map(m => {
+                    if (m.role === "user") return bubble("You", m.content, true);
+                    const said = splitMood(m.content);
+                    return bubble(`${character.name}${said.mood ? ` (${said.mood})` : ""}`, said.text, false, { face: portraitFor(character, said.mood), voice: character.voice || null });
+                }));
                 if (!ui.talkLog.length) log.append(el("div", { class: "gs-note", text: `Say something to ${character.name}.` }));
                 log.scrollTop = log.scrollHeight;
             };
@@ -963,6 +1116,7 @@
                 try {
                     const reply = await deps.chat([{ role: "system", content: characterSystemPrompt(p, character) }, ...ui.talkLog.slice(-CHAT_HISTORY_TURNS)]);
                     ui.talkLog.push({ role: "assistant", content: String(reply || "").trim() || "…" });
+                    if (ui.speakReplies && deps.speak) deps.speak(splitMood(reply).text, character.voice || null).catch(() => {});
                 } catch (err) {
                     ui.talkLog.pop();
                     input.value = text;
@@ -974,12 +1128,18 @@
             };
             input.addEventListener("keydown", e => { if (e.key === "Enter") send(); });
             const keep = el("button", { class: "gs-btn", type: "button", text: "💾 Save as dialogue", disabled: !ui.talkLog.length, onclick: () => {
-                const lines = ui.talkLog.map(m => ({ speaker: m.role === "user" ? "Player" : character.name, text: m.content }));
+                const lines = ui.talkLog.map(m => {
+                    if (m.role === "user") return { speaker: "Player", text: m.content };
+                    const said = splitMood(m.content);
+                    return { speaker: character.name, text: said.text, ...(said.mood ? { emotion: said.mood } : {}) };
+                });
                 const saved = store.saveEntry(p.id, { kind: "dialogue", name: uniqueName(p, `${character.name} talk`, "dialogue"), fields: { scene: `Conversation with ${character.name}` }, lines });
                 say(msg, saved.error || `Saved as "${saved.entry.name}" in the story bible.`, !!saved.error);
             } });
             const clear = el("button", { class: "gs-btn", type: "button", text: "Clear", onclick: () => { ui.talkLog = []; render(); } });
-            return el("div", { class: "gs" }, log, el("div", { class: "gs-send" }, input, el("button", { class: "gs-btn primary", type: "button", text: "Send", onclick: send })), el("div", { class: "gs-row" }, keep, clear));
+            const auto = deps.speak ? el("label", { class: "gs-chip", style: "display: inline-flex; gap: 6px; align-items: center;" },
+                el("input", { type: "checkbox", checked: !!ui.speakReplies, onchange: e => { ui.speakReplies = e.target.checked; if (!ui.speakReplies && deps.stopSpeaking) deps.stopSpeaking(); } }), "🔊 Speak replies") : null;
+            return el("div", { class: "gs" }, log, el("div", { class: "gs-send" }, input, el("button", { class: "gs-btn primary", type: "button", text: "Send", onclick: send })), el("div", { class: "gs-row" }, keep, clear, auto));
         }
 
         function uniqueName(p, base, kind) {
@@ -1061,7 +1221,8 @@
             function lineRow(l, i) {
                 const text = l.type === "direction" ? `(${l.text})` : l.text;
                 const who = l.type === "direction" ? "Director" : l.type === "narration" ? "Narration" : `${l.speaker}${l.emotion ? ` (${l.emotion})` : ""}`;
-                const row = el("div", { class: `gs-bubble ${l.type ? "me" : "them"}`, style: "max-width: 100%;" }, el("small", { text: `${i + 1}. ${who}` }));
+                const speak = l.type !== "direction" && deps.speak ? el("button", { class: "gs-speak", type: "button", text: "🔊", title: "Say it", onclick: () => deps.speak(l.text, voiceOf(l)).catch(err => say(msg, err.message, true)) }) : null;
+                const row = el("div", { class: `gs-bubble ${l.type ? "me" : "them"}`, style: "max-width: 100%; flex: 1; min-width: 0;", "data-line": String(i) }, el("small", {}, `${i + 1}. ${who}`, speak));
                 const body = el("div", { text, title: "Tap to edit", style: "cursor: text;" });
                 body.addEventListener("click", () => {
                     const edit = el("textarea", {});
@@ -1096,8 +1257,31 @@
                         draw();
                     } }) : null);
                 row.append(tools);
-                return row;
+                const face = !l.type && portraitFor(castEntry(l.speaker), l.emotion);
+                return face ? el("div", { class: "gs-said" }, el("img", { src: face, alt: "" }), row) : row;
             }
+
+            const castEntry = name => cast.find(c => sameName(c.name, name) && c.id);
+            const voiceOf = l => l.type === "narration" ? (p.narrator || null) : ((castEntry(l.speaker) || {}).voice || null);
+            const highlight = i => log.querySelectorAll("[data-line]").forEach(n => n.classList.toggle("playing", n.dataset.line === String(i)));
+            // ▶ The scene read aloud like an audio drama: each line in its character's voice,
+            // narration in the narrator's voice (set in Project details); directions are skipped.
+            const play = el("button", { class: "gs-btn", type: "button", text: "▶ Play scene", disabled: !deps.speak, onclick: async () => {
+                if (ui.playing) { ui.playing = false; if (deps.stopSpeaking) deps.stopSpeaking(); return; }
+                ui.playing = true;
+                play.textContent = "⏹ Stop";
+                const list = lines();
+                for (let i = 0; i < list.length && ui.playing; i++) {
+                    if (list[i].type === "direction") continue;
+                    highlight(i);
+                    const node = log.querySelector(`[data-line="${i}"]`);
+                    if (node && node.scrollIntoView) node.scrollIntoView({ block: "nearest" });
+                    try { await deps.speak(list[i].text, voiceOf(list[i])); } catch (err) { say(msg, err.message, true); break; }
+                }
+                ui.playing = false;
+                play.textContent = "▶ Play scene";
+                highlight(-1);
+            } });
 
             const speaker = el("select", { "aria-label": "Who speaks next" }, el("option", { value: "", text: "Whoever fits" }), cast.map(c => el("option", { value: c.name, text: c.name })));
             const direction = el("input", { type: "text", placeholder: "Director's note (optional), like \"she finally loses her temper\"", "aria-label": "Director's note" });
@@ -1173,12 +1357,12 @@
             const info = el("div", { class: "gs-note", text: `Where: ${f.location || "not set"} · Who: ${f.characters || "not set"} · Goal: ${f.goal || "not set"}` });
             draw();
             if (scene.locked) {
-                log.querySelectorAll("button").forEach(b => { b.disabled = true; });
-                return el("div", { class: "gs" }, head, info, log, el("div", { class: "gs-note", text: "🔒 This scene is locked. Unlock it in the story bible to change it." }));
+                log.querySelectorAll("button:not(.gs-speak)").forEach(b => { b.disabled = true; });
+                return el("div", { class: "gs" }, head, info, log, el("div", { class: "gs-row" }, play), el("div", { class: "gs-note", text: "🔒 This scene is locked. Unlock it in the story bible to change it." }));
             }
             return el("div", { class: "gs" }, head, info, log,
                 el("div", { class: "gs-row" }, "Next:", speaker, direction),
-                el("div", { class: "gs-row" }, next, four, reroll, undo, meter),
+                el("div", { class: "gs-row" }, next, four, reroll, undo, play, meter),
                 el("div", { class: "gs-send" }, as, mine, el("button", { class: "gs-btn", type: "button", text: "Add", onclick: add })),
                 msg,
                 el("div", { class: "gs-note", text: "Saved automatically to the story bible. Export it from 📦 Export to your game." }));
@@ -1224,6 +1408,7 @@
     return {
         STORE_KEY, KINDS, KIND_NAMES, SECTIONS, STUDIO_TASK,
         createStudioStore, buildStudioTools, studioPromptBlock, isStudioTask, exportFiles, toJson, toGdscript, toMarkdown,
+        MOODS, moodFor, portraitFor, normalizeVoice, splitMood,
         describeEntry, characterSystemPrompt, sceneDirectorPrompt, sceneTurnMessage, framePrompt, parseSceneLines, normalizeKind, slug, mount
     };
 });
