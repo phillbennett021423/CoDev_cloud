@@ -640,6 +640,7 @@
                             <div class="compact-badge" id="badgeSelfHeal" style="color: var(--success); display:none;">🛡️ Self-Heal</div>
                             <div class="compact-badge" id="badgeReasoning" style="color: var(--codev-blue); display:none;">⚡ Deep Reasoning</div>
                             <div class="compact-badge" id="badgeWebSearch" style="color: var(--codev-blue); display:none;">🔎 Web Search</div>
+                            <div class="compact-badge" id="badgeDeepResearch" style="color: var(--codev-blue); display:none;">🔬 Deep Research</div>
                             <div class="compact-badge" id="badgeSandbox" style="color: var(--codev-purple); display:none;">🧪 Sandbox</div>
                         </div>
 
@@ -651,6 +652,7 @@
                             <button id="micBtn" class="mic-btn" onclick="toggleSpeechRecognition()" title="Voice Input (STT)">🎤</button>
                             <button id="attachBtn" class="tool-btn" onclick="document.getElementById('attachmentInput').click()" title="Attach images, PDFs or short videos">📎</button>
                             <button id="screenshotFolderBtn" class="tool-btn" onclick="pickScreenshotFolder()" title="Pick a folder of screenshots (like Dabble slips) for the agents to read">📸</button>
+                            <button id="deepResearchBtn" class="tool-btn" onclick="toggleDeepResearch()" title="Deep research: read many sources and write a cited report (for your next message)" aria-pressed="false">🔬</button>
                             <button id="webSearchBtn" class="tool-btn" onclick="toggleWebSearch()" title="Search the web for every message: off (technical questions are searched automatically)" aria-pressed="false">🔎</button>
                             <button class="send-btn" onclick="sendChatMessage()">Send Task</button>
                         </div>
@@ -899,6 +901,13 @@
                 <summary>🔎 Web grounding & local tools (free)</summary>
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalAutoGround"> Search the web automatically for technical and code questions
+                </label>
+                <label class="checkbox-group">
+                    <input type="checkbox" id="modalGoogleSearch"> Search with Google through my Gemini key (fresher news, scores and injuries; free up to Google's daily allowance)
+                </label>
+                <p class="settings-note" id="googleSearchNote" style="font-size: 0.75rem; color: var(--text-muted); margin: 0 0 8px 24px;">One-time setup: get a free Gemini API key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and paste it in Settings as your Gemini key. Without it, CoDev searches DuckDuckGo and Bing News, which need no key.</p>
+                <label class="checkbox-group">
+                    <input type="checkbox" id="modalClaudeWebSearch"> With Anthropic as the provider, let Claude search the web itself (Anthropic bills $10 per 1,000 searches, at most 5 per step)
                 </label>
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalChime"> Play a chime when an agent finishes a response or task
@@ -1593,6 +1602,7 @@
                 document.getElementById("badgeSelfHeal").style.display = isHealChecked ? "flex" : "none";
                 document.getElementById("badgeReasoning").style.display = isReasonChecked ? "flex" : "none";
                 document.getElementById("badgeWebSearch").style.display = webSearchEnabled ? "flex" : "none";
+                document.getElementById("badgeDeepResearch").style.display = deepResearchArmed ? "flex" : "none";
                 document.getElementById("badgeSandbox").style.display = sandboxModeActive() ? "flex" : "none";
             }
         }
@@ -2130,11 +2140,11 @@
             return getNativeSpeechPlugin("CapacitorHttp") || window.codevDesktop?.http || null;
         }
 
-        async function searchDuckDuckGoNative(query) {
+        async function searchDuckDuckGoNative(query, df = "") {
             const http = getNativeHttp();
             if (!http) return null;
             const response = await http.get({
-                url: `${DDG_HTML_URL}?q=${encodeURIComponent(query)}&kl=us-en`,
+                url: `${DDG_HTML_URL}?q=${encodeURIComponent(query)}&kl=us-en${df ? `&df=${df}` : ""}`,
                 headers: { "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36", "Accept-Language": "en-US,en;q=0.9" },
                 responseType: "text",
                 connectTimeout: SEARCH_TIMEOUT_MS,
@@ -2183,28 +2193,134 @@
             return data;
         }
 
-        async function searchDuckDuckGoViaServer(query) {
-            const reply = await webFetchViaServer({ kind: "search", query });
+        async function searchDuckDuckGoViaServer(query, df = "") {
+            const reply = await webFetchViaServer({ kind: "search", query, df });
             if (!reply) return null;
             if (reply.status !== 200 || isDuckDuckGoBlockPage(reply.html || "")) throw new Error(`DuckDuckGo is limiting requests right now (HTTP ${reply.status}). Try again in a minute.`);
             return parseDuckDuckGoHtml(reply.html || "");
         }
 
-        // Returns { results, source } with up to SEARCH_RESULT_LIMIT results, or throws with a readable reason.
-        async function localWebSearch(query) {
+        // DuckDuckGo alone: { results, source } with up to SEARCH_RESULT_LIMIT results, or throws.
+        // recency ("day", "week", "month") limits it to pages from that long ago.
+        async function duckDuckGoSearch(query, recency) {
+            const df = DDG_RECENCY[recency] || "";
+            const nativeResults = await searchDuckDuckGoNative(query, df);
+            const serverResults = nativeResults ? null : await searchDuckDuckGoViaServer(query, df);
+            if (nativeResults) return { results: nativeResults.slice(0, SEARCH_RESULT_LIMIT), source: "DuckDuckGo (on device)" };
+            if (serverResults) return { results: serverResults.slice(0, SEARCH_RESULT_LIMIT), source: "DuckDuckGo via CoDev's server" };
+            return { results: (await searchViaLocalHelper(query)).slice(0, SEARCH_RESULT_LIMIT), source: "DuckDuckGo via local ddgs helper" };
+        }
+
+        // LIVE SEARCH: the freshest source this device has, best first.
+        //  1. Google Search through the user's Gemini key (Gemini's own grounding: the same
+        //     index Gemini answers news, scores and injuries from; free up to Google's daily
+        //     allowance). The key is the one saved for images and video, codev_gemini_key.
+        //  2. DuckDuckGo, plus Bing News headlines with their dates for anything that
+        //     changes day to day (news, scores, injuries, lines, "today", "latest").
+        // With Anthropic as the provider, the agents' web_search is Claude's own web search
+        // instead (see toAnthropicRequest); this is then used for pre-search and deep research.
+        const DDG_RECENCY = { day: "d", week: "w", month: "m" };
+        const GEMINI_SEARCH_MODEL = "gemini-flash-latest";
+        const NEWS_RESULT_LIMIT = 4;
+        const FRESH_QUERY_PATTERN = /\b(today|tonight|yesterday|tomorrow|this (week|weekend|morning|season)|latest|newest|recent(ly)?|current(ly)?|right now|breaking|news|headlines?|update[sd]?|score[sd]?|final|standings|results?|won|lost|beat|injur(y|ies|ed)|questionable|doubtful|ruled out|status|lineups?|starting|odds|spread|line moves?|props?|trade[sd]?|signed|released|announce[sd]?|price|stock|weather|election|poll)\b|\b20\d\d\b/i;
+        // Questions about what just happened get searched before the agent starts.
+        const NEWS_QUESTION_PATTERN = /\b(today|tonight|yesterday|latest|breaking|news|headlines?|scores?|who won|injur(y|ies|ed)|injury report|lineups?|standings)\b/i;
+        let googleSearchEnabled = (localStorage.getItem("codev_google_search") ?? "1") === "1";
+
+        function isFreshQuery(text) {
+            return FRESH_QUERY_PATTERN.test(String(text || ""));
+        }
+
+        // The Gemini key the images thread saves; read each time so a key added in Settings works at once.
+        function geminiSearchKey() {
+            const key = (typeof geminiKey === "string" && geminiKey) || localStorage.getItem("codev_gemini_key") || "";
+            return String(key).replace(/[\s\u200B-\u200D\uFEFF"'`]+/g, "");
+        }
+
+        // Asks Gemini to search Google and report what it found. Each grounding source comes
+        // back as a result, with the sentences of the report that cite it as its snippet.
+        async function searchWithGoogle(query, recency) {
+            const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+            const when = recency ? ` Only use pages from the last ${recency}.` : "";
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_SEARCH_MODEL}:generateContent`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-goog-api-key": geminiSearchKey() },
+                signal: AbortSignal.timeout(25000),
+                body: JSON.stringify({
+                    contents: [{ role: "user", parts: [{ text: `Today is ${today}. Search Google for: ${query}\n\nReport the most recent, relevant facts you found as 3 to 8 short bullet points. Give dates, times, scores, numbers and names exactly as the sources state them, and say when sources disagree. No introduction.${when}` }] }],
+                    tools: [{ google_search: {} }],
+                    generationConfig: { maxOutputTokens: 1200 }
+                })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(`Google Search via Gemini failed (${data.error?.message || `HTTP ${response.status}`})`);
+            const candidate = data.candidates?.[0] || {};
+            const summary = (candidate.content?.parts || []).map(p => p.text || "").join("").trim();
+            const meta = candidate.groundingMetadata || {};
+            const chunks = (meta.groundingChunks || []).map(c => c.web).filter(w => w && w.uri);
+            const cited = chunks.map(() => []);
+            for (const support of meta.groundingSupports || []) {
+                for (const i of support.groundingChunkIndices || []) if (cited[i] && support.segment?.text) cited[i].push(support.segment.text.trim());
+            }
+            const results = chunks.map((w, i) => ({ title: w.title || w.domain || w.uri, href: w.uri, body: [...new Set(cited[i])].join(" ").slice(0, 600) }));
+            if (!results.length && !summary) throw new Error("Google Search via Gemini returned nothing");
+            return { results: results.slice(0, 8), summary, source: "Google Search (via Gemini)", queries: meta.webSearchQueries || [] };
+        }
+
+        // Bing News's RSS feed: headlines with their publish dates, no key needed.
+        function parseNewsRss(xml) {
+            const doc = new DOMParser().parseFromString(xml, "text/xml");
+            return [...doc.querySelectorAll("item")].map(item => {
+                const text = tag => (item.querySelector(tag)?.textContent || "").replace(/\s+/g, " ").trim();
+                let href = text("link");
+                // Bing wraps the article as .../apiclick.aspx?...&url=<real url>&...
+                const wrapped = href.match(/[?&]url=([^&]+)/);
+                if (wrapped) { try { href = decodeURIComponent(wrapped[1]); } catch (err) { /* keep Bing's link */ } }
+                const date = text("pubDate");
+                const day = date && !isNaN(Date.parse(date)) ? new Date(date).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "";
+                const source = Array.from(item.children).find(c => /source$/i.test(c.tagName))?.textContent?.trim() || "";
+                return { title: text("title"), href, body: `${day ? `[${day}${source ? `, ${source}` : ""}] ` : ""}${text("description").replace(/<[^>]+>/g, "")}`.trim() };
+            }).filter(r => r.title && /^https?:\/\//.test(r.href));
+        }
+
+        async function searchNews(query) {
+            const { status, html } = await fetchPageHtml(`https://www.bing.com/news/search?q=${encodeURIComponent(query)}&format=rss&mkt=en-US`);
+            if (status !== 200) throw new Error(`Bing News answered HTTP ${status}`);
+            return parseNewsRss(html).slice(0, NEWS_RESULT_LIMIT);
+        }
+
+        // Returns { results, source, summary? } or throws with a readable reason.
+        // options.recency: "day", "week" or "month" for news-like questions.
+        async function localWebSearch(query, options = {}) {
             query = buildSearchQuery(query);
             if (!query) return { results: [], source: "none" };
-            const cached = searchCache.get(query);
-            if (cached && Date.now() - cached.at < SEARCH_CACHE_MS) return cached.value;
+            const recency = DDG_RECENCY[options.recency] ? options.recency : "";
+            const fresh = Boolean(recency) || isFreshQuery(query);
+            const cacheKey = `${recency}|${query}`;
+            const cached = searchCache.get(cacheKey);
+            // News goes stale fast: fresh questions are cached for two minutes, not ten.
+            if (cached && Date.now() - cached.at < (fresh ? 2 * 60 * 1000 : SEARCH_CACHE_MS)) return cached.value;
 
-            let value;
-            const nativeResults = await searchDuckDuckGoNative(query);
-            const serverResults = nativeResults ? null : await searchDuckDuckGoViaServer(query);
-            if (nativeResults) value = { results: nativeResults.slice(0, SEARCH_RESULT_LIMIT), source: "DuckDuckGo (on device)" };
-            else if (serverResults) value = { results: serverResults.slice(0, SEARCH_RESULT_LIMIT), source: "DuckDuckGo via CoDev's server" };
-            else value = { results: (await searchViaLocalHelper(query)).slice(0, SEARCH_RESULT_LIMIT), source: "DuckDuckGo via local ddgs helper" };
-
-            searchCache.set(query, { at: Date.now(), value });
+            let value = null;
+            if (googleSearchEnabled && geminiSearchKey()) {
+                try { value = await searchWithGoogle(query, recency); } catch (err) {
+                    logConsoleActivity(`[Web Search] ${err.message}; using DuckDuckGo instead.`);
+                }
+            }
+            if (!value) {
+                // News headlines and the web side by side; either one failing still leaves the other.
+                const [web, news] = await Promise.allSettled([
+                    duckDuckGoSearch(query, recency),
+                    fresh ? searchNews(query) : Promise.resolve([])
+                ]);
+                const newsResults = news.status === "fulfilled" ? news.value : [];
+                if (web.status === "rejected" && !newsResults.length) throw web.reason;
+                const webResults = web.status === "fulfilled" ? web.value.results : [];
+                const results = newsResults.concat(webResults.filter(r => !newsResults.some(n => n.href === r.href)));
+                const sources = [newsResults.length ? "Bing News" : "", web.status === "fulfilled" ? web.value.source : ""].filter(Boolean);
+                value = { results, source: sources.join(" + ") };
+            }
+            searchCache.set(cacheKey, { at: Date.now(), value });
             if (searchCache.size > 30) searchCache.delete(searchCache.keys().next().value);
             return value;
         }
@@ -2267,7 +2383,8 @@
 
         function formatSearchSnippets(search) {
             const lines = search.results.map((r, i) => `[${i + 1}] ${r.title}\n${r.href}\n${r.body}`);
-            return `\n\n[Web Search Snippets: ${search.source}, fetched ${new Date().toISOString().slice(0, 10)}]\n${lines.join("\n\n")}`;
+            const summary = search.summary ? `Summary of what the search found:\n${search.summary}\n\n` : "";
+            return `\n\n[Web Search Snippets: ${search.source}, fetched ${new Date().toISOString().slice(0, 10)}]\n${summary}${lines.join("\n\n")}`;
         }
 
         // Under a finished reply: every step the agent took and what it found, so the user
@@ -3252,18 +3369,23 @@
             const tools = [
                 {
                     name: "web_search",
-                    description: "Search the web with DuckDuckGo for live facts. Call this before answering anything about an API, library, engine feature, syntax, version, error message or code you are not completely certain about.",
-                    inputSchema: { type: "object", properties: { query: { type: "string", description: "A short search query, like you would type into a search engine." } }, required: ["query"] },
-                    run: async ({ query }, ctx) => {
+                    description: "Search the web for live facts: Google Search when the user has a Gemini key, otherwise DuckDuckGo plus dated news headlines. Call this for anything that may have changed since your training (news, scores, injuries, lineups, odds, prices, releases) and before answering about an API, library, engine feature, syntax, version or error message you are not completely certain about. Set recency to \"day\" or \"week\" for news, scores and injuries.",
+                    inputSchema: { type: "object", properties: {
+                        query: { type: "string", description: "A short search query, like you would type into a search engine." },
+                        recency: { type: "string", enum: ["day", "week", "month", "any"], description: "Optional: only pages from the last day, week or month. Use day or week for news, scores and injuries." }
+                    }, required: ["query"] },
+                    run: async ({ query, recency }, ctx) => {
                         if (!String(query || "").trim()) return "web_search needs a query.";
-                        const search = await localWebSearch(String(query));
-                        if (!search.results.length) return "No results.";
+                        const search = await localWebSearch(String(query), { recency });
+                        if (!search.results.length && !search.summary) return "No results.";
                         const start = ctx.sources.length;
                         search.results.forEach(r => { if (!ctx.sources.some(s => s.href === r.href)) ctx.sources.push({ title: r.title, href: r.href }); });
-                        return search.results.map(r => {
+                        const list = search.results.map(r => {
                             const n = ctx.sources.findIndex(s => s.href === r.href) + 1 || start + 1;
                             return `[${n}] ${r.title}\n${r.href}\n${r.body}`;
                         }).join("\n\n");
+                        return `[${search.source}, searched ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC]\n`
+                            + (search.summary ? `Summary of what the search found:\n${search.summary}\n\n` : "") + list;
                     }
                 },
                 {
@@ -3591,7 +3713,14 @@
                 current ? `▶ Now: ${current}` : ""
             ].filter(Boolean).join("\n");
             for (let round = 0; round < MAX_TOOL_ROUNDS && outlierFailures < 2 && browserFailures < 3; round++) {
-                const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" });
+                const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" }, { sources: ctx.sources || [] });
+                // Searches Claude ran itself (its own web search) are steps too.
+                for (const search of message.web_searches || []) {
+                    const step = `🔎 Claude searched: ${search.query}`;
+                    const note = search.error ? `Error: ${search.error}` : `${search.count} result(s)`;
+                    done.push({ step, ok: !search.error, note });
+                    if (ctx.toolLog) ctx.toolLog.push(`${step} → ${note}`);
+                }
                 const calls = message.tool_calls || [];
                 if (!calls.length) return message.content || "";
                 messages.push({ role: "assistant", content: message.content || "", tool_calls: calls, anthropic_content: message.anthropic_content });
@@ -3653,7 +3782,7 @@
                 }
             }
             // Out of rounds: ask for the answer with what was gathered.
-            const final = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "none" });
+            const final = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "none" }, { sources: ctx.sources || [] });
             return final.content || "";
         }
 
@@ -4880,6 +5009,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             document.getElementById("anthropicServerNote").style.display = anthropicViaServer ? "inline" : "none";
             toggleProviderFields();
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
+            document.getElementById("modalGoogleSearch").checked = googleSearchEnabled;
+            document.getElementById("googleSearchNote").style.display = geminiSearchKey() ? "none" : "block";
+            document.getElementById("modalClaudeWebSearch").checked = claudeWebSearchEnabled;
             document.getElementById("modalMemoryOn").checked = savedMemoryEnabled;
             renderSavedMemories();
             document.getElementById("modalChime").checked = chimeEnabled;
@@ -5073,6 +5205,11 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             autoGroundingEnabled = document.getElementById("modalAutoGround").checked;
             searchHelperUrl = document.getElementById("modalSearchHelperUrl").value.trim() || DEFAULT_SEARCH_HELPER_URL;
             localStorage.setItem("codev_auto_ground", autoGroundingEnabled ? "1" : "0");
+            googleSearchEnabled = document.getElementById("modalGoogleSearch").checked;
+            localStorage.setItem("codev_google_search", googleSearchEnabled ? "1" : "0");
+            claudeWebSearchEnabled = document.getElementById("modalClaudeWebSearch").checked;
+            localStorage.setItem("codev_claude_web_search", claudeWebSearchEnabled ? "1" : "0");
+            claudeWebSearchFailed = false;
             chimeEnabled = document.getElementById("modalChime").checked;
             localStorage.setItem("codev_chime", chimeEnabled ? "1" : "0");
             readAzureSettings();
@@ -5471,8 +5608,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // Sends one chat request to the provider picked in Settings. The body uses
         // Groq's model names; with OpenRouter the model is swapped for the OpenRouter
         // model from Settings, which serves text, tools and images alike.
-        async function groqChatMessage(body) {
-            if (currentBackend === "anthropic") return anthropicChatMessage(body);
+        // extras.sources: the run's source list, for Claude's web search citations.
+        async function groqChatMessage(body, extras) {
+            if (currentBackend === "anthropic") return anthropicChatMessage(body, extras);
             const openRouter = currentBackend === "openrouter";
             const provider = openRouter
                 ? { name: "OpenRouter", host: "openrouter.ai", url: "https://openrouter.ai/api/v1/chat/completions", key: openRouterKey,
@@ -5505,6 +5643,38 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             return match
                 ? { type: "image", source: { type: "base64", media_type: match[1], data: match[2] } }
                 : { type: "image", source: { type: "url", url } };
+        }
+
+        // CLAUDE'S OWN WEB SEARCH: with Anthropic as the provider, the agents' web_search is
+        // Anthropic's server-side search tool, so Claude searches and reads results itself,
+        // fresh, with citations. Anthropic bills $10 per 1,000 searches plus the result text
+        // as input; max_uses caps the searches in one request. If the account or model
+        // refuses it, CoDev goes back to its own web_search for the rest of the session.
+        const CLAUDE_WEB_SEARCH_TOOL = { type: "web_search_20250305", name: "web_search", max_uses: 5 };
+        let claudeWebSearchEnabled = (localStorage.getItem("codev_claude_web_search") ?? "1") === "1";
+        let claudeWebSearchFailed = false;
+        function claudeWebSearchActive() {
+            return claudeWebSearchEnabled && !claudeWebSearchFailed;
+        }
+
+        // The text of Claude's reply with [n] after each cited passage, numbered in sources
+        // (the run's source list, so they match the links under the reply), and the searches it ran.
+        function claudeSearchResults(content, sources) {
+            const searches = content.filter(b => b.type === "server_tool_use" && b.name === "web_search").map(b => {
+                const result = content.find(r => r.type === "web_search_tool_result" && r.tool_use_id === b.id);
+                const found = Array.isArray(result?.content) ? result.content.filter(r => r.url) : [];
+                return { query: b.input?.query || "", count: found.length, error: Array.isArray(result?.content) ? "" : result?.content?.error_code || "" };
+            });
+            const number = (url, title) => {
+                let n = sources.findIndex(s => s.href === url);
+                if (n < 0) { sources.push({ title: title || url, href: url }); n = sources.length - 1; }
+                return n + 1;
+            };
+            const text = content.filter(b => b.type === "text").map(b => {
+                const cites = [...new Set((b.citations || []).filter(c => c.url).map(c => number(c.url, c.title)))];
+                return b.text + (cites.length ? cites.map(n => ` [${n}]`).join("") : "");
+            }).join("");
+            return { text, searches };
         }
 
         // Converts the OpenAI chat body CoDev builds into an Anthropic Messages request.
@@ -5547,7 +5717,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const request = { model: ANTHROPIC_MODEL, max_tokens: 16000, cache_control: { type: "ephemeral" }, messages };
             if (system.length) request.system = system.join("\n\n");
             if (body.tools?.length) {
-                request.tools = body.tools.map(t => ({ name: t.function.name, description: t.function.description || "", input_schema: t.function.parameters || { type: "object", properties: {} } }));
+                request.tools = body.tools.map(t => t.function.name === "web_search" && claudeWebSearchActive()
+                    ? CLAUDE_WEB_SEARCH_TOOL
+                    : { name: t.function.name, description: t.function.description || "", input_schema: t.function.parameters || { type: "object", properties: {} } });
                 request.tool_choice = { type: body.tool_choice === "none" ? "none" : "auto" };
             }
             return request;
@@ -5556,7 +5728,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // Sends a chat request to Anthropic and answers in the OpenAI message shape
         // ({ content, tool_calls }) the rest of CoDev expects. With no key in Settings
         // on the local server page, server.js adds ANTHROPIC_API_KEY and relays it.
-        async function anthropicChatMessage(body) {
+        async function anthropicChatMessage(body, extras = {}) {
             const viaServer = !anthropicKey && anthropicViaServer;
             const url = viaServer ? "/anthropic/v1/messages" : "https://api.anthropic.com/v1/messages";
             const headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01" };
@@ -5565,15 +5737,32 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 // Anthropic only answers browser pages that say they hold the user's own key.
                 headers["anthropic-dangerous-direct-browser-access"] = "true";
             }
-            let response;
-            try {
-                response = await fetch(url, { method: "POST", headers, body: JSON.stringify(toAnthropicRequest(body)) });
-            } catch (err) {
-                throw new Error(viaServer
-                    ? `Couldn't reach CoDev's server to relay to Anthropic (${err.message}). Is npm start still running?`
-                    : `Couldn't reach Anthropic at api.anthropic.com (${err.message}). Check that this device is online, and that a firewall, antivirus, VPN or ad blocker isn't blocking api.anthropic.com.`);
+            const request = toAnthropicRequest(body);
+            const send = async () => {
+                let response;
+                try {
+                    response = await fetch(url, { method: "POST", headers, body: JSON.stringify(request) });
+                } catch (err) {
+                    throw new Error(viaServer
+                        ? `Couldn't reach CoDev's server to relay to Anthropic (${err.message}). Is npm start still running?`
+                        : `Couldn't reach Anthropic at api.anthropic.com (${err.message}). Check that this device is online, and that a firewall, antivirus, VPN or ad blocker isn't blocking api.anthropic.com.`);
+                }
+                return { response, data: await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } })) };
+            };
+            let { response, data } = await send();
+            // Web search not enabled for this account or model: CoDev's own web_search instead.
+            if (response.status === 400 && /web_search/i.test(data.error?.message || "") && request.tools?.includes(CLAUDE_WEB_SEARCH_TOOL)) {
+                claudeWebSearchFailed = true;
+                logConsoleActivity(`[Anthropic] Claude's web search isn't available on this account (${data.error.message}); using CoDev's web search.`);
+                return anthropicChatMessage(body, extras);
             }
-            const data = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } }));
+            // A long search turn pauses; sending it back as it is lets Claude carry on.
+            const content = [];
+            for (let resumes = 0; response.ok && data.stop_reason === "pause_turn" && resumes < 3; resumes++) {
+                content.push(...(data.content || []));
+                request.messages = request.messages.concat({ role: "assistant", content: data.content || [] });
+                ({ response, data } = await send());
+            }
             if (!response.ok) {
                 if (response.status === 401) {
                     throw new Error(viaServer
@@ -5587,13 +5776,16 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             }
             const usage = data.usage || {};
             if (usage.cache_read_input_tokens) logConsoleActivity(`[Anthropic] ${usage.cache_read_input_tokens} of ${usage.cache_read_input_tokens + (usage.cache_creation_input_tokens || 0) + (usage.input_tokens || 0)} input tokens came from the prompt cache (billed at a tenth).`);
-            const content = data.content || [];
-            const text = content.filter(b => b.type === "text").map(b => b.text).join("");
+            content.push(...(data.content || []));
+            const searched = claudeSearchResults(content, extras.sources || []);
+            const text = searched.text;
+            if (searched.searches.length) logConsoleActivity(`[Anthropic] Claude searched the web ${searched.searches.length} time(s): ${searched.searches.map(q => q.query).join("; ")}`);
             const calls = content.filter(b => b.type === "tool_use")
                 .map(b => ({ id: b.id, type: "function", function: { name: b.name, arguments: JSON.stringify(b.input || {}) } }));
             if (data.stop_reason === "max_tokens" && !calls.length) logConsoleActivity("[Anthropic] The reply hit the length limit and was cut short.");
             const message = { role: "assistant", content: text, anthropic_content: content };
             if (calls.length) message.tool_calls = calls;
+            if (searched.searches.length) message.web_searches = searched.searches;
             return message;
         }
 
@@ -5701,7 +5893,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 10. STYLE: Answer directly in plain words. Match the length to the question: a short question gets a short answer. Use lists or code blocks only when they help.
 
-11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; web search and reading full web pages; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots, images, PDFs and video frames. For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
+11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots, images, PDFs and video frames. For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
 
 12. ENGINE-SPECIFIC RULES:${godotRules || " none for this task."}`;
             
@@ -6328,6 +6520,135 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             };
         }
 
+        // 🔬 DEEP RESEARCH: a long question answered from many sources, as a cited report.
+        // CoDev plans the searches, runs them, reads the best pages, asks once what is still
+        // missing and searches that, then writes the report. It is a fixed pipeline, so the
+        // usage is known up front: 3 model calls, up to 8 searches and a capped number of
+        // pages, sized to the provider (Groq's free tier has small per-minute token limits).
+        const DEEP_RESEARCH_REQUEST = /^\s*(\/research\b|deep research\b)[\s:,-]*/i;
+        const DEEP_RESEARCH_LIMITS = {
+            groq: { queries: 4, followUps: 2, pages: 6, pageChars: 1500 },
+            openrouter: { queries: 5, followUps: 3, pages: 8, pageChars: 3000 },
+            anthropic: { queries: 5, followUps: 3, pages: 12, pageChars: 5000 }
+        };
+        let deepResearchArmed = false;
+
+        // 🔬 arms the next message only, so a forgotten toggle never runs up usage.
+        function toggleDeepResearch(on = !deepResearchArmed) {
+            deepResearchArmed = on;
+            const btn = document.getElementById("deepResearchBtn");
+            if (!btn) return;
+            btn.classList.toggle("active", on);
+            btn.setAttribute("aria-pressed", String(on));
+            btn.title = on ? "Deep research is on for your next message: CoDev reads many sources and writes a cited report" : "Deep research: read many sources and write a cited report (for your next message)";
+            const badge = document.getElementById("badgeDeepResearch");
+            if (badge && document.getElementById("compactBadgesBar").style.display === "flex") badge.style.display = on ? "flex" : "none";
+            logConsoleActivity(`Deep research ${on ? "on for the next message" : "off"}.`);
+        }
+
+        // The model's JSON list of queries, or [] when it answered something else.
+        function parseQueryList(text) {
+            const match = String(text || "").match(/\[[\s\S]*\]/);
+            if (!match) return [];
+            try {
+                const list = JSON.parse(match[0]);
+                return Array.isArray(list) ? list.map(q => String(q || "").replace(/\s+/g, " ").trim()).filter(q => q && q.length <= 200) : [];
+            } catch (err) { return []; }
+        }
+
+        async function runDeepResearch(session, question) {
+            const limits = DEEP_RESEARCH_LIMITS[currentBackend] || DEEP_RESEARCH_LIMITS.groq;
+            const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+            appendMessageToSession(session, "🔬 Deep research (Working...)", "📝 Planning the searches…");
+            const placeholder = session.messages[session.messages.length - 1];
+            const toolLog = [];
+            const sources = [];            // { title, href, body, text } numbered in order
+            const summaries = [];
+            const show = line => {
+                placeholder.text = `${toolLog.slice(-6).map(l => `✓ ${l}`).join("\n")}${line ? `\n▶ Now: ${line}` : ""}`;
+                if (session.id === activeChatId) renderActiveChatFeed();
+            };
+            const ask = async (system, user) => groqChat({ model: TEXT_MODEL, temperature: 0.0, messages: [{ role: "system", content: system }, { role: "user", content: user }] });
+            const search = async query => {
+                show(`🔎 Searching: ${query}`);
+                try {
+                    const found = await localWebSearch(query, isFreshQuery(question) ? { recency: "month" } : {});
+                    if (found.summary) summaries.push(`Search "${query}" (${found.source}):\n${found.summary}`);
+                    let added = 0;
+                    for (const r of found.results) if (!sources.some(s => s.href === r.href)) { sources.push({ title: r.title, href: r.href, body: r.body }); added++; }
+                    toolLog.push(`🔎 ${query} → ${found.results.length} result(s), ${added} new, from ${found.source}`);
+                } catch (err) {
+                    toolLog.push(`🔎 ${query} → Error: ${err.message}`);
+                }
+            };
+            const read = async picks => {
+                // Three at a time: quick, without hammering one site.
+                for (let i = 0; i < picks.length; i += 3) {
+                    await Promise.all(picks.slice(i, i + 3).map(async source => {
+                        show(`📖 Reading ${source.title}`);
+                        try {
+                            const { status, html } = await fetchPageHtml(source.href);
+                            if (status >= 400) throw new Error(`HTTP ${status}`);
+                            const page = htmlToReadableText(html);
+                            source.text = page.text.slice(0, limits.pageChars);
+                            toolLog.push(`📖 ${source.title} → ${source.text ? `${source.text.length} characters` : "no readable text"}`);
+                        } catch (err) {
+                            source.text = "";
+                            toolLog.push(`📖 ${source.title} → Error: ${err.message}`);
+                        }
+                    }));
+                }
+            };
+            const notes = () => sources.map((s, i) => `[${i + 1}] ${s.title}\n${s.href}\n${s.text ? s.text : s.body || ""}`).join("\n\n");
+            try {
+                // 1. Plan.
+                const plan = parseQueryList(await ask(
+                    `Today is ${today}. You plan web research. Reply with only a JSON array of ${limits.queries} short, distinct search queries that together cover the question: the main facts, the latest news or numbers, and other viewpoints. No other text.`,
+                    question));
+                const queries = (plan.length ? plan : [question]).slice(0, limits.queries);
+                toolLog.push(`📝 Plan: ${queries.join(" | ")}`);
+                // 2. Search, then read the best pages: each query's top results in turn.
+                for (const q of queries) await search(q);
+                if (!sources.length && !summaries.length) throw new Error("No search worked, so there is nothing to research from. Check the connection and try again.");
+                const firstPicks = sources.slice(0, limits.pages);
+                await read(firstPicks);
+                // 3. One follow-up round for what is still missing.
+                show("🧭 Checking what is still missing");
+                const followUps = parseQueryList(await ask(
+                    `Today is ${today}. You review research notes. Reply with only a JSON array of at most ${limits.followUps} search queries for important gaps or claims that need checking. Reply [] if the notes already answer the question.`,
+                    `Question: ${question}\n\n${summaries.join("\n\n")}\n\n${notes().slice(0, limits.pages * limits.pageChars)}`)).slice(0, limits.followUps);
+                if (followUps.length) {
+                    toolLog.push(`🧭 Follow-up: ${followUps.join(" | ")}`);
+                    const before = sources.length;
+                    for (const q of followUps) await search(q);
+                    await read(sources.slice(before, before + Math.max(2, Math.floor(limits.pages / 3))));
+                }
+                // 4. Write the report from the sources only.
+                show("✍️ Writing the report");
+                const fullyRead = sources.filter(s => s.text).length;
+                const report = await ask(
+                    `Today is ${today}. Write a research report that answers the user's question using only the numbered sources and search summaries given.
+- Start with a short "Answer" section: the direct answer in 2 to 4 sentences.
+- Then "Findings" with headed sections and bullet points. Put the source number in brackets, like [3], after every factual claim; several sources like [2][5].
+- Give dates for anything time-sensitive (news, scores, injuries, prices) and prefer the newest source when they disagree, saying that they disagree.
+- End with "What's uncertain": gaps, weak or conflicting sources, and what to check.
+- Never cite a number that isn't in the list, and never add facts the sources don't support. Use plain words.`,
+                    `Question: ${question}\n\n${summaries.length ? `[Search summaries]\n${summaries.join("\n\n")}\n\n` : ""}[Sources]\n${notes()}`);
+                const at = session.messages.indexOf(placeholder);
+                if (at >= 0) session.messages.splice(at, 1);
+                appendMessageToSession(session, "🔬 Deep research", report || "The model returned an empty report.", null, sources.map(s => ({ title: s.title, href: s.href })));
+                const reply = session.messages[session.messages.length - 1];
+                reply.toolLog = toolLog.slice(-MAX_HISTORY_TOOL_STEPS);
+                logConsoleActivity(`[Deep research] ${queries.length + followUps.length} searches, ${sources.length} sources (${fullyRead} read in full), 3 model calls.`);
+            } catch (err) {
+                const at = session.messages.indexOf(placeholder);
+                if (at >= 0) session.messages.splice(at, 1);
+                appendMessageToSession(session, "❌ Deep research", err.message);
+            }
+            if (session.id === activeChatId) renderActiveChatFeed();
+            scheduleChatSave();
+        }
+
         // One agent's turn. The workspace is indexed again for every agent, since the
         // agent before it may have changed files.
         async function runAgentStep(session, agent, task, opts) {
@@ -6486,6 +6807,13 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
             if (session) session.isGroup = isGroup;
 
+            // 🔬 armed, or a message starting "deep research" or /research: the research pipeline answers it.
+            if (session && (deepResearchArmed || DEEP_RESEARCH_REQUEST.test(userText))) {
+                if (deepResearchArmed) toggleDeepResearch(false);
+                await runDeepResearch(session, userText.replace(DEEP_RESEARCH_REQUEST, "").trim() || userText);
+                return;
+            }
+
             let activeAgent = agents.find(a => a.id === selectedAgentId) || agents[0];
             if (!activeAgent) {
                 appendMessageToActiveSession("❌ System Error", "No agent is configured. Create an agent in the Agent Manager first.");
@@ -6506,13 +6834,16 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 });
             }
 
-            // Ground technical answers in live DuckDuckGo results (or every answer when 🔎 is on).
+            // Ground technical and news answers in live search results (or every answer when 🔎 is on).
             let webSources = [];
-            if (webSearchEnabled || (autoGroundingEnabled && isTechnicalQuery(userText))) {
-                appendMessageToSession(session, "🔎 Web Search", "Searching DuckDuckGo for live sources…");
+            // News-like questions too, unless Claude is searching for itself or it's a props task for Outlier.
+            const newsAsk = autoGroundingEnabled && NEWS_QUESTION_PATTERN.test(userText) && requestKind !== "props"
+                && !(currentBackend === "anthropic" && claudeWebSearchActive());
+            if (webSearchEnabled || newsAsk || (autoGroundingEnabled && isTechnicalQuery(userText))) {
+                appendMessageToSession(session, "🔎 Web Search", "Searching the web for live sources…");
                 const searchPlaceholder = session.messages[session.messages.length - 1];
                 try {
-                    const search = await localWebSearch(userText);
+                    const search = await localWebSearch(userText, newsAsk ? { recency: "week" } : {});
                     if (search.results.length) {
                         webSources = search.results.map(r => ({ title: r.title, href: r.href }));
                         injectedContext += formatSearchSnippets(search);

@@ -45,13 +45,15 @@ async function fetchText(address, redirects = 4) {
     return { status: response.status, url: url.href, contentType: type, text: Buffer.concat(chunks).toString('utf8') };
 }
 
-// { kind: "search", query } or { kind: "page", url } -> { status, url, contentType, html } or { error }.
+// { kind: "search", query, df? } or { kind: "page", url } -> { status, url, contentType, html } or { error }.
 async function handleWebFetch(message) {
     try {
         if (message?.kind === 'search') {
             const query = String(message.query || '').trim().slice(0, 300);
             if (!query) return { error: 'No search query.' };
-            const page = await fetchText(`${DDG_HTML_URL}?q=${encodeURIComponent(query)}&kl=us-en`);
+            // df limits results to the last day, week or month (news, scores, injuries).
+            const df = /^[dwm]$/.test(String(message.df || '')) ? `&df=${message.df}` : '';
+            const page = await fetchText(`${DDG_HTML_URL}?q=${encodeURIComponent(query)}&kl=us-en${df}`);
             return { status: page.status, url: page.url, contentType: page.contentType, html: page.text };
         }
         if (message?.kind === 'page') {
