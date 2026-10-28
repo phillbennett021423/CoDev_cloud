@@ -316,6 +316,12 @@
         .model-viewer-bar span { background: rgba(5, 7, 11, 0.75); padding: 4px 8px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .model-viewer-bar button { pointer-events: auto; }
 
+        .msg-steps { margin-top: 10px; font-size: 0.78rem; color: var(--text-muted); }
+        .msg-steps summary { cursor: pointer; }
+        .msg-steps ol { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
+        .msg-steps li { list-style: none; }
+        .msg-steps .step-bad { color: var(--warning); }
+        .memory-row { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; padding: 4px 0; border-bottom: 1px solid var(--border-color); overflow-wrap: anywhere; }
         .msg-sources { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; font-size: 0.75rem; color: var(--text-muted); }
         .msg-sources a { color: var(--accent); text-decoration: none; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 3px 8px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .settings-extra { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; font-size: 0.85rem; }
@@ -874,6 +880,20 @@
                     <input type="text" id="modalAnthropicKey" placeholder="sk-ant-..." style="font-family: monospace;" autocomplete="off">
                 </div>
             </div>
+
+            <details class="settings-extra" id="memorySettings">
+                <summary>🧠 Memory (kept across all chats)</summary>
+                <label class="checkbox-group">
+                    <input type="checkbox" id="modalMemoryOn"> Use saved memory in every chat
+                </label>
+                <div style="font-size: 0.8rem; color: var(--text-muted);">Say "remember that..." in any chat and CoDev saves it here. "New task" doesn't clear it.</div>
+                <div id="savedMemoryList" style="font-size: 0.85rem; max-height: 220px; overflow-y: auto;"></div>
+                <div style="display: flex; gap: 8px;">
+                    <input type="text" id="newMemoryInput" placeholder="Add a fact, e.g. I use Windows 11" style="flex: 1;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); addSavedMemoryFromSettings(); }">
+                    <button class="btn-secondary" type="button" onclick="addSavedMemoryFromSettings()">Add</button>
+                </div>
+                <button class="link-btn" type="button" onclick="clearSavedMemories()">Forget everything</button>
+            </details>
 
             <details class="settings-extra" id="searchSettings">
                 <summary>🔎 Web grounding & local tools (free)</summary>
@@ -1815,6 +1835,7 @@
                     ${renderMessageAttachments(msg.attachments)}
                     <div class="text">${formattedText}</div>
                     ${renderMessageSources(msg.sources)}
+                    ${/\(Working\.\.\.\)$/.test(msg.sender) ? "" : renderMessageSteps(msg.toolLog)}
                 `;
                 fragment.appendChild(div);
             });
@@ -2143,6 +2164,32 @@
             }
         }
 
+        // The page served by server.js (npm start / start-codev.bat) can ask the server to
+        // fetch for it, which gets past the browser's cross-site block without the helper.
+        function isLocalServerPage() {
+            return location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+        }
+
+        // null when this page has no server to ask (or an older server.js without /web/fetch).
+        async function webFetchViaServer(message) {
+            if (!isLocalServerPage()) return null;
+            let response;
+            try {
+                response = await fetch("/web/fetch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(message) });
+            } catch (err) { return null; }
+            if (response.status === 404) return null;
+            const data = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+            if (data.error) throw new Error(data.error);
+            return data;
+        }
+
+        async function searchDuckDuckGoViaServer(query) {
+            const reply = await webFetchViaServer({ kind: "search", query });
+            if (!reply) return null;
+            if (reply.status !== 200 || isDuckDuckGoBlockPage(reply.html || "")) throw new Error(`DuckDuckGo is limiting requests right now (HTTP ${reply.status}). Try again in a minute.`);
+            return parseDuckDuckGoHtml(reply.html || "");
+        }
+
         // Returns { results, source } with up to SEARCH_RESULT_LIMIT results, or throws with a readable reason.
         async function localWebSearch(query) {
             query = buildSearchQuery(query);
@@ -2152,7 +2199,9 @@
 
             let value;
             const nativeResults = await searchDuckDuckGoNative(query);
+            const serverResults = nativeResults ? null : await searchDuckDuckGoViaServer(query);
             if (nativeResults) value = { results: nativeResults.slice(0, SEARCH_RESULT_LIMIT), source: "DuckDuckGo (on device)" };
+            else if (serverResults) value = { results: serverResults.slice(0, SEARCH_RESULT_LIMIT), source: "DuckDuckGo via CoDev's server" };
             else value = { results: (await searchViaLocalHelper(query)).slice(0, SEARCH_RESULT_LIMIT), source: "DuckDuckGo via local ddgs helper" };
 
             searchCache.set(query, { at: Date.now(), value });
@@ -2160,9 +2209,80 @@
             return value;
         }
 
+        // READING A WEB PAGE (read_webpage): search gives snippets; this gives the page.
+        // Fetched natively on Android and in the Windows app, through server.js on the
+        // local server page. Only the readable text goes to the model, a slice at a time.
+        const PAGE_CHUNK_CHARS = 8000;
+        const pageTextCache = new Map();
+
+        async function fetchPageHtml(url) {
+            const http = getNativeHttp();
+            if (http) {
+                const response = await http.get({
+                    url,
+                    headers: { "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36", "Accept-Language": "en-US,en;q=0.9" },
+                    responseType: "text", connectTimeout: SEARCH_TIMEOUT_MS, readTimeout: SEARCH_TIMEOUT_MS
+                });
+                return { status: response.status, html: typeof response.data === "string" ? response.data : JSON.stringify(response.data ?? "") };
+            }
+            const reply = await webFetchViaServer({ kind: "page", url });
+            if (reply) return { status: reply.status, html: reply.html || "" };
+            throw new Error("this page can't read websites directly. Use CoDev from start-codev.bat (http://localhost:3000), the Windows app or the Android app.");
+        }
+
+        // The readable text of a page: title, then headings, paragraphs, list items and
+        // table rows on their own lines, without menus, scripts and footers.
+        function htmlToReadableText(html) {
+            const doc = new DOMParser().parseFromString(html, "text/html");
+            doc.querySelectorAll("script, style, noscript, svg, iframe, template, nav, footer, header, aside, form, [aria-hidden=true], [role=navigation]").forEach(el => el.remove());
+            const root = doc.querySelector("article, main, [role=main]") || doc.body || doc.documentElement;
+            root.querySelectorAll("h1, h2, h3, h4, h5, h6, p, li, tr, pre, blockquote, dt, dd, br, div, section").forEach(el => {
+                if (/^H\d$/.test(el.tagName)) el.prepend(doc.createTextNode("\n## "));
+                else if (el.tagName === "LI") el.prepend(doc.createTextNode("\n- "));
+                el.append(doc.createTextNode("\n"));
+            });
+            const text = (root.textContent || "").replace(/[ \t\u00a0]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+            const title = (doc.querySelector("title")?.textContent || "").replace(/\s+/g, " ").trim();
+            return { title, text };
+        }
+
+        async function readWebpage(url, start = 0) {
+            url = String(url || "").trim();
+            if (!/^https?:\/\//i.test(url)) return "read_webpage needs a full http(s) address.";
+            let page = pageTextCache.get(url);
+            if (!page) {
+                const { status, html } = await fetchPageHtml(url);
+                if (status >= 400) return `The site answered HTTP ${status}, so the page couldn't be read.`;
+                page = htmlToReadableText(html);
+                pageTextCache.set(url, page);
+                if (pageTextCache.size > 20) pageTextCache.delete(pageTextCache.keys().next().value);
+            }
+            if (!page.text) return "The page has no readable text (it may need JavaScript or a sign-in). Try another result.";
+            start = Math.max(0, Math.floor(Number(start) || 0));
+            const slice = page.text.slice(start, start + PAGE_CHUNK_CHARS);
+            const end = start + slice.length;
+            const more = end < page.text.length ? `\n\n[Characters ${start}-${end} of ${page.text.length}. Call read_webpage again with start ${end} for more, only if you need it.]` : "";
+            return `${page.title ? `Title: ${page.title}\n` : ""}${url}\n\n${slice}${more}`;
+        }
+
         function formatSearchSnippets(search) {
             const lines = search.results.map((r, i) => `[${i + 1}] ${r.title}\n${r.href}\n${r.body}`);
             return `\n\n[Web Search Snippets: ${search.source}, fetched ${new Date().toISOString().slice(0, 10)}]\n${lines.join("\n\n")}`;
+        }
+
+        // Under a finished reply: every step the agent took and what it found, so the user
+        // can always see what CoDev did. Problems are marked ⚠️.
+        const openStepLists = new Set();
+        function renderMessageSteps(toolLog) {
+            if (!toolLog || !toolLog.length) return "";
+            const problems = toolLog.filter(line => / → (Error|Tool failed|Unknown tool|Not run)/.test(line)).length;
+            const items = toolLog.map(line => {
+                const bad = / → (Error|Tool failed|Unknown tool|Not run)/.test(line);
+                return `<li class="${bad ? "step-bad" : ""}">${bad ? "⚠️" : "✓"} ${escapeHtml(line.length > 220 ? line.slice(0, 220) + "…" : line)}</li>`;
+            }).join("");
+            const key = escapeHtml(toolLog[0].slice(0, 60) + toolLog.length);
+            return `<details class="msg-steps" data-key="${key}" ${openStepLists.has(key) ? "open" : ""} ontoggle="this.open ? openStepLists.add(this.dataset.key) : openStepLists.delete(this.dataset.key)">`
+                + `<summary>🧭 What CoDev did: ${toolLog.length} step${toolLog.length === 1 ? "" : "s"}${problems ? `, ${problems} problem${problems === 1 ? "" : "s"}` : ""}</summary><ol>${items}</ol></details>`;
         }
 
         function renderMessageSources(sources) {
@@ -2171,6 +2291,122 @@
                 .filter(s => /^https?:\/\//.test(s.href))
                 .map((s, i) => `<a href="${escapeHtml(s.href)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(s.href)}">[${i + 1}] ${escapeHtml(s.title)}</a>`);
             return `<div class="msg-sources"><span>🔎 Web sources</span>${links.join("")}</div>`;
+        }
+
+        // SAVED MEMORY
+        // Facts and preferences the user wants CoDev to keep across every chat (their name,
+        // how they like answers, their setup, standing rules). Agents save them with
+        // save_memory when the user asks, and the user sees and edits them in Settings.
+        // Unlike an agent's own memory box, "New task" doesn't clear them. Only the notes
+        // that fit MEMORY_PROMPT_CHARS go in the prompt, the ones that best match the task first.
+        const MEMORY_STORE_KEY = "codev_saved_memories";
+        const MAX_SAVED_MEMORIES = 100;
+        const MAX_MEMORY_CHARS = 300;
+        const MEMORY_PROMPT_CHARS = 1500;
+        let savedMemoryEnabled = (localStorage.getItem("codev_memory_on") ?? "1") === "1";
+        let savedMemories = (() => {
+            try {
+                const list = JSON.parse(localStorage.getItem(MEMORY_STORE_KEY) || "[]");
+                return Array.isArray(list) ? list.filter(m => m && typeof m.text === "string") : [];
+            } catch (err) { return []; }
+        })();
+
+        function storeSavedMemories() {
+            try { localStorage.setItem(MEMORY_STORE_KEY, JSON.stringify(savedMemories)); } catch (err) { /* storage full or blocked */ }
+            renderSavedMemories();
+        }
+
+        const memoryWords = text => new Set(String(text || "").toLowerCase().match(/[a-z0-9][a-z0-9'+#.-]{2,}/g) || []);
+
+        function addSavedMemory(text) {
+            text = String(text || "").replace(/\s+/g, " ").trim().slice(0, MAX_MEMORY_CHARS);
+            if (!text) return "save_memory needs the fact to keep.";
+            const same = savedMemories.find(m => m.text.toLowerCase() === text.toLowerCase());
+            if (same) return `Already saved: "${same.text}"`;
+            savedMemories.unshift({ id: `mem_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, text, at: new Date().toISOString() });
+            savedMemories = savedMemories.slice(0, MAX_SAVED_MEMORIES);
+            storeSavedMemories();
+            logConsoleActivity(`🧠 Saved to memory: ${text}`);
+            return `Saved to memory: "${text}". It will be available in every chat.`;
+        }
+
+        // Removes the saved notes that best match the description (all words present).
+        function forgetSavedMemory(what) {
+            const words = [...memoryWords(what)];
+            if (!words.length) return "forget_memory needs words from the note to remove.";
+            const doomed = savedMemories.filter(m => { const have = memoryWords(m.text); return words.every(w => have.has(w)); });
+            if (!doomed.length) return `No saved note matches "${what}". Saved notes:\n${savedMemories.map(m => `- ${m.text}`).join("\n") || "(none)"}`;
+            savedMemories = savedMemories.filter(m => !doomed.includes(m));
+            storeSavedMemories();
+            logConsoleActivity(`🧠 Forgot ${doomed.length} memory note(s).`);
+            return `Removed: ${doomed.map(m => `"${m.text}"`).join(", ")}`;
+        }
+
+        function deleteSavedMemory(id) {
+            savedMemories = savedMemories.filter(m => m.id !== id);
+            storeSavedMemories();
+        }
+
+        function clearSavedMemories() {
+            if (!savedMemories.length || !confirm(`Forget all ${savedMemories.length} saved memory notes? This can't be undone.`)) return;
+            savedMemories = [];
+            storeSavedMemories();
+        }
+
+        function addSavedMemoryFromSettings() {
+            const input = document.getElementById("newMemoryInput");
+            if (!input || !input.value.trim()) return;
+            addSavedMemory(input.value);
+            input.value = "";
+        }
+
+        function renderSavedMemories() {
+            const list = document.getElementById("savedMemoryList");
+            if (!list) return;
+            list.innerHTML = savedMemories.length ? savedMemories.map(m => `<div class="memory-row"><span>${escapeHtml(m.text)}</span>`
+                + `<button type="button" class="link-btn" onclick="deleteSavedMemory('${m.id}')" title="Forget this">✕</button></div>`).join("")
+                : `<div style="color: var(--text-muted);">Nothing saved yet. Say "remember that..." in any chat.</div>`;
+        }
+
+        // The prompt block: every note when they fit, else the best matches for this task.
+        function savedMemoryForPrompt(taskText) {
+            if (!savedMemoryEnabled || !savedMemories.length) return "";
+            let picked = savedMemories;
+            if (savedMemories.reduce((n, m) => n + m.text.length + 3, 0) > MEMORY_PROMPT_CHARS) {
+                const task = memoryWords(taskText);
+                const scored = savedMemories.map((m, i) => ({ m, score: [...memoryWords(m.text)].filter(w => task.has(w)).length * 10 - i / savedMemories.length }));
+                scored.sort((a, b) => b.score - a.score);
+                picked = [];
+                let used = 0;
+                for (const { m } of scored) {
+                    if (used + m.text.length + 3 > MEMORY_PROMPT_CHARS) continue;
+                    picked.push(m);
+                    used += m.text.length + 3;
+                }
+            }
+            return `[Saved memory] What the user asked CoDev to remember, from earlier chats. Use it when it's relevant; don't recite it unprompted.\n${picked.map(m => `- ${m.text}`).join("\n")}`;
+        }
+
+        // search_past_chats: the user's other saved chats, matched by words.
+        function searchPastChats(query, excludeId) {
+            const words = [...memoryWords(query)];
+            if (!words.length) return "search_past_chats needs a few words to look for.";
+            const hits = [];
+            for (const session of chatSessions) {
+                if (session.id === excludeId) continue;
+                for (const msg of session.messages || []) {
+                    const text = String(msg.text || "");
+                    if (!text || /\(Working\.\.\.\)$/.test(String(msg.sender || ""))) continue;
+                    const lower = text.toLowerCase();
+                    const score = words.filter(w => lower.includes(w)).length;
+                    if (!score) continue;
+                    const at = Math.max(0, lower.indexOf(words.find(w => lower.includes(w))) - 120);
+                    hits.push({ score, line: `[${session.title}] ${String(msg.sender || "").replace(/^\S+\s+/, "")}: ${at ? "…" : ""}${text.slice(at, at + 350).replace(/\s+/g, " ")}${text.length > at + 350 ? "…" : ""}` });
+                }
+            }
+            if (!hits.length) return `No earlier chat mentions "${query}".`;
+            hits.sort((a, b) => b.score - a.score);
+            return hits.slice(0, 6).map(h => h.line).join("\n\n");
         }
 
         // LOCAL TOOLS THE AGENTS CAN CALL
@@ -2182,6 +2418,7 @@
         // Autonomous tasks scan, edit and run code in many steps, so the loop allows plenty.
         const MAX_TOOL_ROUNDS = 24;
         const MAX_TOOL_RESULT_CHARS = 12000;
+        const PROGRESS_STEPS_SHOWN = 6;
         // On: agents edit files and run commands without a confirm dialog.
         let toolsAutoRun = (localStorage.getItem("codev_tools_autorun") ?? "1") === "1";
         let helperCommandsCache = { at: 0, commands: [] };
@@ -3029,6 +3266,39 @@
                         }).join("\n\n");
                     }
                 },
+                {
+                    name: "read_webpage",
+                    description: "Read the text of a web page, such as a web_search result, a link the user gave, or documentation. Search snippets are short; read the page when you need the details. Returns 8,000 characters at a time; pass start to read further.",
+                    inputSchema: { type: "object", properties: {
+                        url: { type: "string", description: "The full http(s) address." },
+                        start: { type: "integer", description: "Optional: the character to start from, for the next part of a long page." }
+                    }, required: ["url"] },
+                    run: async ({ url, start }, ctx) => {
+                        const text = await readWebpage(url, start);
+                        if (/^Title: |^https?:/.test(text) && ctx.sources && !ctx.sources.some(s => s.href === url)) {
+                            ctx.sources.push({ title: (text.match(/^Title: (.*)/) || [])[1] || url, href: url });
+                        }
+                        return text;
+                    }
+                },
+                {
+                    name: "save_memory",
+                    description: "Save a lasting fact or preference about the user to CoDev's memory, kept across all chats. Use it when the user asks you to remember something, or states a standing preference or fact about themselves or their setup that will matter in later chats. Write one short, self-contained sentence. Don't save one-off task details or secrets such as passwords and API keys.",
+                    inputSchema: { type: "object", properties: { fact: { type: "string", description: "The fact, as one short sentence (e.g. \"The user's Godot project uses C#.\")." } }, required: ["fact"] },
+                    run: async ({ fact }) => /\b(sk-[a-z0-9-]{8,}|gsk_\w{8,}|password\s*[:=])/i.test(String(fact || "")) ? "Not saved: it looks like a secret (key or password). CoDev's memory doesn't keep those." : addSavedMemory(fact)
+                },
+                {
+                    name: "forget_memory",
+                    description: "Remove a note from CoDev's saved memory when the user asks you to forget it or it is out of date. Give words from the note.",
+                    inputSchema: { type: "object", properties: { note: { type: "string", description: "Words from the note to remove." } }, required: ["note"] },
+                    run: async ({ note }) => forgetSavedMemory(note)
+                },
+                {
+                    name: "search_past_chats",
+                    description: "Search the user's other saved CoDev chats by words, for when they refer to something from an earlier conversation (\"like we did before\", \"that bug from yesterday\").",
+                    inputSchema: { type: "object", properties: { query: { type: "string", description: "A few distinctive words to look for." } }, required: ["query"] },
+                    run: async ({ query }, ctx) => searchPastChats(query, ctx?.sessionId)
+                },
             ];
             // Sandbox mode: the sandbox's own file and command tools replace every tool that writes to disk.
             tools.push({
@@ -3193,6 +3463,10 @@
             if (name === "mcp_list_resources") return "📚 Listing MCP resources";
             if (name === "mcp_read_resource") return `📄 Reading ${args.uri}`;
             if (name === "web_search") return `🔎 Searching: ${args.query}`;
+            if (name === "read_webpage") return `🌐 Reading ${args.url}`;
+            if (name === "save_memory") return "🧠 Saving to memory";
+            if (name === "forget_memory") return "🧠 Updating memory";
+            if (name === "search_past_chats") return `🗂️ Searching earlier chats for "${args.query}"`;
             if (name === "read_workspace_file") return `📄 Reading ${args.name}`;
             if (name === "list_workspace_files") return "📁 Listing project files";
             if (name === "search_workspace" || name === "search_files") return `🔍 Searching the project for "${args.query}"`;
@@ -3302,7 +3576,21 @@
             // Two failed Outlier calls in one request stop the tools: the agent answers with
             // what failed instead of retrying and spending the user's time and usage.
             let outlierFailures = 0;
-            for (let round = 0; round < MAX_TOOL_ROUNDS && outlierFailures < 2; round++) {
+            // Self-checks: the same call with the same input runs at most twice per request,
+            // and three failed browser actions stop the tools, so a confused agent can't
+            // click around blindly and burn the user's usage.
+            const callCounts = new Map();
+            let browserFailures = 0;
+            // The live view under the agent's name: its plan, the steps done with what each
+            // found (⚠️ for a problem), and the step running now.
+            const done = ctx.progress = ctx.progress || [];
+            const progressView = current => [
+                ctx.plan ? `📝 Plan: ${ctx.plan}` : "",
+                done.length > PROGRESS_STEPS_SHOWN ? `… ${done.length - PROGRESS_STEPS_SHOWN} earlier step(s)` : "",
+                ...done.slice(-PROGRESS_STEPS_SHOWN).map(d => `${d.ok ? "✓" : "⚠️"} ${d.step}${d.note ? ` → ${d.note}` : ""}`),
+                current ? `▶ Now: ${current}` : ""
+            ].filter(Boolean).join("\n");
+            for (let round = 0; round < MAX_TOOL_ROUNDS && outlierFailures < 2 && browserFailures < 3; round++) {
                 const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" });
                 const calls = message.tool_calls || [];
                 if (!calls.length) return message.content || "";
@@ -3320,15 +3608,30 @@
                     } else {
                         const step = describeToolCall(tool.name, args);
                         logConsoleActivity(`[Tool] ${step}`);
-                        const show = text => { if (ctx.onStep) ctx.onStep(ctx.plan ? `📝 ${ctx.plan}\n\n${text}` : text); };
+                        const show = text => { if (ctx.onStep) ctx.onStep(progressView(text)); };
                         show(step);
+                        const signature = `${tool.name} ${call.function?.arguments || ""}`;
+                        callCounts.set(signature, (callCounts.get(signature) || 0) + 1);
                         // A long Outlier read says where it is (board screen, card, tab) while it runs.
                         const watch = /(^|__)outlier_/.test(tool.name) ? setInterval(async () => {
                             const progress = await outlierProgress();
                             if (progress) show(`${step}\n⏳ ${progress}`);
                         }, 1500) : null;
-                        try { result = await tool.run(args, ctx); } catch (err) { result = `Tool failed: ${err.message}`; } finally { if (watch) clearInterval(watch); }
+                        if (callCounts.get(signature) > 2) {
+                            result = "Not run: you already made this exact call twice in this task. Repeating it won't change the result. Check what the earlier results actually show, then try a different approach, or stop and tell the user what is blocking you.";
+                        } else {
+                            try { result = await tool.run(args, ctx); } catch (err) { result = `Tool failed: ${err.message}`; }
+                        }
+                        if (watch) clearInterval(watch);
                         trackToolEffect(ctx, tool.name, args, String(result));
+                        const failed = /^(Error|Tool failed|Unknown tool|Not run)/.test(String(result));
+                        if (/(^|__)browser_/.test(tool.name) && failed && ++browserFailures >= 3) {
+                            result = `${result}\n\nThat is the third browser action that failed in this task, so CoDev stopped calling tools. Answer now: tell the user what you were trying to do, what the page showed instead, and what they can do.`;
+                        } else if (/(^|__)browser_(click|fill|press_key|navigate|select)/.test(tool.name) && !failed) {
+                            result = `${result}\n\n[Check] Before the next step, make sure this did what you meant. If the result doesn't show it, read the page first.`;
+                        }
+                        done.push({ step, ok: !failed, note: String(result).replace(/\s+/g, " ").slice(0, 90) });
+                        show(null);
                         if (/(^|__)outlier_/.test(tool.name) && /^(Error:|Tool failed:)/.test(String(result)) && ++outlierFailures >= 2) {
                             result = `${result}\n\nThat is the second Outlier call that failed, so CoDev stopped calling tools. Answer now: tell the user exactly what failed and what they can do, and give any legs already read.`;
                         }
@@ -4577,6 +4880,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             document.getElementById("anthropicServerNote").style.display = anthropicViaServer ? "inline" : "none";
             toggleProviderFields();
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
+            document.getElementById("modalMemoryOn").checked = savedMemoryEnabled;
+            renderSavedMemories();
             document.getElementById("modalChime").checked = chimeEnabled;
             document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
             document.getElementById("modalMcpServers").value = mcpServersConfig;
@@ -4763,6 +5068,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             anthropicKey = newAnthropicKey;
             localStorage.setItem("codev_anthropic_key", anthropicKey);
 
+            savedMemoryEnabled = document.getElementById("modalMemoryOn").checked;
+            localStorage.setItem("codev_memory_on", savedMemoryEnabled ? "1" : "0");
             autoGroundingEnabled = document.getElementById("modalAutoGround").checked;
             searchHelperUrl = document.getElementById("modalSearchHelperUrl").value.trim() || DEFAULT_SEARCH_HELPER_URL;
             localStorage.setItem("codev_auto_ground", autoGroundingEnabled ? "1" : "0");
@@ -5234,7 +5541,10 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 }
             }
             // No temperature: the Messages API rejects sampling settings.
-            const request = { model: ANTHROPIC_MODEL, max_tokens: 16000, messages };
+            // Prompt caching: a tool loop resends the same tools, instructions and earlier
+            // steps every round. Cached, that prefix costs a tenth of the input price, and the
+            // cache point moves forward on its own as the conversation grows.
+            const request = { model: ANTHROPIC_MODEL, max_tokens: 16000, cache_control: { type: "ephemeral" }, messages };
             if (system.length) request.system = system.join("\n\n");
             if (body.tools?.length) {
                 request.tools = body.tools.map(t => ({ name: t.function.name, description: t.function.description || "", input_schema: t.function.parameters || { type: "object", properties: {} } }));
@@ -5275,6 +5585,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (data.stop_reason === "refusal") {
                 throw new Error(`Claude declined this request${data.stop_details?.explanation ? `: ${data.stop_details.explanation}` : "."}`);
             }
+            const usage = data.usage || {};
+            if (usage.cache_read_input_tokens) logConsoleActivity(`[Anthropic] ${usage.cache_read_input_tokens} of ${usage.cache_read_input_tokens + (usage.cache_creation_input_tokens || 0) + (usage.input_tokens || 0)} input tokens came from the prompt cache (billed at a tenth).`);
             const content = data.content || [];
             const text = content.filter(b => b.type === "text").map(b => b.text).join("");
             const calls = content.filter(b => b.type === "tool_use")
@@ -5365,14 +5677,31 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const godotRules = GODOT_TASK_PATTERN.test(`${systemPrompt}\n${userMessage}`) ? `
 - GODOT 4: CharacterBody3D.move_and_slide() takes ZERO arguments. It reads directly from built-in velocity and up_direction.
 - C# IN GODOT: Vector2 and Vector3 are structs, not records. Do NOT use record 'with' expressions. Construct new vectors or mutate component properties directly.` : "";
-            const technicalGuardrails = `CRITICAL TECHNICAL & STRICT COMPLIANCE RULES:
-1. CURRENT DATE: Today is ${today}. Donald Trump is the 47th President of the United States.
-2. CONTEXT: Work only from this conversation's task, the blocks it contains and your memory notes below. Don't bring in projects, stories or subjects the user hasn't mentioned.
-3. ENGINE-SPECIFIC RULES:${godotRules || " none for this task."}
-4. GROUNDING: Blocks marked [Workspace ...], [Web Search Snippets] or [Attached ...] in the user message are your sources of truth. For code syntax, API names, signatures, versions and technical facts, rely on them first; when they conflict with your memory, follow the sources.
-5. NO GUESSING: Never invent functions, classes, parameters, packages, versions, settings or URLs. If the sources and well-established knowledge don't confirm something, say plainly that you could not verify it instead of guessing. This rule is about facts, not about analysis: when the task gives you data (odds, a board JSON, workspace files, tool results), work through it and compute what was asked from that data.
-6. CITATIONS: When a statement relies on a web snippet, cite it inline as [n] using that snippet's number. Never cite a source that was not provided. Workspace files are cited by file name.
-7. TOOLS: When tools are available, use them on your own initiative. Call web_search before answering about any API, library, engine feature, syntax, version or error message you are not certain about, and for any code implementation that is unfamiliar. When the task is about the user's code or files, call list_workspace_files and read_workspace_file (or list_files and read_file) to check their real code instead of assuming; for questions, research, props or anything else that isn't about their files, don't list, search or read the project folder. When the user asks you to change, create, run or test code and file or command tools (write_workspace_file, write_file, edit_file, run_command, run_approved_command) are available, do it with those tools directly instead of only showing code, then verify by reading the file back or running it. Never claim you searched, read, ran or verified something unless a tool result in this conversation shows it.`;
+            // CoDev's core instructions. They are the same for every request (only the date and
+            // the engine rules change), so Claude's prompt cache reuses them between calls.
+            const technicalGuardrails = `HOW YOU WORK
+
+1. FACTS FOR TODAY: Today is ${today}. Donald Trump is the 47th President of the United States. For anything that may have changed since your training (news, prices, versions, schedules, injuries, lines), check with web_search instead of relying on memory.
+
+2. UNDERSTAND THE ASK: Work out what the user actually wants and what a finished result looks like before acting. Stay on this conversation's task, the blocks it contains and the saved memory; don't bring in projects or subjects the user hasn't mentioned. If a request is truly ambiguous and a wrong guess would waste real work, ask one short question; otherwise pick the most likely reading, say which one, and go.
+
+3. GROUND EVERY CLAIM: Blocks marked [Workspace ...], [Web Search Snippets], [Attached ...] and tool results are your sources of truth; when they conflict with your memory, follow them. Never invent functions, parameters, packages, versions, settings, URLs, stats or quotes. If you can't verify something, say so plainly. When the task gives you data (odds, a board, files, tool results), work through it and compute what was asked from it.
+
+4. USE TOOLS ON YOUR OWN INITIATIVE: Search the web (web_search) for facts you aren't sure of, then read_webpage on the best result when the snippets aren't enough. Read the user's real files before talking about their code. When asked to change, create, run or test code and file or command tools exist, do it with the tools, then verify by reading back or running it. Use only the tools the task needs: every call costs the user time and usage. Never claim you searched, read, ran, clicked or verified something unless a tool result in this conversation shows it.
+
+5. CHECK YOUR OWN WORK: After every action that changes something (a click, typing, opening a page, a file edit, an Outlier read), look at what the result actually shows and compare it with what you expected: the right page, player, stat, line and game, filters still set, the page not reloaded, the file containing your change. If it doesn't match, say what is off and correct it with a different approach. Never repeat a call that just failed with the same input. After two failed attempts at the same step, stop and tell the user exactly what went wrong and what they can do.
+
+6. KEEP THE USER INFORMED: When a task takes several tool steps, start with a one or two line plan as your message text. In the final answer, lead with the result, then briefly say what you did and checked, anything that failed or is uncertain, and what is left for the user.
+
+7. ALWAYS HELP: If you can't do something directly here (no tool for it, a site needs the user's sign-in, an action happens on their phone or account, a payment), say so in one line, then walk the user through doing it themselves with exact, numbered steps, or do the parts you can.
+
+8. MEMORY: [Saved memory] holds facts the user asked CoDev to keep. When the user asks you to remember something, or states a lasting preference or fact about themselves or their setup, call save_memory; call forget_memory when they ask you to forget. When they refer to an earlier conversation, use search_past_chats.
+
+9. CITATIONS: When a statement relies on a web result, cite it inline as [n] using that result's number. Never cite a source that wasn't provided. Workspace files are cited by file name.
+
+10. STYLE: Answer directly in plain words. Match the length to the question: a short question gets a short answer. Use lists or code blocks only when they help.
+
+11. ENGINE-SPECIFIC RULES:${godotRules || " none for this task."}`;
             
             // A resumed run: the conversation it had saved, from where it stopped.
             if (options.resumeMessages) {
@@ -5511,7 +5840,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             return kind;
         }
 
-        const CODEV_IDENTITY = "[CoDev] You are CoDev, a multi-purpose agent: you write and fix code, answer questions, research on the web, analyze sports props on Outlier, read screenshots, images and documents, and help with writing and planning. "
+        const CODEV_IDENTITY = "[CoDev] You are CoDev, a capable general assistant and agent: you write and fix code, answer any question, research on the web and read pages, analyze sports props on Outlier, read screenshots, images and documents, drive a browser, remember what the user asks you to keep, and help with writing, planning and anything else the user needs. "
             + "Before acting, work out what kind of request this is and use only the tools it needs. Touch the user's project files only when the task is about them or the user asks.";
         const REQUEST_KIND_NOTES = {
             props: "[Request type] Sports props and betting research, not a coding task. Use the Outlier tools, read_screenshots for slip screenshots, and web_search. Don't list, search or read the project files unless the user asks about a file.",
@@ -5519,7 +5848,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             general: "[Request type] A general question or task, not about the project files. Answer it directly, using web_search for facts you aren't sure of. List, search or read the project files only if the user asks about them."
         };
 
-        function agentSystemPrompt(agent, workspaceNote, memory, kind = "code") {
+        function agentSystemPrompt(agent, workspaceNote, memory, kind = "code", task = "") {
             const coding = kind === "code";
             // Outside a code task, the coding roles answer as the general agent does: they
             // aren't told to treat the message as a job on the project.
@@ -5530,7 +5859,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (general && /^\[Workspace status\] No project/.test(workspaceNote)) workspaceNote = "[Workspace status] No project folder is connected. That only matters if the task is about project files.";
             else if (!coding && workspaceNote) workspaceNote = "[Workspace status] A project folder is connected; its files only matter if the user asks about them.";
             return [CODEV_IDENTITY, DEV_ROLES[role].prompt, general ? null : AUTONOMY_RULES, coding ? null : REQUEST_KIND_NOTES[kind], workspaceNote,
-                agent.instructions && `[Agent instructions] ${agent.instructions}`, memory].filter(Boolean).join("\n\n");
+                agent.instructions && `[Agent instructions] ${agent.instructions}`, savedMemoryForPrompt(task), memory].filter(Boolean).join("\n\n");
         }
 
         // WORKSPACE AUTO-INJECTION
@@ -5977,6 +6306,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             return {
                 agentId: agent.id,
                 agentName: agent.name,
+                sessionId: session.id,
                 sources: webSources.slice(),
                 changes: [],
                 commands: [],
@@ -6011,7 +6341,10 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 if (at >= 0) session.messages.splice(at, 1);
                 appendMessageToSession(session, sender, text, null, sources);
                 const reply = session.messages[session.messages.length - 1];
-                if (reply && tools.toolLog.length) reply.toolLog = tools.toolLog.slice(-MAX_HISTORY_TOOL_STEPS);
+                if (reply && tools.toolLog.length) {
+                    reply.toolLog = tools.toolLog.slice(-MAX_HISTORY_TOOL_STEPS);
+                    if (session.id === activeChatId) renderActiveChatFeed();
+                }
             };
             try {
                 // Sandbox mode: this agent's container on the task's shared staging copy.
@@ -6032,7 +6365,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 const context = kind === "code" ? await buildWorkspaceContext(task, ws) : { text: "", files: [], total: 0 };
                 if (ws && kind === "code") logConsoleActivity(`[Workspace] ${agent.name}: tree of ${context.total} files${context.files.length ? ` + ${context.files.join(", ")}` : ""}.`);
                 placeholder.text = "Working on it…";
-                const response = await callAI(agentSystemPrompt(agent, workspaceNote(ws), memory, kind), task + context.text + extraContext + notes, { ...aiOptions, tools });
+                const response = await callAI(agentSystemPrompt(agent, workspaceNote(ws), memory, kind, task), task + context.text + extraContext + notes, { ...aiOptions, tools });
                 finish(title ? title(agent) : `🤖 ${agent.name}`, response, tools.sources);
                 setAgentState(agent.id, "success");
                 return { ok: true, agent, response, changes: tools.changes, commands: tools.commands };

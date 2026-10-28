@@ -19,6 +19,7 @@ const { loadConfig, describeConfig, ensureDataDirs } = require('./config');
 const { loadServices } = require('./agent-services');
 const { checkDocker } = require('./scripts/checks');
 const { handleImageFolder } = require('./desktop/image-folder');
+const { handleWebFetch } = require('./web-fetch');
 
 const config = loadConfig();
 const fatal = config.problems.filter(problem => problem.level === 'error');
@@ -208,6 +209,11 @@ const server = http.createServer(async (req, res) => {
     if (req.url === '/screenshots') {
         if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
         return readJsonBody(req, res, async message => sendJson(res, 200, await handleImageFolder(message)));
+    }
+    // Web search and page reads for the agents' web_search and read_webpage tools: CoDev's own page only.
+    if (req.url === '/web/fetch') {
+        if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
+        return readJsonBody(req, res, async message => sendJson(res, 200, await handleWebFetch(message)));
     }
     if (req.url === '/agent/status') {
         if (req.method !== 'GET' || !isOwnPageCall(req)) return sendJson(res, 403, { error: 'Forbidden' });

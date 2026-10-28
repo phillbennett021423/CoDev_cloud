@@ -483,7 +483,7 @@ test('each request is sorted first: only code and file tasks carry the project, 
     const calls = await page.evaluate(() => window.__modelCalls);
     const question = calls[0].messages.at(-1).content;
     assert.doesNotMatch(question, /\[Workspace/, 'a question carries no project files');
-    assert.match(calls[0].system, /You are CoDev, a multi-purpose agent/);
+    assert.match(calls[0].system, /You are CoDev, a capable general assistant and agent/);
     assert.match(calls[0].system, /\[Request type\] A general question/);
     assert.doesNotMatch(calls[0].system, /AUTONOMOUS DEVELOPER MODE/);
     assert.ok(calls[0].tools.includes('read_screenshots'));
