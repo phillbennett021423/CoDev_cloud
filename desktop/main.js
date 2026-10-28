@@ -23,6 +23,8 @@ protocol.registerSchemesAsPrivileged([
 // Only DuckDuckGo's HTML results page, the same one the Android app uses, and the
 // free keyless services behind the Google tools' fallbacks: OpenStreetMap places and
 // routes, and YouTube's video titles.
+const ODDS_API = /^https:\/\/api\.the-odds-api\.com\/v4\/sports(\/|\?)/;
+const ODDS_HEADERS = ['x-requests-remaining', 'x-requests-used', 'x-requests-last'];
 const ALLOWED_HTTP = /^https:\/\/(html\.duckduckgo\.com\/html\/\?|nominatim\.openstreetmap\.org\/search\?|router\.project-osrm\.org\/route\/v1\/|www\.youtube\.com\/oembed\?)/;
 
 // A crash log in the app's user data folder (CoDev-crash.log), so an error in the
@@ -127,6 +129,15 @@ app.whenReady().then(() => {
         if (typeof url !== 'string' || !ALLOWED_HTTP.test(url)) throw new Error('This address is not allowed.');
         const response = await net.fetch(url, { headers: headers || {} });
         return { status: response.status, data: await response.text(), headers: {} };
+    });
+
+    // The Odds API (line tracking): only its v4 API, and only the credit headers come back.
+    ipcMain.handle('codev:http-odds', async (_event, { url }) => {
+        if (typeof url !== 'string' || !ODDS_API.test(url)) throw new Error('This address is not allowed.');
+        const response = await net.fetch(url);
+        const headers = {};
+        for (const name of ODDS_HEADERS) if (response.headers.get(name) != null) headers[name] = response.headers.get(name);
+        return { status: response.status, data: await response.text(), headers };
     });
 
     // Built-in MCP tools: agents work in the project folder chosen in Settings.
