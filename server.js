@@ -20,6 +20,7 @@ const { loadServices } = require('./agent-services');
 const { checkDocker } = require('./scripts/checks');
 const { handleImageFolder } = require('./desktop/image-folder');
 const { handleWebFetch } = require('./web-fetch');
+const { createGoogleConnect } = require('./desktop/google-connect');
 
 const config = loadConfig();
 const fatal = config.problems.filter(problem => problem.level === 'error');
@@ -34,6 +35,13 @@ const anthropic = config.keys.anthropic ? { key: config.keys.anthropic } : {
         + '(copy .env.example) or set it in your environment, then restart.'
 };
 if (anthropic.error) console.warn(`Note: ${anthropic.error}`);
+// The Google account for the page's YouTube, Maps, Gmail and Drive tools. The sign-in
+// is kept in the data folder (gitignored), never sent to the page except as a phone link code.
+const google = createGoogleConnect({
+    tokenFile: path.join(config.workspace.dataDir, 'google-account.json'),
+    env: config.google,
+    log: line => console.log(`[google] ${line}`)
+});
 
 const PORT = config.port;
 const ROOT = path.join(__dirname, 'mobile', 'www');
@@ -215,6 +223,11 @@ const server = http.createServer(async (req, res) => {
         if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
         return readJsonBody(req, res, async message => sendJson(res, 200, await handleWebFetch(message)));
     }
+    // Google apps for the agents' tools and Settings > Google apps: CoDev's own page only.
+    if (req.url === '/google') {
+        if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
+        return readJsonBody(req, res, async message => sendJson(res, 200, await google.handle(message)));
+    }
     if (req.url === '/agent/status') {
         if (req.method !== 'GET' || !isOwnPageCall(req)) return sendJson(res, 403, { error: 'Forbidden' });
         return sendJson(res, 200, await agentStatus());
@@ -266,6 +279,7 @@ async function shutdown() {
     if (stopping) return process.exit(1); // second Ctrl+C: don't wait
     stopping = true;
     const router = await agentServices;
+    google.close();
     await Promise.all([mcpHub && mcpHub.close(), router && router.close()]);
     process.exit(0);
 }

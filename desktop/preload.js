@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     flushStorage: () => ipcRenderer.send('codev:flush-storage'),
     // Gives keyboard focus back to the page after a native alert or confirm.
     refocus: () => ipcRenderer.send('codev:refocus'),
+    // The Google account for the YouTube, Maps, Gmail and Drive tools: { op, ... } (see google-connect.js).
+    google: req => ipcRenderer.invoke('codev:google', req),
     // Built-in MCP tools for the chosen project folder.
     mcp: message => ipcRenderer.invoke('codev:mcp', message),
     mcpFolder: () => ipcRenderer.invoke('codev:mcp-folder'),

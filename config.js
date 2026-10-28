@@ -16,7 +16,8 @@ const KEYS = {
     anthropic: { env: 'ANTHROPIC_API_KEY', prefix: 'sk-ant-', label: 'Anthropic', use: 'Anthropic relay (/anthropic/v1/messages)' },
     openrouter: { env: 'OPENROUTER_API_KEY', prefix: 'sk-or-', label: 'OpenRouter', use: 'OpenRouter models' },
     manus: { env: 'MANUS_API_KEY', prefix: '', label: 'Manus', use: 'Q tasks' },
-    oddsApi: { env: 'ODDS_API_KEY', prefix: '', label: 'The Odds API', use: 'free-tier market odds in the Outlier tab' }
+    oddsApi: { env: 'ODDS_API_KEY', prefix: '', label: 'The Odds API', use: 'free-tier market odds in the Outlier tab' },
+    googleApi: { env: 'GOOGLE_API_KEY', prefix: 'AIza', label: 'Google API', use: 'YouTube and Google Maps tools' }
 };
 
 function readKey({ env, prefix, label }) {
@@ -90,6 +91,12 @@ function loadConfig({ argv = process.argv.slice(2), envFile } = {}) {
         },
         // Filled in by server.js / setup.js after probing (see scripts/checks.js).
         docker: { available: false, version: null, detail: 'not checked' },
+        // The user's own "Desktop app" OAuth client for Gmail and Drive (docs/google-apps.md).
+        google: {
+            apiKey: keys.googleApi.key,
+            clientId: String(process.env.GOOGLE_CLIENT_ID || '').trim() || null,
+            clientSecret: String(process.env.GOOGLE_CLIENT_SECRET || '').trim() || null
+        },
         secrets: { vaultKey: String(process.env.CODEV_VAULT_KEY || '').trim() || null },
         problems
     };

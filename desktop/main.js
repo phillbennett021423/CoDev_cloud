@@ -10,6 +10,7 @@ const { createNodeMcpHub } = require('./mcp-hub');
 const { createSandbox } = require('./sandbox');
 const { createBrowserService } = require('./browser');
 const { createOutlierBridge } = require('./outlier-bridge');
+const { createGoogleConnect } = require('./google-connect');
 const { pathToFileURL } = require('url');
 
 const WWW = path.join(__dirname, 'www');
@@ -19,8 +20,10 @@ protocol.registerSchemesAsPrivileged([
     { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } }
 ]);
 
-// Only DuckDuckGo's HTML results page, the same one the Android app uses.
-const ALLOWED_HTTP = /^https:\/\/html\.duckduckgo\.com\/html\/\?/;
+// Only DuckDuckGo's HTML results page, the same one the Android app uses, and the
+// free keyless services behind the Google tools' fallbacks: OpenStreetMap places and
+// routes, and YouTube's video titles.
+const ALLOWED_HTTP = /^https:\/\/(html\.duckduckgo\.com\/html\/\?|nominatim\.openstreetmap\.org\/search\?|router\.project-osrm\.org\/route\/v1\/|www\.youtube\.com\/oembed\?)/;
 
 // A crash log in the app's user data folder (CoDev-crash.log), so an error in the
 // main process is written down instead of closing the app, and the cause can be
@@ -133,6 +136,19 @@ app.whenReady().then(() => {
     const getProjectDir = () => (desktopSettings.projectDir && fs.existsSync(desktopSettings.projectDir) ? desktopSettings.projectDir : '');
     const handleMcp = createMcpTools(getProjectDir);
     ipcMain.handle('codev:mcp', (_event, message) => handleMcp(message));
+
+    // The Google account for the YouTube, Maps, Gmail and Drive tools, encrypted
+    // with safeStorage when Windows offers it. Sign-in opens in the normal browser.
+    const canEncrypt = () => { try { return safeStorage.isEncryptionAvailable(); } catch { return false; } };
+    const google = createGoogleConnect({
+        tokenFile: path.join(app.getPath('userData'), 'google-account.json'),
+        env: { apiKey: process.env.GOOGLE_API_KEY || null, clientId: process.env.GOOGLE_CLIENT_ID || null, clientSecret: process.env.GOOGLE_CLIENT_SECRET || null },
+        protect: text => (canEncrypt() ? `enc:${safeStorage.encryptString(text).toString('base64')}` : text),
+        unprotect: text => (text.startsWith('enc:') ? safeStorage.decryptString(Buffer.from(text.slice(4), 'base64')) : text),
+        openExternal: url => shell.openExternal(url)
+    });
+    ipcMain.handle('codev:google', (_event, req) => google.handle(req));
+    app.on('will-quit', () => google.close());
     ipcMain.handle('codev:mcp-folder', () => getProjectDir());
     // Chromium writes the page's storage to disk only every few seconds, so a crash
     // could lose the last chat messages and run checkpoint. The page asks for a write

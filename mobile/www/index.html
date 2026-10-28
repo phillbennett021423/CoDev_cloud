@@ -979,6 +979,9 @@
                 </div>
             </details>
 
+            <!-- Filled in by agent-ui/google-apps.js. -->
+            <details class="settings-extra" id="googleSettings"></details>
+
             <details class="settings-extra" id="browserSettings" style="display: none;">
                 <summary>🌐 Agents' web browser & saved logins</summary>
                 <div id="browserVaultStatus" style="font-size: 0.8rem; color: var(--text-muted); white-space: pre-line; overflow-wrap: anywhere;"></div>
@@ -1031,6 +1034,7 @@
     <script src="agent-ui/diff-review.js"></script>
     <script src="agent-ui/outlier-view.js"></script>
     <script src="media-tools.js"></script>
+    <script src="agent-ui/google-apps.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
         // text boxes stop taking clicks and typing until the window is refocused.
@@ -3411,6 +3415,23 @@
             return commands;
         }
 
+        // GOOGLE APPS: YouTube, Maps, Gmail and Drive for agents (agent-ui/google-apps.js).
+        // Without a Google key, YouTube and Maps fall back to the free web search,
+        // YouTube's oEmbed and OpenStreetMap. Email and Drive saves always ask first.
+        const googleTransport = CodevGoogleApps.detectTransport(window);
+        const googleApps = CodevGoogleApps.createGoogleApps({
+            transport: googleTransport,
+            getApiKey: () => { try { return localStorage.getItem(CodevGoogleApps.STORE.apiKey) || ""; } catch (err) { return ""; } },
+            confirmWrite: async message => confirm(message),
+            webSearch: query => localWebSearch(query),
+            fetchText: url => fetchPageHtml(url)
+        });
+        document.addEventListener("DOMContentLoaded", () => {
+            const el = document.getElementById("googleSettings");
+            // The server page opens Google's sign-in in a new tab; the Windows app opens the normal browser itself.
+            if (el) CodevGoogleApps.mountSettings(el, { transport: googleTransport, apps: googleApps, storage: localStorage, openWindow: window.codevDesktop ? null : () => window.open("about:blank", "_blank") });
+        });
+
         async function buildLocalTools(ctx) {
             const tools = [
                 {
@@ -3485,6 +3506,9 @@
             });
             // Long attached files and image making (media-tools.js).
             tools.push(...await buildMediaTools(ctx));
+            try {
+                for (const tool of await googleApps.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
+            } catch (err) { logConsoleActivity(`[Google] ${err.message}`); }
             if (ctx && ctx.sandbox) return buildSandboxTools(tools, ctx);
             const mcpTools = await fetchAllMcpTools();
             // The folder connected in the page gets its own tools. When the Windows app or the
@@ -3630,6 +3654,8 @@
         function describeToolCall(fullName, args) {
             const split = fullName.indexOf("__");
             const name = split > 0 ? fullName.slice(split + 2) : fullName;
+            const googleStep = googleApps.describe(name, args);
+            if (googleStep) return googleStep;
             if (name === "mcp_list_resources") return "📚 Listing MCP resources";
             if (name === "read_attachment") return `📄 Reading ${args.name || "the attached file"}${args.pages ? `, pages ${args.pages}` : args.query ? ` for "${args.query}"` : ""}`;
             if (name === "query_table") return `📊 ${{ stats: "Measuring", group: "Totaling", search: "Searching", columns: "Looking over" }[args.action] || "Reading rows of"} ${args.name || "the spreadsheet"}${args.group_by ? ` by ${args.group_by}` : ""}`;
