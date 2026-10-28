@@ -468,3 +468,84 @@ test('in the page: an interview kept as notes, a what-if branch, and a lore chec
     assert.equal(await page.evaluate(() => JSON.stringify(storyStudio.findEntry(storyStudio.active(), 'Rook'))), before, 'Rook was never changed');
     assert.deepEqual(errors, []);
 });
+
+// ---------- Part 5: growth you approve, snapshots, character sheets ----------
+
+test('snapshots go back without losing the current version; agents can\'t touch pictures, voices, locks or growth; growth replies are checked', async () => {
+    const { store } = sampleStore();
+    const p = store.project('Skyfall');
+    const mara = store.findEntry(p, 'Mara Vex');
+    store.snapshot('', mara.id, 'Act 1');
+    store.saveEntry('', { id: mara.id, summary: 'Changed in act 2', fields: { goals: 'Revenge' } });
+    const back = store.restoreSnapshot('', mara.id, 0).entry;
+    assert.equal(back.summary, 'A courier who can slow time.');
+    assert.equal(back.fields.goals, undefined);
+    assert.deepEqual(back.snapshots.map(s => s.label), ['Before going back to "Act 1"', 'Act 1']);
+    assert.equal(back.snapshots[0].data.summary, 'Changed in act 2', 'the version replaced is kept');
+
+    const tools = Object.fromEntries(Studio.buildStudioTools(store).map(t => [t.name, t]));
+    await tools.studio_save.run({ name: 'Mara Vex', summary: 'By an agent', growth: true, voice: { rate: 2 }, snapshots: [], portraits: { happy: { thumb: 'data:image/png;base64,AA' } } });
+    const after = store.findEntry(p, 'Mara Vex');
+    assert.equal(after.summary, 'By an agent');
+    assert.equal(after.growth, undefined);
+    assert.equal(after.voice, undefined);
+    assert.equal(after.portraits, undefined);
+    assert.equal(after.snapshots.length, 2);
+
+    const cast = [after];
+    assert.deepEqual(Studio.parseGrowth('[{"character": "mara vex", "field": "Goals", "new_text": "Find her brother, then leave the city.", "why": "She chose him over the job."}, {"character": "Nobody", "field": "goals", "new_text": "x"}, {"character": "Mara Vex", "field": "hair", "new_text": "Blue"}]', cast),
+        [{ entryId: after.id, name: 'Mara Vex', field: 'goals', new_text: 'Find her brother, then leave the city.', why: 'She chose him over the job.' }]);
+    assert.match(Studio.growthPrompt(p, cast, 'She saved Tomas.')[0].content, /conservative/);
+
+    const html = Studio.characterSheetHtml(p, Object.assign({}, after, { name: 'Mara <b>Vex</b>' }));
+    assert.match(html, /^<!doctype html>/);
+    assert.match(html, /Mara &lt;b&gt;Vex&lt;\/b&gt;/);
+    assert.match(html, /How they talk<\/h2><p>Clipped, sarcastic\.<\/p>/);
+});
+
+test('in the page: growth is off until turned on, only suggested, and applied when approved with a snapshot first; the sheet prints', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { page, errors } = await openStudioPage(t, []);
+    await page.evaluate(() => {
+        window.groqChatMessage = async body => /grown after what just happened/.test(body.messages[0].content)
+            ? { role: 'assistant', content: '[{"character": "Rook", "field": "goals", "new_text": "Earn back his name.", "why": "He chose to stay and fight."}]' }
+            : { role: 'assistant', content: '[determined] I stay.' };
+        window.__printed = [];
+        storyStudio.createProject({ name: 'Ashen Crown' });
+        storyStudio.saveEntry('', { kind: 'character', name: 'Rook', fields: { goals: 'Hide.' } });
+        storyStudio.saveEntry('', { kind: 'scene', name: 'Stand', fields: { characters: 'Rook' }, lines: [{ speaker: 'Rook', text: 'I stay.' }] });
+        switchView('studio');
+    });
+    await page.click('#view-studio .gs-tabs button:has-text("Scene Builder")');
+    await page.click('#view-studio .gs-card:has-text("Stand")');
+    assert.equal(await page.locator('#view-studio button:has-text("Suggest growth")').count(), 0, 'off by default');
+
+    await page.click('#view-studio .gs-tabs button:has-text("Story bible")');
+    await page.click('#view-studio .gs-card:has-text("Rook")');
+    await page.click('#view-studio summary:has-text("Growth and")');
+    await page.check('#view-studio label:has-text("Suggest growth after scenes") input');
+    // The Scene Builder tab reopens the scene that was open.
+    await page.click('#view-studio .gs-tabs button:has-text("Scene Builder")');
+    await page.click('#view-studio button:has-text("Suggest growth")');
+    await page.waitForSelector('#view-studio .gs-growth');
+    assert.equal(await page.evaluate(() => storyStudio.findEntry(storyStudio.active(), 'Rook').fields.goals), 'Hide.', 'a suggestion changes nothing');
+    await page.click('#view-studio .gs-growth button:has-text("Approve")');
+    const rook = await page.evaluate(() => storyStudio.findEntry(storyStudio.active(), 'Rook'));
+    assert.equal(rook.fields.goals, 'Earn back his name.');
+    assert.equal(rook.snapshots[0].data.fields.goals, 'Hide.', 'a snapshot was saved first');
+
+    await page.evaluate(() => { storyStudioView = null; document.getElementById('view-studio').replaceChildren(); window.__realPrint = true; });
+    await page.evaluate(() => {
+        const original = CodevStoryStudio.mount;
+        CodevStoryStudio.mount = (c, s, d) => original(c, s, Object.assign({}, d, { printHtml: html => window.__printed.push(html) }));
+        showStudioView();
+    });
+    await page.click('#view-studio .gs-tabs button:has-text("Story bible")');
+    await page.click('#view-studio .gs-card:has-text("Rook")');
+    await page.click('#view-studio button:has-text("Print character sheet")');
+    const printed = await page.evaluate(() => window.__printed);
+    assert.equal(printed.length, 1);
+    assert.match(printed[0], /<h1>Rook<\/h1>/);
+    assert.match(printed[0], /Earn back his name\./);
+    assert.deepEqual(errors, []);
+});

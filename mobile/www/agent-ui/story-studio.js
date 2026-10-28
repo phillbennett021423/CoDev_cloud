@@ -32,6 +32,7 @@
     const MAX_SUMMARY_CHARS = 400;
     const MAX_LINES = 200;
     const MAX_LINKS = 40;
+    const MAX_SNAPSHOTS = 10;
     const MAX_BEATS = 40;
     const MAX_SCENE_LINES = 60;        // lines in one scene
     const MAX_SCENE_CALLS = 30;        // model calls per scene in one sitting, to keep its cost down
@@ -257,6 +258,7 @@
                 entry.beats = data.beats.slice(0, MAX_BEATS).map(b => ({ text: clean(b && b.text, 600), status: BEAT_STATUS.some(([k]) => k === (b && b.status)) ? b.status : "idea",
                     ...(b && b.scene ? { scene: clip(b.scene, 80) } : {}) })).filter(b => b.text);
             }
+            if (typeof data.growth === "boolean") entry.growth = data.growth || undefined;
             if (data.order !== undefined) entry.order = Number.isFinite(Number(data.order)) ? Number(data.order) : undefined;
             if (typeof data.locked === "boolean") entry.locked = data.locked || undefined;
             if (data.art !== undefined) entry.art = data.art && isPicture(data.art.thumb) ? { id: clip(data.art.id, 80), thumb: String(data.art.thumb) } : undefined;
@@ -284,6 +286,42 @@
             p.updatedAt = now();
             save();
             return entry;
+        }
+
+        // 📸 Snapshots: an entry's words (not its pictures) saved under a label, newest first.
+        function snapshot(projectRef, id, label) {
+            const p = project(projectRef);
+            const entry = findEntry(p, id);
+            if (!entry) return { error: "No such entry." };
+            const data = JSON.parse(JSON.stringify({ name: entry.name, summary: entry.summary, fields: entry.fields, tags: entry.tags, links: entry.links, lines: entry.lines, beats: entry.beats }));
+            entry.snapshots = [{ at: now(), label: clean(label, 80) || "Snapshot", data }, ...(entry.snapshots || [])].slice(0, MAX_SNAPSHOTS);
+            const error = save();
+            return error ? { error } : { entry };
+        }
+
+        // Puts a snapshot back, after saving the current version as one, so nothing is lost.
+        function restoreSnapshot(projectRef, id, index) {
+            const p = project(projectRef);
+            const entry = findEntry(p, id);
+            const snap = entry && (entry.snapshots || [])[index];
+            if (!snap) return { error: "No such snapshot." };
+            if (entry.locked) return { error: `"${entry.name}" is locked. Unlock it first.`, locked: true };
+            snapshot(p.id, entry.id, `Before going back to "${snap.label}"`);
+            const d = snap.data;
+            Object.assign(entry, { summary: d.summary || "", fields: Object.assign({}, d.fields), tags: (d.tags || []).slice() });
+            ["links", "lines", "beats"].forEach(k => { if (d[k]) entry[k] = JSON.parse(JSON.stringify(d[k])); else delete entry[k]; });
+            if (d.name && !p.entries.some(e => e !== entry && e.kind === entry.kind && sameName(e.name, d.name))) entry.name = d.name;
+            entry.updatedAt = now();
+            const error = save();
+            return error ? { error } : { entry };
+        }
+
+        function dropSnapshot(projectRef, id, index) {
+            const entry = findEntry(project(projectRef), id);
+            if (!entry || !entry.snapshots) return;
+            entry.snapshots.splice(index, 1);
+            if (!entry.snapshots.length) delete entry.snapshots;
+            save();
         }
 
         // A project exported as story_bible.json, from another device or a backup.
@@ -314,7 +352,7 @@
 
         return {
             get state() { return state; }, save, projects, project, active, setActive,
-            createProject, updateProject, deleteProject, findEntry, saveEntry, removeEntry, importProject,
+            createProject, updateProject, deleteProject, findEntry, saveEntry, removeEntry, importProject, snapshot, restoreSnapshot, dropSnapshot,
             onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
         };
     }
@@ -646,6 +684,54 @@
         } catch (err) { return null; }
     }
 
+    // 🌱 Growth: changes a scene or chat could justify, only ever suggested. The user approves each one.
+    const GROWTH_FIELDS = ["summary", "personality", "backstory", "goals", "relationships", "powers", "speaking_style", "appearance"];
+    function growthPrompt(p, characters, sourceText) {
+        return [
+            { role: "system", content: `You help the writer of the game "${p.name}" decide whether characters have grown after what just happened. Be conservative: suggest a change only when the events clearly justify it, at most 3 in all, and none if nothing important changed. `
+                + `Each suggestion replaces one field with its full new text, keeping everything that still holds. Fields: ${GROWTH_FIELDS.join(", ")}. Answer with only a JSON array: `
+                + '[{"character": "Name", "field": "goals", "new_text": "the whole new text of that field", "why": "one sentence pointing at what happened"}]' },
+            { role: "user", content: `${characters.map(c => `[Character card]\n${describeEntry(c)}`).join("\n\n")}\n\n[What happened]\n${clip(sourceText, 8000)}` }
+        ];
+    }
+
+    function parseGrowth(text, characters) {
+        const match = String(text || "").match(/\[[\s\S]*\]/);
+        if (!match) return null;
+        let list;
+        try { list = JSON.parse(match[0]); } catch (err) { return null; }
+        if (!Array.isArray(list)) return null;
+        return list.map(g => {
+            const c = g && characters.find(x => sameName(x.name, g.character));
+            const field = g && slug(g.field);
+            if (!c || !GROWTH_FIELDS.includes(field) || !clean(g.new_text, 10)) return null;
+            return { entryId: c.id, name: c.name, field, new_text: clean(g.new_text, MAX_FIELD_CHARS), why: clean(g.why, 300) };
+        }).filter(Boolean).slice(0, 3);
+    }
+
+    // 🖨️ A character sheet as a standalone page, light colors for printing.
+    function esc(text) { return String(text == null ? "" : text).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+    function characterSheetHtml(p, entry) {
+        const kind = KINDS[entry.kind] || KINDS.lore;
+        const face = (entry.portraits && entry.portraits.neutral) || entry.art;
+        const faces = MOODS.filter(([m]) => m !== "neutral" && entry.portraits && entry.portraits[m]);
+        const order = kind.fields.map(([k]) => k);
+        const fields = Object.keys(entry.fields || {}).sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
+        const relations = (entry.links || []).map(l => `<li><b>${esc(linkLabel(l.type))}</b> of ${esc((p.entries.find(e => e.id === l.to) || l).name)}${l.note ? ` (${esc(l.note)})` : ""}</li>`);
+        p.entries.forEach(e => (e.links || []).forEach(l => { if (l.to === entry.id) relations.push(`<li>${esc(e.name)}: <b>${esc(linkLabel(l.type).toLowerCase())}</b>${l.note ? ` (${esc(l.note)})` : ""}</li>`); }));
+        return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(entry.name)} · ${esc(p.name)}</title>
+<style>body{font-family:Georgia,"Times New Roman",serif;color:#1f2937;background:#fff;margin:0;padding:32px;max-width:820px;margin:auto}header{display:flex;gap:24px;align-items:center;border-bottom:3px solid #1f2937;padding-bottom:16px}
+header img{width:180px;height:180px;object-fit:cover;border-radius:12px;border:1px solid #d1d5db}h1{margin:0;font-size:2.2rem}.game{color:#6b7280;text-transform:uppercase;letter-spacing:.1em;font-size:.8rem}.sum{font-style:italic;font-size:1.1rem;margin-top:8px}
+h2{font-size:1rem;text-transform:uppercase;letter-spacing:.08em;color:#6b7280;margin:22px 0 4px;border-bottom:1px solid #e5e7eb}p{margin:4px 0 0;white-space:pre-wrap;line-height:1.45}.faces{display:flex;gap:10px;flex-wrap:wrap}.faces figure{margin:0;text-align:center;font-size:.75rem;color:#6b7280}
+.faces img{width:84px;height:84px;object-fit:cover;border-radius:8px;display:block}footer{margin-top:28px;font-size:.75rem;color:#9ca3af}@media print{body{padding:0}}</style></head><body>
+<header>${face ? `<img src="${esc(face.thumb)}" alt="">` : ""}<div><div class="game">${esc(p.name)} · ${esc(kind.label)}</div><h1>${esc(entry.name)}</h1>${entry.summary ? `<div class="sum">${esc(entry.summary)}</div>` : ""}</div></header>
+${fields.map(k => `<h2>${esc(fieldLabel(entry.kind, k))}</h2><p>${esc(entry.fields[k])}</p>`).join("\n")}
+${relations.length ? `<h2>Relationships</h2><ul>${relations.join("")}</ul>` : ""}
+${faces.length ? `<h2>Moods</h2><div class="faces">${faces.map(([m, label]) => `<figure><img src="${esc(entry.portraits[m].thumb)}" alt=""><figcaption>${esc(label)}</figcaption></figure>`).join("")}</div>` : ""}
+${entry.tags && entry.tags.length ? `<h2>Tags</h2><p>${esc(entry.tags.join(", "))}</p>` : ""}
+<footer>Character sheet from CoDev Story Studio · ${esc(now().slice(0, 10))}</footer></body></html>`;
+    }
+
     // "[angry] Get out." -> { mood: "angry", text: "Get out." }
     function splitMood(reply) {
         const m = /^\s*\[([^\]\n]{1,24})\]\s*/.exec(String(reply || ""));
@@ -750,7 +836,9 @@
                         p = made.project;
                     }
                     if (!p) return noProject();
-                    const { locked, art, id, ...data } = args;
+                    // Only story content: pictures, voices, locks, snapshots and growth stay the user's.
+                    const data = {};
+                    for (const k of ["kind", "name", "summary", "fields", "tags", "lines", "links", "order", "beats"]) if (args[k] !== undefined) data[k] = args[k];
                     const saved = store.saveEntry(p.id, data);
                     if (saved.locked) return `Not saved: the user locked "${data.name}" so it stays exactly as it is. Don't change it; if a change would help, suggest it in your reply and let the user decide.`;
                     if (saved.error) return `Not saved: ${saved.error}`;
@@ -873,6 +961,8 @@
 .gs-beat .gs-btn, .gs-beat select { padding: 3px 7px; font-size: 0.72rem; }
 .gs-issues { display: flex; flex-direction: column; gap: 6px; }
 .gs-issue { background: var(--bg-card); border-left: 3px solid var(--warning); border-radius: 6px; padding: 8px 10px; font-size: 0.85rem; display: flex; flex-direction: column; gap: 3px; }
+.gs-growth { border-color: var(--success); }
+.gs label.gs-chip { flex-direction: row; align-items: center; gap: 6px; color: var(--text-main); }
 .gs-speak { background: none; border: none; cursor: pointer; font-size: 0.85rem; padding: 0 2px; opacity: 0.75; }
 .gs-send input { flex: 1; min-width: 0; }
 @media (max-width: 600px) { .gs-line { grid-template-columns: 1fr; } .gs-grid { grid-template-columns: 1fr; } }
@@ -908,7 +998,7 @@
     // canWriteFolder() -> bool, pickFile() -> text, confirm(text) -> bool
     function mount(container, store, deps = {}) {
         if (!document.getElementById(STYLE_ID)) document.head.append(el("style", { id: STYLE_ID, text: CSS }));
-        const ui = { section: "bible", kindFilter: "", search: "", editing: null, talkWith: "", talkLog: [], sceneId: "", sceneSetup: false, sceneCalls: {}, loreResults: {}, asked: new Set(), busy: false };
+        const ui = { section: "bible", kindFilter: "", search: "", editing: null, talkWith: "", talkLog: [], sceneId: "", sceneSetup: false, sceneCalls: {}, loreResults: {}, asked: new Set(), growth: [], busy: false };
         const confirmFn = deps.confirm || (text => window.confirm(text));
         let msgTimer = null;
 
@@ -947,6 +1037,12 @@
 
         function body() {
             const p = store.active();
+            const panel = p && growthPanel(p);
+            const view = section(p);
+            return panel ? el("div", { class: "gs" }, panel, view) : view;
+        }
+
+        function section(p) {
             if (ui.section === "new" || !p) return projectForm(null);
             if (ui.section === "details") return projectForm(p);
             if (ui.section === "talk") return talkView(p);
@@ -1102,6 +1198,8 @@
             }
             const faces = !isNew && entry.kind === "character" ? moodFaces(p, entry, msg) : null;
             const linkBox = !isNew && !["dialogue", "scene", "arc"].includes(entry.kind) ? linkEditor(p, entry, msg) : null;
+            const growBox = !isNew && entry.kind === "character" ? growthAndSnapshots(p, entry, msg) : null;
+            const sheet = !isNew && entry.kind === "character" ? sheetButtons(p, entry) : null;
             const voiceBox = !isNew && entry.kind === "character" ? voicePicker(entry.voice, entry.locked, voice => store.saveEntry(p.id, { id: entry.id, voice }),
                 () => sampleLine(entry)) : null;
             const help = !isNew ? el("div", { class: "gs-send" },
@@ -1118,10 +1216,10 @@
                 entry.locked ? el("div", { class: "gs-note", text: "Locked: nothing can change it, not even an agent, until you unlock it. Chats and scenes with it never change it either way." }) : null,
                 art, faces, voiceBox, el("div", { class: "gs-row" }, el("label", {}, "Name", name), el("label", {}, "Kind", kindSelect)),
                 el("label", {}, "Summary", summary), fieldNodes, kind.lines ? el("label", {}, "Lines", linesBox) : null,
-                linkBox, el("label", {}, "Tags", tags), msg,
+                linkBox, growBox, el("label", {}, "Tags", tags), msg, sheet,
                 !isNew ? loreChecker(p, [entry], entry.id) : null, entry.locked ? null : el("div", { class: "gs-row" }, save, remove), help);
             if (entry.locked) {
-                form.querySelectorAll("input, textarea, select").forEach(node => { if (!node.closest(".gs-send")) node.disabled = true; });
+                form.querySelectorAll("input, textarea, select").forEach(node => { if (!node.closest(".gs-send") && !node.closest(".gs-section")) node.disabled = true; });
                 form.querySelectorAll(".gs-art button, .gs-line button, .gs-lines > button, .gs-faces button").forEach(node => { if (!node.dataset.keep) node.disabled = true; });
             }
             return form;
@@ -1456,6 +1554,92 @@
             return el("div", { class: "gs" }, el("div", { class: "gs-row" }, btn, el("span", { class: "gs-note", text: "Compares it with the rest of the story bible. It only reports; nothing is changed." })), out);
         }
 
+        // 🌱 + 📸 for one character: growth suggestions on or off (off unless the user turns
+        // it on), and snapshots to save and go back to.
+        function growthAndSnapshots(p, entry, msg) {
+            const snaps = entry.snapshots || [];
+            const label = el("input", { type: "text", placeholder: "Snapshot name, like \"Before the war\"", "aria-label": "Snapshot name" });
+            const take = el("button", { class: "gs-btn", type: "button", "data-keep": "1", text: "📸 Save snapshot", onclick: () => {
+                const done = store.snapshot(p.id, entry.id, label.value || new Date().toLocaleString());
+                if (done.error) return say(msg, done.error, true);
+                ui.editing = done.entry;
+                render();
+            } });
+            const growth = el("label", { class: "gs-chip", style: "display: inline-flex; gap: 6px; align-items: center;" },
+                el("input", { type: "checkbox", checked: !!entry.growth, disabled: !!entry.locked, onchange: e => { store.saveEntry(p.id, { id: entry.id, growth: e.target.checked }); ui.editing = store.findEntry(p, entry.id); render(); } }),
+                "🌱 Suggest growth after scenes and chats");
+            return el("details", { class: "gs-section", open: snaps.length > 0 || !!entry.growth },
+                el("summary", { text: `🌱 Growth and 📸 snapshots${snaps.length ? ` (${snaps.length})` : ""}` }),
+                el("div", { class: "gs-note", text: `${entry.name} never changes on their own. With growth turned on, "🌱 Suggest growth" in a scene or chat proposes changes, and nothing changes until you approve one; a snapshot is saved first. Snapshots let you go back to any saved version.` }),
+                growth,
+                el("div", { class: "gs-send" }, label, take),
+                ...snaps.map((snap, i) => el("div", { class: "gs-row" },
+                    el("span", { text: `📸 ${snap.label}`, style: "flex: 1;" }), el("span", { class: "gs-note", text: new Date(snap.at).toLocaleDateString() }),
+                    el("button", { class: "gs-btn", type: "button", text: "↩ Go back to this", disabled: !!entry.locked, onclick: () => {
+                        if (!confirmFn(`Put ${entry.name} back to "${snap.label}"? The current version is saved as a snapshot first.`)) return;
+                        const done = store.restoreSnapshot(p.id, entry.id, i);
+                        if (done.error) return say(msg, done.error, true);
+                        ui.editing = done.entry;
+                        render();
+                    } }),
+                    el("button", { class: "gs-btn", type: "button", text: "✕", "data-keep": "1", "aria-label": "Delete snapshot", onclick: () => { store.dropSnapshot(p.id, entry.id, i); ui.editing = store.findEntry(p, entry.id); render(); } }))));
+        }
+
+        // 🌱 Asks for growth suggestions for the characters (growth on, not locked) after a scene or chat.
+        function suggestGrowthButton(p, characters, sourceText, msg) {
+            const growing = characters.filter(c => c && c.id && c.growth && !c.locked);
+            if (!growing.length || !deps.chat) return null;
+            const btn = el("button", { class: "gs-btn", type: "button", text: "🌱 Suggest growth", title: `Ideas for how ${growing.map(c => c.name).join(" and ")} could change after this. Nothing changes unless you approve it.`, onclick: async () => {
+                const text = sourceText();
+                if (!text.trim()) return say(msg, "Nothing has happened yet to grow from.", true);
+                btn.disabled = true;
+                say(msg, "Thinking about how they might have changed…");
+                try {
+                    const found = parseGrowth(await deps.chat(growthPrompt(p, growing, text)), growing);
+                    if (!found) say(msg, "The answer didn't come back in a form CoDev could read. Try again.", true);
+                    else if (!found.length) say(msg, "No growth suggested: nothing here changes them much.");
+                    else { ui.growth = [...ui.growth.filter(g => !found.some(f => f.entryId === g.entryId && f.field === g.field)), ...found]; say(msg, ""); render(); }
+                } catch (err) { say(msg, `Couldn't ask: ${err.message}`, true); }
+                btn.disabled = false;
+            } });
+            return btn;
+        }
+
+        // The suggestions waiting for the user, with Approve and Skip.
+        function growthPanel(p) {
+            const mine = ui.growth.filter(g => p.entries.some(e => e.id === g.entryId));
+            if (!mine.length) return null;
+            const msg = el("div", { class: "gs-msg" });
+            return el("div", { class: "gs-form gs-growth" },
+                el("b", { text: "🌱 Suggested growth: nothing changes unless you approve it" }), msg,
+                ...mine.map(g => {
+                    const entry = p.entries.find(e => e.id === g.entryId);
+                    const before = g.field === "summary" ? entry.summary : (entry.fields || {})[g.field];
+                    return el("div", { class: "gs-issue" },
+                        el("b", { text: `${g.name}: ${fieldLabel("character", g.field)}` }),
+                        g.why ? el("div", { class: "gs-note", text: `Why: ${g.why}` }) : null,
+                        before ? el("div", { class: "gs-note", text: `Now: ${before}` }) : null,
+                        el("div", { text: `Would become: ${g.new_text}` }),
+                        el("div", { class: "gs-row" },
+                            el("button", { class: "gs-btn primary", type: "button", text: "✓ Approve", onclick: () => {
+                                store.snapshot(p.id, entry.id, `Before growth: ${fieldLabel("character", g.field).toLowerCase()}`);
+                                const saved = store.saveEntry(p.id, g.field === "summary" ? { id: entry.id, summary: g.new_text } : { id: entry.id, fields: { [g.field]: g.new_text } });
+                                if (saved.error) return say(msg, saved.error, true);
+                                ui.growth = ui.growth.filter(x => x !== g);
+                                render();
+                            } }),
+                            el("button", { class: "gs-btn", type: "button", text: "Skip", onclick: () => { ui.growth = ui.growth.filter(x => x !== g); render(); } })));
+                }));
+        }
+
+        // 🖨️ The character sheet: printed where printing works, else saved as a page to share.
+        function sheetButtons(p, entry) {
+            const name = `${slug(p.name)}_${slug(entry.name)}_sheet.html`;
+            return el("div", { class: "gs-row" },
+                deps.printHtml ? el("button", { class: "gs-btn", type: "button", "data-keep": "1", text: "🖨️ Print character sheet", onclick: () => deps.printHtml(characterSheetHtml(p, entry), name) }) : null,
+                deps.saveFile ? el("button", { class: "gs-btn", type: "button", "data-keep": "1", text: "⬇ Save sheet to share", onclick: () => deps.saveFile(name, characterSheetHtml(p, entry), "text/html") }) : null);
+        }
+
         function elevenLabsBox() {
             const key = el("input", { type: "password", value: deps.getElevenLabsKey ? deps.getElevenLabsKey() : "", placeholder: "ElevenLabs API key", "aria-label": "ElevenLabs API key", autocomplete: "off" });
             return el("details", { class: "gs-section" }, el("summary", { text: "🎙️ ElevenLabs voices (optional, paid)" }),
@@ -1548,7 +1732,8 @@
                 keepNotes);
             const auto = deps.speak ? el("label", { class: "gs-chip", style: "display: inline-flex; gap: 6px; align-items: center;" },
                 el("input", { type: "checkbox", checked: !!ui.speakReplies, onchange: e => { ui.speakReplies = e.target.checked; if (!ui.speakReplies && deps.stopSpeaking) deps.stopSpeaking(); } }), "🔊 Speak replies") : null;
-            return el("div", { class: "gs" }, log, el("div", { class: "gs-send" }, input, el("button", { class: "gs-btn primary", type: "button", text: "Send", onclick: send })), el("div", { class: "gs-row" }, keep, clear, auto), interview);
+            return el("div", { class: "gs" }, log, el("div", { class: "gs-send" }, input, el("button", { class: "gs-btn primary", type: "button", text: "Send", onclick: send })), el("div", { class: "gs-row" }, keep, clear, auto,
+                suggestGrowthButton(p, [character], () => ui.talkLog.map(m => m.role === "user" ? `Player: ${m.content}` : `${character.name}: ${splitMood(m.content).text}`).join("\n"), msg)), interview);
         }
 
         function uniqueName(p, base, kind) {
@@ -1787,7 +1972,8 @@
             }
             return el("div", { class: "gs" }, head, info, log,
                 el("div", { class: "gs-row" }, "Next:", speaker, direction),
-                el("div", { class: "gs-row" }, next, four, reroll, undo, play, meter),
+                el("div", { class: "gs-row" }, next, four, reroll, undo, play,
+                    suggestGrowthButton(p, cast.map(c => c.id && store.findEntry(p, c.id)), () => `Scene "${scene.name}" (${f.location || "somewhere"}). Goal: ${f.goal || "none"}.\n${lines().map(lineText).join("\n")}`, msg), meter),
                 el("div", { class: "gs-send" }, as, mine, el("button", { class: "gs-btn", type: "button", text: "Add", onclick: add })),
                 msg,
                 el("div", { class: "gs-note", text: "Saved automatically to the story bible. Export it from 📦 Export to your game." }),
@@ -1834,7 +2020,7 @@
     return {
         STORE_KEY, KINDS, KIND_NAMES, SECTIONS, STUDIO_TASK,
         createStudioStore, buildStudioTools, studioPromptBlock, isStudioTask, exportFiles, toJson, toGdscript, toMarkdown,
-        MOODS, moodFor, portraitFor, normalizeVoice, splitMood, LINK_TYPES, BEAT_STATUS, timelineOrder, INTERVIEW_QUESTIONS, loreCheckPrompt, parseIssues,
+        MOODS, moodFor, portraitFor, normalizeVoice, splitMood, LINK_TYPES, BEAT_STATUS, timelineOrder, INTERVIEW_QUESTIONS, loreCheckPrompt, parseIssues, growthPrompt, parseGrowth, characterSheetHtml,
         describeEntry, characterSystemPrompt, sceneDirectorPrompt, sceneTurnMessage, framePrompt, parseSceneLines, normalizeKind, slug, mount
     };
 });

@@ -1978,6 +1978,15 @@
                     sendChatMessage();
                 },
                 saveFile: saveTextFileForUser,
+                // Android's WebView can't print, so the sheet goes to the share sheet there.
+                printHtml: (html, name) => {
+                    if (getNativeSpeechPlugin("CapacitorHttp")) return saveTextFileForUser(name, html, "text/html");
+                    const frame = document.createElement("iframe");
+                    frame.style.cssText = "position: fixed; width: 0; height: 0; border: 0; right: 0; bottom: 0;";
+                    frame.srcdoc = html;
+                    frame.onload = () => { frame.contentWindow.focus(); frame.contentWindow.print(); setTimeout(() => frame.remove(), 60000); };
+                    document.body.appendChild(frame);
+                },
                 pickFile: () => pickTextFileFromUser(),
                 writeFile: (path, content) => writeWorkspaceFile(path, content),
                 canWriteFolder: () => !!connectedDirectoryHandle,
