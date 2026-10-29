@@ -2,6 +2,10 @@
 
 The app is a single page, `mobile/www/index.html`. It talks to Groq directly from the browser, so there's no backend server to run. The Android app is in `mobile/` (see `mobile/README.md`).
 
+## CoDev accounts
+
+People can sign in to a CoDev account (Settings > Sign in to CoDev) instead of pasting API keys. CoDev's online server in `cloud/` holds the owner's keys and forwards their requests within their plan, so the keys never reach their devices; the owner's account gets the Owner page. Putting the server online and the plans are in [`cloud/README.md`](cloud/README.md). A key pasted in Settings is still used first.
+
 ## Windows desktop app
 
 Download and run the installer: https://github.com/phillbennett021423/CoDev_cloud/releases/latest/download/CoDev-Studio-Setup.exe
