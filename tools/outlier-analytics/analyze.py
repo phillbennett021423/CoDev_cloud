@@ -658,7 +658,9 @@ def consistency_check(leg, metrics, weights):
         reasons.append(f"{label} {rate:.0%} is outside the {c['hit_rate_min']:.0%}-{c['hit_rate_max']:.0%} consistency band")
     if metrics["baselineVerified"] is False:
         reasons.append("rolling 3-5 game baseline doesn't clear the line in every window")
-    elif metrics["baselineVerified"] is None:
+    elif metrics["baselineVerified"] is None and rate is None:
+        # Outlier's board shows hit rates, not game logs: with L5/L10 on the row the
+        # rolling check is skipped rather than failing every board-only prop.
         reasons.append("not enough recent games to check the 3-5 game baseline")
     if metrics["minutesFloor"] is not None and metrics["minutesFloor"] < c["min_minutes"] - 1e-9:
         reasons.append(f"minutes floor {metrics['minutesFloor']:g} is under {c['min_minutes']:g}")

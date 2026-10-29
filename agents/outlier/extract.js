@@ -48,9 +48,19 @@ function collectPage(selectors) {
     // L10, H2H, 2026...) are only in the header, each row has bare "90%" cells. Each
     // cell gets its column's label by lining up with the header across the page.
     const LABEL = /^(L5|L10|L15|L20|L25|L30|H2H|SZN|Season|20\d\d)$/i;
-    const leaves = [...document.body.querySelectorAll('*')].filter(el => !el.children.length);
-    const heads = leaves.map(el => ({ el, label: text(el).replace(/[^A-Za-z0-9]/g, ''), r: el.getBoundingClientRect() }))
-        .filter(h => LABEL.test(h.label) && h.r.width > 0);
+    const PCT = /^\d{1,3}(\.\d+)?\s?%$/;
+    // The smallest element whose text passes test: a header cell may hold a sort
+    // arrow (an svg) beside "L10", and a rate cell may wrap its number in spans, so
+    // only-leaf elements miss them. textContent keeps this cheap on a long board.
+    const quick = el => (el.textContent || '').replace(/ /g, ' ').trim();
+    const smallest = test => [...document.body.querySelectorAll('*')].filter(el => {
+        const t = quick(el);
+        if (!t || t.length > 14 || !test(t)) return false;
+        return ![...el.children].some(c => test(quick(c)));
+    });
+    const labelOf = t => t.replace(/[^A-Za-z0-9]/g, '');
+    const heads = smallest(t => LABEL.test(labelOf(t))).map(el => ({ el, label: labelOf(quick(el)), r: el.getBoundingClientRect() }))
+        .filter(h => h.r.width > 0);
     const byRow = new Map();
     for (const h of heads) {
         const key = Math.round(h.r.top / 8);
@@ -59,18 +69,29 @@ function collectPage(selectors) {
     }
     const header = [...byRow.values()].sort((a, b) => b.length - a.length)[0] || [];
     const cellRates = new Map();
+    // Each rate cell with where it sits, so a row whose rates are in another
+    // container than its player and price (a pinned left column) still gets them.
+    const placedRates = [];
     if (header.length >= 3) {
         const mid = r => r.left + r.width / 2;
-        for (const el of leaves) {
-            if (!/^\d{1,3}(\.\d+)?\s?%$/.test(text(el))) continue;
+        for (const el of smallest(t => PCT.test(t))) {
             const r = el.getBoundingClientRect();
             if (!r.width || r.top <= header[0].r.top) continue;
             const near = header.map(h => ({ h, d: Math.abs(mid(h.r) - mid(r)) })).sort((a, b) => a.d - b.d)[0];
-            if (near && near.d <= Math.max(40, near.h.r.width)) cellRates.set(el, `${near.h.label}: ${text(el)}`);
+            if (near && near.d <= Math.max(40, near.h.r.width)) {
+                const rate = `${near.h.label}: ${quick(el).replace(/\s/g, '')}`;
+                cellRates.set(el, rate);
+                placedRates.push({ el, rate, y: r.top + r.height / 2 });
+            }
         }
     }
     const withRates = el => {
-        const rates = [...el.querySelectorAll('*')].filter(c => cellRates.has(c)).map(c => cellRates.get(c));
+        let rates = [...el.querySelectorAll('*')].filter(c => cellRates.has(c)).map(c => cellRates.get(c));
+        if (!rates.length && placedRates.length) {
+            // None inside it: the rate cells on the same line of the screen.
+            const r = el.getBoundingClientRect();
+            if (r.height > 0 && r.height < 200) rates = placedRates.filter(p => p.y >= r.top && p.y <= r.bottom && !el.contains(p.el)).map(p => p.rate);
+        }
         return rates.length ? `${text(el)} | hit rates: ${rates.join(' · ')}` : text(el);
     };
 
