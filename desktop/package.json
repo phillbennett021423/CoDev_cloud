@@ -7,11 +7,13 @@
   "private": true,
   "scripts": {
     "copy-www": "node -e \"const fs=require('fs');fs.rmSync('www',{recursive:true,force:true});fs.cpSync('../mobile/www','www',{recursive:true})\"",
-    "start": "npm run copy-www && electron .",
-    "dist": "npm run copy-www && electron-builder --win nsis --publish never"
+    "copy-bundle": "node copy-bundle.js",
+    "start": "npm run copy-www && npm run copy-bundle && electron .",
+    "dist": "npm run copy-www && npm run copy-bundle && electron-builder --win nsis --publish never"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1"
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "playwright-core": "1.64.1"
   },
   "devDependencies": {
     "electron": "44.4.5",
@@ -21,7 +23,8 @@
     "appId": "com.codev.studio",
     "productName": "CoDev Studio",
     "artifactName": "CoDev-Studio-Setup.${ext}",
-    "files": ["main.js", "preload.js", "mcp-tools.js", "mcp-hub.js", "www/**/*"],
+    "files": ["main.js", "preload.js", "mcp-tools.js", "image-folder.js", "mcp-hub.js", "outlier-bridge.js", "google-connect.js", "sandbox/**/*", "!sandbox/test/**", "browser/**/*", "www/**/*", "bundle/**/*"],
+    "asarUnpack": ["node_modules/playwright-core/**", "bundle/tools/**", "sandbox/**"],
     "directories": { "output": "dist", "buildResources": "build" },
     "win": { "icon": "build/icon.png", "target": "nsis" },
     "nsis": { "oneClick": true, "perMachine": false, "createDesktopShortcut": true, "createStartMenuShortcut": true, "shortcutName": "CoDev Studio" }
