@@ -9,9 +9,10 @@
 FROM python:3.11-slim-bookworm
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-dejavu-core \
+ && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-dejavu-core git \
  && rm -rf /var/lib/apt/lists/* && fc-cache -f
 
+# git: DeepFilterNet looks up its version with it.
 # Torch 2.0 is the last one DeepFilterNet 0.5 runs on; Demucs is happy with it too.
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.0.1 torchaudio==2.0.2 \
  && pip install --no-cache-dir "numpy<2" faster-whisper==1.1.1 demucs==4.0.1 deepfilternet==0.5.6 soundfile==0.12.1
