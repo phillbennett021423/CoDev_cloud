@@ -11,7 +11,7 @@ const path = require('path');
 const { createGoogleConnect, isGoogleApiUrl, READ_SCOPES, WRITE_SCOPES } = require('../desktop/google-connect');
 const Google = require('../mobile/www/agent-ui/google-apps.js');
 const { createMockBackend } = require('./fixtures/mock-agent-backend');
-const { launchBrowser, openPage, sendPrompt, waitForChat } = require('./helpers/page-driver');
+const { launchBrowser, openPage, sendPrompt, waitForChat, answerApprovals } = require('./helpers/page-driver');
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 const b64url = text => Buffer.from(text).toString('base64url');
@@ -352,11 +352,7 @@ test('in CoDev, an agent reads Gmail and the user approves one send and declines
         'Done: read your Dabble email and sent one note.'
     ] });
     await page.uncheck('#isSandboxCheckbox');
-    const dialogs = [];
-    page.on('dialog', dialog => {
-        dialogs.push(dialog.message());
-        if (dialogs.length === 1) dialog.accept(); else dialog.dismiss();
-    });
+    const dialogs = await answerApprovals(page, () => dialogs.length === 1);
     await sendPrompt(page, 'Check my Gmail for Dabble and email my friend that the slip hit.');
     await waitForChat(page, /Done: read your Dabble email/);
     const calls = await page.evaluate(() => window.__modelCalls);

@@ -10,7 +10,7 @@ const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 const { createMockBackend } = require('./fixtures/mock-agent-backend');
-const { launchBrowser, openPage, sendPrompt, waitForChat } = require('./helpers/page-driver');
+const { launchBrowser, openPage, sendPrompt, waitForChat, answerApprovals } = require('./helpers/page-driver');
 
 let launched;
 test.before(async () => { launched = await launchBrowser(); });
@@ -216,6 +216,7 @@ test('generate_image makes a picture with the free service when no key is set, a
         route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX, headers: { 'access-control-allow-origin': '*' } });
     });
     page.on('dialog', dialog => dialog.dismiss());
+    await answerApprovals(page, () => false);
     await sendPrompt(page, 'Make me a picture of a red panda astronaut');
     await waitForChat(page, /Here is your red panda astronaut/);
     assert.equal(requested.length, 1);

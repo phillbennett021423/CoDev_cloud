@@ -7,8 +7,10 @@ android {
         applicationId "com.codev.studio"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // On GitHub each build gets a higher number (minutes since 2026-01-01), whichever
+        // workflow built it, so a new APK always installs over the old one.
+        versionCode System.getenv("GITHUB_ACTIONS") ? (int) ((System.currentTimeMillis().intdiv(1000) - 1767225600).intdiv(60)) : 1
+        versionName "1.0.${System.getenv("GITHUB_RUN_NUMBER") ?: "0"}"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +18,26 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // CoDev's permanent signing key, from the ANDROID_KEYSTORE_* repository secrets
+    // (the workflows write it to a file and set these variables). Every build signed
+    // with it installs over the last one; without it Gradle uses a throwaway key.
+    def codevKeystore = System.getenv("CODEV_KEYSTORE_FILE")
+    signingConfigs {
+        if (codevKeystore) {
+            codev {
+                storeFile file(codevKeystore)
+                storePassword System.getenv("CODEV_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("CODEV_KEY_ALIAS")
+                keyPassword System.getenv("CODEV_KEYSTORE_PASSWORD")
+            }
+        }
+    }
     buildTypes {
+        debug {
+            if (codevKeystore) signingConfig signingConfigs.codev
+        }
         release {
+            if (codevKeystore) signingConfig signingConfigs.codev
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

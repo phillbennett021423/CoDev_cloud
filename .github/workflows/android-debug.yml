@@ -46,6 +46,18 @@ jobs:
         working-directory: mobile
         run: npx cap sync android
 
+      - name: Use CoDev's signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          # Without the secrets the APK is signed with a throwaway key, as before.
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then echo "::warning::No ANDROID_KEYSTORE_BASE64 secret: this APK won't install over the last one."; exit 0; fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/codev.keystore"
+          echo "CODEV_KEYSTORE_FILE=$RUNNER_TEMP/codev.keystore" >> "$GITHUB_ENV"
+          echo "CODEV_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "CODEV_KEY_ALIAS=codev" >> "$GITHUB_ENV"
+
       - name: Build debug APK
         working-directory: mobile/android
         run: |

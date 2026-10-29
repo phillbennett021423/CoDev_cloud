@@ -10,7 +10,7 @@ const OUTLIER_PRIMER = 'About Outlier (outlier.bet, web app app.outlier.bet): a 
     + 'Sports: NBA, WNBA, NFL, NCAAF, MLB, NHL, NCAAB, soccer. '
     + 'Reading a prop: player, stat (Points, Rebounds, Assists, PRA, Threes, Passing Yards, Strikeouts, Shots on Goal...), line (e.g. 22.5), side (Over/More/Higher or Under/Less/Lower), American odds (-119 means risk 119 to win 100, about 54% implied; +150 means win 150 on 100, 40%) and hit rates: how often he cleared this line in the last 5, 10 and 20 games (L5, L10, L20), head to head against this opponent (H2H), this season and last season. '
     + 'Colors: green is always good for the side being looked at, red bad (light green 80-100%, green 66-80%, dark green 51-65%, black 50%, dark red 30-49%, red 15-29%, light red under 15%). '
-    + 'The scan opens Props (never +EV, even when Outlier reopens there), picks the sport, finds the game and reads every line; outlier_research_list researches a whole list of legs in one visit; outlier_research opens one player\'s or game\'s details; outlier_read_section reads Insights, Popular or Games. Call outlier_guide for the full guide: every tool, what its numbers mean and the research checklist by sport. '
+    + 'The scan opens Props (never +EV, even when Outlier reopens there), picks the sport, finds the game and reads every line; outlier_find_hit_rates sets Outlier\'s Hit Rate filter (e.g. L5 from 60%) and returns the qualifying legs ranked, with a 4-leg ticket; outlier_research_list researches a whole list of legs in one visit; outlier_research opens one player\'s or game\'s details; outlier_read_section reads Insights, Popular or Games. Call outlier_guide for the full guide: every tool, what its numbers mean and the research checklist by sport. '
     + 'They only read and click tabs, filters, game cards and player names: never adding picks to My Picks or a slip, never entering anything on Outlier, Underdog or Dabble.';
 
 const OUTLIER_GUIDE = `# Outlier: what it is and how to use it for picks
@@ -53,6 +53,7 @@ Sports: NBA, WNBA, NFL, NCAAF (CFB), MLB, NHL, NCAAB (CBB), soccer.
 ## CoDev's Outlier tools
 
 - **outlier_research_list**: a list of legs (from Dabble, Underdog, PrizePicks): every leg researched in one visit, Outlier's line versus the user's, everything on each player's card and its tabs (Supporting Stats, Game Log, Splits, Matchup, Injuries, Odds Movement), minutes and opportunity trends, the audit on just those legs. Use it whenever the user gives a list.
+- **outlier_find_hit_rates**: the legs with strong hit rates (default 60%+ in the last 5, Overs and Unders) across the sport's board: CoDev sets Outlier's Hit Rate, Over/Under, game and stat filters so only those legs show, ranks them, leaves out players with injury news and builds 4-leg regular-line tickets (near -119, one leg per game). Use it for any hit-rate request, once.
 - **outlier_scan_board**: one game's whole Props board read and audited into 4-6 leg tickets.
 - **outlier_research**: one player's card, or one game's page.
 - **outlier_read_section**: Insights, Popular, Games or Injuries as text.

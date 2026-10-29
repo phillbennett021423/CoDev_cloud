@@ -1125,7 +1125,8 @@ test('a list keeps the board loaded: cards open over it and close with Escape, a
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
     const pipeline = createOutlierPipeline({ dataDir, log: () => {}, blockedPorts: [] });
     t.after(() => pipeline.close());
-    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 300, backoffMs: [100, 100] }));
+    // cooldownMs 0: this test calls again right after the 429s (the cooldown has its own test).
+    fs.writeFileSync(pipeline.files.config, JSON.stringify({ pages: [{ kind: 'props', url }], settleMs: 50, market: false, cardPaceMs: 50, clickPaceMs: 300, backoffMs: [100, 100], cooldownMs: 0 }));
     const service = createService({}, { pipeline });
     const legs = players.slice(0, 3).map((player, i) => ({ player, stat: 'Points', line: 20.5 + i, side: 'Over' }));
 
