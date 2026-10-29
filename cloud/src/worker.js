@@ -413,7 +413,7 @@ async function ownerRoute(request, env, user, method, path) {
         const target = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(Number(userMatch[1])).first();
         if (!target || isOwner(env, target.email)) throw new HttpError(404, 'No such account.');
         if (action === 'approve') {
-            if (target.plan === 'pro') throw new HttpError(409, 'That account already pays for the Pro plan.');
+            if (target.plan === 'pro' || target.plan === 'max') throw new HttpError(409, 'That account already pays for a plan.');
             if (target.plan !== 'tester') {
                 const { count } = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE plan = 'tester'").first();
                 const { tester_cap } = await getSettings(env);

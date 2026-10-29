@@ -1,16 +1,20 @@
-// The plans and their limits. Adding a plan (a Max plan, say) is a new entry here
+// The plans and their limits. Adding a plan is a new entry here
 // plus its Stripe price later; nothing else needs to change.
 //
 // chatTotal: messages for the whole life of the account (the trial), or null.
 // chatPerDay: messages a day (UTC), or null for no limit.
 // providers: which AI services the shared keys may be used for.
+// videoMinutesPerMonth: video editing on the rented video machine (0 = not included).
 export const PLANS = {
-    trial: { label: 'Trial', chatTotal: 20, chatPerDay: null, providers: ['groq'], runCode: false },
-    pro: { label: 'Pro plan', chatTotal: null, chatPerDay: 300, providers: ['groq', 'openrouter', 'anthropic'], runCode: true },
+    trial: { label: 'Trial', chatTotal: 20, chatPerDay: null, providers: ['groq'], runCode: false, videoMinutesPerMonth: 0 },
+    pro: { label: 'Pro plan', chatTotal: null, chatPerDay: 300, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: 0 },
+    // $40 a month, the first two months paid up front ($80), so the video machine is
+    // paid for before anyone uses it. Not on sale until payments are built.
+    max: { label: 'Max plan', chatTotal: null, chatPerDay: 1000, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: 120 },
     // Hidden: the owner approves testers on the Owner page. To the tester it is
     // the Pro plan in every way they can see.
-    tester: { label: 'Pro plan', chatTotal: null, chatPerDay: 300, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, hidden: true },
-    owner: { label: 'Owner', chatTotal: null, chatPerDay: null, providers: ['groq', 'openrouter', 'anthropic'], runCode: true }
+    tester: { label: 'Pro plan', chatTotal: null, chatPerDay: 300, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: 0, hidden: true },
+    owner: { label: 'Owner', chatTotal: null, chatPerDay: null, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: null }
 };
 
 // How many messages one request counts as. Anthropic costs far more per message.
@@ -37,6 +41,6 @@ export function planFor(user, owner) {
 // What an account is told about its own plan. A tester gets exactly what a Pro
 // subscriber gets, so nothing reveals the tester plan.
 export function publicPlan(plan) {
-    const { label, chatTotal, chatPerDay, providers, runCode } = plan;
-    return { name: label, chatTotal, chatPerDay, providers: [...providers], runCode };
+    const { label, chatTotal, chatPerDay, providers, runCode, videoMinutesPerMonth } = plan;
+    return { name: label, chatTotal, chatPerDay, providers: [...providers], runCode, videoMinutesPerMonth };
 }
