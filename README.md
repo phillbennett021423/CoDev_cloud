@@ -123,6 +123,8 @@ use **Settings > Google apps**.
 - **Self-checks.** Agents compare each action's result with what they expected (right page, player, stat, filters still set) and fix course instead of clicking on blindly. The same tool call never runs a third time in one task, and three failed browser actions stop the tools so the agent explains what went wrong instead of spending more usage.
 - **See what it did.** While an agent works, its card shows its plan, each finished step with what it found (⚠️ for problems) and the step running now. Under every reply, **🧭 What CoDev did** lists the steps.
 - **Cheaper Claude calls.** Requests to Anthropic use prompt caching, so the instructions and tool list resent on every step of a task are billed at about a tenth of the normal input price.
+- **Spending limits.** Settings > 💰 Spending limits sets the most CoDev may spend in a day (default $1) and on one task (default $0.25); 0 turns a limit off. CoDev adds up what each Claude request, paid OpenRouter model and paid picture costs, and shows today's total there. At the daily limit it sends nothing more until tomorrow; at the task limit the agent stops using tools and answers with what it found.
+- **Short answers.** Agents lead with the answer and stop: a simple question gets a few sentences. Code, reports, deep research and step-by-step instructions can run longer.
 
 ## Every request is sorted first
 
