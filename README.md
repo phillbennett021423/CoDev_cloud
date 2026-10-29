@@ -103,6 +103,25 @@ One free key adds the rest: get a Gemini API key at [aistudio.google.com/apikey]
 
 Ask for a picture ("make a logo for my team", "draw this as a cartoon") and the agent's `generate_image` tool makes it with Pollinations (Flux), which is free and needs no key; without a key it allows about one picture every 15 to 45 seconds, and CoDev waits once and retries when it says to slow down. Gemini (Nano Banana) and OpenRouter can be picked in Settings instead, and are needed to edit an attached picture, but both cost money: Gemini's free tier has no image models, so a free Gemini key covers video, audio and scanned PDFs, not pictures. Pictures show under the reply; tap one to see it full size and download it. To keep usage down, one task makes at most 4 pictures and a day at most the limit in Settings (20 to start), and the Settings section shows today's count.
 
+## Video and audio editing (free, on your computer)
+
+Attach a video (or a song, a voice recording, a logo) with **📎** and ask in plain words: "remove the background noise, keep the people talking and add this song quietly underneath", "make it vertical for TikTok with captions", "cut out the part where I say welcome", "make a GIF of the first 3 seconds". The new file shows under the reply with a player and a **⬇ Download** button. The original is never changed.
+
+Agents edit with four free, open-source tools that run in Docker on your computer, so nothing is uploaded anywhere and nothing costs money:
+
+| Tool | What it does here |
+| --- | --- |
+| FFmpeg | trim, cut, join, speed, vertical/square reframing, background music (dipping while people talk), voiceovers, text, logos, fades, GIFs, MP3s, compressing |
+| Whisper (faster-whisper) | captions burned in or as an .srt file, transcripts, finding when something is said |
+| Demucs | keeping only the voices, removing the voices (karaoke), splitting a song into stems |
+| DeepFilterNet | removing background noise (wind, hum, crowd, traffic) from speech |
+
+Agents can also use music that's already on your computer: ask for "my lofi playlist" or a song by name and they look in your Music, Videos, Downloads and Desktop folders (or a folder you name) and copy the one they pick into the media folder.
+
+It needs Docker Desktop and works in the Windows app and in CoDev opened with `start-codev.bat` or `npm start`. The tools download once (about 3 GB) the first time an agent edits a video, from **Settings > 🎬 Video & audio editing**, or with `npm run setup -- --media`. If the download fails, CoDev builds them on your computer from `desktop/media/image` instead (10 to 20 minutes). Each edit runs in its own container with no network, and one runs at a time. Long clips take a few minutes: Whisper and Demucs take about as long as the clip on a typical PC. Files live in the data folder under `media/` (`uploads/` and `outputs/`). `CODEV_MEDIA_MEMORY` (default 6g) and `CODEV_MEDIA_CPUS` set the container's limits.
+
+The same service can run on a server for phones and other people's accounts: the host passes `resolveUser` (a folder per account) and `authorize` (the plan check and monthly minutes) to `createMedia` in `desktop/media/index.js`.
+
 ## Google apps (YouTube, Maps, Gmail, Drive)
 
 Agents can search YouTube, find places and directions, and read Gmail and Google

@@ -315,6 +315,11 @@
         .msg-attachments img { width: 72px; height: 72px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border-color); }
         .msg-attachments img.generated { width: 280px; max-width: 100%; height: auto; cursor: zoom-in; }
         .msg-attachments .generated-pill { cursor: pointer; }
+        .media-result { display: flex; flex-direction: column; gap: 6px; max-width: min(100%, 420px); }
+        .media-result video, .media-result img { width: 100%; max-height: 60vh; border-radius: 8px; background: #000; object-fit: contain; }
+        .media-result audio { width: 100%; }
+        .media-result-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.8rem; color: var(--text-muted); }
+        .media-result-bar a { text-decoration: none; padding: 4px 10px; color: var(--accent); }
         .generated-viewer { position: fixed; inset: 0; z-index: 3000; background: rgba(0, 0, 0, 0.8); display: flex; align-items: center; justify-content: center; padding: 16px; }
         .generated-viewer-box { position: relative; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px; max-width: min(96vw, 1100px); max-height: 94vh; display: flex; flex-direction: column; gap: 8px; align-items: center; overflow: auto; color: var(--text-main); }
         .generated-viewer-box img { max-width: 100%; max-height: 74vh; object-fit: contain; border-radius: 6px; }
@@ -1084,6 +1089,13 @@
                 <div id="mediaStatus" style="font-size: 0.8rem; color: var(--text-muted); white-space: pre-line;"></div>
             </details>
 
+            <details class="settings-extra" id="videoEditSettings">
+                <summary>🎬 Video &amp; audio editing (free, on this computer)</summary>
+                <div style="font-size: 0.8rem; color: var(--text-muted);">Attach a video with 📎 and ask in plain words: "remove the background noise, keep the people talking and add this song quietly underneath", "make it vertical for TikTok with captions", "cut out the part where I say welcome". Agents edit it with FFmpeg, Whisper, Demucs and DeepFilterNet in Docker on this computer, all free, and the new file shows under the reply with a player and a download button. The tools download once (about 3 GB).</div>
+                <div id="videoEditStatus" style="font-size: 0.8rem; color: var(--text-muted); white-space: pre-line;"></div>
+                <button class="btn-secondary" id="videoEditPrepare" onclick="prepareVideoTools()" style="display: none;">⬇ Download the video tools now</button>
+            </details>
+
             <details class="settings-extra" id="memorySettings">
                 <summary>🧠 Memory (kept across all chats)</summary>
                 <label class="checkbox-group">
@@ -1195,6 +1207,7 @@
     <script src="media-tools.js"></script>
     <script src="agent-ui/google-apps.js"></script>
     <script src="agent-ui/odds-api.js"></script>
+    <script src="agent-ui/media-studio.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
         // text boxes stop taking clicks and typing until the window is refocused.
@@ -2097,6 +2110,7 @@
                 fragment.appendChild(div);
             });
             feed.replaceChildren(fragment);
+            mediaStudio.hydrate(feed).catch(() => {});
             if (chatScroll.resize) {
                 chatScroll.resize.disconnect();
                 chatScroll.resize.observe(feed);
@@ -3780,6 +3794,8 @@
             });
             // Long attached files and image making (media-tools.js).
             tools.push(...await buildMediaTools(ctx));
+            // Video and audio editing in Docker on this computer.
+            try { tools.push(...await mediaStudio.buildTools(ctx)); } catch (err) { logConsoleActivity(`[Media] ${err.message}`); }
             try {
                 for (const tool of await googleApps.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             } catch (err) { logConsoleActivity(`[Google] ${err.message}`); }
@@ -4215,12 +4231,18 @@
                 pendingAttachments.push(att);
                 renderAttachmentTray();
                 try {
+                    // Videos, audio and pictures also go to the media folder, so agents can edit them.
+                    const editable = await uploadForEditing(file, att);
                     if (kind === "image") await prepareImage(file, att);
                     else if (kind === "pdf") await preparePdf(file, att);
                     else if (kind === "sheet") await prepareSheet(file, att);
                     else if (kind === "text") await prepareTextFile(file, att);
-                    else if (kind === "audio") await prepareAudio(file, att);
+                    else if (kind === "audio") {
+                        // A song for the background needs no transcript: without a key it's still kept for editing.
+                        try { await prepareAudio(file, att); } catch (err) { if (!editable) throw err; att.text = ""; }
+                    }
                     else await prepareVideo(file, att);
+                    if (editable) att.text = `${att.text ? att.text + "\n\n" : ""}[Saved for editing as "${editable.name}" in CoDev's media folder: use the media_* tools with that name.]`;
                     logConsoleActivity(`Prepared ${kind} ${file.name}.`);
                 } catch (err) {
                     pendingAttachments = pendingAttachments.filter(a => a !== att);
@@ -4231,6 +4253,46 @@
                 renderAttachmentTray();
             }
         }
+
+        // VIDEO AND AUDIO EDITING (agent-ui/media-studio.js; the tools run in Docker on this computer).
+        const mediaStudio = CodevMediaStudio.createMediaStudio({ transport: CodevMediaStudio.detectTransport(window), log: line => logConsoleActivity(line) });
+
+        async function uploadForEditing(file, att) {
+            if (!["video", "audio", "image"].includes(att.kind)) return null;
+            try {
+                if (!(await mediaStudio.available())) return null;
+                att.status = "saving it for editing…";
+                renderAttachmentTray();
+                return await mediaStudio.upload(file);
+            } catch (err) {
+                logConsoleActivity(`[Media] Couldn't save ${file.name} for editing: ${err.message}`);
+                return null;
+            }
+        }
+
+        async function refreshVideoEditStatus() {
+            const el = document.getElementById("videoEditStatus");
+            if (!el) return;
+            const s = await mediaStudio.status(true);
+            const button = document.getElementById("videoEditPrepare");
+            const state = s.setup && s.setup.state;
+            el.textContent = !s.available ? `Off: ${s.reason}`
+                : state === "ready" ? "Ready: FFmpeg, Whisper, Demucs and DeepFilterNet are on this computer."
+                : state === "preparing" ? `${s.setup.detail} You can keep using CoDev meanwhile.`
+                : state === "failed" ? `Setting up didn't work: ${s.setup.detail}`
+                : "Not downloaded yet. It happens by itself the first time an agent edits a video, or now:";
+            if (button) button.style.display = s.available && (state === "missing" || state === "failed") ? "" : "none";
+            if (state === "preparing") setTimeout(refreshVideoEditStatus, 15000);
+        }
+
+        async function prepareVideoTools() {
+            try { await mediaStudio.prepare(); } catch (err) { alert(err.message); }
+            refreshVideoEditStatus();
+        }
+        document.addEventListener("DOMContentLoaded", () => {
+            const section = document.getElementById("videoEditSettings");
+            if (section) section.addEventListener("toggle", () => { if (section.open) refreshVideoEditStatus(); });
+        });
 
         function removeAttachment(id) {
             pendingAttachments = pendingAttachments.filter(a => a.id !== id);
@@ -4267,7 +4329,9 @@
 
         function renderMessageAttachments(attachments) {
             if (!attachments || !attachments.length) return "";
-            return `<div class="msg-attachments">${attachments.map(a => a.generatedId && !a.thumb
+            return `<div class="msg-attachments">${attachments.map(a => a.mediaFile
+                ? mediaStudio.renderFile(a, escapeHtml)
+                : a.generatedId && !a.thumb
                 ? `<span class="file-pill generated-pill" onclick="openGeneratedImage('${escapeHtml(a.generatedId)}')">🎨 ${escapeHtml(a.name)}</span>`
                 : a.generatedId
                 ? `<img class="generated" src="${a.thumb}" alt="${escapeHtml(a.name)}" title="${escapeHtml(a.name)}: tap to open full size" loading="lazy" onclick="openGeneratedImage('${escapeHtml(a.generatedId)}')">`
@@ -6389,7 +6453,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 10. STYLE: Answer directly in plain words. Match the length to the question: a short question gets a short answer. Use lists or code blocks only when they help.
 
-11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); making and editing pictures (generate_image). For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
+11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); editing videos and audio the user attaches (cutting, joining, vertical for TikTok, captions, noise removal, voice and music separation, background music, text, logos, GIFs) with the media_* tools when CoDev runs on their computer with Docker; making and editing pictures (generate_image). For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
 
 12. ENGINE-SPECIFIC RULES:${godotRules || " none for this task."}`;
             
@@ -7198,7 +7262,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 const at = session.messages.indexOf(placeholder);
                 if (at >= 0) session.messages.splice(at, 1);
                 // Pictures generate_image made go under the reply (previews; full size in IndexedDB).
-                const made = (tools.generatedImages || []).map(({ fullUrl, ...kept }) => kept);
+                const made = (tools.generatedImages || []).map(({ fullUrl, ...kept }) => kept).concat(mediaStudio.replyAttachments(tools));
                 appendMessageToSession(session, sender, text, made, sources);
                 const reply = session.messages[session.messages.length - 1];
                 if (reply && tools.toolLog.length) {

@@ -8,6 +8,7 @@ const { createMcpTools } = require('./mcp-tools');
 const { handleImageFolder } = require('./image-folder');
 const { createNodeMcpHub } = require('./mcp-hub');
 const { createSandbox } = require('./sandbox');
+const { createMedia } = require('./media');
 const { createBrowserService } = require('./browser');
 const { createOutlierBridge } = require('./outlier-bridge');
 const { createGoogleConnect } = require('./google-connect');
@@ -191,6 +192,27 @@ app.whenReady().then(() => {
     });
     app.on('before-quit', () => { sandbox.closeSync(); });
 
+    // Video and audio editing (FFmpeg, Whisper, Demucs, DeepFilterNet in Docker): the
+    // agents' media_* tools, the page's uploads, and the files it shows under replies.
+    const media = createMedia({ dataDir: app.getPath('userData'), log: line => console.log(`[media] ${line}`) });
+    ipcMain.handle('codev:media', async (_event, req = {}) => {
+        try {
+            if (req.op === 'mcp') return await handleMediaMcp(media, req.message);
+            if (req.op === 'status') return await media.status({});
+            if (req.op === 'prepare') { media.prepare(); return await media.status({}); }
+            if (req.op === 'files') return media.listFiles({});
+            if (req.op === 'delete') return media.deleteFile({}, req.name);
+            if (req.op === 'upload') return await media.saveUpload({}, req.name, Buffer.from(req.data));
+            if (req.op === 'read') {
+                const file = media.openFile({}, req.name);
+                return { data: fs.readFileSync(file.full), type: file.type };
+            }
+            return { error: `Unknown media request ${req.op}` };
+        } catch (err) {
+            return { error: err.message };
+        }
+    });
+
     // Agents' headless browsers. Saved logins are encrypted with safeStorage (DPAPI
     // on Windows) in this app's user data folder; the page asks the user before any is used.
     const browserTools = createBrowserService({ dataDir: app.getPath('userData'), safeStorage, getProjectDir });
@@ -296,3 +318,14 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+
+// The media tools as MCP JSON-RPC, like the sandbox's over codev:sandbox-mcp.
+async function handleMediaMcp(media, msg) {
+    const id = msg && msg.id;
+    if (!msg || msg.method === 'tools/list') return { jsonrpc: '2.0', id, result: { tools: await media.listTools() } };
+    if (msg.method === 'tools/call') {
+        const meta = (msg.params && msg.params._meta) || {};
+        return { jsonrpc: '2.0', id, result: await media.callTool(msg.params.name, msg.params.arguments, { agentId: meta['codev/agentId'], meta }) };
+    }
+    return { jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${msg.method}` } };
+}

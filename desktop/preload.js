@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     // serves under /agent/: ({ method, path, body }) -> { status, body }.
     sandboxMcp: message => ipcRenderer.invoke('codev:sandbox-mcp', message),
     agentRequest: req => ipcRenderer.invoke('codev:agent-request', req),
+    // Video and audio editing: { op: status | prepare | files | delete | upload | read | mcp, ... }.
+    media: req => ipcRenderer.invoke('codev:media', req),
     // Agents' headless browsers and the saved web logins (JSON-RPC, like mcp).
     browserMcp: message => ipcRenderer.invoke('codev:browser-mcp', message),
     // The 📈 Outlier tab's requests, the routes server.js serves under /outlier/: ({ method, path, body }) -> { status, body }.

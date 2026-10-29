@@ -10,6 +10,7 @@
 //     callTool(name, args, ctx) -> MCP CallToolResult,
 //     handleRequest?(method, pathname, query, body) -> { status, body } | null,
 //     routes?: { 'POST /path': async (req, res, body) => reply },
+//     rawRoutes?: { 'POST /path': async (req, res) => {} } (the body unread, for uploads),
 //     status() -> { available, detail } (or a promise of it), close() }
 // handleRequest gets the page's REST calls under /agent/ (null = not mine);
 // routes are exact paths. Both are for the page only, never for agents.
@@ -23,7 +24,8 @@ const PROTOCOL_VERSION = '2025-06-18';
 const SERVICES = [
     { name: 'sandbox', module: path.join(__dirname, 'desktop', 'sandbox') },
     { name: 'browser', module: path.join(__dirname, 'agents', 'browser') },
-    { name: 'outlier', module: path.join(__dirname, 'agents', 'outlier') }
+    { name: 'outlier', module: path.join(__dirname, 'agents', 'outlier') },
+    { name: 'media', module: path.join(__dirname, 'desktop', 'media') }
 ];
 
 function isMissingModule(err, modulePath) {
@@ -71,11 +73,14 @@ function createRouter(services, skipped, log) {
     }
 
     const routes = new Map();
+    const rawRoutes = new Map();
     for (const service of services) {
-        for (const [key, handler] of Object.entries(service.routes || {})) {
-            const [method, route] = key.split(/\s+/);
-            if (routes.has(`${method.toUpperCase()} ${route}`)) log(`Route ${key} from ${service.name} is already taken; ignored.`);
-            else routes.set(`${method.toUpperCase()} ${route}`, { service, handler });
+        for (const [table, own] of [[routes, service.routes], [rawRoutes, service.rawRoutes]]) {
+            for (const [key, handler] of Object.entries(own || {})) {
+                const [method, route] = key.split(/\s+/);
+                if (routes.has(`${method.toUpperCase()} ${route}`) || rawRoutes.has(`${method.toUpperCase()} ${route}`)) log(`Route ${key} from ${service.name} is already taken; ignored.`);
+                else table.set(`${method.toUpperCase()} ${route}`, { service, handler });
+            }
         }
     }
 
@@ -151,7 +156,7 @@ function createRouter(services, skipped, log) {
         }));
     }
 
-    return { handle, handleRequest, status, close, routes, services, skipped };
+    return { handle, handleRequest, status, close, routes, rawRoutes, services, skipped };
 }
 
 module.exports = { loadServices, createRouter, SERVICES };

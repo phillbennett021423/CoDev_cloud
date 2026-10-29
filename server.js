@@ -126,6 +126,16 @@ async function handleServiceRoute(req, res, url) {
     const router = await agentServices;
     if (!router) return false;
     const pathname = url.pathname;
+    // Uploads: the service reads the body itself (a video, not JSON). Only CoDev's
+    // own page: its Origin and Host, from a same-origin request.
+    const raw = router.rawRoutes && router.rawRoutes.get(`${req.method} ${pathname}`);
+    if (raw) {
+        const site = req.headers['sec-fetch-site'];
+        const own = OWN_ORIGINS.includes(`http://${req.headers.host}`) && OWN_ORIGINS.includes(req.headers.origin) && (!site || site === 'same-origin');
+        if (!own) { sendJson(res, 403, { error: 'Forbidden' }); return true; }
+        try { await raw.handler(req, res); } catch (err) { if (!res.headersSent) sendJson(res, 500, { error: err.message }); }
+        return true;
+    }
     const route = router.routes.get(`${req.method} ${pathname}`);
     const isAgentPath = pathname.startsWith('/agent/');
     if (!route && !isAgentPath) return false;
