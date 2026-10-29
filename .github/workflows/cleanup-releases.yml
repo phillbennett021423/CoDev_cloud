@@ -1,0 +1,33 @@
+name: Delete old releases
+
+# Run by hand from the Actions tab. Keeps the release marked Latest (it holds
+# both the phone APK and the Windows installer) and deletes every other
+# release with its attached files. Git tags and commits are left alone.
+on:
+  workflow_dispatch:
+
+# Shares the release group so it never runs while a new release is being built.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Delete every release except Latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          latest=$(gh release view --json tagName --jq .tagName)
+          echo "Keeping $latest"
+          gh release list --limit 1000 --json tagName --jq '.[].tagName' |
+            grep -vxF "$latest" |
+            while read -r tag; do
+              echo "Deleting $tag"
+              gh release delete "$tag" --yes
+            done
+          gh release list --limit 1000

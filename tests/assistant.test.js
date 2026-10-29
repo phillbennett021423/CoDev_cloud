@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createMockBackend } = require('./fixtures/mock-agent-backend');
-const { launchBrowser, openPage, sendPrompt, waitForChat } = require('./helpers/page-driver');
+const { launchBrowser, openPage, sendPrompt, waitForChat, answerApprovals } = require('./helpers/page-driver');
 const { handleWebFetch, isPublicHost } = require('../web-fetch');
 
 let launched;
@@ -139,9 +139,8 @@ test('without Docker, plain test and build steps run straight away and anything 
         window.__hostCalls = [];
         window.callAgentTool = async (name, args, sandbox, options) => { window.__hostCalls.push({ name, command: args.command, hostAllowed: options?.hostAllowed }); return 'Exit code: 0'; };
     });
-    const dialogs = [];
     let answer = false;
-    page.on('dialog', dialog => { dialogs.push(dialog.message()); answer ? dialog.accept() : dialog.dismiss(); });
+    const dialogs = await answerApprovals(page, () => answer);
     const ctx = { agentName: 'Architect', sandbox: { id: 's1', agentId: 'a1' } };
     assert.equal(await page.evaluate(ctx => runHostCommand({ command: 'npm test' }, ctx), ctx), 'Exit code: 0');
     assert.equal(dialogs.length, 0, 'a test step runs without asking');

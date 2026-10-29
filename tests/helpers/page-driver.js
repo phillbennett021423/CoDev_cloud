@@ -109,4 +109,18 @@ async function waitForChat(page, pattern, timeout = 30000) {
     }, { source, flags }, { timeout });
 }
 
-module.exports = { loadPlaywright, launchBrowser, openPage, sendPrompt, waitForReview, chatMessages, waitForChat };
+// Answers the agents' approval cards (CoDev asks with a card in the corner, not a
+// native dialog) by clicking Allow or Decline. decide(message) -> true to allow.
+// Returns the list of questions asked, in order.
+async function answerApprovals(page, decide = () => true) {
+    const asked = [];
+    await page.exposeFunction('__codevDecideApproval', async message => { asked.push(message); return Boolean(await decide(message)); });
+    await page.evaluate(() => window.addEventListener('codev-approval', async event => {
+        const allow = await window.__codevDecideApproval(event.detail.message);
+        const card = [...document.querySelectorAll('.approval-card')].find(c => c.querySelector('.approval-text').textContent === event.detail.message);
+        card.querySelector(allow ? '.approval-allow' : '.approval-decline').click();
+    }));
+    return asked;
+}
+
+module.exports = { loadPlaywright, launchBrowser, openPage, sendPrompt, waitForReview, chatMessages, waitForChat, answerApprovals };
