@@ -377,6 +377,15 @@
 
         .codev-toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(20px); max-width: min(520px, calc(100vw - 32px)); background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 10px; padding: 10px 16px; font-size: 0.85rem; line-height: 1.4; box-shadow: 0 10px 30px rgba(0,0,0,0.5); opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s; z-index: 2000; }
         .codev-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+        /* An agent's question (run a command, write a file, use a login): a card in the
+           corner instead of a native dialog, so the rest of CoDev keeps working while it waits. */
+        .approval-tray { position: fixed; right: 16px; bottom: 16px; width: min(420px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 10px; z-index: 1900; pointer-events: none; }
+        .approval-card { pointer-events: auto; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--warning); border-radius: 10px; padding: 12px 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); font-size: 0.85rem; line-height: 1.4; }
+        .approval-card .approval-who { font-weight: 700; margin-bottom: 6px; }
+        .approval-card .approval-text { white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; margin-bottom: 10px; }
+        .approval-card .approval-actions { display: flex; justify-content: flex-end; gap: 8px; }
+        .approval-card button { border-radius: 6px; padding: 6px 14px; cursor: pointer; border: 1px solid var(--border-color); background: transparent; color: var(--text-main); font-size: 0.85rem; }
+        .approval-card button.approval-allow { background: var(--warning); color: #111; border-color: var(--warning); font-weight: 700; }
 
         /* Mobile-only elements are hidden on desktop */
         .mobile-only, .mobile-tabbar, .drawer-backdrop, .drawer-close-mobile { display: none; }
@@ -468,6 +477,7 @@
 
             /* Bottom tab bar */
             .mobile-tabbar { display: flex; flex: 0 0 auto; background: var(--bg-panel); border-top: 1px solid var(--border-color); z-index: 800; }
+            .approval-tray { right: 12px; left: 12px; width: auto; bottom: calc(76px + env(safe-area-inset-bottom)); }
             .mobile-tab { flex: 1; min-height: 56px; background: none; border: none; color: var(--text-muted); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 0.68rem; cursor: pointer; }
             .mobile-tab .tab-icon { font-size: 1.2rem; line-height: 1; }
             .mobile-tab.active { color: var(--accent); }
@@ -1226,6 +1236,56 @@
             }
         }
 
+        // AGENT APPROVALS: whenever an agent needs the user's OK (a command, a file write,
+        // a saved login, an email), it asks with a card in the corner and waits for it.
+        // A native confirm() froze the whole app until it was answered and pulled the
+        // window to the front; the card leaves every chat, agent and setting usable,
+        // never takes the keyboard, and several agents' questions queue up.
+        // Resolves true (Allow) or false (Decline).
+        function askPermission(message, who) {
+            return new Promise(resolve => {
+                let tray = document.getElementById("approvalTray");
+                if (!tray) {
+                    tray = document.createElement("div");
+                    tray.id = "approvalTray";
+                    tray.className = "approval-tray";
+                    tray.setAttribute("aria-live", "polite");
+                    document.body.appendChild(tray);
+                }
+                const card = document.createElement("div");
+                card.className = "approval-card";
+                card.setAttribute("role", "group");
+                const title = document.createElement("div");
+                title.className = "approval-who";
+                title.textContent = `🔐 ${who || "An agent"} is waiting for your OK`;
+                const text = document.createElement("div");
+                text.className = "approval-text";
+                text.textContent = message;
+                const actions = document.createElement("div");
+                actions.className = "approval-actions";
+                const answer = allowed => {
+                    card.remove();
+                    window.dispatchEvent(new CustomEvent("codev-approval-answered", { detail: { message, allowed } }));
+                    resolve(allowed);
+                };
+                const decline = document.createElement("button");
+                decline.type = "button";
+                decline.className = "approval-decline";
+                decline.textContent = "Decline";
+                decline.onclick = () => answer(false);
+                const allow = document.createElement("button");
+                allow.type = "button";
+                allow.className = "approval-allow";
+                allow.textContent = "Allow";
+                allow.onclick = () => answer(true);
+                actions.append(decline, allow);
+                card.append(title, text, actions);
+                tray.appendChild(card);
+                card.setAttribute("aria-label", title.textContent);
+                window.dispatchEvent(new CustomEvent("codev-approval", { detail: { message, who } }));
+            });
+        }
+
         // The AI provider: "groq", "openrouter" or "anthropic". Groq and OpenRouter speak
         // the OpenAI chat API; Anthropic requests are translated in groqChatMessage.
         const BACKENDS = ["groq", "openrouter", "anthropic"];
@@ -1662,8 +1722,14 @@
             }
         }
 
+        // Saving writes every chat at once, so while agents work it waits for a moment
+        // the page is idle instead of landing in the middle of the user's clicks.
         function scheduleChatSave() {
-            if (!chatSaveTimer) chatSaveTimer = setTimeout(saveChatsNow, 300);
+            if (chatSaveTimer) return;
+            chatSaveTimer = setTimeout(() => {
+                if (window.requestIdleCallback) requestIdleCallback(() => { if (chatSaveTimer) saveChatsNow(); }, { timeout: 2000 });
+                else saveChatsNow();
+            }, 300);
         }
 
         // RUN CHECKPOINTS
@@ -2144,7 +2210,39 @@
             document.getElementById("chatJumpBtn").hidden = true;
         }
 
+        // Escape first so code like List<int> or <div> shows as text instead of vanishing.
+        function formatMessageText(text) {
+            return escapeHtml(text).replace(/```([a-z]*)\n([\s\S]*?)```/g, '<pre><code class="$1">$2</code></pre>');
+        }
+
+        // A running agent's message changes with every step (and every 1.5 s during a long
+        // Outlier read). Only that message's text is redrawn, not the whole chat, so the
+        // buttons and old messages the user is clicking and reading stay put. Anything
+        // else (another chat, a message not drawn yet) waits for one redraw next frame.
+        let feedRenderFrame = 0;
+        function scheduleFeedRender() {
+            if (feedRenderFrame) return;
+            feedRenderFrame = requestAnimationFrame(() => { feedRenderFrame = 0; renderActiveChatFeed(); });
+        }
+
+        function refreshChatMessage(session, msg) {
+            if (!session || session.id !== activeChatId) return;
+            const index = session.messages.indexOf(msg);
+            const div = index < 0 ? null : document.querySelector(`#chatFeed > .message[data-msg-index="${index}"]`);
+            const textEl = div && div.querySelector(".text");
+            if (!textEl || div.dataset.sender !== msg.sender || document.getElementById("chatFeed").children.length !== session.messages.length) {
+                scheduleFeedRender();
+                return;
+            }
+            textEl.innerHTML = formatMessageText(msg.text);
+            if (chatScroll.follow) {
+                const feed = document.getElementById("chatFeed");
+                feed.scrollTop = feed.scrollHeight;
+            }
+        }
+
         function renderActiveChatFeed() {
+            if (feedRenderFrame) { cancelAnimationFrame(feedRenderFrame); feedRenderFrame = 0; }
             const feed = document.getElementById("chatFeed");
             watchChatScroll(feed);
             const session = chatSessions.find(s => s.id === activeChatId);
@@ -2157,8 +2255,9 @@
             session.messages.forEach((msg, index) => {
                 const div = document.createElement("div");
                 div.className = index === lastIndex ? "message" : "message no-anim";
-                // Escape first so code like List<int> or <div> shows as text instead of vanishing.
-                let formattedText = escapeHtml(msg.text).replace(/```([a-z]*)\n([\s\S]*?)```/g, '<pre><code class="$1">$2</code></pre>');
+                div.dataset.msgIndex = index;
+                div.dataset.sender = msg.sender;
+                const formattedText = formatMessageText(msg.text);
                 
                 let speakButtonHtml = "";
                 if (msg.runId && /^⚠️ Interrupted/.test(msg.sender)) {
@@ -3309,6 +3408,9 @@
             const panel = document.getElementById("livePanel");
             const open = force ?? !panel.classList.contains("open");
             panel.classList.toggle("open", open);
+            const paused = open ? live.pausedFor : null;
+            live.pausedFor = null;
+            if (paused && paused.agentId !== live.agentId) { live.picked = true; if (live.stop) { live.stop(); live.stop = null; } live.agentId = paused.agentId; }
             document.body.classList.toggle("computer-open", open);
             updateWorkspaceGrid();
             markAgentComputers();
@@ -3382,10 +3484,18 @@
             }
             // A dead link, redirect or parked page: that browser is left open and handed to the
             // user, so show it (whichever browser was being watched).
+            // It never pops the computer open or switches browsers on its own: the user may be
+            // reading another chat. With the computer already open it moves to that browser;
+            // otherwise a note says where to find it.
             if (update.type === "paused") {
-                logConsoleActivity(`[Live] ⏸️ ${update.agentId === live.outlier ? "Outlier" : agents.find(a => String(a.id) === update.agentId)?.name || update.agentId}'s browser is paused for you: ${update.text}`);
+                const who = update.agentId === live.outlier ? "Outlier" : agents.find(a => String(a.id) === update.agentId)?.name || update.agentId;
+                logConsoleActivity(`[Live] ⏸️ ${who}'s browser is paused for you: ${update.text}`);
+                if (!document.getElementById("livePanel").classList.contains("open")) {
+                    live.pausedFor = update;
+                    showToast(`⏸️ ${who}'s browser is paused for you. Open its computer (🖥️) when you're ready to fix it.`);
+                    return;
+                }
                 if (update.agentId !== live.agentId) { live.picked = true; watchLiveAgent(update.agentId); }
-                toggleLiveView(true);
                 addLiveRow("console", `⏸️ Paused for you: ${update.text} Fix it here, then press Hand back.`, "error");
                 return;
             }
@@ -3394,7 +3504,13 @@
                 live.frame = update;
                 if (document.activeElement !== document.getElementById("liveUrl")) document.getElementById("liveUrl").value = update.url;
                 // Pictures nobody can see aren't decoded: a long run sends thousands of them.
-                return liveFrameShown() ? renderLiveFrame() : undefined;
+                // The ones on screen are drawn at most once a frame, newest only, so a fast
+                // page can't queue up decoding work ahead of the user's clicks.
+                if (liveFrameShown() && !live.drawPending) {
+                    live.drawPending = true;
+                    requestAnimationFrame(() => { live.drawPending = false; if (live.frame && liveFrameShown()) renderLiveFrame(); });
+                }
+                return;
             }
             if (update.type === "state") {
                 live.userControl = update.userControl;
@@ -3800,8 +3916,11 @@
         async function runMcpTool(tool, args, ctx) {
             const shownName = tool.qualifiedName || tool.name;
             // Tools that need approval every time ask below, whatever this setting says.
-            if (!toolsAutoRun && !tool.annotations?.readOnlyHint && !tool._meta?.["codev/requiresUserApproval"]) {
-                if (!confirm(`An agent wants to use ${shownName}${tool.server ? ` (MCP server "${tool.server}")` : " on your computer"}:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`)) {
+            // A command on the real computer asks too unless it's a plain test or build
+            // step: anything else could open apps or drive the mouse and keyboard.
+            const hostCommand = tool.transport === "desktop" && tool.name === "run_command" && !isSafeHostCommand(args?.command);
+            if ((!toolsAutoRun || hostCommand) && !tool.annotations?.readOnlyHint && !tool._meta?.["codev/requiresUserApproval"]) {
+                if (!await askPermission(`An agent wants to use ${shownName}${tool.server ? ` (MCP server "${tool.server}")` : " on your computer"}:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`, ctx?.agentName)) {
                     logConsoleActivity(`[Tool] You declined: ${shownName}`);
                     return "The user declined this tool call.";
                 }
@@ -3817,7 +3936,7 @@
                     _meta: { "codev/agentId": ctx?.agentId || "default", "codev/agentName": ctx?.agentName || "An agent" } });
                 const approval = result._meta?.["codev/approvalRequired"];
                 if (approval) {
-                    const approved = confirm(`🔐 ${approval.prompt}\n\nAllow it?`);
+                    const approved = await askPermission(`🔐 ${approval.prompt}\n\nAllow it?`, ctx?.agentName);
                     logConsoleActivity(`[Browser] You ${approved ? "allowed" : "declined"}: ${approval.tool}`);
                     result = await browserRpc("codev/approve", { id: approval.id, approved });
                     if (approved && /session|login/.test(approval.tool)) refreshBrowserVault();
@@ -3858,7 +3977,7 @@
         const googleApps = CodevGoogleApps.createGoogleApps({
             transport: googleTransport,
             getApiKey: () => { try { return localStorage.getItem(CodevGoogleApps.STORE.apiKey) || ""; } catch (err) { return ""; } },
-            confirmWrite: async message => confirm(message),
+            confirmWrite: message => askPermission(message),
             webSearch: query => localWebSearch(query),
             fetchText: url => fetchPageHtml(url)
         });
@@ -4067,7 +4186,7 @@
             if (typeof content !== "string") return "write_workspace_file needs content as a string.";
             const name = normalizeWorkspacePath(rawName);
             if (!name) return "Use a file path inside the project folder, like scripts/player.gd.";
-            if (!toolsAutoRun && !confirm(`An agent wants to write ${name} (${content.length} characters) in your project folder.\n\nAllow it?`)) {
+            if (!toolsAutoRun && !await askPermission(`An agent wants to write ${name} (${content.length} characters) in your project folder.\n\nAllow it?`)) {
                 logConsoleActivity(`[Tool] You declined writing ${name}`);
                 return "The user declined this write.";
             }
@@ -4092,7 +4211,7 @@
         async function runHelperCommand(command) {
             if (!command) return "Unknown command. Only the listed commands can run.";
             const shown = (command.argv || []).join(" ");
-            if (!toolsAutoRun && !confirm(`An agent wants to run this command on your computer:\n\n${shown}\n(in ${command.cwd || "the helper's project folder"})\n\nAllow it?`)) {
+            if (!toolsAutoRun && !await askPermission(`An agent wants to run this command on your computer:\n\n${shown}\n(in ${command.cwd || "the helper's project folder"})\n\nAllow it?`)) {
                 logConsoleActivity(`[Tool] You declined: ${command.name}`);
                 return "The user declined to run this command.";
             }
@@ -7099,7 +7218,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (!command) return "run_command needs a 'command' string.";
             const auto = toolsAutoRun && isSafeHostCommand(command);
             if (!auto) {
-                const ok = confirm(`${ctx?.agentName || "An agent"} wants to run this command on your computer:\n\n${command.slice(0, 600)}${args.cwd ? `\n\n(in ${args.cwd})` : ""}\n\nIt runs in CoDev's copy of your project, not your real folder, but Docker isn't running, so it isn't walled off from the rest of your computer. Allow it?`);
+                const ok = await askPermission(`${ctx?.agentName || "An agent"} wants to run this command on your computer:\n\n${command.slice(0, 600)}${args.cwd ? `\n\n(in ${args.cwd})` : ""}\n\nIt runs in CoDev's copy of your project, not your real folder, but Docker isn't running, so it isn't walled off from the rest of your computer. Allow it?`, ctx?.agentName);
                 if (!ok) {
                     logConsoleActivity(`[Sandbox] You declined: ${command.slice(0, 120)}`);
                     return "The user declined to run this command. Don't run it again; explain what you wanted to check and continue without it, or ask the user.";
@@ -7150,7 +7269,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // me first" on. The browser's tools keep their own approval prompts.
         async function runOutsideSandbox(tool, name, args, ctx) {
             if (tool.transport === "browser" || tool.annotations?.readOnlyHint) return runMcpTool(tool, args, ctx);
-            if (!confirm(`An agent wants to use ${name}${tool.server ? ` (MCP server "${tool.server}")` : ""}. It works outside the sandbox, so the change review won't cover it:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`)) {
+            if (!await askPermission(`An agent wants to use ${name}${tool.server ? ` (MCP server "${tool.server}")` : ""}. It works outside the sandbox, so the change review won't cover it:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`, ctx?.agentName)) {
                 logConsoleActivity(`[Tool] You declined: ${name}`);
                 return "The user declined this tool call.";
             }
@@ -7289,7 +7408,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 onStep: step => {
                     setAgentState(agent.id, "active");
                     placeholder.text = step;
-                    if (session.id === activeChatId) renderActiveChatFeed();
+                    refreshChatMessage(session, placeholder);
                     scheduleChatSave();
                 }
             };
@@ -7341,7 +7460,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const summaries = [];
             const show = line => {
                 placeholder.text = `${toolLog.slice(-6).map(l => `✓ ${l}`).join("\n")}${line ? `\n▶ Now: ${line}` : ""}`;
-                if (session.id === activeChatId) renderActiveChatFeed();
+                refreshChatMessage(session, placeholder);
             };
             const ask = async (system, user) => groqChat({ model: TEXT_MODEL, temperature: 0.0, messages: [{ role: "system", content: system }, { role: "user", content: user }] });
             const search = async query => {

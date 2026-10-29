@@ -7,7 +7,7 @@ const path = require('path');
 const { createMcpTools } = require('./mcp-tools');
 const { handleImageFolder } = require('./image-folder');
 const { createNodeMcpHub } = require('./mcp-hub');
-const { createSandbox } = require('./sandbox');
+const { createSandboxWorker } = require('./sandbox/remote');
 const { createBrowserService } = require('./browser');
 const { createOutlierBridge } = require('./outlier-bridge');
 const { createGoogleConnect } = require('./google-connect');
@@ -198,7 +198,8 @@ app.whenReady().then(() => {
     // Sandboxed agents: tools that work in a staging copy of the project, commands in
     // per-agent Docker containers, and the review gate (the only path that writes
     // agents' changes to the project folder, after the user approves the diff).
-    const sandbox = createSandbox({ getProjectDir, log: line => console.log(line) });
+    // It runs on a thread of its own, so copying and diffing a project never freezes the window.
+    const sandbox = createSandboxWorker({ getProjectDir, log: line => console.log(line) });
     ipcMain.handle('codev:sandbox-mcp', (_event, message) => sandbox.handleMcp(message));
     ipcMain.handle('codev:agent-request', async (_event, req) => {
         const { method, path: urlPath, body } = req || {};
@@ -260,10 +261,11 @@ app.whenReady().then(() => {
     });
 
     // Electron on Windows leaves text boxes dead after alert()/confirm() until the
-    // window loses and regains focus, so the page asks for exactly that.
+    // window loses and regains focus, so the page asks for exactly that. Only while
+    // CoDev is the window in front: it never pulls itself over what the user is doing.
     ipcMain.on('codev:refocus', event => {
         const win = BrowserWindow.fromWebContents(event.sender);
-        if (!win) return;
+        if (!win || !win.isFocused()) return;
         win.blur();
         win.focus();
         event.sender.focus();

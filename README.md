@@ -140,7 +140,9 @@ Every code or file task is treated as a task on your project. You don't type fil
 
 **Files with keys stay hidden.** Agents can't list, search, read or write hidden files and folders (`.env`, `.git`, anything whose name starts with a dot), env files like `production.env`, key and certificate files (`.pem`, `.key`, `.pfx`, `.p12`, `.keystore`, `.jks`) or `secrets.*` and `credentials.*`, whichever folder tools they use: the sandbox, the Windows app's, the Python helper's or the page's own. Commands an agent runs directly on your computer (outside the sandbox) aren't filtered, so leave those off if that matters to you.
 
-**Run file edits and commands without asking me first** (Settings) is on by default, so agents save files and run commands with no confirm dialog. Turn it off to approve each change.
+**Run file edits and commands without asking me first** (Settings) is on by default, so agents save files and run plain test and build commands without asking. Any other command on your real computer still asks first, since a command could open apps or drive the mouse and keyboard. Turn the setting off to approve each change.
+
+When an agent needs your OK, it asks with a card in the bottom corner and waits there. The rest of CoDev keeps working meanwhile: switch chats and agents, scroll back through old messages, open Settings, and answer the card when you're ready. CoDev never pulls its window to the front or takes the keyboard to ask, and an agent's browser that needs you waits for you to open its computer (🖥️) instead of popping it open.
 
 | Where CoDev runs | Project the agents see | Edits | Run code |
 | --- | --- | --- | --- |
