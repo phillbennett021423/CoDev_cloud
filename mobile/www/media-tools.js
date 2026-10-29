@@ -927,9 +927,10 @@ async function makeImageWithOpenRouter(prompt, aspect, references) {
     return { url, model: openRouterImageModel, cost: Number(data.usage?.cost) || null };
 }
 
-async function makeImageWithPollinations(prompt, aspect) {
+// seed: the same number with the same prompt gives a similar picture (Story Studio's mood faces).
+async function makeImageWithPollinations(prompt, aspect, seed) {
     const [width, height] = ASPECT_SIZES[aspect] || ASPECT_SIZES["1:1"];
-    const url = `${POLLINATIONS_URL}${encodeURIComponent(prompt.slice(0, 1500))}?model=flux&width=${width}&height=${height}&nologo=true&private=true&referrer=codev-studio&seed=${Math.floor(Math.random() * 1e9)}`;
+    const url = `${POLLINATIONS_URL}${encodeURIComponent(prompt.slice(0, 1500))}?model=flux&width=${width}&height=${height}&nologo=true&private=true&referrer=codev-studio&seed=${Number.isInteger(seed) ? seed : Math.floor(Math.random() * 1e9)}`;
     let response;
     for (let attempt = 0; ; attempt++) {
         try { response = await fetch(url); } catch (err) { throw new Error(`couldn't reach the free image service at image.pollinations.ai (${err.message})`); }
@@ -987,7 +988,7 @@ async function generateImageForTask(args, ctx) {
     try {
         made = service === "gemini" ? await makeImageWithGemini(prompt, aspect, references)
             : service === "openrouter" ? await makeImageWithOpenRouter(prompt, aspect, references)
-            : await makeImageWithPollinations(prompt, aspect);
+            : await makeImageWithPollinations(prompt, aspect, args.seed);
     } catch (err) {
         return `Error: the picture couldn't be made: ${err.message}.`;
     }

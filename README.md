@@ -73,6 +73,30 @@ The **📈 Outlier** tab (when CoDev runs on your computer with `npm start` or `
 
 The parser doesn't depend on Outlier's markup, but if it misses props, **Save page snapshot** stores the page (HTML and the data it loaded) in the same folder so selectors can be added to `config.json` there. Agents can read the latest entries with the read-only `outlier_slips` tool. Automated reading may be against Outlier's terms; that's your call. The numbers are estimates, not guarantees.
 
+## Story Studio
+
+The **🎭 Story Studio** tab (on the phone, the **Story** tab) is for writing a game's story with your agents. It works for any game: make a project for each one, and each project gets its own **story bible** of characters, factions, abilities, places, timeline events, lore, quests, items, dialogue, scenes and story arcs. The bible is kept on the device, and **⬆ Import** loads one exported from another device.
+
+- **Agents use the bible.** When a request is about a game's story ("write a backstory for my villain", "create a quest for Skyfall"), agents get the `studio_read`, `studio_save`, `studio_remove` and `studio_export` tools plus a short index of the bible. They read what's already canon before writing and save what they make. Other requests don't get these tools, so they cost nothing extra there. **🤖 Ask an agent** in the studio sends a request to the chat for you.
+- **🔒 Lock** keeps an entry exactly as it is. Nobody can change or delete it, agents included, until you unlock it. Talking to a character or running a scene never changes the character either way.
+- **🗣️ Talk to a character:** chat with a character in their own voice to hear how they sound. "(ooc)" asks them something out of character. **💾 Save as dialogue** keeps the chat.
+- **🎬 Scene Builder:** set where the scene happens, who is in it and the goal or conflict. Agents play each character a line (or four) at a time. You can add a director's note, pick who speaks next, step in with your own line, narration or stage direction, redo the last line, undo, rewind to any line, or tap a line to edit it. Each scene saves as you go. A scene stops after 30 agent turns in one sitting until you say to go on. **🎨 Storyboard** draws up to 4 frames per scene with the picture service set in Settings (free Pollinations by default).
+- **📦 Export to your game:** writes `story_bible.json`, `game_data.gd` (GDScript constants such as `CHARACTERS`, `DIALOGUE` and `SCENES`, plus `dialogue_lines()` and `scene_beats()`), one JSON file per dialogue in `dialogue/`, one cutscene JSON per scene in `scenes/`, and `story_bible.md`. Every line has an `id` and the `next` line's id, so the game can play it as a cutscene or walk it as a dialogue tree. With a project folder connected, they save straight into it (`game_data/` by default). Otherwise they download, or on Android they go to the share sheet (Drive, Files, email).
+
+Every one of these is optional; use only what helps:
+
+- **🎭 Mood faces:** up to seven portraits per character (calm, happy, angry, sad, scared, determined, surprised). Each is drawn to match the calm face, using the character's own seed on the free service, or the calm face as a reference on a paid one. Chats and scenes show the face that fits each line's mood.
+- **🔊 Voices and read-aloud:** each character, and a narrator under Project details, gets one of the device's voices with a speed and pitch. With your own ElevenLabs key they can use an ElevenLabs voice instead. That's paid per character, so CoDev stops at 10,000 characters a day. 🔊 says any line, **Speak replies** speaks a chat, and **▶ Play scene** reads a scene like an audio drama.
+- **🕸️ Relationships:** link any entry to others (ally, enemy, rival, family, love, mentor, member of) and see the web. Tap a name to see only its relationships.
+- **⏳ Timeline:** your world's events in story order. **📈 Story arcs:** a board of arcs and their beats, each marked idea, written or in the game, and optionally tied to a scene.
+- **🎤 Interview mode:** questions that dig into a character. You can keep the answers as a lore note.
+- **🌿 What if…:** branch a scene from any line into a copy, and the original stays as it is.
+- **🔍 Lore checker:** compares an entry, a scene or the whole bible with the rest and lists contradictions. It only reports.
+- **🌱 Growth and 📸 snapshots:** characters never change on their own. Growth suggestions are off until you turn them on for a character. **🌱 Suggest growth** after a scene or chat then proposes changes, and each one waits for your **Approve**, with a snapshot saved first. You can save snapshots yourself and go back to any of them.
+- **🖨️ Character sheets:** a printable page per character, with portrait, card, relationships and moods. On a phone it goes to the share sheet.
+
+Talking to characters, scenes, lore checks and growth suggestions use the provider picked in Settings through the same call as the chat, so the spending limits apply to them too. Agents' `studio_save` only changes story content, never pictures, voices, locks, growth settings or snapshots.
+
 ## Line tracking with The Odds API
 
 Agents can compare every sportsbook's lines and player props, follow how they move, and get a short list of what to look up on Outlier. It works on the phone, the Windows app and the browser page alike.

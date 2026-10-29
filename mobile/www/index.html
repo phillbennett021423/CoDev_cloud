@@ -607,6 +607,7 @@
             <span id="tab-codev" onclick="switchView('codev')" style="color: var(--codev-blue); font-weight: bold;">⚡ CoDev Hub</span>
             <span id="tab-cloud" onclick="switchView('cloud')" style="color: var(--codev-purple); font-weight: bold;">☁️ CoDev Cloud</span>
             <span id="tab-outlier" onclick="switchView('outlier')" style="color: var(--success); font-weight: bold;">📈 Outlier</span>
+            <span id="tab-studio" onclick="switchView('studio')" style="color: var(--warning); font-weight: bold;">🎭 Story Studio</span>
             <span id="tab-console" onclick="switchView('console')">Console Logs</span>
         </div>
         <div class="header-right">
@@ -705,6 +706,9 @@
                 </div>
                 <div class="menu-item" onclick="switchView('project')">
                     <span class="menu-icon">📁</span> Project Files
+                </div>
+                <div class="menu-item" onclick="switchView('studio')" title="Your games' characters, lore and scenes, written with your agents">
+                    <span class="menu-icon">🎭</span> Story Studio
                 </div>
                 <div class="menu-item" onclick="switchView('console')">
                     <span class="menu-icon">📜</span> Console Logs
@@ -923,6 +927,9 @@
             <!-- Outlier slips (agents/outlier on CoDev's server; agent-ui/outlier-view.js draws it) -->
             <div id="view-outlier" class="alt-view-content"></div>
 
+            <!-- Story Studio: game projects, story bibles, character chats, scenes (agent-ui/story-studio.js) -->
+            <div id="view-studio" class="alt-view-content"></div>
+
             <div id="view-console" class="alt-view-content">
                 <h3>Runtime & API Telemetry Logs</h3>
                 <div class="console-output" id="consoleOutput">
@@ -995,6 +1002,7 @@
         <button class="mobile-tab active" data-view="chat" onclick="mobileTab('chat')"><span class="tab-icon">💬</span>Chat</button>
         <button class="mobile-tab" data-drawer="agents" onclick="mobileTab('agents')"><span class="tab-icon">🤖</span>Agents</button>
         <button class="mobile-tab" data-view="project" onclick="mobileTab('project')"><span class="tab-icon">📁</span>Files</button>
+        <button class="mobile-tab" data-view="studio" onclick="mobileTab('studio')"><span class="tab-icon">🎭</span>Story</button>
         <button class="mobile-tab" data-view="codev" onclick="mobileTab('codev')"><span class="tab-icon">⚡</span>Hub</button>
         <button class="mobile-tab" data-view="cloud" onclick="mobileTab('cloud')"><span class="tab-icon">☁️</span>Cloud</button>
         <button class="mobile-tab" data-view="console" onclick="mobileTab('console')"><span class="tab-icon">📜</span>Logs</button>
@@ -1226,6 +1234,7 @@
     <script src="agent-ui/outlier-view.js"></script>
     <script src="media-tools.js"></script>
     <script src="agent-ui/google-apps.js"></script>
+    <script src="agent-ui/story-studio.js"></script>
     <script src="agent-ui/odds-api.js"></script>
     <script src="agent-ui/cloud-account.js"></script>
     <script>
@@ -1987,8 +1996,181 @@
             document.getElementById("statusText").innerText = activeProviderKey() ? `${BACKEND_NAMES[currentBackend]} Live` : "Awaiting API Key";
         }
 
-        const VIEW_NAMES = ["chat", "project", "codev", "cloud", "outlier", "console"];
-        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", outlier: "Switched to Outlier slips.", console: "Switched to Console Logs." };
+        const VIEW_NAMES = ["chat", "project", "codev", "cloud", "outlier", "studio", "console"];
+        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", outlier: "Switched to Outlier slips.", studio: "Switched to Story Studio.", console: "Switched to Console Logs." };
+
+        // STORY STUDIO (agent-ui/story-studio.js): each game project's story bible, kept
+        // on this device. Agents get the studio_* tools and the bible's index when a task
+        // is about a game's story; talking to characters and scenes use the normal model
+        // call, so the spending limits apply.
+        const storyStudio = window.CodevStoryStudio ? CodevStoryStudio.createStudioStore(localStorage) : null;
+        let storyStudioView = null;
+
+        // A text file for the user: a download on a computer; on the phone, Android's share
+        // sheet (Drive, Files, email…), or the clipboard when sharing isn't available.
+        async function saveTextFileForUser(name, content, mime = "text/plain") {
+            const fs = getNativeSpeechPlugin("Filesystem");
+            const share = getNativeSpeechPlugin("Share");
+            if (fs && share) {
+                try {
+                    const written = await fs.writeFile({ path: name, data: content, directory: "CACHE", encoding: "utf8" });
+                    await share.share({ title: name, files: [written.uri] });
+                    return;
+                } catch (err) {
+                    if (/cancel/i.test(err.message || "")) return;
+                    logConsoleActivity(`[Studio] Sharing ${name} failed (${err.message}); copying it instead.`);
+                }
+            }
+            if (getNativeSpeechPlugin("CapacitorHttp")) {
+                try { await navigator.clipboard.writeText(content); alert(`Copied ${name} to your clipboard.`); } catch (err) { alert(`Couldn't save or copy ${name}: ${err.message}`); }
+                return;
+            }
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(new Blob([content], { type: mime }));
+            link.download = name;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+        }
+
+        function pickTextFileFromUser(accept = ".json,application/json") {
+            return new Promise(resolve => {
+                const input = document.createElement("input");
+                input.type = "file";
+                input.accept = accept;
+                input.onchange = async () => resolve(input.files[0] ? await input.files[0].text() : null);
+                input.click();
+            });
+        }
+
+        // Concept art through generate_image's service, limits and picture store. seed keeps
+        // the free service's faces alike; a paid service also draws from the reference picture.
+        async function makeStudioArt(prompt, { seed, referenceId } = {}) {
+            const ctx = { onStep: step => logConsoleActivity(`[Studio] ${step}`) };
+            const args = { prompt, aspect_ratio: "1:1", seed };
+            if (referenceId && imageService() !== "free") {
+                const reference = await loadGeneratedImage(referenceId);
+                if (reference) {
+                    ctx.attachedImages = [reference.url];
+                    args.edit_attached_images = true;
+                    args.prompt = `Keep this exact character (same face, hair, outfit and art style) and change only the expression. ${prompt}`;
+                }
+            }
+            const said = await generateImageForTask(args, ctx);
+            const made = (ctx.generatedImages || [])[0];
+            if (!made) return { error: String(said).replace(/^Error: /, "").replace(/\s*Tell the user[^.]*\.?/g, "").replace(/\s*Show the user[^.]*\.?/g, "").trim() };
+            return { id: made.generatedId, thumb: await shrinkDataUrl(made.thumb, 240, 0.75) };
+        }
+
+        // 🔊 Character voices: this device's voices for free, or ElevenLabs with the user's key
+        // (paid per character, so CoDev caps it per day). Resolves when the line has been said.
+        const ELEVENLABS_KEY = "codev_elevenlabs_key";
+        const ELEVENLABS_DAILY_CHARS = 10000;
+        const elevenLabsKey = () => { try { return localStorage.getItem(ELEVENLABS_KEY) || ""; } catch (err) { return ""; } };
+
+        function studioVoices() {
+            if (getNativeSpeechPlugin("TextToSpeech") || !window.speechSynthesis) return [];
+            return window.speechSynthesis.getVoices().map(v => ({ name: v.name, lang: v.lang }));
+        }
+
+        async function speakWithElevenLabs(text, voiceId) {
+            let usage = { day: new Date().toDateString(), chars: 0 };
+            try { const saved = JSON.parse(localStorage.getItem("codev_elevenlabs_usage") || "{}"); if (saved.day === usage.day) usage = saved; } catch (err) { /* new day */ }
+            if (usage.chars + text.length > ELEVENLABS_DAILY_CHARS) throw new Error(`Today's ElevenLabs allowance in CoDev (${ELEVENLABS_DAILY_CHARS} characters) is used up. The device's own voice still works.`);
+            let response;
+            try {
+                response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_64`, {
+                    method: "POST", headers: { "xi-api-key": elevenLabsKey(), "Content-Type": "application/json", "Accept": "audio/mpeg" },
+                    body: JSON.stringify({ text, model_id: "eleven_flash_v2_5" })
+                });
+            } catch (err) { throw new Error(`couldn't reach ElevenLabs (${err.message})`); }
+            if (response.status === 401) throw new Error("ElevenLabs rejected the key. Check it in Story Studio > Project details.");
+            if (!response.ok) throw new Error(`ElevenLabs answered ${response.status}${response.status === 404 ? " (no voice with that ID)" : ""}`);
+            usage.chars += text.length;
+            try { localStorage.setItem("codev_elevenlabs_usage", JSON.stringify(usage)); } catch (err) { /* not counted */ }
+            await playAudioBlob(await response.blob());
+        }
+
+        function speakWebLine(chunk, voice, rate, pitch) {
+            return new Promise((resolve, reject) => {
+                const utterance = new SpeechSynthesisUtterance(chunk);
+                utterance.lang = (voice && voice.lang) || SPEECH_LANG;
+                if (voice) utterance.voice = voice;
+                utterance.rate = rate;
+                utterance.pitch = pitch;
+                utterance.onend = () => resolve();
+                utterance.onerror = event => event.error === "interrupted" || event.error === "canceled" ? resolve() : reject(new Error(event.error));
+                window.speechSynthesis.speak(utterance);
+            });
+        }
+
+        async function speakAsCharacter(text, voice) {
+            const clean = cleanTextForSpeech(text);
+            if (!clean) return;
+            stopSpeaking();
+            const runId = speechRunId;
+            isSpeaking = true;
+            const rate = voice ? voice.rate : 1, pitch = voice ? voice.pitch : 1;
+            try {
+                if (voice && voice.engine === "elevenlabs" && voice.elevenId && elevenLabsKey()) return await speakWithElevenLabs(clean, voice.elevenId);
+                const nativeTts = getNativeSpeechPlugin("TextToSpeech");
+                if (nativeTts) {
+                    for (const chunk of splitTextForSpeech(clean, 3000)) {
+                        if (runId !== speechRunId) return;
+                        await nativeTts.speak({ text: chunk, lang: SPEECH_LANG, rate, pitch, volume: 1.0 });
+                    }
+                    return;
+                }
+                if (!window.speechSynthesis) throw new Error("This browser can't speak text.");
+                await waitForWebVoices();
+                const picked = (voice && voice.name && window.speechSynthesis.getVoices().find(v => v.name === voice.name)) || lockedWebVoice;
+                await new Promise(r => setTimeout(r, 120));
+                window.speechSynthesis.resume();
+                for (const chunk of splitTextForSpeech(clean, picked && picked.localService ? 1200 : 220)) {
+                    if (runId !== speechRunId) return;
+                    await speakWebLine(chunk, picked, rate, pitch);
+                }
+            } finally {
+                if (runId === speechRunId) isSpeaking = false;
+            }
+        }
+
+        function showStudioView() {
+            if (!storyStudio) return;
+            if (storyStudioView) return storyStudioView.refresh();
+            storyStudioView = CodevStoryStudio.mount(document.getElementById("view-studio"), storyStudio, {
+                chat: messages => groqChat({ model: TEXT_MODEL, temperature: 0.8, messages }),
+                makeArt: makeStudioArt,
+                openArt: id => openGeneratedImage(id),
+                askAgent: text => {
+                    switchView("chat");
+                    const input = document.getElementById("userInput");
+                    input.value = text;
+                    sendChatMessage();
+                },
+                saveFile: saveTextFileForUser,
+                // Android's WebView can't print, so the sheet goes to the share sheet there.
+                printHtml: (html, name) => {
+                    if (getNativeSpeechPlugin("CapacitorHttp")) return saveTextFileForUser(name, html, "text/html");
+                    const frame = document.createElement("iframe");
+                    frame.style.cssText = "position: fixed; width: 0; height: 0; border: 0; right: 0; bottom: 0;";
+                    frame.srcdoc = html;
+                    frame.onload = () => { frame.contentWindow.focus(); frame.contentWindow.print(); setTimeout(() => frame.remove(), 60000); };
+                    document.body.appendChild(frame);
+                },
+                pickFile: () => pickTextFileFromUser(),
+                writeFile: (path, content) => writeWorkspaceFile(path, content),
+                canWriteFolder: () => !!connectedDirectoryHandle,
+                voices: studioVoices,
+                speak: speakAsCharacter,
+                stopSpeaking: () => stopSpeaking(),
+                hasElevenLabs: () => !!elevenLabsKey(),
+                getElevenLabsKey: elevenLabsKey,
+                setElevenLabsKey: key => { try { if (key) localStorage.setItem(ELEVENLABS_KEY, key); else localStorage.removeItem(ELEVENLABS_KEY); } catch (err) { /* blocked storage */ } },
+                confirm: text => confirm(text)
+            });
+        }
 
         // Drawn the first time it's opened, then refreshed on each visit.
         let outlierView = null;
@@ -2036,6 +2218,7 @@
             if (viewName === "project" && (Object.keys(loadedProjectFiles).length > 0 || Object.keys(loadedModelAssets).length > 0)) renderProjectFiles();
             if (viewName === "project") resumeModelViewer();
             if (viewName === "outlier") showOutlierView();
+            if (viewName === "studio") showStudioView();
             if (VIEW_LOG_MESSAGES[viewName]) logConsoleActivity(VIEW_LOG_MESSAGES[viewName]);
             if (isMobileLayout() && openDrawerName) closeDrawers();
             updateMobileTabs();
@@ -4096,6 +4279,10 @@
             });
             // Long attached files and image making (media-tools.js).
             tools.push(...await buildMediaTools(ctx));
+            // The story bible's tools, only for a task about a game's story (they cost tokens on every call).
+            if (storyStudio && CodevStoryStudio.isStudioTask(storyStudio, ctx?.task)) {
+                tools.push(...CodevStoryStudio.buildStudioTools(storyStudio, { writeFile: (path, content) => writeWorkspaceFile(path, content), confirm: async text => confirm(text) }));
+            }
             try {
                 for (const tool of await googleApps.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             } catch (err) { logConsoleActivity(`[Google] ${err.message}`); }
@@ -6916,6 +7103,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // keeps the type of the message before it.
         function classifyRequest(text, previousText = "", hasImages = false) {
             const t = String(text || "");
+            // Sent from Story Studio: writing for a game's story, not work on its files.
+            if (/^\[Story Studio\]/.test(t)) return "general";
             let kind = PROPS_TASK.test(t) ? "props"
                 : CODE_TASK_STRONG.test(t) ? "code"
                 : IMAGE_TASK.test(t) || hasImages ? "images"
@@ -6946,7 +7135,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (general && /^\[Workspace status\] No project/.test(workspaceNote)) workspaceNote = "[Workspace status] No project folder is connected. That only matters if the task is about project files.";
             else if (!coding && workspaceNote) workspaceNote = "[Workspace status] A project folder is connected; its files only matter if the user asks about them.";
             return [CODEV_IDENTITY, DEV_ROLES[role].prompt, general ? null : AUTONOMY_RULES, coding ? null : REQUEST_KIND_NOTES[kind], workspaceNote,
-                agent.instructions && `[Agent instructions] ${agent.instructions}`, savedMemoryForPrompt(task), memory].filter(Boolean).join("\n\n");
+                agent.instructions && `[Agent instructions] ${agent.instructions}`, savedMemoryForPrompt(task), storyStudio && CodevStoryStudio.studioPromptBlock(storyStudio, task), memory].filter(Boolean).join("\n\n");
         }
 
         // WORKSPACE AUTO-INJECTION
@@ -7586,6 +7775,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const tools = createToolContext(session, placeholder, agent, webSources);
             // The pictures attached to this message, for generate_image to edit.
             tools.attachedImages = aiOptions.images || [];
+            // What the task is about, for the tools that are only offered for some tasks.
+            tools.task = task;
             if (resume?.toolLog) tools.toolLog.push(...resume.toolLog);
             // The same list as the run's, so a crash mid-run still leaves what was done.
             placeholder.toolLog = tools.toolLog;
