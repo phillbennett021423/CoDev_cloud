@@ -53,12 +53,17 @@ function createService(config = {}, { log = console.log } = {}) {
                 const heartbeat = setInterval(() => res.write(': ping\n\n'), 15000);
                 req.on('close', () => { clearInterval(heartbeat); stop(); });
             },
+            // Deletes the kept sign-ins of one agent's browser ({ agentId }) or every agent's.
+            'POST /browser/forget-signins': async (req, res, body) => sendJson(res, 200, await browser.manager.forgetSignIns((body && body.agentId) || null)),
             'POST /browser/live/control': async (req, res, body) => {
                 try { sendJson(res, 200, await browser.live.control(body && body.agentId, (body && body.control) || {})); } catch (err) {
                     sendJson(res, 400, { error: err.message });
                 }
             }
         },
+        // For other services: the same browsers and live view (the Outlier
+        // pipeline keeps its signed-in browser here so the user can see and drive it).
+        shared: { manager: browser.manager, live: browser.live },
         status: () => browser.status(),
         close: () => browser.close()
     };

@@ -2,7 +2,11 @@
 // edit files and run commands in a project folder without the Python helper.
 // The page talks to this over IPC with the same JSON-RPC messages it sends to
 // an MCP server (initialize, tools/list, tools/call).
+// The tools run in the app's main process, which also carries the window's clicks and
+// keys, so the slow parts (walking and searching the folder, reading and writing
+// files) are asynchronous: a big project can't freeze CoDev while an agent works.
 const fs = require('fs');
+const fsp = fs.promises;
 const path = require('path');
 const { exec } = require('child_process');
 
@@ -13,6 +17,8 @@ const MAX_TIMEOUT_SECONDS = 600;
 const MAX_SEARCH_MATCHES = 200;
 const MAX_SEARCHED_FILES = 2000;
 const MAX_SEARCHED_FILE_BYTES = 1024 * 1024;
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp' };
 const SKIPPED_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.godot', '.import', 'venv', '.venv', 'dist', 'build']);
 
 // Files that can hold API keys and secrets, which agents never see: hidden files
@@ -45,47 +51,63 @@ function createMcpTools(getProjectDir) {
         return full;
     }
 
+    const statOrNull = file => fsp.stat(file).catch(() => null);
+
     // Project-relative paths of the files under rel, at most `limit` of them.
-    function walkFiles(rel, limit) {
+    async function walkFiles(rel, limit) {
         const start = projectPath(rel);
-        if (!fs.existsSync(start) || !fs.statSync(start).isDirectory()) throw new ToolError(`'${rel}' is not a folder`);
+        const stat = await statOrNull(start);
+        if (!stat || !stat.isDirectory()) throw new ToolError(`'${rel}' is not a folder`);
         const root = getProjectDir();
         const found = [];
-        const walk = dir => {
-            for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const walk = async dir => {
+            for (const entry of (await fsp.readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
                 if (found.length >= limit) return;
                 if (isSecretName(entry.name)) continue;
                 const full = path.join(dir, entry.name);
-                if (entry.isDirectory()) { if (!SKIPPED_DIRS.has(entry.name)) walk(full); }
+                if (entry.isDirectory()) { if (!SKIPPED_DIRS.has(entry.name)) await walk(full); }
                 else found.push(path.relative(root, full).split(path.sep).join('/'));
             }
         };
-        walk(start);
+        await walk(start);
         return found;
     }
 
-    function listFiles({ path: rel } = {}) {
-        const found = walkFiles(rel, MAX_LISTED_FILES);
+    async function listFiles({ path: rel } = {}) {
+        const found = await walkFiles(rel, MAX_LISTED_FILES);
         if (!found.length) return 'The folder is empty.';
         return found.join('\n') + (found.length >= MAX_LISTED_FILES ? `\n[stopped at ${MAX_LISTED_FILES} files]` : '');
     }
 
-    function readFile({ path: rel } = {}) {
+    async function readFile({ path: rel } = {}) {
         const full = projectPath(rel);
-        if (!fs.existsSync(full) || !fs.statSync(full).isFile()) throw new ToolError(`No file at '${rel}'. Call list_files to see what exists.`);
-        const text = fs.readFileSync(full, 'utf8');
+        const stat = await statOrNull(full);
+        if (!stat || !stat.isFile()) throw new ToolError(`No file at '${rel}'. Call list_files to see what exists.`);
+        const text = await fsp.readFile(full, 'utf8');
         return text.length > MAX_READ_CHARS ? text.slice(0, MAX_READ_CHARS) + `\n[truncated at ${MAX_READ_CHARS} characters]` : text;
     }
 
-    function searchFiles({ query, path: rel } = {}) {
+    // An image (a screenshot, say) as MCP image content, for the page's screenshot reader.
+    async function readImage({ path: rel } = {}) {
+        const full = projectPath(rel);
+        const stat = await statOrNull(full);
+        if (!stat || !stat.isFile()) throw new ToolError(`No file at '${rel}'. Call list_files to see what exists.`);
+        const mimeType = IMAGE_TYPES[path.extname(full).toLowerCase()];
+        if (!mimeType) throw new ToolError(`'${rel}' isn't a PNG, JPG, WebP, GIF or BMP image`);
+        if (stat.size > MAX_IMAGE_BYTES) throw new ToolError(`'${rel}' is over ${MAX_IMAGE_BYTES / 1024 / 1024} MB`);
+        return { content: [{ type: 'image', data: (await fsp.readFile(full)).toString('base64'), mimeType }], _meta: { 'codev/modified': stat.mtimeMs } };
+    }
+
+    async function searchFiles({ query, path: rel } = {}) {
         if (typeof query !== 'string' || !query.trim()) throw new ToolError("search_files needs a 'query' string");
         const needle = query.toLowerCase();
         const root = getProjectDir();
         const hits = [];
-        for (const file of walkFiles(rel, MAX_SEARCHED_FILES)) {
+        for (const file of await walkFiles(rel, MAX_SEARCHED_FILES)) {
             const full = path.join(root, file);
-            if (fs.statSync(full).size > MAX_SEARCHED_FILE_BYTES) continue;
-            const text = fs.readFileSync(full, 'utf8');
+            const stat = await statOrNull(full);
+            if (!stat || stat.size > MAX_SEARCHED_FILE_BYTES) continue;
+            const text = await fsp.readFile(full, 'utf8');
             if (text.includes('\u0000')) continue; // binary
             const lines = text.split('\n');
             for (let i = 0; i < lines.length; i++) {
@@ -97,24 +119,24 @@ function createMcpTools(getProjectDir) {
         return hits.length ? hits.join('\n') : `No matches for "${query}".`;
     }
 
-    function writeFile({ path: rel, content } = {}) {
+    async function writeFile({ path: rel, content } = {}) {
         if (typeof content !== 'string') throw new ToolError("write_file needs 'content' as a string");
         const full = projectPath(rel);
-        fs.mkdirSync(path.dirname(full), { recursive: true });
-        fs.writeFileSync(full, content, 'utf8');
+        await fsp.mkdir(path.dirname(full), { recursive: true });
+        await fsp.writeFile(full, content, 'utf8');
         return `Wrote ${content.length} characters to ${rel}.`;
     }
 
-    function editFile({ path: rel, old_text: oldText, new_text: newText } = {}) {
+    async function editFile({ path: rel, old_text: oldText, new_text: newText } = {}) {
         if (typeof oldText !== 'string' || !oldText || typeof newText !== 'string') {
             throw new ToolError("edit_file needs non-empty 'old_text' and a 'new_text' string");
         }
         const full = projectPath(rel);
-        if (!fs.existsSync(full)) throw new ToolError(`No file at '${rel}'`);
-        const text = fs.readFileSync(full, 'utf8');
+        if (!(await statOrNull(full))) throw new ToolError(`No file at '${rel}'`);
+        const text = await fsp.readFile(full, 'utf8');
         const count = text.split(oldText).length - 1;
         if (count !== 1) throw new ToolError(`old_text must appear exactly once in the file; it appears ${count} times`);
-        fs.writeFileSync(full, text.replace(oldText, () => newText), 'utf8');
+        await fsp.writeFile(full, text.replace(oldText, () => newText), 'utf8');
         return `Edited ${rel}.`;
     }
 
@@ -138,6 +160,9 @@ function createMcpTools(getProjectDir) {
           inputSchema: { type: 'object', properties: { path: { ...pathProp, description: 'Sub-folder to list; omit for the whole project.' } } } },
         { name: 'read_file', run: readFile, annotations: { readOnlyHint: true },
           description: "Read a text file from the user's project folder.",
+          inputSchema: { type: 'object', properties: { path: pathProp }, required: ['path'] } },
+        { name: 'read_image', run: readImage, annotations: { readOnlyHint: true },
+          description: "Read an image file (PNG, JPG, WebP, GIF, BMP) from the user's project folder as image content.",
           inputSchema: { type: 'object', properties: { path: pathProp }, required: ['path'] } },
         { name: 'search_files', run: searchFiles, annotations: { readOnlyHint: true },
           description: "Search the text of every file in the user's project folder (case-insensitive) and get matching lines as path:line: text. Use it to find where something is defined or used.",
@@ -178,8 +203,9 @@ function createMcpTools(getProjectDir) {
             const tool = TOOLS.find(t => t.name === msg.params?.name);
             if (!tool) return { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown tool: ${msg.params?.name}` } };
             try {
-                const text = await tool.run(msg.params.arguments || {});
-                return ok({ content: [{ type: 'text', text }], isError: false });
+                const output = await tool.run(msg.params.arguments || {});
+                if (output && typeof output === 'object') return ok({ ...output, isError: false });
+                return ok({ content: [{ type: 'text', text: output }], isError: false });
             } catch (err) {
                 return ok({ content: [{ type: 'text', text: err instanceof ToolError ? err.message : `${err.name}: ${err.message}` }], isError: true });
             }

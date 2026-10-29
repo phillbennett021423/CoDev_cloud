@@ -11,6 +11,7 @@
 // not a tool, runs the action. Passwords are typed into the page by this module
 // and never appear in a tool result.
 const crypto = require('crypto');
+const { resolveAddress, fixKnownAddress, checkPage, advice, SEARCH } = require('./page-check');
 const fs = require('fs');
 const path = require('path');
 const { BrowserUnavailableError } = require('./browser-manager');
@@ -46,13 +47,20 @@ function sameSite(domain, host) {
     return h === d || h.endsWith(`.${d}`) || d.endsWith(`.${h}`);
 }
 
-// isUserControlled(agentId): true while the user drives that browser in the live view.
-function createBrowserTools({ manager, vault, getProjectDir = () => '', screenshotDir, isUserControlled = () => false, log = console.log }) {
+// While the user drives an agent's browser in the live view, the agent's tools that
+// act (navigate, click, type) use a background tab of that browser (manager.workPage),
+// never the user's tab; reading tools read the user's page (manager.readPage).
+function createBrowserTools({ manager, vault, getProjectDir = () => '', screenshotDir, log = console.log }) {
     const pending = new Map();
 
     function checkUrl(raw) {
         let url;
-        try { url = new URL(String(raw || '').trim()); } catch { throw new ToolError(`"${raw}" is not a full web address. Include https://.`); }
+        // A bare domain ("espn.com") gets https://; words are not an address.
+        const typed = String(raw || '').trim();
+        const resolved = /^https?:\/\//i.test(typed) || /^(about|data):/i.test(typed) ? null : (() => { try { return resolveAddress(typed); } catch { return null; } })();
+        try { url = new URL(fixKnownAddress(resolved && resolved.how !== 'search' ? resolved.url : typed)); } catch {
+            throw new ToolError(`"${raw}" is not a web address. Use a full address like https://example.com, or ${SEARCH}<words> to search.`);
+        }
         if (url.href === 'about:blank' || url.protocol === 'data:') return url;
         if (!/^https?:$/.test(url.protocol)) throw new ToolError(`Agents' browsers only open http:// and https:// pages, not ${url.protocol}`);
         if (manager.isBlocked(url)) throw new ToolError(`${url.origin} is CoDev's own server or helper, which agents' browsers can't open.`);
@@ -96,27 +104,38 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
 
     async function navigate({ url, wait_until: waitUntil }, ctx) {
         const target = checkUrl(url);
-        const { page } = await manager.get(ctx.agentId);
-        const response = await page.goto(target.href, { waitUntil: ['load', 'domcontentloaded', 'networkidle'].includes(waitUntil) ? waitUntil : 'load', timeout: NAVIGATION_TIMEOUT_MS });
+        const page = await manager.workPage(ctx.agentId);
+        let response;
+        try {
+            response = await page.goto(target.href, { waitUntil: ['load', 'domcontentloaded', 'networkidle'].includes(waitUntil) ? waitUntil : 'load', timeout: NAVIGATION_TIMEOUT_MS });
+        } catch (err) {
+            if (err && err.name === 'TimeoutError') throw err;
+            return pausedFor(ctx, page, advice(await checkPage(page, null, { error: err }), target.href));
+        }
         const status = response ? ` (HTTP ${response.status()})` : '';
+        // A dead link or a parked "domain for sale" page is not the site: say so, so the
+        // agent searches for the real address instead of reading the parking page.
+        const check = target.href === 'about:blank' ? { ok: true } : await checkPage(page, response);
+        if (!check.ok) return pausedFor(ctx, page, `Opened ${page.url()}${status}, but it's not a working site. ${advice(check, page.url())}`);
         return text(`${await pageSummary(page)}`.replace(/^Page: /, `Opened${status}: `));
     }
 
     async function click({ selector, double }, ctx) {
         if (typeof selector !== 'string' || !selector.trim()) throw new ToolError('browser_click needs a selector.');
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.workPage(ctx.agentId);
         const locator = page.locator(selector).first();
         if (double) await locator.dblclick({ timeout: ACTION_TIMEOUT_MS });
         else await locator.click({ timeout: ACTION_TIMEOUT_MS });
-        const session = await manager.get(ctx.agentId);
-        await settle(session.page);
-        return text(`Clicked ${selector}.\n${await pageSummary(session.page, false)}`);
+        // A link that opened a new tab: carry on there.
+        const after = await manager.workPage(ctx.agentId);
+        await settle(after);
+        return text(`Clicked ${selector}.\n${await pageSummary(after, false)}`);
     }
 
     async function fill({ selector, value, submit }, ctx) {
         if (typeof selector !== 'string' || !selector.trim()) throw new ToolError('browser_fill needs a selector.');
         if (typeof value !== 'string') throw new ToolError('browser_fill needs value as a string.');
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.workPage(ctx.agentId);
         const locator = page.locator(selector).first();
         await locator.fill(value, { timeout: ACTION_TIMEOUT_MS });
         if (submit) {
@@ -128,7 +147,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
 
     async function pressKey({ key, selector }, ctx) {
         if (typeof key !== 'string' || !key) throw new ToolError('browser_press_key needs a key, like Enter, Tab, Escape or Control+A.');
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.workPage(ctx.agentId);
         if (selector) await page.locator(selector).first().press(key, { timeout: ACTION_TIMEOUT_MS });
         else await page.keyboard.press(key);
         await settle(page);
@@ -136,7 +155,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
     }
 
     async function getText({ selector, mode, max_chars: maxChars }, ctx) {
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.readPage(ctx.agentId);
         const limit = Math.max(500, Math.min(MAX_TEXT_CHARS, Number(maxChars) || DEFAULT_TEXT_CHARS));
         const locator = page.locator(selector || 'body').first();
         let content;
@@ -149,7 +168,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
     }
 
     async function waitFor({ selector, text: wanted, timeout_seconds: seconds }, ctx) {
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.readPage(ctx.agentId);
         const timeout = Math.max(1, Math.min(60, Number(seconds) || 15)) * 1000;
         if (selector) await page.locator(selector).first().waitFor({ state: 'visible', timeout });
         else if (wanted) await page.getByText(String(wanted)).first().waitFor({ state: 'visible', timeout });
@@ -158,7 +177,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
     }
 
     async function screenshot({ selector, full_page: fullPage, save_as: saveAs }, ctx) {
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.readPage(ctx.agentId);
         const image = selector
             ? await page.locator(selector).first().screenshot({ timeout: ACTION_TIMEOUT_MS })
             : await page.screenshot({ fullPage: Boolean(fullPage), timeout: NAVIGATION_TIMEOUT_MS });
@@ -169,15 +188,28 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
             const dir = path.join(screenshotDir, ctx.agentId.replace(/[^A-Za-z0-9_-]/g, '_'));
             file = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}.png`);
         }
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, image);
+        // Written asynchronously: this runs in the app's main process, beside the window's input.
+        await fs.promises.mkdir(path.dirname(file), { recursive: true });
+        await fs.promises.writeFile(file, image);
         return { content: [
             { type: 'image', data: image.toString('base64'), mimeType: 'image/png' },
             { type: 'text', text: `Screenshot of ${selector || (fullPage ? 'the whole page' : 'the visible page')} at ${page.url()}, saved to ${file}.` }
         ], isError: false };
     }
 
+    // A dead link, redirect or parked page: the browser stays open with that page shown,
+    // paused for the user in the live view, and the agent is told to wait.
+    function pausedFor(ctx, page, problem) {
+        manager.pause(ctx.agentId, page, problem);
+        return failure(`${problem}\nYour browser is paused and left open in the live view so the user can fix it (they may search for the right address or sign in). ` +
+            'Don\'t close it: ask the user what to do, or search for the real address. The user hands it back when they\'re done.');
+    }
+
     async function closeBrowser(_args, ctx) {
+        const session = manager.peek(ctx.agentId);
+        if (session && session.paused) return failure('Your browser is paused for the user in the live view. Leave it open; the user hands it back when they\'re done.');
+        // The user has used this browser, so it's theirs too: it stays open for them.
+        if (session && manager.isUsers(session)) return text('The user has used this browser in the live view, so it stays open for them. You are done with it; nothing more to close.');
         return text(await manager.close(ctx.agentId) ? 'Closed your browser; its profile and cookies were deleted.' : 'Your browser was not open.');
     }
 
@@ -207,7 +239,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
 
     async function login(id, target, ctx) {
         const credential = vault.useCredential(id);
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.workPage(ctx.agentId);
         const onSite = () => { try { return new URL(page.url()).origin === credential.origin; } catch { return false; } };
         const refuse = where => failure(`Stopped before typing the password: the sign-in page is now on ${where}, not ${credential.origin}. ` +
             'Ask the user to save a login for that site if it is the right one.');
@@ -238,7 +270,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
 
     async function prepareSaveSession({ name }, ctx) {
         if (!manager.has(ctx.agentId)) throw new ToolError('Your browser is not open. Sign in first, then save the session.');
-        const { page } = await manager.get(ctx.agentId);
+        const page = await manager.readPage(ctx.agentId);
         let host;
         try { host = new URL(page.url()).hostname; } catch { host = ''; }
         if (!host) throw new ToolError('Open the signed-in site first, then save its session.');
@@ -319,7 +351,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
               full_page: { type: 'boolean', description: 'Capture the whole scrollable page, not just the visible part.' },
               save_as: { type: 'string', description: 'Save it in the project folder at this path (like screenshots/home.png); omit to keep it in CoDev\'s screenshots folder.' } } } },
         { name: 'browser_close', run: closeBrowser, annotations: { readOnlyHint: false },
-          description: 'Close your browser and delete its temporary profile and cookies. Do it when a web task is finished.',
+          description: 'Close your browser when a web task is finished. A browser the user has opened or used in the live view stays open for them.',
           inputSchema: { type: 'object', properties: {} } },
         { name: 'browser_list_credentials', run: listCredentials, annotations: { readOnlyHint: true },
           description: "List the user's saved web logins and saved sessions: names, sites and user names only, never passwords.",
@@ -337,7 +369,9 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
     ];
 
     function context(meta = {}) {
-        const agentId = String(meta['codev/agentId'] || 'default').slice(0, 64);
+        // Ids starting with @ are CoDev's own browsers (the signed-in Outlier one):
+        // an agent never gets one, whatever id the page sends.
+        const agentId = String(meta['codev/agentId'] || 'default').replace(/^@+/, '').slice(0, 64) || 'default';
         return { agentId, agentName: String(meta['codev/agentName'] || agentId).slice(0, 64) };
     }
 
@@ -347,14 +381,9 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
         return failure(`${err && err.name || 'Error'}: ${firstLines(err && err.message)}`);
     }
 
-    function userHasControl() {
-        return failure('The user has taken over your browser in the live view. Wait for them to hand it back, then try again, or ask them what they want.');
-    }
-
     async function callTool(name, args = {}, ctx = context()) {
         const tool = TOOLS.find(t => t.name === name);
         if (!tool) return failure(`Unknown tool: ${name}`);
-        if (name !== 'browser_list_credentials' && isUserControlled(ctx.agentId)) return userHasControl();
         try {
             if (!tool.prepare) return await tool.run(args || {}, ctx);
             const { prompt, run } = await tool.prepare(args || {}, ctx);
@@ -373,7 +402,6 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
         const entry = pending.get(String(id || ''));
         pending.delete(String(id || ''));
         if (!entry || entry.expires < Date.now()) return failure('That approval request expired. Call the tool again.');
-        if (approved && isUserControlled(entry.agentId)) return userHasControl();
         if (!approved) {
             log(`[Browser] The user declined ${entry.tool} for ${entry.agentId}.`);
             return text('The user declined this. Do not try to get around it; ask the user what to do instead.');

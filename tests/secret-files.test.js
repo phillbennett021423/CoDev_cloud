@@ -51,6 +51,12 @@ test("the Windows app's folder tools never list, search, read or write secret fi
         }
     }
     assert.match(text(await call('list_files', { path: '.github' })), /hidden or env file/);
+    // read_image, for the screenshot reader: images only, never a secret file.
+    assert.match(text(await call('read_image', { path: '.env' })), /hidden or env file/);
+    assert.match(text(await call('read_image', { path: 'app.js' })), /isn't a PNG/);
+    fs.writeFileSync(path.join(project, 'slip.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const image = await call('read_image', { path: 'slip.png' });
+    assert.deepEqual(image.content, [{ type: 'image', data: 'iVBORw==', mimeType: 'image/png' }]);
     for (const [rel, content] of Object.entries(FILES)) assert.equal(fs.readFileSync(path.join(project, rel), 'utf8'), content, rel);
 });
 
@@ -93,4 +99,27 @@ print(json.dumps(out))
     }
     assert.equal(out.github.ok, false);
     for (const [rel, content] of Object.entries(FILES)) assert.equal(fs.readFileSync(path.join(project, rel), 'utf8'), content, rel);
+});
+
+test('screenshots by full path: images only, newest first, never a hidden folder or key file', async t => {
+    const { handleImageFolder } = require('../desktop/image-folder');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-shots-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    fs.writeFileSync(path.join(dir, 'IMG_2810.PNG'), png);
+    fs.writeFileSync(path.join(dir, 'IMG_2811.PNG'), png);
+    fs.utimesSync(path.join(dir, 'IMG_2810.PNG'), 1000, 1000);
+    fs.writeFileSync(path.join(dir, 'notes.txt'), `${FAKE_KEY}\n`);
+    fs.mkdirSync(path.join(dir, '.hidden'));
+    fs.writeFileSync(path.join(dir, '.hidden', 'IMG_1.PNG'), png);
+
+    const listed = await handleImageFolder({ op: 'list', folder: dir });
+    assert.equal(listed.ok, true, listed.error);
+    assert.deepEqual(listed.images.map(i => i.name), ['IMG_2811.PNG', 'IMG_2810.PNG']);
+    const read = await handleImageFolder({ op: 'read', path: listed.images[0].path });
+    assert.deepEqual({ mimeType: read.mimeType, data: read.data }, { mimeType: 'image/png', data: 'iVBORw==' });
+    assert.match((await handleImageFolder({ op: 'read', path: path.join(dir, 'notes.txt') })).error, /isn't a PNG/);
+    assert.match((await handleImageFolder({ op: 'read', path: path.join(dir, '.hidden', 'IMG_1.PNG') })).error, /hidden folder/);
+    assert.match((await handleImageFolder({ op: 'read', path: path.join(os.homedir(), '.env.png') })).error, /hidden folder|key file/);
+    assert.match((await handleImageFolder({ op: 'list', folder: 'New folder' })).error, /full path/);
 });

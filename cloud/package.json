@@ -1,0 +1,10 @@
+{
+  "name": "codev-cloud-server",
+  "private": true,
+  "type": "module",
+  "description": "CoDev's online server: accounts, plans and the owner's shared API keys (Cloudflare Worker + D1)",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "deploy": "wrangler deploy"
+  }
+}

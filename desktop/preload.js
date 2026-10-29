@@ -5,14 +5,24 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('codevDesktop', {
     http: {
-        get: ({ url, headers }) => ipcRenderer.invoke('codev:http-get', { url, headers })
+        get: ({ url, headers }) => ipcRenderer.invoke('codev:http-get', { url, headers }),
+        // The Odds API for line tracking, with its credit headers (x-requests-remaining...).
+        odds: ({ url }) => ipcRenderer.invoke('codev:http-odds', { url }),
+        // Tavily web search with the key from Settings: ({ key, body }) -> { status, data }.
+        tavily: ({ key, body }) => ipcRenderer.invoke('codev:http-tavily', { key, body })
     },
     azureTts: ({ region, key, ssml }) => ipcRenderer.invoke('codev:azure-tts', { region, key, ssml }),
+    // Writes the page's saved chats and run checkpoints to disk now, so a crash right after loses nothing.
+    flushStorage: () => ipcRenderer.send('codev:flush-storage'),
     // Gives keyboard focus back to the page after a native alert or confirm.
     refocus: () => ipcRenderer.send('codev:refocus'),
+    // The Google account for the YouTube, Maps, Gmail and Drive tools: { op, ... } (see google-connect.js).
+    google: req => ipcRenderer.invoke('codev:google', req),
     // Built-in MCP tools for the chosen project folder.
     mcp: message => ipcRenderer.invoke('codev:mcp', message),
     mcpFolder: () => ipcRenderer.invoke('codev:mcp-folder'),
+    // Screenshots in any folder on this computer, by full path: { op: "list", folder } or { op: "read", path }.
+    imageFolder: req => ipcRenderer.invoke('codev:image-folder', req),
     pickMcpFolder: () => ipcRenderer.invoke('codev:mcp-pick-folder'),
     // External MCP servers (stdio and remote), run by the main process's MCP hub.
     mcpHub: req => ipcRenderer.invoke('codev:mcp-hub', req),
@@ -22,6 +32,8 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     agentRequest: req => ipcRenderer.invoke('codev:agent-request', req),
     // Agents' headless browsers and the saved web logins (JSON-RPC, like mcp).
     browserMcp: message => ipcRenderer.invoke('codev:browser-mcp', message),
+    // The 📈 Outlier tab's requests, the routes server.js serves under /outlier/: ({ method, path, body }) -> { status, body }.
+    outlierRequest: req => ipcRenderer.invoke('codev:outlier-request', req),
     // Live view of those browsers: watch/unwatch/control, and the stream of frames and events.
     browserLive: req => ipcRenderer.invoke('codev:browser-live', req),
     onBrowserLive: callback => {

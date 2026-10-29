@@ -4,10 +4,14 @@
 // The picture comes straight from Chromium over the DevTools protocol
 // (Page.startScreencast sends a JPEG each time the page repaints), so it needs no
 // VNC, X server or Docker: the browsers run on this computer, not in a container.
-// While the user has control, the agent's browser tools wait (browser-tools.js asks
-// isUserControlled), so the two never fight over the page.
+// While the user has control, the agent's browser tools work in a background tab of
+// the same browser (browser-manager.js workPage), so the two never fight over a page;
+// handing back shows the agent's tab.
+const { resolveAddress, checkPage, advice } = require('./page-check');
+
 const SCREENCAST = { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 };
 const MAX_BACKLOG = 300;
+const FRAME_GAP_MS = 200;
 const MAX_TEXT = 500;
 const DOM_BINDING = '__codevLiveDom';
 
@@ -57,6 +61,8 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
     const backlogs = new Map();   // agentId -> recent inspector events
     const casts = new Map();      // agentId -> { page, cdp }
     const stateListeners = new Set();
+    // A browser someone is watching doesn't close for being idle.
+    manager.holdOpen(agentId => (watchers.get(agentId) || new Set()).size > 0);
 
     function send(agentId, event) {
         for (const listener of watchers.get(agentId) || []) {
@@ -134,9 +140,19 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
         let cdp;
         try { cdp = await session.context.newCDPSession(page); } catch (err) { return log(`[Live] Can't stream ${agentId}: ${err.message}`); }
         casts.set(agentId, { page, cdp });
+        // At most FRAME_GAP_MS apart: a busy page repaints many times a second, and every
+        // picture goes on to the app's window. The newest one is kept and sent when the
+        // gap is up, so the view still ends on the page as it is.
+        let lastSent = 0;
+        let pending = null;
+        let timer = null;
+        const flush = () => { timer = null; if (pending) { lastSent = Date.now(); send(agentId, pending); pending = null; } };
         cdp.on('Page.screencastFrame', ({ data, metadata, sessionId }) => {
             cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
-            send(agentId, { type: 'frame', data, width: metadata.deviceWidth, height: metadata.deviceHeight, url: page.isClosed() ? '' : page.url() });
+            pending = { type: 'frame', data, width: metadata.deviceWidth, height: metadata.deviceHeight, url: page.isClosed() ? '' : page.url() };
+            const wait = FRAME_GAP_MS - (Date.now() - lastSent);
+            if (wait <= 0) flush();
+            else if (!timer) timer = setTimeout(flush, wait);
         });
         try { await cdp.send('Page.startScreencast', SCREENCAST); } catch (err) { log(`[Live] ${err.message}`); }
     }
@@ -159,6 +175,15 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
         broadcastSessions();
     });
     manager.events.on('page', session => { startCast(session.agentId); broadcastSessions(); });
+    // Everyone watching anything hears about a pause, so the page can open that browser.
+    manager.events.on('pause', session => {
+        const event = { type: 'paused', agentId: session.agentId, text: session.paused.reason, url: session.paused.url };
+        send(session.agentId, { type: 'state', agentId: session.agentId, open: true, userControl: true });
+        for (const [agentId, listeners] of watchers) if (agentId !== session.agentId) for (const l of listeners) { try { l(event); } catch { /* gone */ } }
+        for (const l of watchers.get(session.agentId) || []) { try { l(event); } catch { /* gone */ } }
+        for (const l of stateListeners) { try { l(event); } catch { /* gone */ } }
+        broadcastSessions();
+    });
     manager.events.on('close', agentId => {
         casts.delete(agentId);
         send(agentId, { type: 'closed', agentId });
@@ -188,18 +213,31 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
     }
 
     function setControl(session, userControl) {
+        // Once the user has driven it, it's their browser too (browser-manager.js isUsers).
+        if (userControl) session.userOwned = true;
         if (session.userControl === userControl) return;
         session.userControl = userControl;
+        if (!userControl) manager.handBack(session);
         log(`[Live] ${userControl ? 'You took over' : 'You handed back'} ${session.agentId}'s browser.`);
         send(session.agentId, { type: 'state', agentId: session.agentId, open: true, userControl });
         broadcastSessions();
     }
 
     // The user's own input. Any input takes control from the agent until "release".
+    // "close" is the user closing the browser; only they close one they've used.
+    // "open" and "navigate" also start the browser when it isn't open yet, so the
+    // user can browse in an agent's browser (or the Outlier one) before the agent
+    // does, and the agent picks up on that same page when it's handed back.
     async function control(agentId, req = {}) {
-        const session = manager.peek(String(agentId || ''));
-        if (!session) throw new LiveError(`${agentId || 'That agent'} has no browser open.`);
+        const id = String(agentId || '');
         const { op } = req;
+        let session = manager.peek(id);
+        if (op === 'close') { if (session) await manager.close(id); return { ok: true }; }
+        const fresh = !session;
+        if (!session && (op === 'open' || op === 'navigate') && id) session = await manager.get(id);
+        // "open" with a url: go there only if this just opened the browser (else keep the user's page).
+        if (op === 'open' && req.url && fresh && session) return control(id, { op: 'navigate', url: req.url });
+        if (!session) throw new LiveError(`${agentId || 'That agent'} has no browser open.`);
         if (op === 'release') { setControl(session, false); return { ok: true }; }
         setControl(session, true);
         session.lastUsed = Date.now();
@@ -209,7 +247,7 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
         const y = Number(req.y) || 0;
         const button = ['left', 'right', 'middle'].includes(req.button) ? req.button : 'left';
         switch (op) {
-            case 'takeover': break;
+            case 'takeover': case 'open': break;
             case 'move': await page.mouse.move(x, y); break;
             case 'down': await page.mouse.move(x, y); await page.mouse.down({ button }); break;
             case 'up': await page.mouse.move(x, y); await page.mouse.up({ button }); break;
@@ -218,11 +256,24 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
             case 'keyup': await page.keyboard.up(String(req.key)); break;
             case 'text': await page.keyboard.insertText(clip(req.text, 5000)); break;
             case 'navigate': {
+                // An address, a bare domain or words to search for.
                 let url;
-                try { url = new URL(String(req.url || '')); } catch { throw new LiveError('Type a full address, like https://example.com.'); }
-                if (!/^https?:$/.test(url.protocol) || isBlockedUrl(url)) throw new LiveError(`Agents' browsers can't open ${url.href}.`);
-                await page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
-                break;
+                try { url = new URL(resolveAddress(req.url).url); } catch (err) { throw new LiveError(err.message); }
+                if (url.href !== 'about:blank' && (!/^https?:$/.test(url.protocol) || isBlockedUrl(url))) throw new LiveError(`Agents' browsers can't open ${url.href}.`);
+                let response = null;
+                let check;
+                try {
+                    response = await page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                    check = url.href === 'about:blank' ? { ok: true } : await checkPage(page, response);
+                } catch (err) {
+                    check = await checkPage(page, null, { error: err });
+                }
+                if (!check.ok) {
+                    const warning = advice(check, url.href);
+                    send(id, { type: 'warning', agentId: id, text: warning, url: page.url() });
+                    return { ok: true, url: page.url(), warning };
+                }
+                return { ok: true, url: page.url() };
             }
             case 'back': await page.goBack({ timeout: 10000 }).catch(() => {}); break;
             case 'forward': await page.goForward({ timeout: 10000 }).catch(() => {}); break;

@@ -18,7 +18,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const { spawn, execFile } = require('child_process');
-const { launchBrowser, openPage, sendPrompt, waitForReview, waitForChat } = require('./helpers/page-driver');
+const { launchBrowser, openPage, sendPrompt, waitForReview, waitForChat, answerApprovals } = require('./helpers/page-driver');
 
 const ROOT = path.join(__dirname, '..');
 const SERVER_TIMEOUT_MS = 60000;
@@ -255,11 +255,15 @@ test('a coding prompt through the page is staged, reviewed and saved', async t =
         'Built the greeter page in site/.'
     ];
     const { page, errors } = await openPage(launched.browser, ctx.server.url, { steps });
+    // Without Docker, "ls site" runs on this computer only with the user's OK: declined here.
+    await answerApprovals(page, () => false);
     await sendPrompt(page, 'Build a small greeter page in site/ that says hello to the name typed in');
     const rows = await waitForReview(page, 120000);
     const offered = (await page.evaluate(() => window.__modelCalls))[0].tools;
     assert.ok(offered.includes('write_file') && !offered.includes('write_workspace_file'), `tools offered: ${offered.join(', ')}`);
     if (ctx.tools.includes('browser_navigate')) assert.ok(offered.includes('browser_navigate'), 'browser tools stay available in sandbox mode');
+    if (ctx.tools.includes('outlier_scan_board')) assert.ok(offered.includes('outlier_scan_board'), 'agents are offered the Outlier scan');
+    if (ctx.tools.includes('outlier_scan_board')) assert.match((await page.evaluate(() => window.__modelCalls))[0].system, /call outlier_scan_board first/);
     const byPath = Object.fromEntries(rows.map(r => [r.path, r]));
     assert.ok(byPath['site/index.html'] && byPath['site/greet.js'], JSON.stringify(rows));
     assert.equal(byPath['site/typo.js'].blocked, true, 'the syntax error is blocked in the review');
@@ -341,32 +345,41 @@ test("the agent's card shows its browser live, and the user can drive it from th
         steps: [[{ name: 'browser_navigate', arguments: { url } }], 'Opened the page.']
     });
     page.on('dialog', dialog => dialog.accept());
+    await answerApprovals(page);
     const agentId = await page.evaluate(() => String(selectedAgentId));
     t.after(() => ctx.tool('browser_close', {}, agentId).catch(() => {}));
     await sendPrompt(page, 'Open the test page in your browser');
     await waitForChat(page, /Opened the page\./);
 
-    // The live picture appears in the selected agent's own card.
+    // The live picture appears in the selected agent's own card (the agent list starts folded away).
+    await page.evaluate(() => { if (isAgentCollapsed) toggleAgentSidebar(); });
     const viewport = page.locator(`.agent-card[data-agent-id="${agentId}"] .agent-browser-panel #agentViewport`);
     await viewport.waitFor({ state: 'visible', timeout: 20000 });
-    await page.waitForFunction(() => (document.getElementById('agentViewport').getAttribute('src') || '').startsWith('data:image/jpeg;base64,'), null, { timeout: 20000 });
+    await page.waitForFunction(() => (document.getElementById('agentViewport').getAttribute('src') || '').startsWith('blob:'), null, { timeout: 20000 });
     assert.equal(await page.textContent('#agentViewportUrl'), url);
     if (process.env.CODEV_CARD_SCREENSHOT) await page.locator(`.agent-card[data-agent-id="${agentId}"]`).screenshot({ path: process.env.CODEV_CARD_SCREENSHOT });
 
     // Clicking and typing on the card drive the agent's browser and take it over.
     await viewport.click();
     await page.keyboard.type('Hi');
+    await page.keyboard.press('Enter'); // on the focused button, Enter also clicks it
     await page.waitForFunction(() => /Hand back/.test(document.getElementById('agentViewportControl').textContent), null, { timeout: 10000 });
-    const paused = await ctx.tool('browser_get_text', { selector: '#out', mode: 'text' }, agentId);
-    assert.match(paused.text, /taken over your browser/);
+    // While the user drives, the agent can still read the page (what it does goes to a
+    // background tab: tests/browser-session.test.js).
+    let seen = '';
+    for (let i = 0; i < 20 && !/click Hi\[Enter\]/.test(seen); i++) {
+        seen = (await ctx.tool('browser_get_text', { selector: '#out', mode: 'text' }, agentId)).text;
+        if (!/click Hi\[Enter\]/.test(seen)) await new Promise(r => setTimeout(r, 250));
+    }
+    assert.match(seen, /click Hi\[Enter\]/, "the agent reads the user's page");
     await page.click('#agentViewportControl');
     await page.waitForFunction(() => /Take over/.test(document.getElementById('agentViewportControl').textContent), null, { timeout: 10000 });
     let text = '';
-    for (let i = 0; i < 20 && !/click Hi$/.test(text); i++) {
+    for (let i = 0; i < 20 && !/click Hi\[Enter\]/.test(text); i++) {
         text = (await ctx.tool('browser_get_text', { selector: '#out', mode: 'text' }, agentId)).text;
-        if (!/click Hi$/.test(text)) await new Promise(r => setTimeout(r, 250));
+        if (!/click Hi\[Enter\]/.test(text)) await new Promise(r => setTimeout(r, 250));
     }
-    assert.match(text, /click Hi$/);
+    assert.match(text, /click Hi\[Enter\]/);
     assert.deepEqual(errors, []);
 });
 
@@ -378,7 +391,7 @@ const DRIVE_HTML = `<!doctype html>
   <script>
     const out = document.getElementById('out');
     document.getElementById('target').addEventListener('click', () => { out.textContent += 'click '; });
-    document.addEventListener('keydown', e => { if (e.key.length === 1) out.textContent += e.key; });
+    document.addEventListener('keydown', e => { if (e.key.length === 1) out.textContent += e.key; if (e.key === 'Enter') out.textContent += '[Enter]'; });
   </script>
 </body></html>
 `;

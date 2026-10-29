@@ -55,13 +55,19 @@ async function openPage(browser, baseUrl, { steps = [], selfHeal = false, mcpSer
     }, null, { timeout: 15000 });
     await page.evaluate(({ steps, selfHeal }) => {
         document.getElementById('settingsModal').style.display = 'none';
+        // The mode toggles start folded away; the tests use them, so open them.
+        if (document.getElementById('chatControlsContainer').style.display === 'none') toggleChatControls();
         document.getElementById('isSelfHealCheckbox').checked = selfHeal;
         const queue = steps.slice();
         window.__modelCalls = [];
         let seq = 0;
         // Replaces the provider call for the whole page (it's a global function).
         window.groqChatMessage = async body => {
-            window.__modelCalls.push({ tools: (body.tools || []).map(t => t.function.name), system: body.messages[0]?.content || '' });
+            window.__modelCalls.push({
+                tools: (body.tools || []).map(t => t.function.name),
+                system: body.messages[0]?.content || '',
+                messages: body.messages.slice(1).map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) }))
+            });
             const step = queue.shift();
             if (step === undefined) return { role: 'assistant', content: 'Done.' };
             if (typeof step === 'string') return { role: 'assistant', content: step };
@@ -103,4 +109,18 @@ async function waitForChat(page, pattern, timeout = 30000) {
     }, { source, flags }, { timeout });
 }
 
-module.exports = { loadPlaywright, launchBrowser, openPage, sendPrompt, waitForReview, chatMessages, waitForChat };
+// Answers the agents' approval cards (CoDev asks with a card in the corner, not a
+// native dialog) by clicking Allow or Decline. decide(message) -> true to allow.
+// Returns the list of questions asked, in order.
+async function answerApprovals(page, decide = () => true) {
+    const asked = [];
+    await page.exposeFunction('__codevDecideApproval', async message => { asked.push(message); return Boolean(await decide(message)); });
+    await page.evaluate(() => window.addEventListener('codev-approval', async event => {
+        const allow = await window.__codevDecideApproval(event.detail.message);
+        const card = [...document.querySelectorAll('.approval-card')].find(c => c.querySelector('.approval-text').textContent === event.detail.message);
+        card.querySelector(allow ? '.approval-allow' : '.approval-decline').click();
+    }));
+    return asked;
+}
+
+module.exports = { loadPlaywright, launchBrowser, openPage, sendPrompt, waitForReview, chatMessages, waitForChat, answerApprovals };

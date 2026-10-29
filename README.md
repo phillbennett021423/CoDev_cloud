@@ -2,6 +2,10 @@
 
 The app is a single page, `mobile/www/index.html`. It talks to Groq directly from the browser, so there's no backend server to run. The Android app is in `mobile/` (see `mobile/README.md`).
 
+## CoDev accounts
+
+People can sign in to a CoDev account (Settings > Sign in to CoDev) instead of pasting API keys. CoDev's online server in `cloud/` holds the owner's keys and forwards their requests within their plan, so the keys never reach their devices; the owner's account gets the Owner page. Putting the server online and the plans are in [`cloud/README.md`](cloud/README.md). A key pasted in Settings is still used first.
+
 ## Windows desktop app
 
 Download and run the installer: https://github.com/phillbennett021423/CoDev_cloud/releases/latest/download/CoDev-Studio-Setup.exe
@@ -36,6 +40,7 @@ Settings are read by `config.js` from the environment or `.env`:
 | `ANTHROPIC_API_KEY` | Anthropic relay (`sk-ant-...`) |
 | `OPENROUTER_API_KEY` | OpenRouter (`sk-or-...`) |
 | `MANUS_API_KEY` | Q tasks |
+| `ODDS_API_KEY` | free-tier market odds in the Outlier tab's scrape (the-odds-api.com); agents' line tracking uses the key in Settings instead (see below) |
 | `CODEV_WORKSPACE` | the project folder agents work in; `start-codev.bat C:\path\to\project` sets it too |
 | `CODEV_DATA_DIR` | where `.codev` goes |
 | `CODEV_VAULT_KEY` | passphrase for the browser tools' saved logins |
@@ -43,9 +48,119 @@ Settings are read by `config.js` from the environment or `.env`:
 
 `server.js` loads the agent services through `agent-services.js`: the sandbox containers and diff review (`desktop/sandbox`) and the headless browser (`agents/browser`). A service that isn't installed is skipped. The page reaches their tools at `POST /agent-tools` (MCP JSON-RPC: `initialize`, `tools/list`, `tools/call`), the review gate under `/agent/`, and what's on at `GET /agent/status`. All of these answer CoDev's own page only. Ctrl+C removes the agents' containers and browser profiles.
 
+## Outlier slips
+
+The **📈 Outlier** tab (when CoDev runs on your computer with `npm start` or `start-codev.bat`) reads your signed-in Outlier pages, scores the props and recommends 4-leg power and flex entries (6-leg optional), weighing same-game correlation, with a fractional-Kelly stake for each and closing line value tracked for the entries you play:
+
+1. **Sign in to Outlier** opens a browser window. Sign in there once and close it. That sign-in is kept in a browser profile used only by this pipeline, in your app-data folder (`codev-server/outlier/profile`), never in the repo, so it carries over between runs. **Forget Outlier sign-in** deletes it.
+2. **Scrape & analyze** opens the pages listed under **Pages and sign-in** in a hidden browser, reads the prop cards and odds tables into JSON (`agents/outlier/extract.js`), and runs `tools/outlier-analytics/analyze.py` on them (needs Python 3; set `CODEV_PYTHON` if it isn't on the PATH). **Auto** repeats it every few minutes while the tab is open.
+3. With a free `ODDS_API_KEY` (the-odds-api.com), ESPN's public scoreboard and any public odds-comparison pages you list, each scrape cross-references every prop against the other books: no-vig fair price (sharp books first), each book's juice, best price (`tools/outlier-analytics/market_data.py`, stored in `market.db`).
+4. **I played this** tracks an entry; mark its legs hit/miss when they settle and the filters retune themselves (see `tools/outlier-analytics/README.md`).
+5. **Strategy: Consistency (-119)** looks for props near -119 whose players hit 60–75% with a steady 3/4/5-game baseline and a minutes floor, reads matchup, usage, pace and potential-volume stats off the page, and builds 4–6 leg parlay tickets with their combined odds. These are estimates; no filter guarantees a win.
+6. On top of either strategy, the analysis also:
+   - flags **orphaned lines**, where a soft book is still near -119 after the sharp books (Pinnacle and the like) moved to -130 or past;
+   - keeps legs that work against each other off the same ticket;
+   - shares a ruled-out starter's usage out to his teammates' props (from the page's injury notes or a list you type in);
+   - drops players whose minutes fell 10% or more over the last two games, or who face one of the stingiest defenses.
+7. **⏺ Passive capture** collects props while you scroll Outlier yourself in the live view. A MutationObserver in the page notes each prop card as it appears, including cards a long board removes once they scroll away. Every few seconds CoDev parses them into a scratchpad and the latest read, and re-scores at most every 15 seconds. It never scrolls, clicks or moves your view.
+8. The **Under value engine** looks at the props the strategy didn't keep from the under side. A prop is tagged an **Under Value Leg** when at least two under signals line up and the under price still leaves a 2-point edge. The signals are a slow game, a lockdown defense, a teammate's usage coming back, and an inflated public over. A prop is routed to the core picks or the under list, never both, and under legs stay off the over tickets.
+9. **Board files in your project folder.** Every analysis writes the whole board to `downloads/new folder/outlier_live_board_dump.json`: props, injuries, each leg's metrics and route, tickets and under legs. A board JSON you save into `downloads/new folder` is read in and audited automatically. It can be a list of props, `{ "props": [...] }`, or CoDev's own dump. Agents do the same with the `outlier_import_board` tool. Both paths are set under **Pages and sign-in**, and an empty field turns that one off.
+10. **Ask an agent to scan Outlier.** For a prompt like "go to Outlier and build me a ticket", agents use the `outlier_scan_board` tool. It runs the scan in your signed-in Outlier browser (in a background tab if you're using it) and returns the tickets and under legs. The agent never gets that browser or its cookies, and it can only open app.outlier.bet pages. The scan reads the board after every scroll step, including boards that scroll inside a panel and remove rows as they go, and stops at the end of the board (up to 40 steps). Typed on its own, "outlier" or "outlier.com" opens app.outlier.bet.
+
+    For hit rates ("find me legs hitting 60%+ in the last 5, overs or unders"), agents use `outlier_find_hit_rates`. It sets Outlier's own filters (Hit Rate L5 from 60%, Over/Under, the game and stat when you name them) so the board lists only those legs, ranks every one of them, leaves out players with injury news, and builds a 4-leg regular-line ticket (legs priced near -119, one per game). A repeat within 10 minutes reuses the same read. Lists of legs (`outlier_research_list`) also set Outlier's filters now: each player and the game are ticked instead of scrolling the whole board. When Outlier answers "too many requests" (429) and a run is cut short, CoDev doesn't open Outlier again for 10 minutes and answers from what it already read (`cooldownMs` in the Outlier config changes this).
+
+    It also moves around Outlier for you. Ask "NBA props for the 8pm game" (or "the 3 o'clock game", "Lakers tonight", "Points for the Celtics game") and the agent passes the sport, game and stat to the tool. The scan clicks Outlier's sport tab, any stat filter and the game card with that start time or those teams, reads that game's board and builds tickets from that game's props only. Times are your computer's local time, as Outlier shows them. If it can't find the game, it lists the games it saw so the agent can ask you which one. It only clicks tabs, filters and game cards, never a pick or an entry button, and it never enters anything on Outlier, Underdog or Dabble: the ticket comes back as the agent's reply in chat.
+
+The parser doesn't depend on Outlier's markup, but if it misses props, **Save page snapshot** stores the page (HTML and the data it loaded) in the same folder so selectors can be added to `config.json` there. Agents can read the latest entries with the read-only `outlier_slips` tool. Automated reading may be against Outlier's terms; that's your call. The numbers are estimates, not guarantees.
+
+## Story Studio
+
+The **🎭 Story Studio** tab (on the phone, the **Story** tab) is for writing a game's story with your agents. It works for any game: make a project for each one, and each project gets its own **story bible** of characters, factions, abilities, places, timeline events, lore, quests, items, dialogue, scenes and story arcs. The bible is kept on the device, and **⬆ Import** loads one exported from another device.
+
+- **Agents use the bible.** When a request is about a game's story ("write a backstory for my villain", "create a quest for Skyfall"), agents get the `studio_read`, `studio_save`, `studio_remove` and `studio_export` tools plus a short index of the bible. They read what's already canon before writing and save what they make. Other requests don't get these tools, so they cost nothing extra there. **🤖 Ask an agent** in the studio sends a request to the chat for you.
+- **🔒 Lock** keeps an entry exactly as it is. Nobody can change or delete it, agents included, until you unlock it. Talking to a character or running a scene never changes the character either way.
+- **🗣️ Talk to a character:** chat with a character in their own voice to hear how they sound. "(ooc)" asks them something out of character. **💾 Save as dialogue** keeps the chat.
+- **🎬 Scene Builder:** set where the scene happens, who is in it and the goal or conflict. Agents play each character a line (or four) at a time. You can add a director's note, pick who speaks next, step in with your own line, narration or stage direction, redo the last line, undo, rewind to any line, or tap a line to edit it. Each scene saves as you go. A scene stops after 30 agent turns in one sitting until you say to go on. **🎨 Storyboard** draws up to 4 frames per scene with the picture service set in Settings (free Pollinations by default).
+- **📦 Export to your game:** writes `story_bible.json`, `game_data.gd` (GDScript constants such as `CHARACTERS`, `DIALOGUE` and `SCENES`, plus `dialogue_lines()` and `scene_beats()`), one JSON file per dialogue in `dialogue/`, one cutscene JSON per scene in `scenes/`, and `story_bible.md`. Every line has an `id` and the `next` line's id, so the game can play it as a cutscene or walk it as a dialogue tree. With a project folder connected, they save straight into it (`game_data/` by default). Otherwise they download, or on Android they go to the share sheet (Drive, Files, email).
+
+Every one of these is optional; use only what helps:
+
+- **🎭 Mood faces:** up to seven portraits per character (calm, happy, angry, sad, scared, determined, surprised). Each is drawn to match the calm face, using the character's own seed on the free service, or the calm face as a reference on a paid one. Chats and scenes show the face that fits each line's mood.
+- **🔊 Voices and read-aloud:** each character, and a narrator under Project details, gets one of the device's voices with a speed and pitch. With your own ElevenLabs key they can use an ElevenLabs voice instead. That's paid per character, so CoDev stops at 10,000 characters a day. 🔊 says any line, **Speak replies** speaks a chat, and **▶ Play scene** reads a scene like an audio drama.
+- **🕸️ Relationships:** link any entry to others (ally, enemy, rival, family, love, mentor, member of) and see the web. Tap a name to see only its relationships.
+- **⏳ Timeline:** your world's events in story order. **📈 Story arcs:** a board of arcs and their beats, each marked idea, written or in the game, and optionally tied to a scene.
+- **🎤 Interview mode:** questions that dig into a character. You can keep the answers as a lore note.
+- **🌿 What if…:** branch a scene from any line into a copy, and the original stays as it is.
+- **🔍 Lore checker:** compares an entry, a scene or the whole bible with the rest and lists contradictions. It only reports.
+- **🌱 Growth and 📸 snapshots:** characters never change on their own. Growth suggestions are off until you turn them on for a character. **🌱 Suggest growth** after a scene or chat then proposes changes, and each one waits for your **Approve**, with a snapshot saved first. You can save snapshots yourself and go back to any of them.
+- **🖨️ Character sheets:** a printable page per character, with portrait, card, relationships and moods. On a phone it goes to the share sheet.
+
+Talking to characters, scenes, lore checks and growth suggestions use the provider picked in Settings through the same call as the chat, so the spending limits apply to them too. Agents' `studio_save` only changes story content, never pictures, voices, locks, growth settings or snapshots.
+
+## Line tracking with The Odds API
+
+Agents can compare every sportsbook's lines and player props, follow how they move, and get a short list of what to look up on Outlier. It works on the phone, the Windows app and the browser page alike.
+
+**Set it up (about 2 minutes):**
+
+1. Go to [the-odds-api.com](https://the-odds-api.com/#get-access) and sign up for the free plan. You only need an email address; they email you a key.
+2. In CoDev, open **Settings > 🎯 Odds API (line tracking)** and paste the key. That's it.
+
+**What agents can do with it:**
+
+- `odds_lookup_list`: the players, props and lines worth checking on Outlier for a game: props whose line or odds moved, props where the books disagree, and props the juice leans on, each with the reason and every book's price. It ends with the legs ready for `outlier_research_list`, so an agent asked for a ticket goes straight to those players on Outlier.
+- `odds_player_props` and `odds_game_lines`: one game's props, or a sport's moneylines, spreads and totals, side by side at every book, with the best price for each side and the fair chance with the book's margin taken out.
+- `odds_line_movement`: how a line moved, snapshot by snapshot, book by book.
+- `odds_show_chart`, or **📉 View tracked lines** in Settings: a chart of a line at each book over time and a table comparing the books.
+
+**Credits.** The free plan has 500 credits a month. Listing games is free; a sport's game lines cost about 3 credits; a game's props cost 1 credit per stat (3 for the default stats). CoDev keeps them safe on its own: it saves every answer and reuses it (lines for 30 minutes, props for an hour), spreads the month's credits over its days, always keeps 25 back, and stops before going over. Settings shows how many are left. Each extra group of sportsbooks you tick (DFS apps, Pinnacle in Europe...) multiplies a call's cost. With **Re-check** on, CoDev takes a new snapshot of the lines agents looked at every few hours while it's open, using at most half of the day's credits, so movement builds up by itself.
+
+Without a key, or once the day's credits are used, agents read the odds on Outlier in the browser as before. The numbers are what the sportsbooks show, not picks.
+
+## Agents start blank
+
+Every agent, the three built in (Architect, Swarm, Self-Healing) and any you add, starts with empty memory, no shared-memory links and generic instructions: it takes its domain (code, data, research, betting analytics…) from your task, not from a project built into CoDev. New agents get the **General** role, which adapts to any task; the developer roles below are for work on a connected project. Engine-specific rules (Godot) are only added when the task is about that engine. When you switch to an unrelated task, **🧹 New task (clear context)** in the menu empties every agent's memory and shared-memory links, opens an empty chat and can unload the project files, so nothing from the old task carries over; **Clear** next to an agent's memory empties just that one.
+
+## Reading screenshots (Dabble slips and more)
+
+You never upload anything: tell CoDev where the folder is, like you would Gemini. Either name its full path in the chat ("look in G:\My Drive\continuumUniverse\New folder and research the props"; the Windows app and CoDev opened from start-codev.bat can read any folder by path, images only), or click **📸** next to the chat box and pick it (on a phone, pick the screenshots themselves). CoDev remembers the folder, so after that "read my screenshots" is enough. Then ask in plain words: "look at my screenshots and research these props", or "read the newest 3 screenshots". The agent's `read_screenshots` tool sends the images, newest first, to the vision model, which writes down every leg on a slip (player, stat, line, Over/Under, sport, game) or the text of any other image. Prop legs go straight on to `outlier_research_list`, the same research a typed list gets. It reads every screenshot in the folder (up to 100), counts a leg that shows up on several screenshots once, and remembers what it already read, so when you swap screenshots in and out only the new ones go to the vision model. CoDev remembers the folder after a restart; the first time you ask after one, the browser asks you to allow it again. A Google Drive for Desktop folder (like `G:\My Drive\...`) works, online-only files included: they download as they're read, and a slow one is tried again. A folder inside your project works too ("read the screenshots in the Dabble folder"), and so do screenshots attached with 📎 (up to 50 in one message): the vision model reads them 3 at a time first, so the agent can still use its tools and gets each leg once.
+
+## Big files, video, audio and pictures
+
+Attach with **📎**. Nothing to set up for documents: a long PDF (hundreds of pages), a spreadsheet (CSV, TSV, XLSX with every sheet) or a text file is read in full on your device. A short one goes to the agent whole; a long one goes as its start plus a summary, and the agent reads the rest as it needs it with `read_attachment` (pages like "40-45", or every passage that mentions something) and does exact math over every row with `query_table` (filters, sums, averages, medians, totals per team or player), so a big file costs only what the agent reads. The files stay readable for the rest of that chat, even after a restart.
+
+One free key adds the rest: get a Gemini API key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and paste it in **⚙️ Settings > 🖼️ Images, video & big files**. With it, Gemini watches whole videos with their sound (not just frames), transcribes audio files, and reads every page of scanned PDFs. Without it, videos still give up to 12 frames, and with the free Groq key their sound (and audio files up to 25 MB) is transcribed by Whisper.
+
+Ask for a picture ("make a logo for my team", "draw this as a cartoon") and the agent's `generate_image` tool makes it with Pollinations (Flux), which is free and needs no key; without a key it allows about one picture every 15 to 45 seconds, and CoDev waits once and retries when it says to slow down. Gemini (Nano Banana) and OpenRouter can be picked in Settings instead, and are needed to edit an attached picture, but both cost money: Gemini's free tier has no image models, so a free Gemini key covers video, audio and scanned PDFs, not pictures. Pictures show under the reply; tap one to see it full size and download it. To keep usage down, one task makes at most 4 pictures and a day at most the limit in Settings (20 to start), and the Settings section shows today's count.
+
+## Google apps (YouTube, Maps, Gmail, Drive)
+
+Agents can search YouTube, find places and directions, and read Gmail and Google
+Drive. YouTube and Maps work with no setup through free basic versions (web
+search and OpenStreetMap). A Google API key gives full YouTube and Google Maps
+results, and signing in with Google adds Gmail and Drive. Sending email and saving
+to Drive are off unless you turn them on, and CoDev asks before each one. The
+one-time Google Cloud setup is in [docs/google-apps.md](docs/google-apps.md); then
+use **Settings > Google apps**.
+
+## Memory, web reading and self-checks
+
+- **Memory across chats.** Say "remember that I use Windows 11" (or any fact or preference) and the agent saves it. Saved notes go with every chat, even after **New task**; see, add or delete them in ⚙️ Settings > 🧠 Memory, or turn them off there. Ask "forget that I use Windows 11" to remove one. Keys and passwords are never saved.
+- **Earlier chats.** When you mention something from another conversation ("like that bug yesterday"), the agent searches your saved chats for it.
+- **Web search and web pages.** `web_search` now also works in a browser tab on the computer running `start-codev.bat` (CoDev's server fetches DuckDuckGo, so the Python helper is optional), and the new `read_webpage` tool reads the full text of a result or any link you give, 8,000 characters at a time. Only public websites are read, never your computer or local network.
+- **Self-checks.** Agents compare each action's result with what they expected (right page, player, stat, filters still set) and fix course instead of clicking on blindly. The same tool call never runs a third time in one task, and three failed browser actions stop the tools so the agent explains what went wrong instead of spending more usage.
+- **See what it did.** While an agent works, its card shows its plan, each finished step with what it found (⚠️ for problems) and the step running now. Under every reply, **🧭 What CoDev did** lists the steps.
+- **Cheaper Claude calls.** Requests to Anthropic use prompt caching, so the instructions and tool list resent on every step of a task are billed at about a tenth of the normal input price.
+- **Spending limits.** Settings > 💰 Spending limits sets the most CoDev may spend in a day (default $1) and on one task (default $0.25); 0 turns a limit off. CoDev adds up what each Claude request, paid OpenRouter model and paid picture costs, and shows today's total there. At the daily limit it sends nothing more until tomorrow; at the task limit the agent stops using tools and answers with what it found.
+- **Short answers.** Agents lead with the answer and stop: a simple question gets a few sentences. Code, reports, deep research and step-by-step instructions can run longer.
+
+## Every request is sorted first
+
+CoDev is a multi-purpose agent. Before an agent runs, CoDev sorts the request: **code or project files**, **sports props**, **screenshots or images**, or **a general question**. A short follow-up ("now fix it") keeps the type of the message before it. Only code and file tasks get the project's files put in the prompt and the developer rules below; for anything else the Architect and Swarm agents answer like the General agent and leave the project folder alone unless you ask about a file. The Console shows how each request was sorted.
+
 ## Autonomous developer workspace
 
-Every message is treated as a task on your project. You don't type file paths or paste code:
+Every code or file task is treated as a task on your project. You don't type file paths or paste code:
 
 - **Workspace auto-injection.** Each agent request carries the project's file tree, the file open in the editor, the files agents just changed and the files that best match the task. The amount is capped per provider (about 14k characters on Groq, whose free tier has small per-minute token limits, 30k on OpenRouter, 80k on Anthropic); agents read anything else with their tools.
 - **Autonomous execution.** Agents search the project, edit files and, where a command tool exists, run the code, tests or build themselves. Tools are always on.
@@ -53,7 +168,9 @@ Every message is treated as a task on your project. You don't type file paths or
 
 **Files with keys stay hidden.** Agents can't list, search, read or write hidden files and folders (`.env`, `.git`, anything whose name starts with a dot), env files like `production.env`, key and certificate files (`.pem`, `.key`, `.pfx`, `.p12`, `.keystore`, `.jks`) or `secrets.*` and `credentials.*`, whichever folder tools they use: the sandbox, the Windows app's, the Python helper's or the page's own. Commands an agent runs directly on your computer (outside the sandbox) aren't filtered, so leave those off if that matters to you.
 
-**Run file edits and commands without asking me first** (Settings) is on by default, so agents save files and run commands with no confirm dialog. Turn it off to approve each change.
+**Run file edits and commands without asking me first** (Settings) is on by default, so agents save files and run plain test and build commands without asking. Any other command on your real computer still asks first, since a command could open apps or drive the mouse and keyboard. Turn the setting off to approve each change.
+
+When an agent needs your OK, it asks with a card in the bottom corner and waits there. The rest of CoDev keeps working meanwhile: switch chats and agents, scroll back through old messages, open Settings, and answer the card when you're ready. CoDev never pulls its window to the front or takes the keyboard to ask, and an agent's browser that needs you waits for you to open its computer (🖥️) instead of popping it open.
 
 | Where CoDev runs | Project the agents see | Edits | Run code |
 | --- | --- | --- | --- |
@@ -70,13 +187,13 @@ On a computer (the Windows app, or `server.js`), agents can work in a sandbox in
 - **A container per agent.** `run_command` runs inside the agent's own Docker container, which sees only the staging copy, mounted at `/workspace`. Containers have no network (unless allowed), no Linux capabilities, a read-only system, 2 GB of memory, 2 CPUs and at most 256 processes. They're removed when the review is done, after 15 idle minutes, and when CoDev closes. The default image is `node:22-bookworm-slim`; set `CODEV_SANDBOX_IMAGE` (for example `python:3.12-slim`) or `CODEV_SANDBOX_NETWORK=bridge` to change that.
 - **Review before anything reaches the disk.** CoDev shows the changes as a git diff, file by file, with a syntax check for each: JSON is parsed, JavaScript goes through `node --check`, the inline scripts of HTML pages too, and Python through `ast.parse`. Nothing is executed for the check. You approve or reject files; a file whose check failed can't be approved. A file is also held back if it changed in the sandbox after you reviewed it, or if you changed it on disk since the agent started.
 
-Without Docker, the staging copy and the review still work, but agents can't run commands in the sandbox; the status says whether Docker is missing or just not running. The Android app and the web version have no sandbox, since a phone or a browser tab can't run Docker.
+Without Docker, the staging copy and the review still work, and `run_command` runs on your computer instead, in the staging copy (never your real folder), with CoDev's own keys removed from its environment. There's no container around it, so CoDev asks you before each command unless it's a plain test, build or check step of the project's own tooling (`npm test`, `npm run build`, `pytest`, `dotnet build`, `cargo test`, `git status` and the like, with no `&&`, pipes or redirects) and **Run file edits and commands without asking me first** is on. Docker stays the safer choice: when it's running, commands go to the container as before. The status says whether Docker is missing or just not running. The Android app and the web version have no sandbox, since a phone or a browser tab can't run Docker.
 
 Tests: `node --test desktop/sandbox/test/sandbox.test.js` (the container tests run when Docker is running).
 
 ## Agents' web browser
 
-On the Windows app and `npm start`, agents get a headless Chromium of their own (Playwright): `browser_navigate`, `browser_click`, `browser_fill`, `browser_press_key`, `browser_get_text` (rendered text, accessibility tree or HTML), `browser_wait_for`, `browser_screenshot` and `browser_close`. Each agent has a separate temporary profile (cache, cookies, storage) that is deleted when its browser closes or after 15 idle minutes. They can test your local dev server (`http://localhost:5173` and so on) but can't open CoDev's own server or helper.
+On the Windows app and `npm start`, agents get a headless Chromium of their own (Playwright): `browser_navigate`, `browser_click`, `browser_fill`, `browser_press_key`, `browser_get_text` (rendered text, accessibility tree or HTML), `browser_wait_for`, `browser_screenshot` and `browser_close`. Each agent has a separate browser profile (cache, cookies, local storage), kept in your app-data folder (`codev-server/browser-profiles/<agent>`, or the Windows app's own data folder), never in the repo. A site you sign in to in an agent's browser, from the live view or through the agent, stays signed in next time, even after a restart. Agents never see each other's sign-ins. **🧹 Forget sign-ins** in the live view deletes the shown agent's profile. Set `CODEV_BROWSER_KEEP_SIGNINS=0` in `.env` to go back to temporary profiles that are deleted when the browser closes. An agent's browser that nobody has used or watched closes after 15 idle minutes, but its profile stays. A browser you've opened, driven or been handed in the live view is yours: it stays open whether or not an agent is using it, isn't closed to make room for another agent's, and an agent's `browser_close` leaves it open. **⏻ Close browser** in the live view closes it. They can test your local dev server (`http://localhost:5173` and so on) but can't open CoDev's own server or helper.
 
 The browser is Playwright's Chromium (`npx playwright install chromium`, which `npm run setup` does), or else the Edge or Chrome already installed. Set `CODEV_BROWSER_PATH` to use a specific one.
 
@@ -84,9 +201,13 @@ The browser is Playwright's Chromium (`npx playwright install chromium`, which `
 
 **Signing in to Google and similar sites.** Agents' browsers present themselves as the ordinary Chrome or Edge they are (no "HeadlessChrome" user agent, no `navigator.webdriver`, Chromium's `AutomationControlled` feature off), so sites are less likely to treat them as scripts. Google can still refuse a sign-in in a browser that's being driven remotely. The reliable way is to sign in yourself: open the agent's live view, take over, sign in, hand back, and ask the agent to save the session (`browser_save_session`). Later tasks load it with `browser_load_session`, and CoDev asks you each time, so no agent is signed in to your account without your say-so.
 
-**Live view.** Press **🖥️ Live view** in the header to watch an agent's browser as it works. Click, scroll or type in it to take over: the agent's browser tools wait until you press **Hand back**. The address bar and back/forward/reload buttons work while you drive. The same live picture also shows in the card of the agent that's using the browser, in the agents list: click and type on it there to take over, ✋/↩️ to take over or hand back, and ⤢ to open the full view. A side panel shows the page's console messages and errors, its network requests (address and status only, no headers or bodies) and a summary of its DOM changes. The picture is Chromium's own screencast over the DevTools protocol, so it needs no VNC, X server or Docker: the browsers run on your computer.
+**Live view.** Press **🖥️ Live view** in the header to watch an agent's browser as it works. Click, scroll or type in it to take over (on a phone, tap to click and drag to scroll): you keep control until you press **Hand back**. Meanwhile the agent isn't blocked: its reading tools read your page, and anything it does (navigating, clicking, typing) happens in a background tab of the same browser, with the same sign-ins, that starts on your page. Your tab is never touched, and handing back shows the agent's tab. The address bar and back/forward/reload buttons work while you drive. The same live picture also shows in the card of the agent that's using the browser, in the agents list: click and type on it there to take over, ✋/↩️ to take over or hand back, and ⤢ to open the full view. A side panel shows the page's console messages and errors, its network requests (address and status only, no headers or bodies) and a summary of its DOM changes. The picture is Chromium's own screencast over the DevTools protocol, so it needs no VNC, X server or Docker: the browsers run on your computer.
 
-The Android app and the web version have no browser tools: a phone or a browser tab can't start Chromium.
+**Browsing yourself.** Pick any agent in the live view's list, even one whose browser isn't open, and type in the address bar: a full address, a bare domain (`espn.com`), a shortcut (`outlier`, `espn`) or words to search for (DuckDuckGo). That opens the browser with you in control, so you can search, sign in or set up a page before the agent starts. A page that doesn't load, returns 404, or turns out to be a parked "this domain is for sale" page (GoDaddy, Sedo, Afternic…) opens with a warning instead of passing as the real site. When an agent's `browser_navigate` or an Outlier scrape lands on one (or Outlier redirects to its sign-in page), the browser isn't closed: it stays open on that page, paused and handed to you in the live view (which opens on it), and the agent is told to wait; it can't close a paused browser, and idle browsers that are paused aren't closed either. Fix the address or sign in, then press **Hand back**. Addresses on outlierbet.com (and similar look-alikes) always go to Outlier's real sign-in portal, https://app.outlier.bet/login. On CoDev's server the list also has **📈 Outlier (signed in)**: the Outlier pipeline's own browser with your saved sign-in. Browse it yourself (or press **🖥️ Browse** in the Outlier view, which opens it at Outlier's sign-in portal, https://app.outlier.bet/login), then **📄 Read this page** adds the props on the open page to the analysis without taking the browser from you; **Scrape & analyze** reads your configured pages in a background tab while you browse. Agents can run the same extraction on their own browser with `outlier_extract_page`, never on the signed-in one.
+
+**On the Android app.** Agents get a browser on the phone too, with the same tools, live view and saved logins. It is the phone's own browser engine (Android WebView) running inside CoDev, out of sight while you chat, so nothing runs on a computer or in the cloud. Tap the 🖥️ computer icon to watch an agent's browser, or to open one yourself on a search page with no task running. **✋ Take over** puts the real browser over CoDev, full screen: tap, scroll and type with your own keyboard (and your password manager), then press **↩ Hand back** at the top, or the phone's back button on the first page. While you have it, the agent keeps working in a background tab, as on the computer. Sites you sign in to stay signed in between tasks and restarts. On a phone the agents share one set of sign-ins (sign in once, every agent can use it), kept apart from CoDev's own storage where the phone's WebView supports separate profiles (Android System WebView 128 or newer). **🧹 Forget sign-ins** signs every agent's browser out. Saved logins are encrypted with a key in the phone's secure key store, and the app types the password into the login's own site itself. `browser_save_session` and `browser_load_session` aren't on the phone, because sign-ins already stay. Screenshots show the visible part of the page and aren't saved to a folder. Some sites, Google's own sign-in among them, refuse to sign in inside an app's built-in browser; for Gmail and Drive use **Settings > Google apps**, which signs in through the phone's normal browser.
+
+A browser tab with no CoDev server behind it has no browser tools: a web page can't start a browser of its own.
 
 ## Sandbox and change review
 
@@ -94,7 +215,7 @@ When CoDev runs from `npm start` (or the Windows app) with a project folder, the
 
 - After a task, a review screen lists every changed file with its diff and syntax check. Files that fail the check can't be approved; untick any file you don't want.
 - **Approve & save** writes the ticked files, **Reject all** throws the changes away, and **Keep for later** leaves them waiting under **📝 Review changes** in the header.
-- Without Docker, agents still edit the staging copy, but can't run code. On Android and on the web the mode is greyed out and agents edit as before.
+- Without Docker, agents still edit the staging copy and run code on your computer in that copy, asking you first for anything but a plain test or build step. On Android and on the web the mode is greyed out and agents edit as before.
 
 The page code is `mobile/www/agent-ui/` (`agent-client.js` talks to the `/agent/*` routes and `/agent-tools`, `diff-review.js` is the review screen).
 

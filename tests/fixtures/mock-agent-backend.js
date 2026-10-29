@@ -54,7 +54,9 @@ function syntaxCheck(rel, text) {
     }
 }
 
-function createMockBackend({ workspace, docker = false, hubTools = [] } = {}) {
+// agentTools: more /agent-tools tools, name -> (box, args, agentId) => text (e.g. an Outlier stand-in).
+// google: optional handler for POST /google (a desktop/google-connect.js handle()).
+function createMockBackend({ workspace, docker = false, hubTools = [], agentTools = {}, google = null } = {}) {
     const sandboxes = new Map(); // id -> { id, agents:Set, files: Map(rel -> text|null), base: Map }
     const changesets = new Map();
     const log = [];
@@ -138,7 +140,8 @@ function createMockBackend({ workspace, docker = false, hubTools = [] } = {}) {
         },
         delete_file: (box, { path: rel }) => { box.files.set(safeRel(rel), null); return `Deleted ${rel}.`; },
         sandbox_diff: (box) => stage(box).diff || 'No changes staged yet.',
-        submit_changes: (box, { summary }, agentId) => { box.submission = { agent: agentId, summary: String(summary || '') }; return 'Submitted for review.'; }
+        submit_changes: (box, { summary }, agentId) => { box.submission = { agent: agentId, summary: String(summary || '') }; return 'Submitted for review.'; },
+        ...agentTools
     };
 
     function handleMcp(msg) {
@@ -226,6 +229,7 @@ function createMockBackend({ workspace, docker = false, hubTools = [] } = {}) {
             if (url.pathname === '/anthropic/status') return send(200, { available: false });
             if (url.pathname === '/agent-tools') return send(200, handleMcp(body));
             if (url.pathname === '/mcp-hub') return send(200, handleHub(body));
+            if (url.pathname === '/google' && google) return Promise.resolve(google(body)).then(reply => send(200, reply), err => send(500, { error: err.message }));
             if (url.pathname.startsWith('/agent/')) {
                 try {
                     const [status, payload] = handleRequest(req.method, url.pathname, Object.fromEntries(url.searchParams), body);

@@ -1,9 +1,11 @@
-// Loads the agent services (sandbox containers + diff review, headless browser)
+// Loads the agent services (sandbox containers + diff review, headless browser,
+// the Outlier pipeline)
 // and routes the page's tool calls to them. server.js serves the result at
 // POST /agent-tools as MCP JSON-RPC (initialize, tools/list, tools/call), the
 // same messages the Windows app's built-in tools take over IPC.
 //
-// A service module exports createService(config, { log }) returning
+// A service module exports createService(config, { log, services }) returning
+// (services: the ones started before it, by name)
 //   { name, tools: [{ name, description, inputSchema }] (or async listTools()),
 //     callTool(name, args, ctx) -> MCP CallToolResult,
 //     handleRequest?(method, pathname, query, body) -> { status, body } | null,
@@ -20,7 +22,8 @@ const path = require('path');
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVICES = [
     { name: 'sandbox', module: path.join(__dirname, 'desktop', 'sandbox') },
-    { name: 'browser', module: path.join(__dirname, 'agents', 'browser') }
+    { name: 'browser', module: path.join(__dirname, 'agents', 'browser') },
+    { name: 'outlier', module: path.join(__dirname, 'agents', 'outlier') }
 ];
 
 function isMissingModule(err, modulePath) {
@@ -39,7 +42,9 @@ async function loadServices(config, { log = console.log, specs = SERVICES } = {}
             continue;
         }
         try {
-            const service = await mod.createService(config, { log: line => log(`[${spec.name}] ${line}`) });
+            // services: the ones already started, by name (outlier uses browser's).
+            const started = Object.fromEntries(services.map(s => [s.name, s]));
+            const service = await mod.createService(config, { log: line => log(`[${spec.name}] ${line}`), services: started });
             services.push(service);
         } catch (err) {
             skipped.push({ name: spec.name, detail: `failed to start: ${err.message}` });
