@@ -6,9 +6,12 @@
 //  - Windows app: the main process (desktop/google-connect.js) over
 //    window.codevDesktop.google(req).
 //  - A browser on the computer running server.js: the same module at POST /google.
-//  - Android (and a page with no server): here in the page. The phone can't do
-//    Google's sign-in itself, so the user signs in on the computer and copies a
-//    "phone link code" across; the page then refreshes tokens on its own.
+//  - Android (and a page with no server): here in the page. In the Android app the
+//    user signs in on the phone itself: Google's sign-in opens in the phone's browser
+//    and comes back to a one-time listener the app runs on 127.0.0.1 (the same flow
+//    for installed apps as the computer's). Anywhere, the user can instead sign in on
+//    the computer and copy a "phone link code" across. The page then refreshes tokens
+//    on its own.
 // Every transport takes the same requests: status, signin, signout, link, import
 // (phone only) and request ({ method, url, headers, body, auth: "user" | "key", apiKey }).
 // YouTube and Maps can use an API key alone; Gmail and Drive need the sign-in.
@@ -28,6 +31,9 @@
     const ROUTES = "https://routes.googleapis.com/directions/v2:computeRoutes";
     const TOKEN_URL = "https://oauth2.googleapis.com/token";
     const REVOKE_URL = "https://oauth2.googleapis.com/revoke";
+    const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+    const USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
+    const SIGNIN_TIMEOUT_MS = 5 * 60 * 1000;
     const GUIDE_URL = "https://github.com/phillbennett021423/codev_cloud/blob/main/docs/google-apps.md";
     const API_HOSTS = ["www.googleapis.com", "gmail.googleapis.com", "youtube.googleapis.com", "places.googleapis.com", "routes.googleapis.com", "maps.googleapis.com"];
     const SCOPE = {
@@ -68,11 +74,14 @@
         }, "computer");
     }
 
-    // On the phone the page keeps the account itself (copied from the computer) and
-    // calls Google directly: natively through CapacitorHttp when there is one, since
-    // not every Google API allows a web page to call it.
-    function phoneTransport({ http, storage, fetchImpl }) {
+    // On the phone the page keeps the account itself (signed in on the phone, or copied
+    // from the computer) and calls Google directly: natively through CapacitorHttp when
+    // there is one, since not every Google API allows a web page to call it.
+    // loopback: the app's CodevBrowser plugin (loopbackStart, loopbackStop, openExternal,
+    // and its "loopback" event), for signing in on the phone; without it, only the link code.
+    function phoneTransport({ http, storage, fetchImpl, loopback = null, now = () => Date.now() }) {
         let accessToken = null;
+        let pending = null;   // the sign-in in progress: { port, state, verifier, clientId, clientSecret, scopes, timer }
         const load = () => { try { return JSON.parse(storage.getItem(STORE.phoneAccount) || "null"); } catch (err) { return null; } };
         const save = account => {
             accessToken = null;
@@ -114,14 +123,77 @@
             return accessToken.token;
         }
 
+        const b64url = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+        const randomText = size => b64url(crypto.getRandomValues(new Uint8Array(size)));
+
+        function stopPending() {
+            if (!pending) return;
+            clearTimeout(pending.timer);
+            pending = null;
+            loopback.loopbackStop().catch(() => {});
+        }
+
+        // Google sent the browser back to the app's listener: trade the code for the account.
+        async function finishSignIn(event) {
+            const sign = pending;
+            if (!sign || Number(event && event.port) !== sign.port) return;
+            const query = new URLSearchParams(String(event.query || ""));
+            if (query.get("state") !== sign.state) return;
+            stopPending();
+            if (query.get("error")) { sign.result = { error: `Google sign-in was cancelled (${query.get("error")}).` }; return; }
+            try {
+                const reply = await send({ method: "POST", url: TOKEN_URL, form: { code: query.get("code") || "", client_id: sign.clientId, client_secret: sign.clientSecret,
+                    redirect_uri: `http://127.0.0.1:${sign.port}`, grant_type: "authorization_code", code_verifier: sign.verifier } });
+                const tokens = reply.body || {};
+                if (reply.status !== 200 || !tokens.refresh_token) throw new Error(tokens.error_description || tokens.error || (reply.status === 200 ? "Google sent no refresh token. Remove CoDev at myaccount.google.com/permissions and sign in again." : `HTTP ${reply.status}`));
+                let email = null;
+                try {
+                    const who = await send({ method: "GET", url: USERINFO_URL, headers: { Authorization: `Bearer ${tokens.access_token}` } });
+                    email = (who.body && who.body.email) || null;
+                } catch (err) { /* the account still works without the address */ }
+                save({ clientId: sign.clientId, clientSecret: sign.clientSecret, refreshToken: tokens.refresh_token, scopes: String(tokens.scope || sign.scopes.join(" ")).split(" "), email, onPhone: true });
+                accessToken = { token: tokens.access_token, expiresAt: now() + (Number(tokens.expires_in) || 3600) * 1000 };
+                lastSignIn = { ok: true, email };
+            } catch (err) {
+                lastSignIn = { error: `Sign-in didn't finish: ${err.message || err}` };
+            }
+        }
+        let lastSignIn = null;
+        let listening = false;
+
+        async function signIn({ clientId, clientSecret, allowWrite }) {
+            clientId = String(clientId || "").trim();
+            clientSecret = String(clientSecret || "").trim();
+            if (!clientId) return { error: "Add your Google OAuth client ID first (the setup guide shows how to make one), or link this phone with a code from your computer." };
+            if (!listening) { listening = true; await loopback.addListener("loopback", event => finishSignIn(event)); }
+            stopPending();
+            lastSignIn = null;
+            const verifier = randomText(48);
+            const state = randomText(24);
+            const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+            const scopes = ["openid", "email", SCOPE.youtube, SCOPE.gmailRead, SCOPE.driveRead, ...(allowWrite ? [SCOPE.gmailSend, SCOPE.driveFile] : [])];
+            const { port } = await loopback.loopbackStart();
+            pending = { port: Number(port), state, verifier, clientId, clientSecret, scopes, timer: setTimeout(stopPending, SIGNIN_TIMEOUT_MS) };
+            const url = `${AUTH_URL}?${new URLSearchParams({
+                client_id: clientId, redirect_uri: `http://127.0.0.1:${port}`, response_type: "code", scope: scopes.join(" "),
+                code_challenge: challenge, code_challenge_method: "S256", state, access_type: "offline", prompt: "consent"
+            })}`;
+            await loopback.openExternal({ url });
+            return { url, opened: true };
+        }
+
         return {
             kind: "phone",
+            canSignIn: Boolean(loopback),
             async handle(req) {
                 try {
                     const account = load();
                     switch (req.op) {
-                        case "status": return { signedIn: Boolean(account && account.refreshToken), email: account && account.email || null, scopes: account && account.scopes || [], apiKey: false, clientId: Boolean(account), phone: true };
-                        case "signin": return { error: "Google's sign-in doesn't run inside the phone app. Sign in on your computer, press \"Copy phone link code\" there, and paste it here." };
+                        case "status": return { signedIn: Boolean(account && account.refreshToken), email: account && account.email || null, scopes: account && account.scopes || [], apiKey: false,
+                            clientId: Boolean(account), phone: true, onPhone: Boolean(account && account.onPhone), signingIn: Boolean(pending), signInError: (lastSignIn && lastSignIn.error) || null };
+                        case "signin":
+                            if (!loopback) return { error: "Google's sign-in doesn't run on this page. Sign in on your computer, press \"Copy phone link code\" there, and paste it here." };
+                            return await signIn(req);
                         case "import": {
                             let parsed;
                             try { parsed = JSON.parse(decodeURIComponent(escape(atob(String(req.code || "").trim())))); } catch (err) { return { error: "That isn't a CoDev phone link code. Copy it again from Settings > Google apps on your computer." }; }
@@ -130,7 +202,12 @@
                             return { ok: true, email: parsed.email || null };
                         }
                         case "signout":
-                            // The computer shares this sign-in, so the phone only forgets it.
+                            stopPending();
+                            // A sign-in made on the phone is removed from the Google account too; one
+                            // linked from the computer is shared with it, so the phone only forgets it.
+                            if (account && account.onPhone && account.refreshToken) {
+                                await send({ method: "POST", url: REVOKE_URL, form: { token: account.refreshToken } }).catch(() => {});
+                            }
                             save(null);
                             return { ok: true };
                         case "link": return { error: "Copy the phone link code from the computer, not the phone." };
@@ -159,7 +236,8 @@
         const cap = win.Capacitor;
         const native = cap && cap.isNativePlatform && cap.isNativePlatform();
         if (!native && win.location && win.location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(win.location.hostname)) return serverTransport(win.fetch.bind(win));
-        return phoneTransport({ http: native ? (cap.Plugins && cap.Plugins.CapacitorHttp) || null : null, storage: win.localStorage, fetchImpl: win.fetch.bind(win) });
+        return phoneTransport({ http: native ? (cap.Plugins && cap.Plugins.CapacitorHttp) || null : null, storage: win.localStorage, fetchImpl: win.fetch.bind(win),
+            loopback: native ? (cap.Plugins && cap.Plugins.CodevBrowser) || null : null });
     }
 
     // ---- Small helpers -------------------------------------------------------
@@ -732,6 +810,7 @@
     // they change. apps: from createGoogleApps; el: the <details> element.
     function mountSettings(el, { transport, apps, storage, openWindow }) {
         const phone = transport.kind === "phone";
+        const phoneSignIn = phone && transport.canSignIn;
         const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[c]);
         el.innerHTML = `
             <summary>🔗 Google apps (YouTube, Maps, Gmail, Drive)</summary>
@@ -741,7 +820,24 @@
                 <label>Google API key, for YouTube and Maps (starts with AIza)</label>
                 <input type="text" data-g="apiKey" placeholder="AIza..." autocomplete="off" style="font-family: monospace;">
             </div>
-            ${phone ? `
+            ${phoneSignIn ? `
+            <div class="form-group">
+                <label>OAuth client ID, for Gmail and Drive ("Desktop app" type)</label>
+                <input type="text" data-g="clientId" placeholder="1234-abc.apps.googleusercontent.com" autocomplete="off" style="font-family: monospace;">
+                <label>OAuth client secret</label>
+                <input type="text" data-g="clientSecret" placeholder="GOCSPX-..." autocomplete="off" style="font-family: monospace;">
+            </div>
+            <label class="checkbox-group"><input type="checkbox" data-g="allowWrite"> Let agents send email and save new files to Drive (CoDev asks me every time). Sign in again after changing this.</label>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button class="btn-secondary" type="button" data-g="signin">🔐 Sign in with Google</button>
+                <button class="btn-secondary" type="button" data-g="signout">Sign out</button>
+            </div>
+            <details>
+                <summary style="font-size: 0.8rem;">Or link it from your computer</summary>
+                <label style="font-size: 0.8rem;">On the computer, press "Copy phone link code" and paste it here.</label>
+                <textarea data-g="code" spellcheck="false" placeholder="Phone link code" style="font-family: monospace; min-height: 60px;"></textarea>
+                <button class="btn-secondary" type="button" data-g="import">🔗 Link this phone</button>
+            </details>` : phone ? `
             <div class="form-group">
                 <label>Gmail and Drive: sign in on your computer, press "Copy phone link code" there, and paste it here.</label>
                 <textarea data-g="code" spellcheck="false" placeholder="Phone link code" style="font-family: monospace; min-height: 60px;"></textarea>
@@ -786,7 +882,8 @@
             const report = await apps.status(true);
             const lines = [];
             if (report.error) lines.push(`⚠️ ${report.error}`);
-            else lines.push(report.signedIn ? `✅ Signed in${report.email ? ` as ${report.email}` : ""}${phone ? " (linked from your computer)" : ""}` : report.signingIn ? "⏳ Waiting for you to finish signing in to Google in your browser…" : "Gmail and Drive: not signed in");
+            else lines.push(report.signedIn ? `✅ Signed in${report.email ? ` as ${report.email}` : ""}${phone && !report.onPhone ? " (linked from your computer)" : ""}` : report.signingIn ? "⏳ Waiting for you to finish signing in to Google in your browser…" : "Gmail and Drive: not signed in");
+            if (report.signInError && !report.signedIn) lines.push(`⚠️ ${report.signInError}`);
             lines.push((storage.getItem(STORE.apiKey) || report.apiKey) ? "✅ API key set: YouTube and Maps are on" : "YouTube and Maps: add an API key");
             if (report.signedIn) {
                 const s = report.scopes || [];
@@ -819,7 +916,7 @@
         });
         $("signout").addEventListener("click", async () => {
             const reply = await transport.handle({ op: "signout" });
-            note(reply.error || (phone ? "This phone is unlinked." : "Signed out, and CoDev's access was removed from your Google account."));
+            note(reply.error || (phone && !phoneSignIn ? "This phone is unlinked." : "Signed out."));
             refresh();
         });
         if ($("link")) $("link").addEventListener("click", async () => {

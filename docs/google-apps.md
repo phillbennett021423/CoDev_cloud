@@ -61,7 +61,15 @@ don't want that, and CoDev keeps using OpenStreetMap.
 
 ## On your phone
 
-The Android app can't run Google's sign-in itself. Instead:
+The Android app signs in on the phone itself, with the same OAuth client:
+
+1. In **Settings > Google apps** in the phone app, paste the API key, the OAuth
+   client ID and the client secret (the "Desktop app" client from above).
+2. Press **Sign in with Google**. Google's sign-in opens in your phone's browser.
+   Choose your account and allow access. The page then says "Done. Go back to
+   CoDev." Switch back to the app: it shows "Signed in as ...".
+
+Or link the phone to the sign-in on your computer:
 
 1. Sign in on your computer as above.
 2. In **Settings > Google apps** on the computer, press **Copy phone link code**.
