@@ -20,6 +20,7 @@ const { createCapture } = require('./capture');
 const { projectLeg, regressionFlag, gameContext, simulateTicket } = require('./forecast');
 const { navigate, setFilters, sameName, onlyGame, openPlayer, readDetails, readCardTabs, readSubTabs, readBars, hitsAtLine, readAltLines, readWithout, cardNumbers, opportunityTrend, opportunityLine, legSummary, keepLegs, statWords, sameMarket, onTools, normWords, periodOf, sportPropsPath, scrollStep, scrollPlace, settleAfterScroll, placeOf, searchPlayer, clearSearch, markSearchBox, cardFor, cardStat, closeCard } = require('./navigate');
 const { OUTLIER_PRIMER, OUTLIER_GUIDE } = require('./guide');
+const { hitRateLegs, buildTickets, hitRatesText } = require('./hit-rates');
 const { checkPage, advice, fixKnownAddress, resolveAddress } = require('../../desktop/browser/page-check');
 
 // The signed-in browser's id in the shared browser service. Agents' ids never start with @.
@@ -152,7 +153,22 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // profile can't be open twice. signedIn: what the last visit found (null = unknown).
     // propsUrl: the props board's address once reached, where the next visit starts (Outlier
     // itself reopens on +EV). progress: what a long read is on, for the Outlier tab.
-    const state = { busy: null, signedIn: null, lastError: null, lastRun: null, signInContext: null, propsUrl: null, progress: null };
+    const state = { busy: null, signedIn: null, lastError: null, lastRun: null, signInContext: null, propsUrl: null, progress: null, cooldownUntil: 0, analysisError: null };
+    // After Outlier says 429 (too many requests), no tool opens Outlier again for this
+    // long: agents get the reads already made instead of looping on a limited site.
+    const COOLDOWN_MS = 10 * 60 * 1000;
+    const coolDown = () => {
+        const ms = Number.isFinite(config().cooldownMs) ? config().cooldownMs : COOLDOWN_MS;
+        if (ms > 0) state.cooldownUntil = Math.max(state.cooldownUntil, Date.now() + ms);
+    };
+    // Throws while Outlier is cooling down, saying until when and what to do instead.
+    const checkCooldown = () => {
+        if (Date.now() >= state.cooldownUntil) return;
+        const until = new Date(state.cooldownUntil).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        const err = new Error(`Outlier rate-limited CoDev (429), so CoDev won't open Outlier again until ${until}. Don't call Outlier tools again before then: answer the user now with the reads already made (outlier_find_hit_rates with fresh false reuses the last board read).`);
+        err.cooldown = true;
+        throw err;
+    };
     // Kept on disk too, so a restart (a new install) doesn't start on +EV again.
     const rememberProps = url => {
         state.propsUrl = url;
@@ -327,8 +343,12 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         const browser = await openForVisit(cfg, { here: cfg.pages.some(p => p.here) });
         const pages = [];
         const saved = [];
+        // Outlier's own 429s during the visit: two or more start the cooldown.
+        let limited429 = 0;
+        const count429 = response => { if (response.status() === 429 && !thirdParty(response.url())) limited429++; };
         try {
             const page = browser.page;
+            page.on('response', count429);
             for (const target of cfg.pages) {
                 const api = [];
                 const onResponse = async response => {
@@ -420,6 +440,8 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 }
             }
         } finally {
+            browser.page.off('response', count429);
+            if (limited429 >= 2) coolDown();
             await browser.done();
         }
         return { pages, saved };
@@ -833,6 +855,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
 
     // keep: legs the user listed ({ player, stat }): only those props are audited.
     async function scrape({ pages: only = null, keep = null, onPage = null } = {}) {
+        checkCooldown();
         claim('scrape');
         try {
             const { pages } = await visitPages({ pages: only, onPage });
@@ -854,8 +877,18 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                     state.market = { ...(state.market || {}), error: err.message };
                 }
             }
-            const result = await analyze();
-            recordPrices(result);
+            // The board read stands even when the Python audit can't run (Python
+            // missing, a script error): the hit-rate finder and the list research work
+            // from the read itself.
+            let result = null;
+            try {
+                result = await analyze();
+                recordPrices(result);
+                state.analysisError = null;
+            } catch (err) {
+                state.analysisError = err.message;
+                log(`[Outlier] The audit didn't run: ${err.message}`);
+            }
             state.lastRun = new Date().toISOString();
             log(`[Outlier] Read ${parsed.props.length} prop(s) from ${pages.length} page(s); ${result ? result.counts.slips : 0} entr(ies) recommended.`);
             return { ok: true, pages: parsed.pages, settled: settledNow, navigated: nav ? nav.nav.steps : null, extra: nav ? nav.extra : null };
@@ -872,6 +905,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // read as text for an agent. Reaches it like the scan (tabs, game card, then
     // the player's name) and clicks nothing else.
     async function research({ url = null, section, sport, market, game, player } = {}) {
+        checkCooldown();
         claim('research');
         try {
             const cfg = config();
@@ -1134,6 +1168,8 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
                 if (searched) await clearSearch(page);
             }
             const unread = order.filter(({ leg, i }) => !results.has(i) && !cards.has(cardKey(leg))).length;
+            // Cut short by 429s (it stopped opening cards): no more Outlier for a while.
+            if (limited >= MAX_429 || (limited > 0 && order.length - opened > 0)) coolDown();
             return { results, limited: limited > 0, host, unread, skipped: Math.max(0, order.length - opened - [...results.values()].filter(r => r.cached).length) };
         } finally {
             page.off('response', on429);
@@ -1143,7 +1179,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     // Every leg on a list ({ player, stat, line, side }) in one visit: the game's
     // board is reached once, read and audited for just these legs, and the players'
     // cards are opened on that same page.
-    async function researchList({ url = null, sport, game, day, legs = [], maxCards = 12, here = false, setFilters: wantFilters = false, fresh: wantFresh = false } = {}) {
+    async function researchList({ url = null, sport, game, day, legs = [], maxCards = 12, here = false, setFilters: wantFilters = true, fresh: wantFresh = false } = {}) {
         const nav = { ...Object.fromEntries(Object.entries({ sport, game, day }).filter(([, v]) => v)), player: legs[0] && legs[0].player };
         // Asked again after a crash or a restart: the board read a few minutes ago and
         // the cards already read are used as they are, and Outlier isn't opened again
@@ -1183,7 +1219,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         };
         let boardRead = null;
         const run = await scrape({
-            pages: [{ kind: 'props', url: url || boardStart(sport), nav, here, filters: wantFilters ? { altLines: true, widenOdds: true } : null, scrolls: 400, until, progress }], keep: legs,
+            pages: [{ kind: 'props', url: url || boardStart(sport), nav, here, filters: wantFilters ? listFilters(legs) : null, scrolls: 400, until, progress }], keep: legs,
             onPage: async (page, { collected }) => {
                 boardRead = { screens: collected.screens || 1, rows: collected.cards.length + collected.tables.length + collected.configured.length, seconds: Math.round((collected.readMs || 0) / 1000), legsSeen: found.size };
                 const boardProps = parseCollected([{ kind: 'props', url: page.url(), collected }]).props;
@@ -1209,9 +1245,43 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
         return { steps: run.navigated || [], board: boardRead, research: research || { results: new Map(), limited: false, skipped: 0 } };
     }
 
+    // The filters for a list of legs: alt lines on, the whole odds range, every leg's
+    // player ticked (so the board holds just their props instead of being scrolled
+    // end to end), and the prop type when every leg is the same stat.
+    function listFilters(legs) {
+        const stats = [...new Set(legs.map(l => statWords(l.stat)[0]).filter(Boolean))];
+        return { altLines: true, widenOdds: true, players: [...new Set(legs.map(l => l.player))],
+            props: stats.length === 1 && legs.every(l => l.stat && !periodOf(l.stat)) ? [legs[0].stat, ...statWords(legs[0].stat)] : null };
+    }
+
+    // The best legs on Outlier by its own hit rates. Sets Outlier's filters first
+    // (Hit Rate window and From %, Over or Under, the game, the prop type), so the
+    // board holds only those legs and is read in a few screens, then ranks them and
+    // builds the tickets (hit-rates.js). Within REUSE_MS of the last finder read of
+    // the same board (or while Outlier is rate-limiting), that read is reused.
+    const REUSE_MS = 10 * 60 * 1000;
+    let lastFind = null;
+    async function findHitRates({ url = null, sport, day, game, market, window = 'l5', min = 60, side = 'both', fresh = false } = {}) {
+        const key = JSON.stringify([url, sport, day, game, market, window, min, side].map(v => String(v || '').toLowerCase()));
+        const saved = readJson(files.scrape, null);
+        const reusable = lastFind && lastFind.key === key && saved && saved.scrapedAt === lastFind.scrapedAt;
+        const cooling = Date.now() < state.cooldownUntil;
+        if (reusable && (cooling || (!fresh && Date.now() - lastFind.at < REUSE_MS))) {
+            return { steps: [...lastFind.steps, `the same read from ${new Date(lastFind.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} (reused${cooling ? ': Outlier is rate-limiting' : ''})`], props: saved.props || [], injuries: saved.injuries || [] };
+        }
+        const nav = Object.fromEntries(Object.entries({ sport, day, game, market }).filter(([, v]) => v && String(v).trim()).map(([k, v]) => [k, String(v).trim()]));
+        const filters = { altLines: false, widenOdds: false, hitRate: { window, from: min }, side: side === 'over' || side === 'under' ? side : null };
+        // A board filtered to the legs is short; this is a ceiling, not a target.
+        const run = await scrape({ pages: [{ kind: 'props', url: url || boardStart(sport), nav, filters, scrolls: 80 }] });
+        const read = readJson(files.scrape, {});
+        lastFind = { key, at: Date.now(), scrapedAt: read.scrapedAt, steps: run.navigated || [] };
+        return { steps: run.navigated || [], props: read.props || [], injuries: read.injuries || [] };
+    }
+
     // One of Outlier's sections (Insights, Trends, Popular, Games, Injuries...) for
     // a sport, read as text: the tab by its name, the sport, then the page to its end.
     async function readSection({ section, sport, day } = {}) {
+        checkCooldown();
         claim('research');
         try {
             const cfg = config();
@@ -1386,7 +1456,7 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
     }
 
     watchImports();
-    return { userBoard, signIn, scrape, research, researchList, readSection, boardStart, cardsFor, readOpenPage, setCapture, capture, importBoard, importFile, dumpBoard, watchImports, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
+    return { userBoard, signIn, scrape, research, researchList, findHitRates, readSection, boardStart, cardsFor, readOpenPage, setCapture, capture, importBoard, importFile, dumpBoard, watchImports, session: SESSION, snapshot, analyze, recordPrices, setStrategy, refreshMarket, refreshMarketRoute: marketRefreshRoute, setMarketConfig, readPublicBoards, track, untrack, recordOutcomes, learn, resetWeights, forgetSignIn, setConfig,
         state: snapshotState, progress: progressState, status, close, files, settleFromResults };
 }
 
@@ -1671,10 +1741,28 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                 game: { type: 'string', description: 'The game by teams and/or start time, e.g. "Wizards vs Hornets", "7pm". Only when the user named one: leave it out for a list that may span games, and the sport\'s whole board is read.' },
                 day: { type: 'string', description: '"today", "tomorrow" or a weekday, when the games aren\'t today (optional).' },
                 url: { type: 'string', description: 'An app.outlier.bet page to start from (optional).' },
-                here: { type: 'boolean', description: 'Read the user\'s own Outlier page as they set it (filters, game, search): no reload, no tab or filter clicks. CoDev already does this on its own when the shown tab is an Outlier props page with filters set; pass true when the user says they set the page up, false only when the user asks for a fresh board.' },
+                here: { type: 'boolean', description: 'Read the user\'s own Outlier page as they set it (filters, game, search): no reload, no tab or filter clicks. CoDev already does this on its own when the shown tab is an Outlier props page with the user\'s filters in its address; pass true when the user says they set the page up, false when the user asks for a fresh board.' },
                 fresh: { type: 'boolean', description: 'true when the user asks for fresh reads (or the last cards looked wrong): every card is opened again instead of reusing today\'s reads.' },
-                set_filters: { type: 'boolean', description: 'Only when the user asks CoDev to set Outlier\'s filters itself: turns on alternative lines, widens the odds range and ticks the game, in a tab of CoDev\'s own. Off by default: the user\'s filters are never changed.' }
+                set_filters: { type: 'boolean', description: 'On by default (unless the user\'s own page already has their filters): in a tab of CoDev\'s own, CoDev sets Outlier\'s filters so the board shows just these legs (each leg\'s player ticked, the game ticked, the prop type when every leg is one stat, alternative lines on, the whole odds range) instead of scrolling the whole board. Pass false only when the user asks CoDev not to touch the filters.' }
             }, required: ['legs'], additionalProperties: false }
+        }, {
+            name: 'outlier_find_hit_rates',
+            annotations: { readOnlyHint: true },
+            description: 'USE THIS whenever the user asks for strong hit rates, "60%+ in the last 5", legs that keep hitting, or a ticket built from Outlier\'s hit rates (overs or unders). In the user\'s signed-in Outlier browser it opens the sport\'s Props board and SETS OUTLIER\'S OWN FILTERS (Hit Rate window, e.g. L5, From 60%; Over/Under; the game; the stat), so Outlier itself lists only the legs that qualify and nothing is scrolled end to end. Then it ranks every leg at or above the minimum (both Overs and Unders; an Under\'s rate from the Over row when Outlier lists only the Over), drops players with injury news, and builds 4-leg regular-line tickets (pays 10x) from legs priced near -119 (anything from -100 to -140 counts, e.g. -120 at another book), one leg per game and per player. Call it ONCE per request and give the user its list and ticket; a second call within 10 minutes reuses the same read, and while Outlier is rate-limiting it answers from the last read. Needs no list of legs. ' + OUTLIER_PRIMER,
+            inputSchema: { type: 'object', properties: {
+                sport: { type: 'string', description: 'The sport tab, e.g. "NBA", "NFL", "NHL".' },
+                day: { type: 'string', description: '"today", "tomorrow" or a weekday (optional).' },
+                game: { type: 'string', description: 'Only when the user named one game, e.g. "Knicks vs Celtics" (optional; leave out for every game).' },
+                market: { type: 'string', description: 'A stat to filter to, e.g. "Points" (optional; leave out for every stat).' },
+                window: { type: 'string', enum: ['l5', 'l10', 'l20', 'h2h', 'season'], description: 'The hit-rate window (default l5, the last 5 games).' },
+                min_hit_rate: { type: 'number', description: 'The minimum hit rate in percent (default 60).' },
+                side: { type: 'string', enum: ['both', 'over', 'under'], description: 'Overs, Unders or both (default both).' },
+                legs: { type: 'number', description: 'Legs per ticket (default 4).' },
+                odds_low: { type: 'number', description: 'The heaviest price a ticket leg may have (default -140).' },
+                odds_high: { type: 'number', description: 'The lightest price a ticket leg may have (default -100).' },
+                fresh: { type: 'boolean', description: 'true only when the user asks for a fresh read within 10 minutes of the last one.' },
+                url: { type: 'string', description: 'An app.outlier.bet page to start from (optional).' }
+            }, additionalProperties: false }
         }, {
             name: 'outlier_simulate_ticket',
             annotations: { readOnlyHint: true },
@@ -1755,6 +1843,29 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     return { content: [{ type: 'text', text: err.message }], isError: true };
                 }
             }
+            if (name === 'outlier_find_hit_rates') {
+                try {
+                    let url = null;
+                    if (args.url) {
+                        const parsed = new URL(resolveAddress(String(args.url)).url);
+                        if (!/(^|\.)outlier\.bet$/i.test(parsed.hostname)) throw new Error(`outlier_find_hit_rates only opens Outlier (app.outlier.bet), not ${parsed.hostname}.`);
+                        url = parsed.href;
+                    }
+                    const window = ['l5', 'l10', 'l20', 'h2h', 'season'].includes(args.window) ? args.window : 'l5';
+                    const min = Number.isFinite(Number(args.min_hit_rate)) && Number(args.min_hit_rate) > 0 ? Number(args.min_hit_rate) : 60;
+                    const side = ['over', 'under'].includes(args.side) ? args.side : 'both';
+                    const size = Math.max(2, Math.min(8, Math.round(Number(args.legs) || 4)));
+                    const band = [Number.isFinite(Number(args.odds_low)) ? Number(args.odds_low) : -140, Number.isFinite(Number(args.odds_high)) ? Number(args.odds_high) : -100].sort((a, b) => a - b);
+                    const read = await outlier.findHitRates({ url, sport: args.sport, day: args.day, game: args.game, market: args.market, window, min, side, fresh: args.fresh === true });
+                    // Outlier's From % already narrowed the board; the rows are checked again
+                    // here, so a filter that didn't take still gives the right list.
+                    const found = hitRateLegs(read.props, { window, min: min / 100, side, injuries: read.injuries });
+                    const tickets = buildTickets(found.legs, { size, band });
+                    return { content: [{ type: 'text', text: hitRatesText(found, { steps: read.steps, tickets, band, size, payout: size === 4 ? 10 : null }) }] };
+                } catch (err) {
+                    return { content: [{ type: 'text', text: err.message }], isError: true };
+                }
+            }
             if (name === 'outlier_simulate_ticket') {
                 const legs = (Array.isArray(args.legs) ? args.legs : []).filter(l => l && l.player).slice(0, 8);
                 if (legs.length < 2) return { content: [{ type: 'text', text: 'Give at least 2 legs.' }], isError: true };
@@ -1775,7 +1886,12 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
                     const nav = Object.fromEntries(Object.entries({ sport: args.sport, game: args.game, day }).filter(([, v]) => v && String(v).trim()).map(([k, v]) => [k, String(v).trim()]));
                     // One visit: the board read and audited for just these legs, then
                     // the players' cards on that same page.
-                    const { steps, research, board: boardRead } = await outlier.researchList({ url, ...nav, legs, here: args.here === true || (args.here !== false && !url && Boolean(outlier.userBoard && outlier.userBoard())), setFilters: args.set_filters === true, fresh: args.fresh === true });
+                    // The user's own board with their filters in its address is read as they set it;
+                    // otherwise CoDev sets Outlier's filters itself, in a tab of its own.
+                    const mine = !url && outlier.userBoard && outlier.userBoard();
+                    const theirFilters = Boolean(mine && new URL(mine).search.length > 1);
+                    const here = args.here === true || (args.here !== false && args.set_filters !== true && (theirFilters || (args.set_filters === false && Boolean(mine))));
+                    const { steps, research, board: boardRead } = await outlier.researchList({ url, ...nav, legs, here, setFilters: !here && args.set_filters !== false, fresh: args.fresh === true });
                     const result = outlier.state().result;
                     const audit = auditText(result);
                     let props = [];
