@@ -249,7 +249,7 @@ def deepfilter(wav_in, wav_out, atten_lim_db=None):
     import torch
     from df.enhance import enhance, init_df
     say("[DeepFilterNet] removing background noise from the speech")
-    model, state, _ = init_df(log_level="ERROR")
+    model, state, _ = init_df(log_level="ERROR", log_file=None)  # the model folder is read-only
     audio, sr = sf.read(wav_in, dtype="float32", always_2d=True)
     audio = audio.T  # channels x samples
     chunk = DF_CHUNK_SECONDS * sr
