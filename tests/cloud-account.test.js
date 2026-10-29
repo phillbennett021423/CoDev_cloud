@@ -24,23 +24,29 @@ test.before(async () => {
 test.after(async () => { if (launched && launched.browser) await launched.browser.close(); });
 
 // The page, a fresh server and its database; page.route hands the page's requests to the Worker.
-async function setup(t) {
+// Passing an earlier setup's result opens a second device (its own browser storage) on the same server.
+async function setup(t, shared) {
     if (launched.skip) return t.skip(launched.skip);
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-cloud-'));
-    const backend = createMockBackend({ workspace });
-    const url = await backend.listen();
-    t.after(() => backend.close());
+    let url, env, emails, upstream;
+    if (shared) {
+        ({ url, env, emails, upstream } = shared);
+    } else {
+        const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-cloud-'));
+        const backend = createMockBackend({ workspace });
+        url = await backend.listen();
+        t.after(() => backend.close());
 
-    const env = { DB: fakeD1(), OWNER_EMAIL: OWNER, KEYS_SECRET: 'test-secret', RESEND_API_KEY: 're_test' };
-    const emails = [];
-    const upstream = [];
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = async (address, init = {}) => {
-        if (address === 'https://api.resend.com/emails') { emails.push(JSON.parse(init.body)); return Response.json({ id: 'e' }); }
-        upstream.push({ url: address, headers: init.headers, body: JSON.parse(init.body) });
-        return Response.json({ choices: [{ message: { role: 'assistant', content: 'Hello from the shared key.' } }] });
-    };
-    t.after(() => { globalThis.fetch = realFetch; });
+        env = { DB: fakeD1(), OWNER_EMAIL: OWNER, KEYS_SECRET: 'test-secret', RESEND_API_KEY: 're_test' };
+        emails = [];
+        upstream = [];
+        const realFetch = globalThis.fetch;
+        globalThis.fetch = async (address, init = {}) => {
+            if (address === 'https://api.resend.com/emails') { emails.push(JSON.parse(init.body)); return Response.json({ id: 'e' }); }
+            upstream.push({ url: address, headers: init.headers, body: JSON.parse(init.body) });
+            return Response.json({ choices: [{ message: { role: 'assistant', content: 'Hello from the shared key.' } }] });
+        };
+        t.after(() => { globalThis.fetch = realFetch; });
+    }
 
     const page = await launched.browser.newPage();
     t.after(() => page.close());
@@ -73,7 +79,7 @@ async function setup(t) {
         await page.click('#codevAccountPanel button:text-is("Sign in")');
         await page.waitForSelector('#codevAccountPanel button:has-text("Sign out")');
     };
-    return { page, env, emails, upstream, errors, signIn };
+    return { page, url, env, emails, upstream, errors, signIn };
 }
 
 test('a signed-in account chats with no API key, and the key never reaches the page', async t => {
@@ -156,4 +162,55 @@ test('the owner gets the Owner page: keys, sign-ups to approve, limits', async t
     await s.page.locator('#ownerModal button:text-is("Run now")').first().click();
     await s.page.waitForSelector('#ownerModal >> text=Last note');
     assert.deepEqual(s.errors, []);
+});
+
+test('synced chats: locked on one device with a passphrase, unlocked on another, never readable on the server', async t => {
+    const phone = await setup(t);
+    if (!phone) return;
+    await phone.signIn('sam@example.com');
+    await phone.page.waitForSelector('#codevAccountPanel >> text=Turn on synced chats');
+    await phone.page.fill('#codevAccountPanel input[type=password]', 'correct horse battery');
+    await phone.page.click('#codevAccountPanel button:has-text("Turn on synced chats")');
+    await phone.page.waitForSelector('#codevAccountPanel >> text=Last synced');
+
+    // A chat and a memory note on the phone.
+    await phone.page.evaluate(() => {
+        createNewChat();
+        const session = chatSessions.find(s => s.id === activeChatId);
+        session.title = 'Trip planning';
+        session.messages.push({ sender: '👤 You', text: 'Pack the blue tent and the stove' });
+        addSavedMemory('Sam prefers short answers');
+        saveChatsNow();
+    });
+    await phone.page.evaluate(() => CodevSync.syncNow());
+    const stored = phone.env.DB.raw.prepare('SELECT item_key, data FROM sync_items').all();
+    assert.ok(stored.some(r => r.item_key.startsWith('chat:')) && stored.some(r => r.item_key === 'memories'));
+    const everything = JSON.stringify(phone.env.DB.raw.prepare('SELECT * FROM sync_items').all()) + JSON.stringify(phone.env.DB.raw.prepare('SELECT * FROM vaults').all());
+    assert.ok(!/blue tent|Trip planning|short answers|correct horse/.test(everything), 'the server holds only locked data');
+
+    // The laptop: signing in alone isn't enough; a wrong passphrase is refused.
+    const laptop = await setup(t, phone);
+    await laptop.signIn('sam@example.com');
+    await laptop.page.waitForSelector('#codevAccountPanel >> text=Unlock synced chats');
+    await laptop.page.fill('#codevAccountPanel input[type=password]', 'wrong passphrase');
+    await laptop.page.click('#codevAccountPanel button:has-text("Unlock synced chats")');
+    await laptop.page.waitForSelector("#codevAccountPanel >> text=That passphrase isn't right.");
+    await laptop.page.fill('#codevAccountPanel input[type=password]', 'correct horse battery');
+    await laptop.page.click('#codevAccountPanel button:has-text("Unlock synced chats")');
+    await laptop.page.waitForFunction(() => chatSessions.some(s => s.title === 'Trip planning'));
+    const chat = await laptop.page.evaluate(() => chatSessions.find(s => s.title === 'Trip planning').messages.at(-1).text);
+    assert.equal(chat, 'Pack the blue tent and the stove');
+    assert.ok(await laptop.page.evaluate(() => savedMemories.some(m => m.text === 'Sam prefers short answers')));
+    assert.match(await laptop.page.textContent('#chatListContainer'), /Trip planning/);
+
+    // Deleting it on the laptop deletes it on the phone.
+    await laptop.page.evaluate(() => {
+        chatSessions = chatSessions.filter(s => s.title !== 'Trip planning');
+        activeChatId = chatSessions[0].id;
+        saveChatsNow();
+        return CodevSync.syncNow();
+    });
+    await phone.page.evaluate(() => CodevSync.syncNow());
+    assert.equal(await phone.page.evaluate(() => chatSessions.some(s => s.title === 'Trip planning')), false);
+    assert.deepEqual([...phone.errors, ...laptop.errors], []);
 });

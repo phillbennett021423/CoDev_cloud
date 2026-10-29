@@ -134,6 +134,8 @@
             }) }, "Sign out");
             row.append(out);
             box.append(row, status);
+            // Synced chats (agent-ui/cloud-sync.js).
+            root.CodevSync?.renderInto(box);
             return;
         }
 
@@ -288,6 +290,6 @@
             saveLimits));
     }
 
-    root.CodevCloud = { serverUrl, signedIn, covers, relayUrl, authHeader, relayError, refresh, renderPanel, openOwnerPage,
+    root.CodevCloud = { serverUrl, signedIn, covers, relayUrl, authHeader, relayError, refresh, renderPanel, openOwnerPage, request: call,
         onChange: fn => listeners.push(fn), get account() { return account; } };
 })(typeof self !== "undefined" ? self : this);

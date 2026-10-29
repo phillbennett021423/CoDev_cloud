@@ -1228,6 +1228,7 @@
     <script src="agent-ui/google-apps.js"></script>
     <script src="agent-ui/odds-api.js"></script>
     <script src="agent-ui/cloud-account.js"></script>
+    <script src="agent-ui/cloud-sync.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
         // text boxes stop taking clicks and typing until the window is refocused.
@@ -1730,6 +1731,7 @@
                     catch (err3) { console.warn(`[Chats] Couldn't save the chats: ${err3.message}`); }
                 }
             }
+            window.CodevSync?.changed();
         }
 
         // Saving writes every chat at once, so while agents work it waits for a moment
@@ -1740,6 +1742,44 @@
                 if (window.requestIdleCallback) requestIdleCallback(() => { if (chatSaveTimer) saveChatsNow(); }, { timeout: 2000 });
                 else saveChatsNow();
             }, 300);
+        }
+
+        // SYNCED CHATS (agent-ui/cloud-sync.js): each chat, the saved memory and the agents
+        // follow the CoDev account, locked with the user's passphrase before they leave
+        // this device. The newest copy of each one wins.
+        function attachChatSync() {
+            CodevSync.attach({
+                collect() {
+                    const items = { memories: savedMemories, workspace: { agents, selectedAgentId } };
+                    for (const s of chatSessions) items[`chat:${s.id}`] = { ...s, messages: s.messages.slice(-MAX_SAVED_MESSAGES) };
+                    return items;
+                },
+                apply(key, value) {
+                    if (key.startsWith("chat:")) {
+                        const id = key.slice(5);
+                        const at = chatSessions.findIndex(s => s.id === id);
+                        if (value === null) {
+                            if (at >= 0) chatSessions.splice(at, 1);
+                            if (!chatSessions.length) chatSessions.push(newChatSession("chat_" + Date.now(), "New Session #1", false, "New chat initialized."));
+                            if (!chatSessions.some(s => s.id === activeChatId)) activeChatId = chatSessions[0].id;
+                        } else if (value && Array.isArray(value.messages)) {
+                            if (at >= 0) chatSessions[at] = value; else chatSessions.push(value);
+                        }
+                    } else if (key === "memories") {
+                        savedMemories = Array.isArray(value) ? value.filter(m => m && typeof m.text === "string") : [];
+                    } else if (key === "workspace" && value && Array.isArray(value.agents) && value.agents.length) {
+                        agents = value.agents;
+                        selectedAgentId = agents.some(a => a.id === value.selectedAgentId) ? value.selectedAgentId : agents[0].id;
+                    }
+                },
+                applied() {
+                    storeSavedMemories();
+                    saveChatsNow();
+                    renderChatList();
+                    renderAgentList();
+                    logConsoleActivity("🔄 Synced chats from your other devices.");
+                }
+            });
         }
 
         // RUN CHECKPOINTS
@@ -2974,6 +3014,7 @@
         function storeSavedMemories() {
             try { localStorage.setItem(MEMORY_STORE_KEY, JSON.stringify(savedMemories)); } catch (err) { /* storage full or blocked */ }
             renderSavedMemories();
+            window.CodevSync?.changed();
         }
 
         const memoryWords = text => new Set(String(text || "").toLowerCase().match(/[a-z0-9][a-z0-9'+#.-]{2,}/g) || []);
@@ -7847,6 +7888,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 CodevCloud.onChange(() => { pickProviderWithKey(); updateStatusDisplay(); });
                 CodevCloud.refresh();
             }
+            if (window.CodevSync) attachChatSync();
             renderChatList();
             renderAgentList();
             updateWorkspaceGrid();

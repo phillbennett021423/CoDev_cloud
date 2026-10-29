@@ -261,3 +261,55 @@ test('the API agent warns once at 80% of the daily total and sends a summary aft
     assert.match(run.data.agent.last_report, /Day \(UTC\)/);
     assert.match(run.data.agent.memory, /Warned: 4\/5/);
 });
+
+test('synced items: a passphrase check set once, newest write wins, and each account sees only its own', async t => {
+    const s = setup(); t.after(s.restore);
+    const ann = await s.signIn('ann2@example.com');
+    const bob = await s.signIn('bob2@example.com');
+    const vault = { salt: 'c2FsdA', check_iv: 'aXY', check_data: 'Y2hlY2s' };
+    assert.equal((await s.call('GET', '/sync/vault', { token: ann })).data.vault, null);
+    assert.equal((await s.call('PUT', '/sync/items', { token: ann, body: { items: [{ key: 'chat:1', iv: 'aXY', data: 'eA', updated_at: 1 }] } })).status, 409);
+    assert.equal((await s.call('PUT', '/sync/vault', { token: ann, body: vault })).status, 200);
+    assert.equal((await s.call('PUT', '/sync/vault', { token: ann, body: vault })).status, 409, 'set once unless reset');
+    assert.deepEqual((await s.call('GET', '/sync/vault', { token: ann })).data.vault, vault);
+
+    const put = (token, items) => s.call('PUT', '/sync/items', { token, body: { items } });
+    assert.equal((await put(ann, [{ key: 'chat:a1', iv: 'aXY', data: 'bmV3ZXI', updated_at: 200 }, { key: 'memories', iv: 'aXY', data: 'bWVt', updated_at: 100 }])).status, 200);
+    // An older write doesn't replace a newer one.
+    await put(ann, [{ key: 'chat:a1', iv: 'aXY', data: 'b2xkZXI', updated_at: 150 }]);
+    let pulled = (await s.call('GET', '/sync/items?since=0', { token: ann })).data;
+    assert.deepEqual(pulled.items.map(i => [i.key, i.data]).sort(), [['chat:a1', 'bmV3ZXI'], ['memories', 'bWVt']]);
+    const cursor = pulled.cursor;
+
+    // Deleting sends a tombstone; only what changed after the cursor comes back.
+    await new Promise(r => setTimeout(r, 5));
+    await put(ann, [{ key: 'chat:a1', deleted: true, updated_at: 300 }]);
+    pulled = (await s.call('GET', `/sync/items?since=${cursor}`, { token: ann })).data;
+    assert.deepEqual(pulled.items.map(i => [i.key, i.deleted]), [['chat:a1', true]]);
+
+    // Bob can't see Ann's items, and the server only ever holds what was sent: no plain text.
+    assert.equal((await s.call('GET', '/sync/items?since=0', { token: bob })).status, 409);
+    await s.call('PUT', '/sync/vault', { token: bob, body: vault });
+    assert.deepEqual((await s.call('GET', '/sync/items?since=0', { token: bob })).data.items, []);
+
+    // Bad input is refused.
+    assert.equal((await put(ann, [{ key: '../x', iv: 'aXY', data: 'eA', updated_at: 1 }])).status, 400);
+    assert.equal((await put(ann, [{ key: 'chat:z', iv: 'aXY', data: 'not base64!', updated_at: 1 }])).status, 400);
+
+    // Starting over deletes everything synced.
+    assert.equal((await s.call('PUT', '/sync/vault', { token: ann, body: { ...vault, salt: 'bmV3', reset: true } })).status, 200);
+    assert.deepEqual((await s.call('GET', '/sync/items?since=0', { token: ann })).data.items, []);
+});
+
+test('synced items stay within the plan: 5 MB on the trial', async t => {
+    const s = setup(); t.after(s.restore);
+    const ann = await s.signIn('cy@example.com');
+    await s.call('PUT', '/sync/vault', { token: ann, body: { salt: 'c2FsdA', check_iv: 'aXY', check_data: 'Y2hlY2s' } });
+    const big = 'A'.repeat(1_800_000);
+    for (let i = 0; i < 2; i++) assert.equal((await s.call('PUT', '/sync/items', { token: ann, body: { items: [{ key: `chat:${i}`, iv: 'aXY', data: big, updated_at: 1 }] } })).status, 200);
+    const full = await s.call('PUT', '/sync/items', { token: ann, body: { items: [{ key: 'chat:9', iv: 'aXY', data: big, updated_at: 1 }] } });
+    assert.equal(full.status, 413);
+    assert.equal(full.data.error.code, 'sync_full');
+    // Replacing an item already stored counts only its new size.
+    assert.equal((await s.call('PUT', '/sync/items', { token: ann, body: { items: [{ key: 'chat:1', iv: 'aXY', data: big, updated_at: 2 }] } })).status, 200);
+});

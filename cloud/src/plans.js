@@ -5,17 +5,18 @@
 // chatPerDay: messages a day (UTC), or null for no limit.
 // providers: which AI services the shared keys may be used for.
 // videoMinutesPerMonth: video editing on the rented video machine (0 = not included).
+// syncMB: room for synced (locked) chats, memory and agents, or null for no limit.
 export const PLANS = {
-    trial: { label: 'Trial', chatTotal: 20, chatPerDay: null, providers: ['groq'], runCode: false, videoMinutesPerMonth: 0 },
-    pro: { label: 'Pro plan', chatTotal: null, chatPerDay: 300, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: 0 },
+    trial: { label: 'Trial', chatTotal: 20, chatPerDay: null, providers: ['groq'], runCode: false, videoMinutesPerMonth: 0, syncMB: 5 },
+    pro: { label: 'Pro plan', chatTotal: null, chatPerDay: 300, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: 0, syncMB: 50 },
     // $40 a month, the first two months paid up front ($80), so the video machine is
     // paid for before anyone uses it. Not on sale until payments are built.
     // priority: keeps working when the daily total for everyone pauses shared AI.
-    max: { label: 'Max plan', chatTotal: null, chatPerDay: 1000, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: 120, priority: true },
+    max: { label: 'Max plan', chatTotal: null, chatPerDay: 1000, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: 120, syncMB: 200, priority: true },
     // Hidden: the owner approves testers on the Owner page. To the tester it is
     // the Pro plan in every way they can see.
-    tester: { label: 'Pro plan', chatTotal: null, chatPerDay: 300, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: 0, hidden: true },
-    owner: { label: 'Owner', chatTotal: null, chatPerDay: null, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: null }
+    tester: { label: 'Pro plan', chatTotal: null, chatPerDay: 300, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: 0, syncMB: 50, hidden: true },
+    owner: { label: 'Owner', chatTotal: null, chatPerDay: null, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: null, syncMB: null }
 };
 
 // How many messages one request counts as. Anthropic costs far more per message.
@@ -42,6 +43,6 @@ export function planFor(user, owner) {
 // What an account is told about its own plan. A tester gets exactly what a Pro
 // subscriber gets, so nothing reveals the tester plan.
 export function publicPlan(plan) {
-    const { label, chatTotal, chatPerDay, providers, runCode, videoMinutesPerMonth } = plan;
-    return { name: label, chatTotal, chatPerDay, providers: [...providers], runCode, videoMinutesPerMonth };
+    const { label, chatTotal, chatPerDay, providers, runCode, videoMinutesPerMonth, syncMB } = plan;
+    return { name: label, chatTotal, chatPerDay, providers: [...providers], runCode, videoMinutesPerMonth, syncMB };
 }

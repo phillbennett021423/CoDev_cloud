@@ -11,6 +11,7 @@
 //   POST /v1/groq/chat/completions           forwarded to Groq with the owner's key
 //   POST /v1/openrouter/chat/completions     forwarded to OpenRouter
 //   POST /v1/anthropic/messages              forwarded to Anthropic
+//   /sync/...                                synced chats, locked on the device (sync.js)
 //   /owner/...                               the Owner page (owner's account only)
 //
 // Every hour (the cron in wrangler.toml) the owner's API agent checks spending.
@@ -19,6 +20,7 @@
 // the Pro plan (same label, same limits), and nothing a user can reach names them.
 
 import { COST_WEIGHTS, DEFAULT_SETTINGS, KEY_NAMES, planFor, publicPlan } from './plans.js';
+import { syncRoute } from './sync.js';
 import { AGENT_DEFAULTS, getAgent, saveAgent, runApiAgent, signupNotice } from './agents.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -109,6 +111,10 @@ async function route(request, env, ctx) {
         const expected = relay[1] === 'anthropic' ? 'messages' : 'chat/completions';
         if (relay[2] !== expected) throw new HttpError(404, 'Not found.');
         return relayChat(request, env, user, relay[1]);
+    }
+
+    if (path.startsWith('/sync/')) {
+        return syncRoute(request, env, user, planFor(user, isOwner(env, user.email)), method, path, { json, readJson, HttpError });
     }
 
     if (path.startsWith('/owner/')) {
