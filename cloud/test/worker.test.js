@@ -171,8 +171,11 @@ test('the tester limit and the daily cap for everyone are enforced', async t => 
     const capped = await s.call('POST', '/v1/groq/chat/completions', { token: ivy, body: chat });
     assert.equal(capped.status, 503);
     assert.equal(capped.data.error.code, 'global_cap');
-    // The owner is never capped.
+    // The owner is never capped, and the Max plan keeps priority.
     assert.equal((await s.call('POST', '/v1/groq/chat/completions', { token: owner, body: chat })).status, 200);
+    s.env.DB.raw.prepare("UPDATE users SET plan = 'max' WHERE email = ?").run('ivy@example.com');
+    assert.equal((await s.call('POST', '/v1/groq/chat/completions', { token: ivy, body: chat })).status, 200);
+    assert.equal((await s.call('GET', '/me', { token: ivy })).data.plan.name, 'Max plan');
 });
 
 test("a refused owner key isn't passed on as the provider's error", async t => {

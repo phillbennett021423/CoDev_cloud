@@ -10,7 +10,8 @@ export const PLANS = {
     pro: { label: 'Pro plan', chatTotal: null, chatPerDay: 300, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: 0 },
     // $40 a month, the first two months paid up front ($80), so the video machine is
     // paid for before anyone uses it. Not on sale until payments are built.
-    max: { label: 'Max plan', chatTotal: null, chatPerDay: 1000, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: 120 },
+    // priority: keeps working when the daily total for everyone pauses shared AI.
+    max: { label: 'Max plan', chatTotal: null, chatPerDay: 1000, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: 120, priority: true },
     // Hidden: the owner approves testers on the Owner page. To the tester it is
     // the Pro plan in every way they can see.
     tester: { label: 'Pro plan', chatTotal: null, chatPerDay: 300, providers: ['groq', 'openrouter', 'anthropic'], runCode: true, videoMinutesPerMonth: 0, hidden: true },

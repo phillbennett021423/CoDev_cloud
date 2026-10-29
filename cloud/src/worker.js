@@ -290,7 +290,7 @@ async function checkLimits(env, user, plan, provider, owner) {
         throw new HttpError(429, `You've reached today's limit of ${plan.chatPerDay} messages. It resets at midnight (UTC), or add your own API key in Settings.`, 'daily_limit');
     }
     const settings = await getSettings(env);
-    if (await sharedChatTotal(env, today()) + weight > settings.daily_cap) {
+    if (!plan.priority && await sharedChatTotal(env, today()) + weight > settings.daily_cap) {
         throw new HttpError(503, "CoDev is very busy today and has paused shared AI until midnight (UTC). Your own API key in Settings still works.", 'global_cap');
     }
 }
