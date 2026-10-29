@@ -1016,6 +1016,9 @@
                 To power your autonomous agents, multi-agent swarms, and file code loops for free, CoDev connects to <strong>Groq's high-speed AI engine</strong>. 
             </p>
 
+            <!-- The CoDev account box, filled in by agent-ui/cloud-account.js. -->
+            <div id="codevAccountPanel"></div>
+
             <!-- Step-by-Step Guidance Box -->
             <div style="background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 0.85rem;">
                 <div style="font-weight: bold; color: var(--accent);">Quick Setup (Takes 30 Seconds):</div>
@@ -1224,6 +1227,7 @@
     <script src="media-tools.js"></script>
     <script src="agent-ui/google-apps.js"></script>
     <script src="agent-ui/odds-api.js"></script>
+    <script src="agent-ui/cloud-account.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
         // text boxes stop taking clicks and typing until the window is refocused.
@@ -1309,6 +1313,11 @@
         // so the page itself needs no Anthropic key. Set by checkServerAnthropic().
         let anthropicViaServer = false;
 
+        // "cloud" when the signed-in CoDev account covers this provider (agent-ui/cloud-account.js).
+        function cloudProviderKey(backend) {
+            return window.CodevCloud?.covers(backend) ? "cloud" : "";
+        }
+
         // SPENDING LIMITS
         // Every paid model call adds its cost to today's total, kept in this browser.
         // Past the daily limit CoDev sends no more requests until tomorrow (or until the
@@ -1375,15 +1384,16 @@
         }
 
         function activeProviderKey() {
-            if (currentBackend === "anthropic") return anthropicKey || (anthropicViaServer ? "server" : "");
-            return currentBackend === "openrouter" ? openRouterKey : groqKey;
+            if (currentBackend === "anthropic") return anthropicKey || (anthropicViaServer ? "server" : "") || cloudProviderKey("anthropic");
+            return (currentBackend === "openrouter" ? openRouterKey : groqKey) || cloudProviderKey(currentBackend);
         }
 
         // When the saved provider has no key but another one does, switch to that one
         // so setup is skipped. Returns false when no provider has a key at all.
         function pickProviderWithKey() {
             if (activeProviderKey()) return true;
-            const keys = { groq: groqKey, openrouter: openRouterKey, anthropic: anthropicKey || (anthropicViaServer ? "server" : "") };
+            const keys = { groq: groqKey || cloudProviderKey("groq"), openrouter: openRouterKey || cloudProviderKey("openrouter"),
+                anthropic: anthropicKey || (anthropicViaServer ? "server" : "") || cloudProviderKey("anthropic") };
             const backend = BACKENDS.find(b => keys[b]);
             if (!backend) return false;
             currentBackend = backend;
@@ -5722,6 +5732,10 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
         function openSettingsModal() {
             fillVoicePicker();
+            if (window.CodevCloud) {
+                CodevCloud.renderPanel(document.getElementById("codevAccountPanel"));
+                CodevCloud.refresh().then(() => CodevCloud.renderPanel(document.getElementById("codevAccountPanel")));
+            }
             document.getElementById("modalGroqKey").value = groqKey;
             document.getElementById("modalProvider").value = currentBackend;
             document.getElementById("modalOpenRouterKey").value = openRouterKey;
@@ -5886,11 +5900,11 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             document.getElementById("modalOpenRouterKey").value = newOpenRouterKey;
             document.getElementById("modalAnthropicKey").value = newAnthropicKey;
 
-            if (backend === "anthropic" && !newAnthropicKey.startsWith("sk-ant-") && !(newAnthropicKey === "" && anthropicViaServer)) {
+            if (backend === "anthropic" && !newAnthropicKey.startsWith("sk-ant-") && !(newAnthropicKey === "" && (anthropicViaServer || cloudProviderKey("anthropic")))) {
                 showSettingsError("Please enter a valid Anthropic API key starting with 'sk-ant-'.", "modalAnthropicKey");
                 return;
             }
-            if (backend === "groq" && !newGroqKey.startsWith("gsk_")) {
+            if (backend === "groq" && !newGroqKey.startsWith("gsk_") && !(newGroqKey === "" && cloudProviderKey("groq"))) {
                 showSettingsError("Please enter a valid Groq API key starting with 'gsk_'.", "modalGroqKey");
                 return;
             }
@@ -5900,7 +5914,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 showSettingsError(mediaProblem, "modalGeminiKey");
                 return;
             }
-            if (backend === "openrouter" && newOpenRouterKey.length < 10) {
+            if (backend === "openrouter" && newOpenRouterKey.length < 10 && !(newOpenRouterKey === "" && cloudProviderKey("openrouter"))) {
                 showSettingsError("Please paste your OpenRouter API key (it usually starts with 'sk-or-').", "modalOpenRouterKey");
                 return;
             }
@@ -6458,15 +6472,20 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 : { name: "Groq", host: "api.groq.com", url: "https://api.groq.com/openai/v1/chat/completions", key: groqKey, headers: {} };
             // OpenRouter adds what the call cost to usage, for the spending limits.
             if (openRouter) body = { ...body, model: openRouterModel, usage: { include: true } };
+            // No key of the user's own: CoDev's server sends it with the owner's key.
+            const viaCloud = !provider.key && cloudProviderKey(currentBackend) === "cloud";
             let response;
             try {
-                response = await fetch(provider.url, {
+                response = await fetch(viaCloud ? window.CodevCloud.relayUrl(currentBackend) : provider.url, {
                     method: "POST",
-                    headers: { "Authorization": `Bearer ${provider.key}`, "Content-Type": "application/json", ...provider.headers },
+                    headers: viaCloud
+                        ? { ...window.CodevCloud.authHeader(), "Content-Type": "application/json" }
+                        : { "Authorization": `Bearer ${provider.key}`, "Content-Type": "application/json", ...provider.headers },
                     body: JSON.stringify(body)
                 });
             } catch (err) {
                 // fetch only throws like this when the request never reached the provider.
+                if (viaCloud) throw new Error(`Couldn't reach CoDev's server (${err.message}). Check that this device is online.`);
                 throw new Error(`Couldn't reach ${provider.name} at ${provider.host} (${err.message}). Check that this computer is online, and that a firewall, antivirus, VPN or ad blocker isn't blocking ${provider.host}.`);
             }
             const data = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } }));
@@ -6474,6 +6493,10 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 const cost = openRouter ? Number(data.usage?.cost) || 0 : 0;
                 recordSpend(cost, { input: data.usage?.prompt_tokens, output: data.usage?.completion_tokens });
                 return { ...data.choices[0].message, cost };
+            }
+            if (viaCloud) {
+                const message = window.CodevCloud.relayError(response.status, data);
+                if (message) throw new Error(message);
             }
             const code = data.error?.code ? ` (${data.error.code})` : "";
             if (response.status === 401) {
@@ -6510,13 +6533,17 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // with no key on the local server page, through server.js, which adds ANTHROPIC_API_KEY.
         function anthropicEndpoint() {
             const viaServer = !anthropicKey && anthropicViaServer;
+            // No key here or on the local server: CoDev's online server sends it with the owner's key.
+            const viaCloud = !anthropicKey && !viaServer && cloudProviderKey("anthropic") === "cloud";
+            const url = viaCloud ? window.CodevCloud.relayUrl("anthropic") : viaServer ? "/anthropic/v1/messages" : "https://api.anthropic.com/v1/messages";
             const headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01" };
-            if (!viaServer) {
+            if (viaCloud) Object.assign(headers, window.CodevCloud.authHeader());
+            else if (!viaServer) {
                 headers["x-api-key"] = anthropicKey;
                 // Anthropic only answers browser pages that say they hold the user's own key.
                 headers["anthropic-dangerous-direct-browser-access"] = "true";
             }
-            return { url: viaServer ? "/anthropic/v1/messages" : "https://api.anthropic.com/v1/messages", headers, viaServer };
+            return { url, headers, viaServer, viaCloud };
         }
 
         // The text of Claude's reply with [n] after each cited passage, numbered in sources
@@ -6591,7 +6618,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // ({ content, tool_calls }) the rest of CoDev expects. With no key in Settings
         // on the local server page, server.js adds ANTHROPIC_API_KEY and relays it.
         async function anthropicChatMessage(body, extras = {}) {
-            const { url, headers, viaServer } = anthropicEndpoint();
+            const { url, headers, viaServer, viaCloud } = anthropicEndpoint();
             const request = toAnthropicRequest(body);
             let cost = 0;
             const send = async () => {
@@ -6599,6 +6626,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 try {
                     response = await fetch(url, { method: "POST", headers, body: JSON.stringify(request) });
                 } catch (err) {
+                    if (viaCloud) throw new Error(`Couldn't reach CoDev's server (${err.message}). Check that this device is online.`);
                     throw new Error(viaServer
                         ? `Couldn't reach CoDev's server to relay to Anthropic (${err.message}). Is npm start still running?`
                         : `Couldn't reach Anthropic at api.anthropic.com (${err.message}). Check that this device is online, and that a firewall, antivirus, VPN or ad blocker isn't blocking api.anthropic.com.`);
@@ -6627,6 +6655,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 ({ response, data } = await send());
             }
             if (!response.ok) {
+                const cloudMessage = viaCloud && window.CodevCloud.relayError(response.status, data);
+                if (cloudMessage) throw new Error(cloudMessage);
                 if (response.status === 401) {
                     throw new Error(viaServer
                         ? `Anthropic rejected the ANTHROPIC_API_KEY on CoDev's server (401: ${data.error?.message || "unauthorized"}). Fix it in .env and restart, or put a key in Settings.`
@@ -7810,8 +7840,13 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             // The mode toggles start folded away too, to leave room for the chat.
             toggleChatControls();
             await checkServerAnthropic();
-            if (!pickProviderWithKey()) logConsoleActivity("No API key saved yet. Add a Groq, OpenRouter or Anthropic key under ⚙️ Settings to chat with the agents.");
+            if (!pickProviderWithKey()) logConsoleActivity("No API key saved yet. Sign in to your CoDev account or add a Groq, OpenRouter or Anthropic key under ⚙️ Settings to chat with the agents.");
             updateStatusDisplay();
+            if (window.CodevCloud) {
+                // Signing in or out, or a plan change, changes which providers work without a key.
+                CodevCloud.onChange(() => { pickProviderWithKey(); updateStatusDisplay(); });
+                CodevCloud.refresh();
+            }
             renderChatList();
             renderAgentList();
             updateWorkspaceGrid();
