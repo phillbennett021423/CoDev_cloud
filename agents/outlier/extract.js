@@ -92,7 +92,7 @@ function collectPage(selectors) {
 
     // Injury report lines ("Joel Embiid (PHI) - Out", "Out: Joel Embiid"): short blocks
     // with an injury status and no price.
-    const STATUS = /\b(?:OUT|Out|Ruled Out|ruled out|Inactive|INACTIVE|Returning|RETURNING|Probable)\b/;
+    const STATUS = /\b(?:OUT|Out|Ruled Out|ruled out|Inactive|INACTIVE|Returning|RETURNING|Probable|Questionable|QUESTIONABLE|Doubtful|DOUBTFUL|GTD|Day-To-Day|Day-to-Day)\b/;
     out.injuries = [...document.body.querySelectorAll('div, li, tr, span, p')]
         .filter(el => { const t = text(el); return t.length > 0 && t.length <= 160 && STATUS.test(t) && !ODDS.test(t); })
         .filter((el, _, all) => !all.some(other => other !== el && el.contains(other)))

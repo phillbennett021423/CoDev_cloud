@@ -10,6 +10,12 @@ On GitHub open **Actions → Android debug APK → the latest run**, then downlo
 `codev-studio-debug-apk` from the **Artifacts** section. Unzip it and install
 `app-debug.apk` on the phone (allow "Install unknown apps" for your browser or file manager).
 
+## Signing key
+Android only installs an update over the old app when both are signed with the same key. With the
+`ANDROID_KEYSTORE_BASE64` and `ANDROID_KEYSTORE_PASSWORD` repository secrets set, every build is signed
+with that one key (alias `codev`) and gets a higher version number than every build before it. Keep a copy of the keystore: losing it
+means everyone has to uninstall once more. Without the secrets, builds use a throwaway key as before.
+
 ## Building locally (optional)
 Needs Node 22+, JDK 21 and the Android SDK.
 

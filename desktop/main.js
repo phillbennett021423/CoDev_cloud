@@ -7,7 +7,7 @@ const path = require('path');
 const { createMcpTools } = require('./mcp-tools');
 const { handleImageFolder } = require('./image-folder');
 const { createNodeMcpHub } = require('./mcp-hub');
-const { createSandbox } = require('./sandbox');
+const { createSandboxWorker } = require('./sandbox/remote');
 const { createBrowserService } = require('./browser');
 const { createOutlierBridge } = require('./outlier-bridge');
 const { createGoogleConnect } = require('./google-connect');
@@ -23,6 +23,10 @@ protocol.registerSchemesAsPrivileged([
 // Only DuckDuckGo's HTML results page, the same one the Android app uses, and the
 // free keyless services behind the Google tools' fallbacks: OpenStreetMap places and
 // routes, and YouTube's video titles.
+const ODDS_API = /^https:\/\/api\.the-odds-api\.com\/v4\/sports(\/|\?)/;
+const ODDS_HEADERS = ['x-requests-remaining', 'x-requests-used', 'x-requests-last'];
+const TAVILY_SEARCH_URL = 'https://api.tavily.com/search';
+const TAVILY_FIELDS = ['query', 'search_depth', 'max_results', 'include_answer', 'topic', 'time_range'];
 const ALLOWED_HTTP = /^https:\/\/(html\.duckduckgo\.com\/html\/\?|nominatim\.openstreetmap\.org\/search\?|router\.project-osrm\.org\/route\/v1\/|www\.youtube\.com\/oembed\?)/;
 
 // A crash log in the app's user data folder (CoDev-crash.log), so an error in the
@@ -129,6 +133,30 @@ app.whenReady().then(() => {
         return { status: response.status, data: await response.text(), headers: {} };
     });
 
+    // The Odds API (line tracking): only its v4 API, and only the credit headers come back.
+    ipcMain.handle('codev:http-odds', async (_event, { url }) => {
+        if (typeof url !== 'string' || !ODDS_API.test(url)) throw new Error('This address is not allowed.');
+        const response = await net.fetch(url);
+        const headers = {};
+        for (const name of ODDS_HEADERS) if (response.headers.get(name) != null) headers[name] = response.headers.get(name);
+        return { status: response.status, data: await response.text(), headers };
+    });
+
+    // Tavily search with the key from the page's Settings: only its search endpoint and
+    // the search fields, as server.js sends it for the local server page.
+    ipcMain.handle('codev:http-tavily', async (_event, { key, body }) => {
+        if (typeof key !== 'string' || !/^[\w-]{8,200}$/.test(key.trim())) throw new Error('No Tavily API key.');
+        const request = {};
+        for (const name of TAVILY_FIELDS) if (body && body[name] !== undefined) request[name] = body[name];
+        request.query = String(request.query || '').slice(0, 400);
+        const response = await net.fetch(TAVILY_SEARCH_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key.trim()}` },
+            body: JSON.stringify(request)
+        });
+        return { status: response.status, data: await response.text(), headers: {} };
+    });
+
     // Built-in MCP tools: agents work in the project folder chosen in Settings.
     const settingsFile = path.join(app.getPath('userData'), 'codev-desktop.json');
     let desktopSettings = {};
@@ -170,7 +198,8 @@ app.whenReady().then(() => {
     // Sandboxed agents: tools that work in a staging copy of the project, commands in
     // per-agent Docker containers, and the review gate (the only path that writes
     // agents' changes to the project folder, after the user approves the diff).
-    const sandbox = createSandbox({ getProjectDir, log: line => console.log(line) });
+    // It runs on a thread of its own, so copying and diffing a project never freezes the window.
+    const sandbox = createSandboxWorker({ getProjectDir, log: line => console.log(line) });
     ipcMain.handle('codev:sandbox-mcp', (_event, message) => sandbox.handleMcp(message));
     ipcMain.handle('codev:agent-request', async (_event, req) => {
         const { method, path: urlPath, body } = req || {};
@@ -232,10 +261,11 @@ app.whenReady().then(() => {
     });
 
     // Electron on Windows leaves text boxes dead after alert()/confirm() until the
-    // window loses and regains focus, so the page asks for exactly that.
+    // window loses and regains focus, so the page asks for exactly that. Only while
+    // CoDev is the window in front: it never pulls itself over what the user is doing.
     ipcMain.on('codev:refocus', event => {
         const win = BrowserWindow.fromWebContents(event.sender);
-        if (!win) return;
+        if (!win || !win.isFocused()) return;
         win.blur();
         win.focus();
         event.sender.focus();

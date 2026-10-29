@@ -993,6 +993,8 @@ async function generateImageForTask(args, ctx) {
         return `Error: the picture couldn't be made: ${err.message}.`;
     }
     const today = countImageMade(made.cost);
+    // Paid pictures count toward CoDev's daily spending limit too.
+    if (made.cost && typeof recordSpend === "function") recordSpend(made.cost);
     const id = `img_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const thumb = await shrinkDataUrl(made.url, 360, 0.78);
     await mediaStore("images", "readwrite", store => store.put({ id, url: made.url, prompt, model: made.model, at: Date.now() }));

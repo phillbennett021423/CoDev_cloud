@@ -377,6 +377,15 @@
 
         .codev-toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(20px); max-width: min(520px, calc(100vw - 32px)); background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 10px; padding: 10px 16px; font-size: 0.85rem; line-height: 1.4; box-shadow: 0 10px 30px rgba(0,0,0,0.5); opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s; z-index: 2000; }
         .codev-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+        /* An agent's question (run a command, write a file, use a login): a card in the
+           corner instead of a native dialog, so the rest of CoDev keeps working while it waits. */
+        .approval-tray { position: fixed; right: 16px; bottom: 16px; width: min(420px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 10px; z-index: 1900; pointer-events: none; }
+        .approval-card { pointer-events: auto; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--warning); border-radius: 10px; padding: 12px 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); font-size: 0.85rem; line-height: 1.4; }
+        .approval-card .approval-who { font-weight: 700; margin-bottom: 6px; }
+        .approval-card .approval-text { white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; margin-bottom: 10px; }
+        .approval-card .approval-actions { display: flex; justify-content: flex-end; gap: 8px; }
+        .approval-card button { border-radius: 6px; padding: 6px 14px; cursor: pointer; border: 1px solid var(--border-color); background: transparent; color: var(--text-main); font-size: 0.85rem; }
+        .approval-card button.approval-allow { background: var(--warning); color: #111; border-color: var(--warning); font-weight: 700; }
 
         /* Mobile-only elements are hidden on desktop */
         .mobile-only, .mobile-tabbar, .drawer-backdrop, .drawer-close-mobile { display: none; }
@@ -468,6 +477,7 @@
 
             /* Bottom tab bar */
             .mobile-tabbar { display: flex; flex: 0 0 auto; background: var(--bg-panel); border-top: 1px solid var(--border-color); z-index: 800; }
+            .approval-tray { right: 12px; left: 12px; width: auto; bottom: calc(76px + env(safe-area-inset-bottom)); }
             .mobile-tab { flex: 1; min-height: 56px; background: none; border: none; color: var(--text-muted); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 0.68rem; cursor: pointer; }
             .mobile-tab .tab-icon { font-size: 1.2rem; line-height: 1; }
             .mobile-tab.active { color: var(--accent); }
@@ -999,12 +1009,23 @@
     </nav>
 
     <!-- Settings Modal / First-Launch Onboarding Wizard -->
+    <!-- The Odds API line viewer: a saved line's movement by sportsbook and the books side by side (agent-ui/odds-api.js). -->
+    <div class="modal-overlay" id="oddsViewerModal" onclick="if (event.target === this) this.style.display = 'none'">
+        <div class="modal" style="width: 640px; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); overflow: auto;">
+            <h3 style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">📉 Tracked lines <button class="btn-secondary" type="button" onclick="document.getElementById('oddsViewerModal').style.display = 'none'">Close</button></h3>
+            <div id="oddsViewer"></div>
+        </div>
+    </div>
+
     <div class="modal-overlay" id="settingsModal">
         <div class="modal" style="width: 520px;">
             <h3 style="display: flex; align-items: center; gap: 8px;">⚡ Welcome to CoDev Studio Pro</h3>
             <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;">
                 To power your autonomous agents, multi-agent swarms, and file code loops for free, CoDev connects to <strong>Groq's high-speed AI engine</strong>. 
             </p>
+
+            <!-- The CoDev account box, filled in by agent-ui/cloud-account.js. -->
+            <div id="codevAccountPanel"></div>
 
             <!-- Step-by-Step Guidance Box -->
             <div style="background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 0.85rem;">
@@ -1047,6 +1068,20 @@
                     <input type="text" id="modalAnthropicKey" placeholder="sk-ant-..." style="font-family: monospace;" autocomplete="off">
                 </div>
             </div>
+
+            <details class="settings-extra" id="spendSettings">
+                <summary>💰 Spending limits</summary>
+                <div style="font-size: 0.8rem; color: var(--text-muted);">CoDev adds up what each paid AI request costs (Claude, paid OpenRouter models and paid pictures; Groq's free tier is $0). At the daily limit it stops until tomorrow. At the per-task limit an agent stops and answers with what it found. 0 means no limit.</div>
+                <div class="form-group">
+                    <label>Most to spend per day ($)</label>
+                    <input type="number" id="modalDailySpendLimit" min="0" max="1000" step="0.05">
+                </div>
+                <div class="form-group">
+                    <label>Most to spend on one task ($)</label>
+                    <input type="number" id="modalTaskSpendLimit" min="0" max="100" step="0.05">
+                </div>
+                <div id="spendStatus" style="font-size: 0.8rem; color: var(--text-muted);"></div>
+            </details>
 
             <details class="settings-extra" id="mediaSettings">
                 <summary>🖼️ Images, video &amp; big files</summary>
@@ -1103,12 +1138,17 @@
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalAutoGround"> Search the web automatically for technical and code questions
                 </label>
+                <div class="form-group" style="margin: 6px 0 8px;">
+                    <label for="modalTavilyKey">Tavily API key: CoDev's first choice for live search (news, scores, injuries; 1,000 free searches a month)</label>
+                    <input type="text" id="modalTavilyKey" placeholder="tvly-..." style="font-family: monospace;" autocomplete="off">
+                    <p class="settings-note" style="font-size: 0.75rem; color: var(--text-muted); margin: 4px 0 0;">Get a free key at <a href="https://app.tavily.com" target="_blank" rel="noopener">app.tavily.com</a> (sign in, then copy the key that starts with tvly-). Search order: Tavily, then Claude's web search with your Anthropic key, then Google through your Gemini key, then DuckDuckGo and Bing News, which are free and need no key. Each one that is missing or fails hands over to the next.</p>
+                </div>
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalGoogleSearch"> Search with Google through my Gemini key (fresher news, scores and injuries; free up to Google's daily allowance)
                 </label>
                 <p class="settings-note" id="googleSearchNote" style="font-size: 0.75rem; color: var(--text-muted); margin: 0 0 8px 24px;">One-time setup: get a free Gemini API key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and paste it below under 🖼️ Images, video &amp; big files (Gemini API key). Without it, CoDev searches DuckDuckGo and Bing News, which need no key.</p>
                 <label class="checkbox-group">
-                    <input type="checkbox" id="modalClaudeWebSearch"> With Anthropic as the provider, let Claude search the web itself (Anthropic bills $10 per 1,000 searches, at most 5 per step)
+                    <input type="checkbox" id="modalClaudeWebSearch"> Use Claude's web search with my Anthropic key: the backup when Tavily has no key or fails, and Claude's own search with Anthropic as the provider and no Tavily key (Anthropic bills $10 per 1,000 searches, at most 5 per step)
                 </label>
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalChime"> Play a chime when an agent finishes a response or task
@@ -1137,6 +1177,9 @@
 
             <!-- Filled in by agent-ui/google-apps.js. -->
             <details class="settings-extra" id="googleSettings"></details>
+
+            <!-- Filled in by agent-ui/odds-api.js. -->
+            <details class="settings-extra" id="oddsSettings"></details>
 
             <details class="settings-extra" id="browserSettings" style="display: none;">
                 <summary>🌐 Agents' web browser & saved logins</summary>
@@ -1192,6 +1235,8 @@
     <script src="media-tools.js"></script>
     <script src="agent-ui/google-apps.js"></script>
     <script src="agent-ui/story-studio.js"></script>
+    <script src="agent-ui/odds-api.js"></script>
+    <script src="agent-ui/cloud-account.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
         // text boxes stop taking clicks and typing until the window is refocused.
@@ -1202,6 +1247,56 @@
                     try { return original(...args); } finally { window.codevDesktop.refocus(); }
                 };
             }
+        }
+
+        // AGENT APPROVALS: whenever an agent needs the user's OK (a command, a file write,
+        // a saved login, an email), it asks with a card in the corner and waits for it.
+        // A native confirm() froze the whole app until it was answered and pulled the
+        // window to the front; the card leaves every chat, agent and setting usable,
+        // never takes the keyboard, and several agents' questions queue up.
+        // Resolves true (Allow) or false (Decline).
+        function askPermission(message, who) {
+            return new Promise(resolve => {
+                let tray = document.getElementById("approvalTray");
+                if (!tray) {
+                    tray = document.createElement("div");
+                    tray.id = "approvalTray";
+                    tray.className = "approval-tray";
+                    tray.setAttribute("aria-live", "polite");
+                    document.body.appendChild(tray);
+                }
+                const card = document.createElement("div");
+                card.className = "approval-card";
+                card.setAttribute("role", "group");
+                const title = document.createElement("div");
+                title.className = "approval-who";
+                title.textContent = `🔐 ${who || "An agent"} is waiting for your OK`;
+                const text = document.createElement("div");
+                text.className = "approval-text";
+                text.textContent = message;
+                const actions = document.createElement("div");
+                actions.className = "approval-actions";
+                const answer = allowed => {
+                    card.remove();
+                    window.dispatchEvent(new CustomEvent("codev-approval-answered", { detail: { message, allowed } }));
+                    resolve(allowed);
+                };
+                const decline = document.createElement("button");
+                decline.type = "button";
+                decline.className = "approval-decline";
+                decline.textContent = "Decline";
+                decline.onclick = () => answer(false);
+                const allow = document.createElement("button");
+                allow.type = "button";
+                allow.className = "approval-allow";
+                allow.textContent = "Allow";
+                allow.onclick = () => answer(true);
+                actions.append(decline, allow);
+                card.append(title, text, actions);
+                tray.appendChild(card);
+                card.setAttribute("aria-label", title.textContent);
+                window.dispatchEvent(new CustomEvent("codev-approval", { detail: { message, who } }));
+            });
         }
 
         // The AI provider: "groq", "openrouter" or "anthropic". Groq and OpenRouter speak
@@ -1227,16 +1322,87 @@
         // so the page itself needs no Anthropic key. Set by checkServerAnthropic().
         let anthropicViaServer = false;
 
+        // "cloud" when the signed-in CoDev account covers this provider (agent-ui/cloud-account.js).
+        function cloudProviderKey(backend) {
+            return window.CodevCloud?.covers(backend) ? "cloud" : "";
+        }
+
+        // SPENDING LIMITS
+        // Every paid model call adds its cost to today's total, kept in this browser.
+        // Past the daily limit CoDev sends no more requests until tomorrow (or until the
+        // limit is raised in Settings > Spending limits); past the per-task limit an agent
+        // stops using tools and answers with what it has. 0 turns a limit off. Groq's
+        // free tier counts as $0; OpenRouter reports what each call cost.
+        // Claude Haiku 5.5, $ per million tokens. A prompt over 100K tokens is billed at
+        // the higher rates; cache writes cost 1.25x input and cache reads a tenth.
+        const HAIKU_PRICES = { input: 0.10, output: 0.50, longInput: 0.50, longOutput: 2.50, longAfter: 100000, perSearch: 0.01 };
+        const DEFAULT_DAILY_SPEND_LIMIT = 1;
+        const DEFAULT_TASK_SPEND_LIMIT = 0.25;
+        const readSpendLimit = (name, fallback) => {
+            const value = Number(localStorage.getItem(name) ?? fallback);
+            return Number.isFinite(value) && value >= 0 ? value : fallback;
+        };
+        let dailySpendLimit = readSpendLimit("codev_daily_spend_limit", DEFAULT_DAILY_SPEND_LIMIT);
+        let taskSpendLimit = readSpendLimit("codev_task_spend_limit", DEFAULT_TASK_SPEND_LIMIT);
+
+        function spendDay() {
+            const d = new Date();
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        }
+
+        function spendToday() {
+            let saved = null;
+            try { saved = JSON.parse(localStorage.getItem("codev_spend") || "null"); } catch (err) { /* start fresh */ }
+            return saved && saved.day === spendDay() ? saved : { day: spendDay(), usd: 0, requests: 0, inputTokens: 0, outputTokens: 0 };
+        }
+
+        // Adds one request's cost (in dollars) and token counts to today's total.
+        function recordSpend(usd, tokens = {}) {
+            const today = spendToday();
+            today.usd = Math.round((today.usd + (Number(usd) || 0)) * 1e6) / 1e6;
+            today.requests += 1;
+            today.inputTokens += tokens.input || 0;
+            today.outputTokens += tokens.output || 0;
+            try { localStorage.setItem("codev_spend", JSON.stringify(today)); } catch (err) { /* storage full: not counted */ }
+            return today;
+        }
+
+        function anthropicCost(usage = {}) {
+            const fresh = usage.input_tokens || 0, written = usage.cache_creation_input_tokens || 0, read = usage.cache_read_input_tokens || 0;
+            const long = fresh + written + read > HAIKU_PRICES.longAfter;
+            const inRate = (long ? HAIKU_PRICES.longInput : HAIKU_PRICES.input) / 1e6;
+            const outRate = (long ? HAIKU_PRICES.longOutput : HAIKU_PRICES.output) / 1e6;
+            return fresh * inRate + written * inRate * 1.25 + read * inRate * 0.1 + (usage.output_tokens || 0) * outRate
+                + (usage.server_tool_use?.web_search_requests || 0) * HAIKU_PRICES.perSearch;
+        }
+
+        const formatUsd = usd => `$${usd < 0.01 && usd > 0 ? usd.toFixed(4) : usd.toFixed(2)}`;
+
+        function dailySpendReached() {
+            return dailySpendLimit > 0 && spendToday().usd >= dailySpendLimit;
+        }
+
+        function checkDailySpend() {
+            if (!dailySpendReached()) return;
+            throw new Error(`CoDev has reached today's spending limit (${formatUsd(spendToday().usd)} of ${formatUsd(dailySpendLimit)}). It starts again tomorrow, or you can raise the limit in ⚙️ Settings > 💰 Spending limits.`);
+        }
+
+        function describeSpend() {
+            const today = spendToday();
+            return `Spent today: about ${formatUsd(today.usd)}${dailySpendLimit > 0 ? ` of your ${formatUsd(dailySpendLimit)} limit` : " (no daily limit)"}, over ${today.requests} request(s).`;
+        }
+
         function activeProviderKey() {
-            if (currentBackend === "anthropic") return anthropicKey || (anthropicViaServer ? "server" : "");
-            return currentBackend === "openrouter" ? openRouterKey : groqKey;
+            if (currentBackend === "anthropic") return anthropicKey || (anthropicViaServer ? "server" : "") || cloudProviderKey("anthropic");
+            return (currentBackend === "openrouter" ? openRouterKey : groqKey) || cloudProviderKey(currentBackend);
         }
 
         // When the saved provider has no key but another one does, switch to that one
         // so setup is skipped. Returns false when no provider has a key at all.
         function pickProviderWithKey() {
             if (activeProviderKey()) return true;
-            const keys = { groq: groqKey, openrouter: openRouterKey, anthropic: anthropicKey || (anthropicViaServer ? "server" : "") };
+            const keys = { groq: groqKey || cloudProviderKey("groq"), openrouter: openRouterKey || cloudProviderKey("openrouter"),
+                anthropic: anthropicKey || (anthropicViaServer ? "server" : "") || cloudProviderKey("anthropic") };
             const backend = BACKENDS.find(b => keys[b]);
             if (!backend) return false;
             currentBackend = backend;
@@ -1575,8 +1741,14 @@
             }
         }
 
+        // Saving writes every chat at once, so while agents work it waits for a moment
+        // the page is idle instead of landing in the middle of the user's clicks.
         function scheduleChatSave() {
-            if (!chatSaveTimer) chatSaveTimer = setTimeout(saveChatsNow, 300);
+            if (chatSaveTimer) return;
+            chatSaveTimer = setTimeout(() => {
+                if (window.requestIdleCallback) requestIdleCallback(() => { if (chatSaveTimer) saveChatsNow(); }, { timeout: 2000 });
+                else saveChatsNow();
+            }, 300);
         }
 
         // RUN CHECKPOINTS
@@ -2231,7 +2403,39 @@
             document.getElementById("chatJumpBtn").hidden = true;
         }
 
+        // Escape first so code like List<int> or <div> shows as text instead of vanishing.
+        function formatMessageText(text) {
+            return escapeHtml(text).replace(/```([a-z]*)\n([\s\S]*?)```/g, '<pre><code class="$1">$2</code></pre>');
+        }
+
+        // A running agent's message changes with every step (and every 1.5 s during a long
+        // Outlier read). Only that message's text is redrawn, not the whole chat, so the
+        // buttons and old messages the user is clicking and reading stay put. Anything
+        // else (another chat, a message not drawn yet) waits for one redraw next frame.
+        let feedRenderFrame = 0;
+        function scheduleFeedRender() {
+            if (feedRenderFrame) return;
+            feedRenderFrame = requestAnimationFrame(() => { feedRenderFrame = 0; renderActiveChatFeed(); });
+        }
+
+        function refreshChatMessage(session, msg) {
+            if (!session || session.id !== activeChatId) return;
+            const index = session.messages.indexOf(msg);
+            const div = index < 0 ? null : document.querySelector(`#chatFeed > .message[data-msg-index="${index}"]`);
+            const textEl = div && div.querySelector(".text");
+            if (!textEl || div.dataset.sender !== msg.sender || document.getElementById("chatFeed").children.length !== session.messages.length) {
+                scheduleFeedRender();
+                return;
+            }
+            textEl.innerHTML = formatMessageText(msg.text);
+            if (chatScroll.follow) {
+                const feed = document.getElementById("chatFeed");
+                feed.scrollTop = feed.scrollHeight;
+            }
+        }
+
         function renderActiveChatFeed() {
+            if (feedRenderFrame) { cancelAnimationFrame(feedRenderFrame); feedRenderFrame = 0; }
             const feed = document.getElementById("chatFeed");
             watchChatScroll(feed);
             const session = chatSessions.find(s => s.id === activeChatId);
@@ -2244,8 +2448,9 @@
             session.messages.forEach((msg, index) => {
                 const div = document.createElement("div");
                 div.className = index === lastIndex ? "message" : "message no-anim";
-                // Escape first so code like List<int> or <div> shows as text instead of vanishing.
-                let formattedText = escapeHtml(msg.text).replace(/```([a-z]*)\n([\s\S]*?)```/g, '<pre><code class="$1">$2</code></pre>');
+                div.dataset.msgIndex = index;
+                div.dataset.sender = msg.sender;
+                const formattedText = formatMessageText(msg.text);
                 
                 let speakButtonHtml = "";
                 if (msg.runId && /^⚠️ Interrupted/.test(msg.sender)) {
@@ -2629,14 +2834,18 @@
             return { results: (await searchViaLocalHelper(query)).slice(0, SEARCH_RESULT_LIMIT), source: "DuckDuckGo via local ddgs helper" };
         }
 
-        // LIVE SEARCH: the freshest source this device has, best first.
-        //  1. Google Search through the user's Gemini key (Gemini's own grounding: the same
-        //     index Gemini answers news, scores and injuries from; free up to Google's daily
-        //     allowance). The key is the one saved for images and video, codev_gemini_key.
-        //  2. DuckDuckGo, plus Bing News headlines with their dates for anything that
+        // LIVE SEARCH: the freshest source this device has, best first. Each one that has
+        // no key, is turned off or fails hands over to the next.
+        //  1. Tavily with the key pasted in Settings (codev_tavily_key): a search API made
+        //     for agents, with page extracts, publish dates and a short answer.
+        //  2. Claude's web search (Anthropic's server-side tool) with the Anthropic key.
+        //  3. Google Search through the user's Gemini key (Gemini's own grounding; free up
+        //     to Google's daily allowance). The key is the one saved for images and video.
+        //  4. DuckDuckGo, plus Bing News headlines with their dates for anything that
         //     changes day to day (news, scores, injuries, lines, "today", "latest").
-        // With Anthropic as the provider, the agents' web_search is Claude's own web search
-        // instead (see toAnthropicRequest); this is then used for pre-search and deep research.
+        // With Anthropic as the provider and no Tavily key, the agents' web_search is Claude's
+        // own web search instead (see toAnthropicRequest); this is then used for pre-search
+        // and deep research.
         const DDG_RECENCY = { day: "d", week: "w", month: "m" };
         const GEMINI_SEARCH_MODEL = "gemini-flash-latest";
         const NEWS_RESULT_LIMIT = 4;
@@ -2644,6 +2853,11 @@
         // Questions about what just happened get searched before the agent starts.
         const NEWS_QUESTION_PATTERN = /\b(today|tonight|yesterday|latest|breaking|news|headlines?|scores?|who won|injur(y|ies|ed)|injury report|lineups?|standings)\b/i;
         let googleSearchEnabled = (localStorage.getItem("codev_google_search") ?? "1") === "1";
+        const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
+        function cleanSearchKey(key) {
+            return String(key || "").replace(/[\s\u200B-\u200D\uFEFF"'`]+/g, "");
+        }
+        let tavilyKey = cleanSearchKey(localStorage.getItem("codev_tavily_key"));
 
         function isFreshQuery(text) {
             return FRESH_QUERY_PATTERN.test(String(text || ""));
@@ -2685,6 +2899,95 @@
             return { results: results.slice(0, 8), summary, source: "Google Search (via Gemini)", queries: meta.webSearchQueries || [] };
         }
 
+        // Posts a Tavily search the way this device can: CapacitorHttp on Android, the main
+        // process in the Windows app, server.js on the local server page, otherwise directly.
+        async function tavilyPost(body) {
+            const parse = data => {
+                if (data && typeof data === "object") return data;
+                try { return JSON.parse(data || "{}"); } catch (err) { return { detail: String(data).slice(0, 200) }; }
+            };
+            const android = getNativeSpeechPlugin("CapacitorHttp");
+            if (android) {
+                const response = await android.post({
+                    url: TAVILY_SEARCH_URL, data: body, responseType: "json", connectTimeout: 20000, readTimeout: 20000,
+                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${tavilyKey}` }
+                });
+                return { status: response.status, data: parse(response.data) };
+            }
+            if (window.codevDesktop?.http?.tavily) {
+                const response = await window.codevDesktop.http.tavily({ key: tavilyKey, body });
+                return { status: response.status, data: parse(response.data) };
+            }
+            const reply = await webFetchViaServer({ kind: "tavily", key: tavilyKey, body });
+            if (reply) return { status: reply.status, data: parse(reply.html) };
+            const response = await fetch(TAVILY_SEARCH_URL, {
+                method: "POST", signal: AbortSignal.timeout(20000), body: JSON.stringify(body),
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${tavilyKey}` }
+            });
+            return { status: response.status, data: parse(await response.text()) };
+        }
+
+        // Tavily: results with the relevant part of each page and its publish date, plus a
+        // short answer used as the summary. News questions with a recency use its news index.
+        async function searchWithTavily(query, recency) {
+            const body = { query, search_depth: "basic", max_results: 8, include_answer: "basic", topic: recency === "day" || recency === "week" ? "news" : "general" };
+            if (recency) body.time_range = recency;
+            const { status, data } = await tavilyPost(body);
+            if (status !== 200) {
+                const why = data.detail?.error || data.detail || data.error || `HTTP ${status}`;
+                if (status === 401) throw new Error(`Tavily rejected the API key (${why}). Check it in Settings > Web grounding`);
+                if (status === 432 || status === 433) throw new Error(`Tavily's search allowance is used up (${why})`);
+                throw new Error(`Tavily search failed (${typeof why === "string" ? why : JSON.stringify(why)})`);
+            }
+            const results = (data.results || []).filter(r => /^https?:\/\//.test(r.url || "")).map(r => {
+                const day = r.published_date && !isNaN(Date.parse(r.published_date)) ? new Date(r.published_date).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "";
+                return { title: r.title || r.url, href: r.url, body: `${day ? `[${day}] ` : ""}${String(r.content || "").replace(/\s+/g, " ").trim().slice(0, 700)}` };
+            });
+            if (!results.length && !data.answer) throw new Error("Tavily found nothing");
+            return { results, summary: String(data.answer || "").trim(), source: "Tavily" };
+        }
+
+        // Claude's web search as a search of its own (any provider): one short Messages
+        // request with Anthropic's server-side web_search tool. Each page Claude found is a
+        // result, with the passages it cited from it as the snippet.
+        function claudeSearchReady() {
+            return claudeWebSearchActive() && Boolean(anthropicKey || anthropicViaServer);
+        }
+
+        async function searchWithClaude(query, recency) {
+            const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+            const when = recency ? ` Only use pages from the last ${recency}.` : "";
+            const { url, headers } = anthropicEndpoint();
+            const response = await fetch(url, {
+                method: "POST", headers, signal: AbortSignal.timeout(60000),
+                body: JSON.stringify({
+                    model: ANTHROPIC_MODEL, max_tokens: 1500,
+                    tools: [{ ...CLAUDE_WEB_SEARCH_TOOL, max_uses: 3 }],
+                    messages: [{ role: "user", content: `Today is ${today}. Search the web for: ${query}\n\nReport the most recent, relevant facts you found as 3 to 8 short bullet points. Give dates, times, scores, numbers and names exactly as the sources state them, and say when sources disagree. No introduction.${when}` }]
+                })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                if (response.status === 400 && /web_search/i.test(data.error?.message || "")) claudeWebSearchFailed = true;
+                throw new Error(`Claude's web search failed (${data.error?.message || `HTTP ${response.status}`})`);
+            }
+            const content = data.content || [];
+            const results = [];
+            for (const block of content) {
+                if (block.type !== "web_search_tool_result" || !Array.isArray(block.content)) continue;
+                for (const r of block.content) if (r.url && !results.some(x => x.href === r.url)) results.push({ title: r.title || r.url, href: r.url, body: r.page_age ? `[${r.page_age}]` : "" });
+            }
+            for (const block of content) {
+                for (const c of block.citations || []) {
+                    const hit = results.find(r => r.href === c.url);
+                    if (hit && c.cited_text && !hit.body.includes(c.cited_text)) hit.body = `${hit.body} ${c.cited_text}`.trim().slice(0, 700);
+                }
+            }
+            const summary = content.filter(b => b.type === "text").map(b => b.text).join("").trim();
+            if (!results.length && !summary) throw new Error("Claude's web search returned nothing");
+            return { results: results.slice(0, 8), summary, source: "Claude web search (Anthropic)" };
+        }
+
         // Bing News's RSS feed: headlines with their publish dates, no key needed.
         function parseNewsRss(xml) {
             const doc = new DOMParser().parseFromString(xml, "text/xml");
@@ -2720,9 +3023,14 @@
             if (cached && Date.now() - cached.at < (fresh ? 2 * 60 * 1000 : SEARCH_CACHE_MS)) return cached.value;
 
             let value = null;
-            if (googleSearchEnabled && geminiSearchKey()) {
-                try { value = await searchWithGoogle(query, recency); } catch (err) {
-                    logConsoleActivity(`[Web Search] ${err.message}; using DuckDuckGo instead.`);
+            const searches = [
+                tavilyKey && (() => searchWithTavily(query, recency)),
+                claudeSearchReady() && (() => searchWithClaude(query, recency)),
+                googleSearchEnabled && geminiSearchKey() && (() => searchWithGoogle(query, recency))
+            ].filter(Boolean);
+            for (const search of searches) {
+                try { value = await search(); break; } catch (err) {
+                    logConsoleActivity(`[Web Search] ${err.message}; trying the next search.`);
                 }
             }
             if (!value) {
@@ -3293,6 +3601,9 @@
             const panel = document.getElementById("livePanel");
             const open = force ?? !panel.classList.contains("open");
             panel.classList.toggle("open", open);
+            const paused = open ? live.pausedFor : null;
+            live.pausedFor = null;
+            if (paused && paused.agentId !== live.agentId) { live.picked = true; if (live.stop) { live.stop(); live.stop = null; } live.agentId = paused.agentId; }
             document.body.classList.toggle("computer-open", open);
             updateWorkspaceGrid();
             markAgentComputers();
@@ -3366,10 +3677,18 @@
             }
             // A dead link, redirect or parked page: that browser is left open and handed to the
             // user, so show it (whichever browser was being watched).
+            // It never pops the computer open or switches browsers on its own: the user may be
+            // reading another chat. With the computer already open it moves to that browser;
+            // otherwise a note says where to find it.
             if (update.type === "paused") {
-                logConsoleActivity(`[Live] ⏸️ ${update.agentId === live.outlier ? "Outlier" : agents.find(a => String(a.id) === update.agentId)?.name || update.agentId}'s browser is paused for you: ${update.text}`);
+                const who = update.agentId === live.outlier ? "Outlier" : agents.find(a => String(a.id) === update.agentId)?.name || update.agentId;
+                logConsoleActivity(`[Live] ⏸️ ${who}'s browser is paused for you: ${update.text}`);
+                if (!document.getElementById("livePanel").classList.contains("open")) {
+                    live.pausedFor = update;
+                    showToast(`⏸️ ${who}'s browser is paused for you. Open its computer (🖥️) when you're ready to fix it.`);
+                    return;
+                }
                 if (update.agentId !== live.agentId) { live.picked = true; watchLiveAgent(update.agentId); }
-                toggleLiveView(true);
                 addLiveRow("console", `⏸️ Paused for you: ${update.text} Fix it here, then press Hand back.`, "error");
                 return;
             }
@@ -3378,7 +3697,13 @@
                 live.frame = update;
                 if (document.activeElement !== document.getElementById("liveUrl")) document.getElementById("liveUrl").value = update.url;
                 // Pictures nobody can see aren't decoded: a long run sends thousands of them.
-                return liveFrameShown() ? renderLiveFrame() : undefined;
+                // The ones on screen are drawn at most once a frame, newest only, so a fast
+                // page can't queue up decoding work ahead of the user's clicks.
+                if (liveFrameShown() && !live.drawPending) {
+                    live.drawPending = true;
+                    requestAnimationFrame(() => { live.drawPending = false; if (live.frame && liveFrameShown()) renderLiveFrame(); });
+                }
+                return;
             }
             if (update.type === "state") {
                 live.userControl = update.userControl;
@@ -3784,8 +4109,11 @@
         async function runMcpTool(tool, args, ctx) {
             const shownName = tool.qualifiedName || tool.name;
             // Tools that need approval every time ask below, whatever this setting says.
-            if (!toolsAutoRun && !tool.annotations?.readOnlyHint && !tool._meta?.["codev/requiresUserApproval"]) {
-                if (!confirm(`An agent wants to use ${shownName}${tool.server ? ` (MCP server "${tool.server}")` : " on your computer"}:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`)) {
+            // A command on the real computer asks too unless it's a plain test or build
+            // step: anything else could open apps or drive the mouse and keyboard.
+            const hostCommand = tool.transport === "desktop" && tool.name === "run_command" && !isSafeHostCommand(args?.command);
+            if ((!toolsAutoRun || hostCommand) && !tool.annotations?.readOnlyHint && !tool._meta?.["codev/requiresUserApproval"]) {
+                if (!await askPermission(`An agent wants to use ${shownName}${tool.server ? ` (MCP server "${tool.server}")` : " on your computer"}:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`, ctx?.agentName)) {
                     logConsoleActivity(`[Tool] You declined: ${shownName}`);
                     return "The user declined this tool call.";
                 }
@@ -3801,7 +4129,7 @@
                     _meta: { "codev/agentId": ctx?.agentId || "default", "codev/agentName": ctx?.agentName || "An agent" } });
                 const approval = result._meta?.["codev/approvalRequired"];
                 if (approval) {
-                    const approved = confirm(`🔐 ${approval.prompt}\n\nAllow it?`);
+                    const approved = await askPermission(`🔐 ${approval.prompt}\n\nAllow it?`, ctx?.agentName);
                     logConsoleActivity(`[Browser] You ${approved ? "allowed" : "declined"}: ${approval.tool}`);
                     result = await browserRpc("codev/approve", { id: approval.id, approved });
                     if (approved && /session|login/.test(approval.tool)) refreshBrowserVault();
@@ -3842,7 +4170,7 @@
         const googleApps = CodevGoogleApps.createGoogleApps({
             transport: googleTransport,
             getApiKey: () => { try { return localStorage.getItem(CodevGoogleApps.STORE.apiKey) || ""; } catch (err) { return ""; } },
-            confirmWrite: async message => confirm(message),
+            confirmWrite: message => askPermission(message),
             webSearch: query => localWebSearch(query),
             fetchText: url => fetchPageHtml(url)
         });
@@ -3852,11 +4180,36 @@
             if (el) CodevGoogleApps.mountSettings(el, { transport: googleTransport, apps: googleApps, storage: localStorage, openWindow: window.codevDesktop ? null : () => window.open("about:blank", "_blank") });
         });
 
+        // THE ODDS API: every sportsbook's lines and props, saved as snapshots for line
+        // movement, and the list of props worth looking up on Outlier (agent-ui/odds-api.js).
+        // The user's free key is kept in this page; without it agents read odds on Outlier.
+        let oddsViewer = null;
+        const oddsTracker = CodevOddsApi.createOddsTracker({
+            storage: localStorage,
+            http: CodevOddsApi.detectHttp(window),
+            log: logConsoleActivity,
+            onChart: filter => openOddsViewer(filter)
+        });
+        function openOddsViewer(filter) {
+            const el = document.getElementById("oddsViewer");
+            if (!el) return;
+            if (!oddsViewer) oddsViewer = CodevOddsApi.mountViewer(el, { tracker: oddsTracker });
+            oddsViewer.open(filter || {});
+            document.getElementById("oddsViewerModal").style.display = "flex";
+        }
+        document.addEventListener("DOMContentLoaded", () => {
+            const el = document.getElementById("oddsSettings");
+            if (el) CodevOddsApi.mountSettings(el, { tracker: oddsTracker, storage: localStorage, openViewer: openOddsViewer });
+            // Re-snapshots the lines agents looked at, a few times a day, within the credit limits.
+            setTimeout(() => oddsTracker.autoTrack().catch(() => {}), 60000);
+            setInterval(() => oddsTracker.autoTrack().catch(() => {}), 15 * 60000);
+        });
+
         async function buildLocalTools(ctx) {
             const tools = [
                 {
                     name: "web_search",
-                    description: "Search the web for live facts: Google Search when the user has a Gemini key, otherwise DuckDuckGo plus dated news headlines. Call this for anything that may have changed since your training (news, scores, injuries, lineups, odds, prices, releases) and before answering about an API, library, engine feature, syntax, version or error message you are not completely certain about. Set recency to \"day\" or \"week\" for news, scores and injuries.",
+                    description: "Search the web for live facts: Tavily when the user has a key, then Claude's web search, Google Search, or DuckDuckGo plus dated news headlines. Call this for anything that may have changed since your training (news, scores, injuries, lineups, odds, prices, releases) and before answering about an API, library, engine feature, syntax, version or error message you are not completely certain about. Set recency to \"day\" or \"week\" for news, scores and injuries.",
                     inputSchema: { type: "object", properties: {
                         query: { type: "string", description: "A short search query, like you would type into a search engine." },
                         recency: { type: "string", enum: ["day", "week", "month", "any"], description: "Optional: only pages from the last day, week or month. Use day or week for news, scores and injuries." }
@@ -3933,6 +4286,7 @@
             try {
                 for (const tool of await googleApps.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             } catch (err) { logConsoleActivity(`[Google] ${err.message}`); }
+            for (const tool of oddsTracker.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             if (ctx && ctx.sandbox) return buildSandboxTools(tools, ctx);
             const mcpTools = await fetchAllMcpTools();
             // The folder connected in the page gets its own tools. When the Windows app or the
@@ -4029,7 +4383,7 @@
             if (typeof content !== "string") return "write_workspace_file needs content as a string.";
             const name = normalizeWorkspacePath(rawName);
             if (!name) return "Use a file path inside the project folder, like scripts/player.gd.";
-            if (!toolsAutoRun && !confirm(`An agent wants to write ${name} (${content.length} characters) in your project folder.\n\nAllow it?`)) {
+            if (!toolsAutoRun && !await askPermission(`An agent wants to write ${name} (${content.length} characters) in your project folder.\n\nAllow it?`)) {
                 logConsoleActivity(`[Tool] You declined writing ${name}`);
                 return "The user declined this write.";
             }
@@ -4054,7 +4408,7 @@
         async function runHelperCommand(command) {
             if (!command) return "Unknown command. Only the listed commands can run.";
             const shown = (command.argv || []).join(" ");
-            if (!toolsAutoRun && !confirm(`An agent wants to run this command on your computer:\n\n${shown}\n(in ${command.cwd || "the helper's project folder"})\n\nAllow it?`)) {
+            if (!toolsAutoRun && !await askPermission(`An agent wants to run this command on your computer:\n\n${shown}\n(in ${command.cwd || "the helper's project folder"})\n\nAllow it?`)) {
                 logConsoleActivity(`[Tool] You declined: ${command.name}`);
                 return "The user declined to run this command.";
             }
@@ -4080,6 +4434,8 @@
             const name = split > 0 ? fullName.slice(split + 2) : fullName;
             const googleStep = googleApps.describe(name, args);
             if (googleStep) return googleStep;
+            const oddsStep = oddsTracker.describe(name, args);
+            if (oddsStep) return oddsStep;
             if (name === "mcp_list_resources") return "📚 Listing MCP resources";
             if (name === "read_attachment") return `📄 Reading ${args.name || "the attached file"}${args.pages ? `, pages ${args.pages}` : args.query ? ` for "${args.query}"` : ""}`;
             if (name === "query_table") return `📊 ${{ stats: "Measuring", group: "Totaling", search: "Searching", columns: "Looking over" }[args.action] || "Reading rows of"} ${args.name || "the spreadsheet"}${args.group_by ? ` by ${args.group_by}` : ""}`;
@@ -4116,6 +4472,7 @@
             if (name === "browser_save_session" || name === "browser_load_session") return "🍪 Saved session (asks you first)";
             if (name === "outlier_research_list") return `📈 Checking ${(args.legs || []).length} legs on Outlier${args.sport ? ` (${args.sport})` : ""}`;
             if (name === "outlier_research") return `📈 Reading ${args.player || "a player"}'s card on Outlier`;
+            if (name === "outlier_find_hit_rates") return `📈 Filtering Outlier's ${args.sport || ""} board to ${args.min_hit_rate || 60}%+ ${String(args.window || "l5").toUpperCase()} hit rates`.replace("  ", " ");
             if (name === "outlier_scan_board") return `📈 Reading Outlier's ${args.sport || ""} board`.replace("  ", " ");
             if (name === "outlier_read_section") return `📈 Reading Outlier's ${args.section || "section"}`;
             if (name === "outlier_simulate_ticket") return "🎲 Simulating the ticket from the cards";
@@ -4146,8 +4503,9 @@
         function outlierToolNote(tools, messages) {
             if (tools.some(t => t.name === "outlier_scan_board")) {
                 return "[Outlier] Outlier (outlier.bet) is a sports betting research app at https://app.outlier.bet: its Props board lists every player prop with its line, odds by book and hit rates (L5, L10, L20, H2H, season); clicking a prop opens its Market Details (hit rate chart, supporting stats, opponent rank against the position, injuries, odds movement, public bet splits), and the Games tab has each game's lines, injuries and public money. outlier_guide explains every section and what each number means. CoDev keeps the user's own signed-in Outlier browser. "
-                    + "For any request about Outlier, props, parlays or tickets, call outlier_scan_board first, with sport, game and market taken from the request (e.g. sport \"NBA\", game \"8pm\"). "
-                    + "When the user gives a list of props (from Dabble, Underdog, PrizePicks...), call outlier_research_list once with every leg (player, stat, line, side), the sport, the game and the day (\"tomorrow\"), and build the 4-6 leg slip only from those legs, one reason per leg. Leave game out unless the user named one (a list can span games). Never reload, refresh or re-filter the user's Outlier page: when CoDev's browser is already on an Outlier props page, outlier_scan_board and outlier_research_list read it exactly as the user set it (their filters, game, search) on their own, so don't pass here: false, url or set_filters unless the user asks for a fresh board or for CoDev to set the filters. Use its \"Best on Outlier's hit rates\" ranking and the hit rates it prints, then weigh everything it read from each player's card and its tabs: minutes and opportunity (shot attempts, usage, potential assists, rebound chances; a drop lately is a warning for an Over), splits, the matchup rank, injuries around him, line movement and public betting; after picking the legs, call outlier_simulate_ticket with them for the chance they all hit, and give it as an estimate; never invent a number, pace, projection or probability the tools didn't return; if a run was interrupted (a crash or a restart), call outlier_research_list again with the same legs: it picks up the board and the cards it already read in the last 30 minutes instead of starting over; when its result says legs still have their card unread, call it again with the same legs (up to 3 calls in all) before answering, since each call opens only the cards not read yet, unless it says Outlier is limiting CoDev: then answer right away with its \"Slip from what was read\" (built from the legs whose card was read, with its simulation), mark any unverified leg as unverified, and tell the user to say \"continue\" in about 10 minutes to read the rest; never stop without a slip; keep each leg's stat exactly as the user gave it, quarter or half included (\"1st Quarter Receiving Yards\", \"1H Rush Yds\"): Outlier lists those apart from the full game; its sportsbook audit is for reference only, not a pass/fail for DFS legs. Research every leg the same way, in this order, from what the tools returned: 1) the exact line: Outlier's line against the user's (outlier_research_list turns on Outlier's alt lines and opens the odds filter past -300 first, so the user's line is usually there; if only another line shows, say how far off it is and which way that helps or hurts), 2) hit rates at the user's line for L5, L10, L20, H2H and the season (a small sample counts less), 3) playing time and opportunity for that sport and whether it's rising or falling: basketball minutes, usage, shot attempts, touches, potential assists, rebound chances; football snaps, routes, targets, target share, air yards, carries, red-zone touches, pass attempts; baseball plate appearances, batting order, pitch count, innings pitched, batters faced; hockey time on ice, power-play time, shots; use every one the card shows, 4) the opponent matchup (Favorable, Neutral, Unfavorable or the rank against his position), 5) injuries around him (a teammate out moves his volume), 6) line movement and the odds (heavy juice means the books expect it to hit). Flag a leg whose matchup is Unfavorable while his volume is falling, and say which of these six points each leg's reason rests on. Trust Outlier's rosters and teams over your own memory: players get traded. "
+                    + "When the user asks for legs with strong hit rates (\"60%+ in the last 5\", \"lines that keep hitting\", overs or unders) or a ticket built from Outlier's hit rates, call outlier_find_hit_rates ONCE first, before anything else (not outlier_scan_board, not odds_lookup_list): it sets Outlier's own Hit Rate, Over/Under, game and stat filters so the board shows only those legs, ranks them, leaves out players with injury news, and builds the 4-leg regular-line ticket (legs near -119, one per game). Pass the sport and the window and minimum the user said (default L5, 60). Give the user its ranked list and ticket. Don't call it again for the same request: a repeat within 10 minutes returns the same read. If it says Outlier is rate-limiting, answer from what it returned and stop. "
+                    + "For any other request about Outlier, props, parlays or tickets, call outlier_scan_board first, with sport, game and market taken from the request (e.g. sport \"NBA\", game \"8pm\"). "
+                    + "When the user gives a list of props (from Dabble, Underdog, PrizePicks...), call outlier_research_list once with every leg (player, stat, line, side), the sport, the game and the day (\"tomorrow\"), and build the 4-6 leg slip only from those legs, one reason per leg. Leave game out unless the user named one (a list can span games). outlier_research_list sets Outlier's filters itself in a tab of its own (each leg's player and game ticked, the prop type, alt lines on, the whole odds range), so the board shows just those legs instead of being scrolled; the user's own Outlier tab is never reloaded or re-filtered. Pass here: true only when the user says they set their page up themselves, and set_filters: false only when they ask CoDev not to touch the filters. Use its \"Best on Outlier's hit rates\" ranking and the hit rates it prints, then weigh everything it read from each player's card and its tabs: minutes and opportunity (shot attempts, usage, potential assists, rebound chances; a drop lately is a warning for an Over), splits, the matchup rank, injuries around him, line movement and public betting; after picking the legs, call outlier_simulate_ticket with them for the chance they all hit, and give it as an estimate; never invent a number, pace, projection or probability the tools didn't return; if a run was interrupted (a crash or a restart), call outlier_research_list again with the same legs: it picks up the board and the cards it already read in the last 30 minutes instead of starting over; when its result says legs still have their card unread, call it again with the same legs (up to 3 calls in all) before answering, since each call opens only the cards not read yet, unless it says Outlier is limiting CoDev: then answer right away with its \"Slip from what was read\" (built from the legs whose card was read, with its simulation), mark any unverified leg as unverified, and tell the user to say \"continue\" in about 10 minutes to read the rest; never stop without a slip; keep each leg's stat exactly as the user gave it, quarter or half included (\"1st Quarter Receiving Yards\", \"1H Rush Yds\"): Outlier lists those apart from the full game; its sportsbook audit is for reference only, not a pass/fail for DFS legs. Research every leg the same way, in this order, from what the tools returned: 1) the exact line: Outlier's line against the user's (outlier_research_list ticks the players, turns on Outlier's alt lines and opens the odds filter past -300 first, so the user's line is usually there; if only another line shows, say how far off it is and which way that helps or hurts), 2) hit rates at the user's line for L5, L10, L20, H2H and the season (a small sample counts less), 3) playing time and opportunity for that sport and whether it's rising or falling: basketball minutes, usage, shot attempts, touches, potential assists, rebound chances; football snaps, routes, targets, target share, air yards, carries, red-zone touches, pass attempts; baseball plate appearances, batting order, pitch count, innings pitched, batters faced; hockey time on ice, power-play time, shots; use every one the card shows, 4) the opponent matchup (Favorable, Neutral, Unfavorable or the rank against his position), 5) injuries around him (a teammate out moves his volume), 6) line movement and the odds (heavy juice means the books expect it to hit). Flag a leg whose matchup is Unfavorable while his volume is falling, and say which of these six points each leg's reason rests on. Trust Outlier's rosters and teams over your own memory: players get traded. "
                     + "Without a list: scan the board with outlier_scan_board, then check the legs you like with outlier_research. outlier_read_section reads Insights, Popular, Games or Injuries for ideas and context. The Outlier guide below says what every section is for. "
                     + "Don't search the project files for Outlier, don't ask the user for a URL or a login, and don't open Outlier in your own browser: outlier_scan_board already uses the signed-in one. "
                     + "It opens Outlier's regular props board, not Positive EV, even when Outlier reopens on +EV (/pro/ev): always pass sport (e.g. \"NBA\") and it goes straight to that sport's board (app.outlier.bet/NBA/props). Don't pass section \"Props\"; leave section out for the board. Never pass a +EV tab such as \"NBA Player Props\", \"Pinnacle\" or \"Sharp Gamelines\" as section. If it can't find a tab, its error lists the tabs on the page: pick the matching one (or ask the user) and call it again with that name as section or sport. "
@@ -4165,6 +4523,23 @@
                     ? `CoDev's server couldn't start the Outlier service (${String(outlier.detail || "no reason given").slice(0, 200)}). Tell the user that, and to run npm install in their CoDev folder, restart start-codev.bat and ask again.`
                     : "This page isn't connected to CoDev's server, which runs the Outlier scan. Tell the user to start CoDev with start-codev.bat and use the tab it opens at http://localhost:3000, sign in once from the 📈 Outlier tab, and ask again.";
             return `[Outlier] The Outlier scan isn't available here. If the request is about Outlier, don't search the project files for it. ${why}`;
+        }
+
+        // With an Odds API key, agents start from every sportsbook's lines and know what to
+        // look up on Outlier; without one (or out of credits) they read odds on Outlier itself.
+        const ODDS_TASK = /\b(odds|lines?|spreads?|totals?|moneyline|sportsbooks?|books?|juice|vig|movement|moved|sharp)\b/i;
+        function oddsToolNote(tools, askedText) {
+            if (!OUTLIER_TASK.test(askedText) && !ODDS_TASK.test(askedText)) return "";
+            if (!tools.some(t => t.name === "odds_lookup_list")) {
+                return tools.some(t => t.name === "odds_status")
+                    ? "[Odds] The Odds API isn't set up, so read odds and line movement on Outlier (or the web) as usual. If the user asks to track lines across sportsbooks, tell them they can add a free key under Settings > Odds API (line tracking)."
+                    : "";
+            }
+            return "[Odds] The Odds API gives you every sportsbook's current lines and props and how they moved since CoDev saved them. "
+                + "For a hit-rate request (\"60%+ in the last 5\" and the like), call outlier_find_hit_rates first instead. For other props, tickets or line tracking, call odds_lookup_list first (sport, and the game when the user named one): it returns the players, stats, lines and books worth checking, with the reason for each and the legs ready for outlier_research_list. Then research those legs on Outlier, or the user's own legs if they gave a list (use odds_player_props for their prices at every book). "
+                + "Use odds_player_props and odds_game_lines to compare books (best price, fair chance with the margin removed), odds_line_movement for how a line moved (free), and odds_show_chart when the user wants to see it. "
+                + "Odds calls spend the user's free monthly credits: ask for one game and only the stats you need, don't pass refresh unless the user asks for the latest, and don't call the same tool twice with the same input. "
+                + "If an odds tool says it couldn't fetch (no credits left today, or an error), say so in one line and read the odds on Outlier in the browser instead. Never present these numbers as picks: they're the market's view, an input to the research.";
         }
 
         // Runs the model ↔ tool loop until the model answers in plain text.
@@ -4196,6 +4571,8 @@
                 try { outlierNote += "\n\n[Outlier guide]\n" + String(await guideTool.run({}, ctx)).slice(0, 16000); } catch (err) { /* the note alone */ }
             }
             if (outlierNote && messages[0]?.role === "system") messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + outlierNote };
+            const oddsNote = oddsToolNote(tools, askedText);
+            if (oddsNote && messages[0]?.role === "system") messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + oddsNote };
             // Two failed Outlier calls in one request stop the tools: the agent answers with
             // what failed instead of retrying and spending the user's time and usage.
             let outlierFailures = 0;
@@ -4213,8 +4590,15 @@
                 ...done.slice(-PROGRESS_STEPS_SHOWN).map(d => `${d.ok ? "✓" : "⚠️"} ${d.step}${d.note ? ` → ${d.note}` : ""}`),
                 current ? `▶ Now: ${current}` : ""
             ].filter(Boolean).join("\n");
+            // What this task has cost so far; a spending limit ends the tool steps early.
+            ctx.cost = ctx.cost || 0;
+            let spendStop = "";
             for (let round = 0; round < MAX_TOOL_ROUNDS && outlierFailures < 2 && browserFailures < 3; round++) {
+                if (round > 0 && taskSpendLimit > 0 && ctx.cost >= taskSpendLimit) spendStop = `this task reached its spending limit of ${formatUsd(taskSpendLimit)}`;
+                else if (round > 0 && dailySpendReached()) spendStop = `CoDev reached today's spending limit of ${formatUsd(dailySpendLimit)}`;
+                if (spendStop) break;
                 const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" }, { sources: ctx.sources || [] });
+                ctx.cost += message.cost || 0;
                 // Searches Claude ran itself (its own web search) are steps too.
                 for (const search of message.web_searches || []) {
                     const step = `🔎 Claude searched: ${search.query}`;
@@ -4223,7 +4607,10 @@
                     if (ctx.toolLog) ctx.toolLog.push(`${step} → ${note}`);
                 }
                 const calls = message.tool_calls || [];
-                if (!calls.length) return message.content || "";
+                if (!calls.length) {
+                    logTaskSpend(ctx);
+                    return message.content || "";
+                }
                 messages.push({ role: "assistant", content: message.content || "", tool_calls: calls, anthropic_content: message.anthropic_content });
                 checkpoint();
                 // The agent's plan, written with its calls, stays on screen above each step.
@@ -4283,9 +4670,19 @@
                     checkpoint();
                 }
             }
-            // Out of rounds: ask for the answer with what was gathered.
-            const final = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "none" }, { sources: ctx.sources || [] });
+            // Out of rounds, or over a spending limit: ask for the answer with what was gathered.
+            if (spendStop) {
+                logConsoleActivity(`[Spend] Stopped the tool steps: ${spendStop}.`);
+                messages.push({ role: "user", content: `[CoDev] Stop here: ${spendStop}, so no more tools can run. Answer now with what you found, say in one line what is left undone, and tell the user they can raise the limit in Settings > Spending limits or say "continue".` });
+            }
+            const final = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "none" }, { sources: ctx.sources || [], wrapUp: Boolean(spendStop) });
+            ctx.cost += final.cost || 0;
+            logTaskSpend(ctx);
             return final.content || "";
+        }
+
+        function logTaskSpend(ctx) {
+            if (ctx.cost > 0) logConsoleActivity(`[Spend] This task cost about ${formatUsd(ctx.cost)}. ${describeSpend()}`);
         }
 
         // MULTIMEDIA ATTACHMENTS & LIVE WEB SEARCH
@@ -5522,6 +5919,10 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
         function openSettingsModal() {
             fillVoicePicker();
+            if (window.CodevCloud) {
+                CodevCloud.renderPanel(document.getElementById("codevAccountPanel"));
+                CodevCloud.refresh().then(() => CodevCloud.renderPanel(document.getElementById("codevAccountPanel")));
+            }
             document.getElementById("modalGroqKey").value = groqKey;
             document.getElementById("modalProvider").value = currentBackend;
             document.getElementById("modalOpenRouterKey").value = openRouterKey;
@@ -5530,9 +5931,13 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             document.getElementById("anthropicServerNote").style.display = anthropicViaServer ? "inline" : "none";
             toggleProviderFields();
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
+            document.getElementById("modalTavilyKey").value = tavilyKey;
             document.getElementById("modalGoogleSearch").checked = googleSearchEnabled;
             document.getElementById("googleSearchNote").style.display = geminiSearchKey() ? "none" : "block";
             document.getElementById("modalClaudeWebSearch").checked = claudeWebSearchEnabled;
+            document.getElementById("modalDailySpendLimit").value = dailySpendLimit;
+            document.getElementById("modalTaskSpendLimit").value = taskSpendLimit;
+            document.getElementById("spendStatus").textContent = describeSpend();
             document.getElementById("modalMemoryOn").checked = savedMemoryEnabled;
             renderSavedMemories();
             fillMediaSettings();
@@ -5682,11 +6087,11 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             document.getElementById("modalOpenRouterKey").value = newOpenRouterKey;
             document.getElementById("modalAnthropicKey").value = newAnthropicKey;
 
-            if (backend === "anthropic" && !newAnthropicKey.startsWith("sk-ant-") && !(newAnthropicKey === "" && anthropicViaServer)) {
+            if (backend === "anthropic" && !newAnthropicKey.startsWith("sk-ant-") && !(newAnthropicKey === "" && (anthropicViaServer || cloudProviderKey("anthropic")))) {
                 showSettingsError("Please enter a valid Anthropic API key starting with 'sk-ant-'.", "modalAnthropicKey");
                 return;
             }
-            if (backend === "groq" && !newGroqKey.startsWith("gsk_")) {
+            if (backend === "groq" && !newGroqKey.startsWith("gsk_") && !(newGroqKey === "" && cloudProviderKey("groq"))) {
                 showSettingsError("Please enter a valid Groq API key starting with 'gsk_'.", "modalGroqKey");
                 return;
             }
@@ -5696,7 +6101,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 showSettingsError(mediaProblem, "modalGeminiKey");
                 return;
             }
-            if (backend === "openrouter" && newOpenRouterKey.length < 10) {
+            if (backend === "openrouter" && newOpenRouterKey.length < 10 && !(newOpenRouterKey === "" && cloudProviderKey("openrouter"))) {
                 showSettingsError("Please paste your OpenRouter API key (it usually starts with 'sk-or-').", "modalOpenRouterKey");
                 return;
             }
@@ -5733,11 +6138,21 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             autoGroundingEnabled = document.getElementById("modalAutoGround").checked;
             searchHelperUrl = document.getElementById("modalSearchHelperUrl").value.trim() || DEFAULT_SEARCH_HELPER_URL;
             localStorage.setItem("codev_auto_ground", autoGroundingEnabled ? "1" : "0");
+            tavilyKey = cleanSearchKey(document.getElementById("modalTavilyKey").value);
+            localStorage.setItem("codev_tavily_key", tavilyKey);
             googleSearchEnabled = document.getElementById("modalGoogleSearch").checked;
             localStorage.setItem("codev_google_search", googleSearchEnabled ? "1" : "0");
             claudeWebSearchEnabled = document.getElementById("modalClaudeWebSearch").checked;
             localStorage.setItem("codev_claude_web_search", claudeWebSearchEnabled ? "1" : "0");
             claudeWebSearchFailed = false;
+            const spendLimit = (id, fallback) => {
+                const value = parseFloat(document.getElementById(id).value);
+                return Number.isFinite(value) && value >= 0 ? value : fallback;
+            };
+            dailySpendLimit = spendLimit("modalDailySpendLimit", dailySpendLimit);
+            taskSpendLimit = spendLimit("modalTaskSpendLimit", taskSpendLimit);
+            localStorage.setItem("codev_daily_spend_limit", String(dailySpendLimit));
+            localStorage.setItem("codev_task_spend_limit", String(taskSpendLimit));
             chimeEnabled = document.getElementById("modalChime").checked;
             localStorage.setItem("codev_chime", chimeEnabled ? "1" : "0");
             readAzureSettings();
@@ -6233,27 +6648,43 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // Groq's model names; with OpenRouter the model is swapped for the OpenRouter
         // model from Settings, which serves text, tools and images alike.
         // extras.sources: the run's source list, for Claude's web search citations.
-        async function groqChatMessage(body, extras) {
+        // extras.wrapUp: the last answer of a task that hit a spending limit, which may still go out.
+        async function groqChatMessage(body, extras = {}) {
+            if (!extras.wrapUp) checkDailySpend();
             if (currentBackend === "anthropic") return anthropicChatMessage(body, extras);
             const openRouter = currentBackend === "openrouter";
             const provider = openRouter
                 ? { name: "OpenRouter", host: "openrouter.ai", url: "https://openrouter.ai/api/v1/chat/completions", key: openRouterKey,
                     headers: { "HTTP-Referer": "https://github.com/phillbennett021423/CoDev_cloud", "X-Title": "CoDev Studio" } }
                 : { name: "Groq", host: "api.groq.com", url: "https://api.groq.com/openai/v1/chat/completions", key: groqKey, headers: {} };
-            if (openRouter) body = { ...body, model: openRouterModel };
+            // OpenRouter adds what the call cost to usage, for the spending limits.
+            if (openRouter) body = { ...body, model: openRouterModel, usage: { include: true } };
+            // No key of the user's own: CoDev's server sends it with the owner's key.
+            const viaCloud = !provider.key && cloudProviderKey(currentBackend) === "cloud";
             let response;
             try {
-                response = await fetch(provider.url, {
+                response = await fetch(viaCloud ? window.CodevCloud.relayUrl(currentBackend) : provider.url, {
                     method: "POST",
-                    headers: { "Authorization": `Bearer ${provider.key}`, "Content-Type": "application/json", ...provider.headers },
+                    headers: viaCloud
+                        ? { ...window.CodevCloud.authHeader(), "Content-Type": "application/json" }
+                        : { "Authorization": `Bearer ${provider.key}`, "Content-Type": "application/json", ...provider.headers },
                     body: JSON.stringify(body)
                 });
             } catch (err) {
                 // fetch only throws like this when the request never reached the provider.
+                if (viaCloud) throw new Error(`Couldn't reach CoDev's server (${err.message}). Check that this device is online.`);
                 throw new Error(`Couldn't reach ${provider.name} at ${provider.host} (${err.message}). Check that this computer is online, and that a firewall, antivirus, VPN or ad blocker isn't blocking ${provider.host}.`);
             }
             const data = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } }));
-            if (data.choices && data.choices.length > 0) return data.choices[0].message;
+            if (data.choices && data.choices.length > 0) {
+                const cost = openRouter ? Number(data.usage?.cost) || 0 : 0;
+                recordSpend(cost, { input: data.usage?.prompt_tokens, output: data.usage?.completion_tokens });
+                return { ...data.choices[0].message, cost };
+            }
+            if (viaCloud) {
+                const message = window.CodevCloud.relayError(response.status, data);
+                if (message) throw new Error(message);
+            }
             const code = data.error?.code ? ` (${data.error.code})` : "";
             if (response.status === 401) {
                 throw new Error(`${provider.name} rejected the API key (401: ${data.error?.message || "unauthorized"}). CoDev sent ${describeKey(provider.key)}. Open Settings and check it matches your key from ${openRouter ? "openrouter.ai/keys" : "console.groq.com/keys"}.`);
@@ -6279,6 +6710,27 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         let claudeWebSearchFailed = false;
         function claudeWebSearchActive() {
             return claudeWebSearchEnabled && !claudeWebSearchFailed;
+        }
+        // With a Tavily key, Claude agents use CoDev's web_search (Tavily first) like the others.
+        function claudeSearchesForAgents() {
+            return claudeWebSearchActive() && !tavilyKey;
+        }
+
+        // Where Anthropic requests go: straight to Anthropic with the key from Settings, or,
+        // with no key on the local server page, through server.js, which adds ANTHROPIC_API_KEY.
+        function anthropicEndpoint() {
+            const viaServer = !anthropicKey && anthropicViaServer;
+            // No key here or on the local server: CoDev's online server sends it with the owner's key.
+            const viaCloud = !anthropicKey && !viaServer && cloudProviderKey("anthropic") === "cloud";
+            const url = viaCloud ? window.CodevCloud.relayUrl("anthropic") : viaServer ? "/anthropic/v1/messages" : "https://api.anthropic.com/v1/messages";
+            const headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01" };
+            if (viaCloud) Object.assign(headers, window.CodevCloud.authHeader());
+            else if (!viaServer) {
+                headers["x-api-key"] = anthropicKey;
+                // Anthropic only answers browser pages that say they hold the user's own key.
+                headers["anthropic-dangerous-direct-browser-access"] = "true";
+            }
+            return { url, headers, viaServer, viaCloud };
         }
 
         // The text of Claude's reply with [n] after each cited passage, numbered in sources
@@ -6341,7 +6793,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const request = { model: ANTHROPIC_MODEL, max_tokens: 16000, cache_control: { type: "ephemeral" }, messages };
             if (system.length) request.system = system.join("\n\n");
             if (body.tools?.length) {
-                request.tools = body.tools.map(t => t.function.name === "web_search" && claudeWebSearchActive()
+                request.tools = body.tools.map(t => t.function.name === "web_search" && claudeSearchesForAgents()
                     ? CLAUDE_WEB_SEARCH_TOOL
                     : { name: t.function.name, description: t.function.description || "", input_schema: t.function.parameters || { type: "object", properties: {} } });
                 request.tool_choice = { type: body.tool_choice === "none" ? "none" : "auto" };
@@ -6353,25 +6805,27 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // ({ content, tool_calls }) the rest of CoDev expects. With no key in Settings
         // on the local server page, server.js adds ANTHROPIC_API_KEY and relays it.
         async function anthropicChatMessage(body, extras = {}) {
-            const viaServer = !anthropicKey && anthropicViaServer;
-            const url = viaServer ? "/anthropic/v1/messages" : "https://api.anthropic.com/v1/messages";
-            const headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01" };
-            if (!viaServer) {
-                headers["x-api-key"] = anthropicKey;
-                // Anthropic only answers browser pages that say they hold the user's own key.
-                headers["anthropic-dangerous-direct-browser-access"] = "true";
-            }
+            const { url, headers, viaServer, viaCloud } = anthropicEndpoint();
             const request = toAnthropicRequest(body);
+            let cost = 0;
             const send = async () => {
                 let response;
                 try {
                     response = await fetch(url, { method: "POST", headers, body: JSON.stringify(request) });
                 } catch (err) {
+                    if (viaCloud) throw new Error(`Couldn't reach CoDev's server (${err.message}). Check that this device is online.`);
                     throw new Error(viaServer
                         ? `Couldn't reach CoDev's server to relay to Anthropic (${err.message}). Is npm start still running?`
                         : `Couldn't reach Anthropic at api.anthropic.com (${err.message}). Check that this device is online, and that a firewall, antivirus, VPN or ad blocker isn't blocking api.anthropic.com.`);
                 }
-                return { response, data: await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } })) };
+                const data = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } }));
+                if (data.usage) {
+                    const spent = anthropicCost(data.usage);
+                    cost += spent;
+                    const u = data.usage;
+                    recordSpend(spent, { input: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), output: u.output_tokens });
+                }
+                return { response, data };
             };
             let { response, data } = await send();
             // Web search not enabled for this account or model: CoDev's own web_search instead.
@@ -6388,6 +6842,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 ({ response, data } = await send());
             }
             if (!response.ok) {
+                const cloudMessage = viaCloud && window.CodevCloud.relayError(response.status, data);
+                if (cloudMessage) throw new Error(cloudMessage);
                 if (response.status === 401) {
                     throw new Error(viaServer
                         ? `Anthropic rejected the ANTHROPIC_API_KEY on CoDev's server (401: ${data.error?.message || "unauthorized"}). Fix it in .env and restart, or put a key in Settings.`
@@ -6407,7 +6863,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const calls = content.filter(b => b.type === "tool_use")
                 .map(b => ({ id: b.id, type: "function", function: { name: b.name, arguments: JSON.stringify(b.input || {}) } }));
             if (data.stop_reason === "max_tokens" && !calls.length) logConsoleActivity("[Anthropic] The reply hit the length limit and was cut short.");
-            const message = { role: "assistant", content: text, anthropic_content: content };
+            const message = { role: "assistant", content: text, anthropic_content: content, cost };
             if (calls.length) message.tool_calls = calls;
             if (searched.searches.length) message.web_searches = searched.searches;
             return message;
@@ -6507,7 +6963,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 5. CHECK YOUR OWN WORK: After every action that changes something (a click, typing, opening a page, a file edit, an Outlier read), look at what the result actually shows and compare it with what you expected: the right page, player, stat, line and game, filters still set, the page not reloaded, the file containing your change. If it doesn't match, say what is off and correct it with a different approach. Never repeat a call that just failed with the same input. After two failed attempts at the same step, stop and tell the user exactly what went wrong and what they can do.
 
-6. KEEP THE USER INFORMED: When a task takes several tool steps, start with a one or two line plan as your message text. In the final answer, lead with the result, then briefly say what you did and checked, anything that failed or is uncertain, and what is left for the user.
+6. KEEP THE USER INFORMED: When a task takes several tool steps, start with a one or two line plan as your message text. In the final answer, lead with the result, then say in a line or two what you did and checked, anything that failed or is uncertain, and what is left for the user.
 
 7. ALWAYS HELP: If you can't do something directly here (no tool for it, a site needs the user's sign-in, an action happens on their phone or account, a payment), say so in one line, then walk the user through doing it themselves with exact, numbered steps, or do the parts you can.
 
@@ -6515,7 +6971,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 9. CITATIONS: When a statement relies on a web result, cite it inline as [n] using that result's number. Never cite a source that wasn't provided. Workspace files are cited by file name.
 
-10. STYLE: Answer directly in plain words. Match the length to the question: a short question gets a short answer. Use lists or code blocks only when they help.
+10. BE BRIEF: Say what the user needs and stop. Lead with the answer in plain words. No preamble, no restating the question, no repeating what you already said, no closing summary or offers of more help. A simple question gets one to three sentences, and most answers fit in about 150 words. Go longer only when the task needs it: code, a report or deep research, step-by-step instructions, or when the user asks for detail; even then, cut anything that doesn't help. Use lists or code blocks only when they help.
 
 11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); making and editing pictures (generate_image). For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
 
@@ -6663,7 +7119,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         const CODEV_IDENTITY = "[CoDev] You are CoDev, a capable general assistant and agent: you write and fix code, answer any question, research on the web and read pages, analyze sports props on Outlier, read screenshots, images and documents, drive a browser, remember what the user asks you to keep, and help with writing, planning and anything else the user needs. "
             + "Before acting, work out what kind of request this is and use only the tools it needs. Touch the user's project files only when the task is about them or the user asks.";
         const REQUEST_KIND_NOTES = {
-            props: "[Request type] Sports props and betting research, not a coding task. Use the Outlier tools, read_screenshots for slip screenshots, and web_search. Don't list, search or read the project files unless the user asks about a file.",
+            props: "[Request type] Sports props and betting research, not a coding task. Use the Odds API tools (when offered) to find what to look up, the Outlier tools, read_screenshots for slip screenshots, and web_search. Don't list, search or read the project files unless the user asks about a file.",
             images: "[Request type] A request about screenshots or images. Read a folder of them with read_screenshots, or use the attached images. If they turn out to be prop slips, research the legs like any prop list. Don't browse the project's code for this.",
             general: "[Request type] A general question or task, not about the project files. Answer it directly, using web_search for facts you aren't sure of. List, search or read the project files only if the user asks about them."
         };
@@ -6981,7 +7437,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (!command) return "run_command needs a 'command' string.";
             const auto = toolsAutoRun && isSafeHostCommand(command);
             if (!auto) {
-                const ok = confirm(`${ctx?.agentName || "An agent"} wants to run this command on your computer:\n\n${command.slice(0, 600)}${args.cwd ? `\n\n(in ${args.cwd})` : ""}\n\nIt runs in CoDev's copy of your project, not your real folder, but Docker isn't running, so it isn't walled off from the rest of your computer. Allow it?`);
+                const ok = await askPermission(`${ctx?.agentName || "An agent"} wants to run this command on your computer:\n\n${command.slice(0, 600)}${args.cwd ? `\n\n(in ${args.cwd})` : ""}\n\nIt runs in CoDev's copy of your project, not your real folder, but Docker isn't running, so it isn't walled off from the rest of your computer. Allow it?`, ctx?.agentName);
                 if (!ok) {
                     logConsoleActivity(`[Sandbox] You declined: ${command.slice(0, 120)}`);
                     return "The user declined to run this command. Don't run it again; explain what you wanted to check and continue without it, or ask the user.";
@@ -7032,7 +7488,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // me first" on. The browser's tools keep their own approval prompts.
         async function runOutsideSandbox(tool, name, args, ctx) {
             if (tool.transport === "browser" || tool.annotations?.readOnlyHint) return runMcpTool(tool, args, ctx);
-            if (!confirm(`An agent wants to use ${name}${tool.server ? ` (MCP server "${tool.server}")` : ""}. It works outside the sandbox, so the change review won't cover it:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`)) {
+            if (!await askPermission(`An agent wants to use ${name}${tool.server ? ` (MCP server "${tool.server}")` : ""}. It works outside the sandbox, so the change review won't cover it:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`, ctx?.agentName)) {
                 logConsoleActivity(`[Tool] You declined: ${name}`);
                 return "The user declined this tool call.";
             }
@@ -7171,7 +7627,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 onStep: step => {
                     setAgentState(agent.id, "active");
                     placeholder.text = step;
-                    if (session.id === activeChatId) renderActiveChatFeed();
+                    refreshChatMessage(session, placeholder);
                     scheduleChatSave();
                 }
             };
@@ -7223,7 +7679,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const summaries = [];
             const show = line => {
                 placeholder.text = `${toolLog.slice(-6).map(l => `✓ ${l}`).join("\n")}${line ? `\n▶ Now: ${line}` : ""}`;
-                if (session.id === activeChatId) renderActiveChatFeed();
+                refreshChatMessage(session, placeholder);
             };
             const ask = async (system, user) => groqChat({ model: TEXT_MODEL, temperature: 0.0, messages: [{ role: "system", content: system }, { role: "user", content: user }] });
             const search = async query => {
@@ -7504,7 +7960,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             let webSources = [];
             // News-like questions too, unless Claude is searching for itself or it's a props task for Outlier.
             const newsAsk = autoGroundingEnabled && NEWS_QUESTION_PATTERN.test(userText) && requestKind !== "props"
-                && !(currentBackend === "anthropic" && claudeWebSearchActive());
+                && !(currentBackend === "anthropic" && claudeSearchesForAgents());
             if (webSearchEnabled || newsAsk || (autoGroundingEnabled && isTechnicalQuery(userText))) {
                 appendMessageToSession(session, "🔎 Web Search", "Searching the web for live sources…");
                 const searchPlaceholder = session.messages[session.messages.length - 1];
@@ -7575,8 +8031,13 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             // The mode toggles start folded away too, to leave room for the chat.
             toggleChatControls();
             await checkServerAnthropic();
-            if (!pickProviderWithKey()) logConsoleActivity("No API key saved yet. Add a Groq, OpenRouter or Anthropic key under ⚙️ Settings to chat with the agents.");
+            if (!pickProviderWithKey()) logConsoleActivity("No API key saved yet. Sign in to your CoDev account or add a Groq, OpenRouter or Anthropic key under ⚙️ Settings to chat with the agents.");
             updateStatusDisplay();
+            if (window.CodevCloud) {
+                // Signing in or out, or a plan change, changes which providers work without a key.
+                CodevCloud.onChange(() => { pickProviderWithKey(); updateStatusDisplay(); });
+                CodevCloud.refresh();
+            }
             renderChatList();
             renderAgentList();
             updateWorkspaceGrid();

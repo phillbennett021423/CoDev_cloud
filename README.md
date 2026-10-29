@@ -2,6 +2,10 @@
 
 The app is a single page, `mobile/www/index.html`. It talks to Groq directly from the browser, so there's no backend server to run. The Android app is in `mobile/` (see `mobile/README.md`).
 
+## CoDev accounts
+
+People can sign in to a CoDev account (Settings > Sign in to CoDev) instead of pasting API keys. CoDev's online server in `cloud/` holds the owner's keys and forwards their requests within their plan, so the keys never reach their devices; the owner's account gets the Owner page. Putting the server online and the plans are in [`cloud/README.md`](cloud/README.md). A key pasted in Settings is still used first.
+
 ## Windows desktop app
 
 Download and run the installer: https://github.com/phillbennett021423/CoDev_cloud/releases/latest/download/CoDev-Studio-Setup.exe
@@ -36,7 +40,7 @@ Settings are read by `config.js` from the environment or `.env`:
 | `ANTHROPIC_API_KEY` | Anthropic relay (`sk-ant-...`) |
 | `OPENROUTER_API_KEY` | OpenRouter (`sk-or-...`) |
 | `MANUS_API_KEY` | Q tasks |
-| `ODDS_API_KEY` | free-tier market odds in the Outlier tab (the-odds-api.com) |
+| `ODDS_API_KEY` | free-tier market odds in the Outlier tab's scrape (the-odds-api.com); agents' line tracking uses the key in Settings instead (see below) |
 | `CODEV_WORKSPACE` | the project folder agents work in; `start-codev.bat C:\path\to\project` sets it too |
 | `CODEV_DATA_DIR` | where `.codev` goes |
 | `CODEV_VAULT_KEY` | passphrase for the browser tools' saved logins |
@@ -62,6 +66,8 @@ The **📈 Outlier** tab (when CoDev runs on your computer with `npm start` or `
 8. The **Under value engine** looks at the props the strategy didn't keep from the under side. A prop is tagged an **Under Value Leg** when at least two under signals line up and the under price still leaves a 2-point edge. The signals are a slow game, a lockdown defense, a teammate's usage coming back, and an inflated public over. A prop is routed to the core picks or the under list, never both, and under legs stay off the over tickets.
 9. **Board files in your project folder.** Every analysis writes the whole board to `downloads/new folder/outlier_live_board_dump.json`: props, injuries, each leg's metrics and route, tickets and under legs. A board JSON you save into `downloads/new folder` is read in and audited automatically. It can be a list of props, `{ "props": [...] }`, or CoDev's own dump. Agents do the same with the `outlier_import_board` tool. Both paths are set under **Pages and sign-in**, and an empty field turns that one off.
 10. **Ask an agent to scan Outlier.** For a prompt like "go to Outlier and build me a ticket", agents use the `outlier_scan_board` tool. It runs the scan in your signed-in Outlier browser (in a background tab if you're using it) and returns the tickets and under legs. The agent never gets that browser or its cookies, and it can only open app.outlier.bet pages. The scan reads the board after every scroll step, including boards that scroll inside a panel and remove rows as they go, and stops at the end of the board (up to 40 steps). Typed on its own, "outlier" or "outlier.com" opens app.outlier.bet.
+
+    For hit rates ("find me legs hitting 60%+ in the last 5, overs or unders"), agents use `outlier_find_hit_rates`. It sets Outlier's own filters (Hit Rate L5 from 60%, Over/Under, the game and stat when you name them) so the board lists only those legs, ranks every one of them, leaves out players with injury news, and builds a 4-leg regular-line ticket (legs priced near -119, one per game). A repeat within 10 minutes reuses the same read. Lists of legs (`outlier_research_list`) also set Outlier's filters now: each player and the game are ticked instead of scrolling the whole board. When Outlier answers "too many requests" (429) and a run is cut short, CoDev doesn't open Outlier again for 10 minutes and answers from what it already read (`cooldownMs` in the Outlier config changes this).
 
     It also moves around Outlier for you. Ask "NBA props for the 8pm game" (or "the 3 o'clock game", "Lakers tonight", "Points for the Celtics game") and the agent passes the sport, game and stat to the tool. The scan clicks Outlier's sport tab, any stat filter and the game card with that start time or those teams, reads that game's board and builds tickets from that game's props only. Times are your computer's local time, as Outlier shows them. If it can't find the game, it lists the games it saw so the agent can ask you which one. It only clicks tabs, filters and game cards, never a pick or an entry button, and it never enters anything on Outlier, Underdog or Dabble: the ticket comes back as the agent's reply in chat.
 
@@ -90,6 +96,26 @@ Every one of these is optional; use only what helps:
 - **🖨️ Character sheets:** a printable page per character, with portrait, card, relationships and moods. On a phone it goes to the share sheet.
 
 Talking to characters, scenes, lore checks and growth suggestions use the provider picked in Settings through the same call as the chat, so the spending limits apply to them too. Agents' `studio_save` only changes story content, never pictures, voices, locks, growth settings or snapshots.
+
+## Line tracking with The Odds API
+
+Agents can compare every sportsbook's lines and player props, follow how they move, and get a short list of what to look up on Outlier. It works on the phone, the Windows app and the browser page alike.
+
+**Set it up (about 2 minutes):**
+
+1. Go to [the-odds-api.com](https://the-odds-api.com/#get-access) and sign up for the free plan. You only need an email address; they email you a key.
+2. In CoDev, open **Settings > 🎯 Odds API (line tracking)** and paste the key. That's it.
+
+**What agents can do with it:**
+
+- `odds_lookup_list`: the players, props and lines worth checking on Outlier for a game: props whose line or odds moved, props where the books disagree, and props the juice leans on, each with the reason and every book's price. It ends with the legs ready for `outlier_research_list`, so an agent asked for a ticket goes straight to those players on Outlier.
+- `odds_player_props` and `odds_game_lines`: one game's props, or a sport's moneylines, spreads and totals, side by side at every book, with the best price for each side and the fair chance with the book's margin taken out.
+- `odds_line_movement`: how a line moved, snapshot by snapshot, book by book.
+- `odds_show_chart`, or **📉 View tracked lines** in Settings: a chart of a line at each book over time and a table comparing the books.
+
+**Credits.** The free plan has 500 credits a month. Listing games is free; a sport's game lines cost about 3 credits; a game's props cost 1 credit per stat (3 for the default stats). CoDev keeps them safe on its own: it saves every answer and reuses it (lines for 30 minutes, props for an hour), spreads the month's credits over its days, always keeps 25 back, and stops before going over. Settings shows how many are left. Each extra group of sportsbooks you tick (DFS apps, Pinnacle in Europe...) multiplies a call's cost. With **Re-check** on, CoDev takes a new snapshot of the lines agents looked at every few hours while it's open, using at most half of the day's credits, so movement builds up by itself.
+
+Without a key, or once the day's credits are used, agents read the odds on Outlier in the browser as before. The numbers are what the sportsbooks show, not picks.
 
 ## Agents start blank
 
@@ -125,6 +151,8 @@ use **Settings > Google apps**.
 - **Self-checks.** Agents compare each action's result with what they expected (right page, player, stat, filters still set) and fix course instead of clicking on blindly. The same tool call never runs a third time in one task, and three failed browser actions stop the tools so the agent explains what went wrong instead of spending more usage.
 - **See what it did.** While an agent works, its card shows its plan, each finished step with what it found (⚠️ for problems) and the step running now. Under every reply, **🧭 What CoDev did** lists the steps.
 - **Cheaper Claude calls.** Requests to Anthropic use prompt caching, so the instructions and tool list resent on every step of a task are billed at about a tenth of the normal input price.
+- **Spending limits.** Settings > 💰 Spending limits sets the most CoDev may spend in a day (default $1) and on one task (default $0.25); 0 turns a limit off. CoDev adds up what each Claude request, paid OpenRouter model and paid picture costs, and shows today's total there. At the daily limit it sends nothing more until tomorrow; at the task limit the agent stops using tools and answers with what it found.
+- **Short answers.** Agents lead with the answer and stop: a simple question gets a few sentences. Code, reports, deep research and step-by-step instructions can run longer.
 
 ## Every request is sorted first
 
@@ -140,7 +168,9 @@ Every code or file task is treated as a task on your project. You don't type fil
 
 **Files with keys stay hidden.** Agents can't list, search, read or write hidden files and folders (`.env`, `.git`, anything whose name starts with a dot), env files like `production.env`, key and certificate files (`.pem`, `.key`, `.pfx`, `.p12`, `.keystore`, `.jks`) or `secrets.*` and `credentials.*`, whichever folder tools they use: the sandbox, the Windows app's, the Python helper's or the page's own. Commands an agent runs directly on your computer (outside the sandbox) aren't filtered, so leave those off if that matters to you.
 
-**Run file edits and commands without asking me first** (Settings) is on by default, so agents save files and run commands with no confirm dialog. Turn it off to approve each change.
+**Run file edits and commands without asking me first** (Settings) is on by default, so agents save files and run plain test and build commands without asking. Any other command on your real computer still asks first, since a command could open apps or drive the mouse and keyboard. Turn the setting off to approve each change.
+
+When an agent needs your OK, it asks with a card in the bottom corner and waits there. The rest of CoDev keeps working meanwhile: switch chats and agents, scroll back through old messages, open Settings, and answer the card when you're ready. CoDev never pulls its window to the front or takes the keyboard to ask, and an agent's browser that needs you waits for you to open its computer (🖥️) instead of popping it open.
 
 | Where CoDev runs | Project the agents see | Edits | Run code |
 | --- | --- | --- | --- |

@@ -5,7 +5,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('codevDesktop', {
     http: {
-        get: ({ url, headers }) => ipcRenderer.invoke('codev:http-get', { url, headers })
+        get: ({ url, headers }) => ipcRenderer.invoke('codev:http-get', { url, headers }),
+        // The Odds API for line tracking, with its credit headers (x-requests-remaining...).
+        odds: ({ url }) => ipcRenderer.invoke('codev:http-odds', { url }),
+        // Tavily web search with the key from Settings: ({ key, body }) -> { status, data }.
+        tavily: ({ key, body }) => ipcRenderer.invoke('codev:http-tavily', { key, body })
     },
     azureTts: ({ region, key, ssml }) => ipcRenderer.invoke('codev:azure-tts', { region, key, ssml }),
     // Writes the page's saved chats and run checkpoints to disk now, so a crash right after loses nothing.
