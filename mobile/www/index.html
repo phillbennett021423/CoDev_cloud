@@ -1103,12 +1103,17 @@
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalAutoGround"> Search the web automatically for technical and code questions
                 </label>
+                <div class="form-group" style="margin: 6px 0 8px;">
+                    <label for="modalTavilyKey">Tavily API key: CoDev's first choice for live search (news, scores, injuries; 1,000 free searches a month)</label>
+                    <input type="text" id="modalTavilyKey" placeholder="tvly-..." style="font-family: monospace;" autocomplete="off">
+                    <p class="settings-note" style="font-size: 0.75rem; color: var(--text-muted); margin: 4px 0 0;">Get a free key at <a href="https://app.tavily.com" target="_blank" rel="noopener">app.tavily.com</a> (sign in, then copy the key that starts with tvly-). Search order: Tavily, then Claude's web search with your Anthropic key, then Google through your Gemini key, then DuckDuckGo and Bing News, which are free and need no key. Each one that is missing or fails hands over to the next.</p>
+                </div>
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalGoogleSearch"> Search with Google through my Gemini key (fresher news, scores and injuries; free up to Google's daily allowance)
                 </label>
                 <p class="settings-note" id="googleSearchNote" style="font-size: 0.75rem; color: var(--text-muted); margin: 0 0 8px 24px;">One-time setup: get a free Gemini API key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and paste it below under 🖼️ Images, video &amp; big files (Gemini API key). Without it, CoDev searches DuckDuckGo and Bing News, which need no key.</p>
                 <label class="checkbox-group">
-                    <input type="checkbox" id="modalClaudeWebSearch"> With Anthropic as the provider, let Claude search the web itself (Anthropic bills $10 per 1,000 searches, at most 5 per step)
+                    <input type="checkbox" id="modalClaudeWebSearch"> Use Claude's web search with my Anthropic key: the backup when Tavily has no key or fails, and Claude's own search with Anthropic as the provider and no Tavily key (Anthropic bills $10 per 1,000 searches, at most 5 per step)
                 </label>
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalChime"> Play a chime when an agent finishes a response or task
@@ -2458,14 +2463,18 @@
             return { results: (await searchViaLocalHelper(query)).slice(0, SEARCH_RESULT_LIMIT), source: "DuckDuckGo via local ddgs helper" };
         }
 
-        // LIVE SEARCH: the freshest source this device has, best first.
-        //  1. Google Search through the user's Gemini key (Gemini's own grounding: the same
-        //     index Gemini answers news, scores and injuries from; free up to Google's daily
-        //     allowance). The key is the one saved for images and video, codev_gemini_key.
-        //  2. DuckDuckGo, plus Bing News headlines with their dates for anything that
+        // LIVE SEARCH: the freshest source this device has, best first. Each one that has
+        // no key, is turned off or fails hands over to the next.
+        //  1. Tavily with the key pasted in Settings (codev_tavily_key): a search API made
+        //     for agents, with page extracts, publish dates and a short answer.
+        //  2. Claude's web search (Anthropic's server-side tool) with the Anthropic key.
+        //  3. Google Search through the user's Gemini key (Gemini's own grounding; free up
+        //     to Google's daily allowance). The key is the one saved for images and video.
+        //  4. DuckDuckGo, plus Bing News headlines with their dates for anything that
         //     changes day to day (news, scores, injuries, lines, "today", "latest").
-        // With Anthropic as the provider, the agents' web_search is Claude's own web search
-        // instead (see toAnthropicRequest); this is then used for pre-search and deep research.
+        // With Anthropic as the provider and no Tavily key, the agents' web_search is Claude's
+        // own web search instead (see toAnthropicRequest); this is then used for pre-search
+        // and deep research.
         const DDG_RECENCY = { day: "d", week: "w", month: "m" };
         const GEMINI_SEARCH_MODEL = "gemini-flash-latest";
         const NEWS_RESULT_LIMIT = 4;
@@ -2473,6 +2482,11 @@
         // Questions about what just happened get searched before the agent starts.
         const NEWS_QUESTION_PATTERN = /\b(today|tonight|yesterday|latest|breaking|news|headlines?|scores?|who won|injur(y|ies|ed)|injury report|lineups?|standings)\b/i;
         let googleSearchEnabled = (localStorage.getItem("codev_google_search") ?? "1") === "1";
+        const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
+        function cleanSearchKey(key) {
+            return String(key || "").replace(/[\s\u200B-\u200D\uFEFF"'`]+/g, "");
+        }
+        let tavilyKey = cleanSearchKey(localStorage.getItem("codev_tavily_key"));
 
         function isFreshQuery(text) {
             return FRESH_QUERY_PATTERN.test(String(text || ""));
@@ -2514,6 +2528,95 @@
             return { results: results.slice(0, 8), summary, source: "Google Search (via Gemini)", queries: meta.webSearchQueries || [] };
         }
 
+        // Posts a Tavily search the way this device can: CapacitorHttp on Android, the main
+        // process in the Windows app, server.js on the local server page, otherwise directly.
+        async function tavilyPost(body) {
+            const parse = data => {
+                if (data && typeof data === "object") return data;
+                try { return JSON.parse(data || "{}"); } catch (err) { return { detail: String(data).slice(0, 200) }; }
+            };
+            const android = getNativeSpeechPlugin("CapacitorHttp");
+            if (android) {
+                const response = await android.post({
+                    url: TAVILY_SEARCH_URL, data: body, responseType: "json", connectTimeout: 20000, readTimeout: 20000,
+                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${tavilyKey}` }
+                });
+                return { status: response.status, data: parse(response.data) };
+            }
+            if (window.codevDesktop?.http?.tavily) {
+                const response = await window.codevDesktop.http.tavily({ key: tavilyKey, body });
+                return { status: response.status, data: parse(response.data) };
+            }
+            const reply = await webFetchViaServer({ kind: "tavily", key: tavilyKey, body });
+            if (reply) return { status: reply.status, data: parse(reply.html) };
+            const response = await fetch(TAVILY_SEARCH_URL, {
+                method: "POST", signal: AbortSignal.timeout(20000), body: JSON.stringify(body),
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${tavilyKey}` }
+            });
+            return { status: response.status, data: parse(await response.text()) };
+        }
+
+        // Tavily: results with the relevant part of each page and its publish date, plus a
+        // short answer used as the summary. News questions with a recency use its news index.
+        async function searchWithTavily(query, recency) {
+            const body = { query, search_depth: "basic", max_results: 8, include_answer: "basic", topic: recency === "day" || recency === "week" ? "news" : "general" };
+            if (recency) body.time_range = recency;
+            const { status, data } = await tavilyPost(body);
+            if (status !== 200) {
+                const why = data.detail?.error || data.detail || data.error || `HTTP ${status}`;
+                if (status === 401) throw new Error(`Tavily rejected the API key (${why}). Check it in Settings > Web grounding`);
+                if (status === 432 || status === 433) throw new Error(`Tavily's search allowance is used up (${why})`);
+                throw new Error(`Tavily search failed (${typeof why === "string" ? why : JSON.stringify(why)})`);
+            }
+            const results = (data.results || []).filter(r => /^https?:\/\//.test(r.url || "")).map(r => {
+                const day = r.published_date && !isNaN(Date.parse(r.published_date)) ? new Date(r.published_date).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "";
+                return { title: r.title || r.url, href: r.url, body: `${day ? `[${day}] ` : ""}${String(r.content || "").replace(/\s+/g, " ").trim().slice(0, 700)}` };
+            });
+            if (!results.length && !data.answer) throw new Error("Tavily found nothing");
+            return { results, summary: String(data.answer || "").trim(), source: "Tavily" };
+        }
+
+        // Claude's web search as a search of its own (any provider): one short Messages
+        // request with Anthropic's server-side web_search tool. Each page Claude found is a
+        // result, with the passages it cited from it as the snippet.
+        function claudeSearchReady() {
+            return claudeWebSearchActive() && Boolean(anthropicKey || anthropicViaServer);
+        }
+
+        async function searchWithClaude(query, recency) {
+            const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+            const when = recency ? ` Only use pages from the last ${recency}.` : "";
+            const { url, headers } = anthropicEndpoint();
+            const response = await fetch(url, {
+                method: "POST", headers, signal: AbortSignal.timeout(60000),
+                body: JSON.stringify({
+                    model: ANTHROPIC_MODEL, max_tokens: 1500,
+                    tools: [{ ...CLAUDE_WEB_SEARCH_TOOL, max_uses: 3 }],
+                    messages: [{ role: "user", content: `Today is ${today}. Search the web for: ${query}\n\nReport the most recent, relevant facts you found as 3 to 8 short bullet points. Give dates, times, scores, numbers and names exactly as the sources state them, and say when sources disagree. No introduction.${when}` }]
+                })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                if (response.status === 400 && /web_search/i.test(data.error?.message || "")) claudeWebSearchFailed = true;
+                throw new Error(`Claude's web search failed (${data.error?.message || `HTTP ${response.status}`})`);
+            }
+            const content = data.content || [];
+            const results = [];
+            for (const block of content) {
+                if (block.type !== "web_search_tool_result" || !Array.isArray(block.content)) continue;
+                for (const r of block.content) if (r.url && !results.some(x => x.href === r.url)) results.push({ title: r.title || r.url, href: r.url, body: r.page_age ? `[${r.page_age}]` : "" });
+            }
+            for (const block of content) {
+                for (const c of block.citations || []) {
+                    const hit = results.find(r => r.href === c.url);
+                    if (hit && c.cited_text && !hit.body.includes(c.cited_text)) hit.body = `${hit.body} ${c.cited_text}`.trim().slice(0, 700);
+                }
+            }
+            const summary = content.filter(b => b.type === "text").map(b => b.text).join("").trim();
+            if (!results.length && !summary) throw new Error("Claude's web search returned nothing");
+            return { results: results.slice(0, 8), summary, source: "Claude web search (Anthropic)" };
+        }
+
         // Bing News's RSS feed: headlines with their publish dates, no key needed.
         function parseNewsRss(xml) {
             const doc = new DOMParser().parseFromString(xml, "text/xml");
@@ -2549,9 +2652,14 @@
             if (cached && Date.now() - cached.at < (fresh ? 2 * 60 * 1000 : SEARCH_CACHE_MS)) return cached.value;
 
             let value = null;
-            if (googleSearchEnabled && geminiSearchKey()) {
-                try { value = await searchWithGoogle(query, recency); } catch (err) {
-                    logConsoleActivity(`[Web Search] ${err.message}; using DuckDuckGo instead.`);
+            const searches = [
+                tavilyKey && (() => searchWithTavily(query, recency)),
+                claudeSearchReady() && (() => searchWithClaude(query, recency)),
+                googleSearchEnabled && geminiSearchKey() && (() => searchWithGoogle(query, recency))
+            ].filter(Boolean);
+            for (const search of searches) {
+                try { value = await search(); break; } catch (err) {
+                    logConsoleActivity(`[Web Search] ${err.message}; trying the next search.`);
                 }
             }
             if (!value) {
@@ -3710,7 +3818,7 @@
             const tools = [
                 {
                     name: "web_search",
-                    description: "Search the web for live facts: Google Search when the user has a Gemini key, otherwise DuckDuckGo plus dated news headlines. Call this for anything that may have changed since your training (news, scores, injuries, lineups, odds, prices, releases) and before answering about an API, library, engine feature, syntax, version or error message you are not completely certain about. Set recency to \"day\" or \"week\" for news, scores and injuries.",
+                    description: "Search the web for live facts: Tavily when the user has a key, then Claude's web search, Google Search, or DuckDuckGo plus dated news headlines. Call this for anything that may have changed since your training (news, scores, injuries, lineups, odds, prices, releases) and before answering about an API, library, engine feature, syntax, version or error message you are not completely certain about. Set recency to \"day\" or \"week\" for news, scores and injuries.",
                     inputSchema: { type: "object", properties: {
                         query: { type: "string", description: "A short search query, like you would type into a search engine." },
                         recency: { type: "string", enum: ["day", "week", "month", "any"], description: "Optional: only pages from the last day, week or month. Use day or week for news, scores and injuries." }
@@ -5402,6 +5510,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             document.getElementById("anthropicServerNote").style.display = anthropicViaServer ? "inline" : "none";
             toggleProviderFields();
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
+            document.getElementById("modalTavilyKey").value = tavilyKey;
             document.getElementById("modalGoogleSearch").checked = googleSearchEnabled;
             document.getElementById("googleSearchNote").style.display = geminiSearchKey() ? "none" : "block";
             document.getElementById("modalClaudeWebSearch").checked = claudeWebSearchEnabled;
@@ -5605,6 +5714,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             autoGroundingEnabled = document.getElementById("modalAutoGround").checked;
             searchHelperUrl = document.getElementById("modalSearchHelperUrl").value.trim() || DEFAULT_SEARCH_HELPER_URL;
             localStorage.setItem("codev_auto_ground", autoGroundingEnabled ? "1" : "0");
+            tavilyKey = cleanSearchKey(document.getElementById("modalTavilyKey").value);
+            localStorage.setItem("codev_tavily_key", tavilyKey);
             googleSearchEnabled = document.getElementById("modalGoogleSearch").checked;
             localStorage.setItem("codev_google_search", googleSearchEnabled ? "1" : "0");
             claudeWebSearchEnabled = document.getElementById("modalClaudeWebSearch").checked;
@@ -6152,6 +6263,23 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         function claudeWebSearchActive() {
             return claudeWebSearchEnabled && !claudeWebSearchFailed;
         }
+        // With a Tavily key, Claude agents use CoDev's web_search (Tavily first) like the others.
+        function claudeSearchesForAgents() {
+            return claudeWebSearchActive() && !tavilyKey;
+        }
+
+        // Where Anthropic requests go: straight to Anthropic with the key from Settings, or,
+        // with no key on the local server page, through server.js, which adds ANTHROPIC_API_KEY.
+        function anthropicEndpoint() {
+            const viaServer = !anthropicKey && anthropicViaServer;
+            const headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01" };
+            if (!viaServer) {
+                headers["x-api-key"] = anthropicKey;
+                // Anthropic only answers browser pages that say they hold the user's own key.
+                headers["anthropic-dangerous-direct-browser-access"] = "true";
+            }
+            return { url: viaServer ? "/anthropic/v1/messages" : "https://api.anthropic.com/v1/messages", headers, viaServer };
+        }
 
         // The text of Claude's reply with [n] after each cited passage, numbered in sources
         // (the run's source list, so they match the links under the reply), and the searches it ran.
@@ -6213,7 +6341,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const request = { model: ANTHROPIC_MODEL, max_tokens: 16000, cache_control: { type: "ephemeral" }, messages };
             if (system.length) request.system = system.join("\n\n");
             if (body.tools?.length) {
-                request.tools = body.tools.map(t => t.function.name === "web_search" && claudeWebSearchActive()
+                request.tools = body.tools.map(t => t.function.name === "web_search" && claudeSearchesForAgents()
                     ? CLAUDE_WEB_SEARCH_TOOL
                     : { name: t.function.name, description: t.function.description || "", input_schema: t.function.parameters || { type: "object", properties: {} } });
                 request.tool_choice = { type: body.tool_choice === "none" ? "none" : "auto" };
@@ -6225,14 +6353,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // ({ content, tool_calls }) the rest of CoDev expects. With no key in Settings
         // on the local server page, server.js adds ANTHROPIC_API_KEY and relays it.
         async function anthropicChatMessage(body, extras = {}) {
-            const viaServer = !anthropicKey && anthropicViaServer;
-            const url = viaServer ? "/anthropic/v1/messages" : "https://api.anthropic.com/v1/messages";
-            const headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01" };
-            if (!viaServer) {
-                headers["x-api-key"] = anthropicKey;
-                // Anthropic only answers browser pages that say they hold the user's own key.
-                headers["anthropic-dangerous-direct-browser-access"] = "true";
-            }
+            const { url, headers, viaServer } = anthropicEndpoint();
             const request = toAnthropicRequest(body);
             const send = async () => {
                 let response;
@@ -7372,7 +7493,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             let webSources = [];
             // News-like questions too, unless Claude is searching for itself or it's a props task for Outlier.
             const newsAsk = autoGroundingEnabled && NEWS_QUESTION_PATTERN.test(userText) && requestKind !== "props"
-                && !(currentBackend === "anthropic" && claudeWebSearchActive());
+                && !(currentBackend === "anthropic" && claudeSearchesForAgents());
             if (webSearchEnabled || newsAsk || (autoGroundingEnabled && isTechnicalQuery(userText))) {
                 appendMessageToSession(session, "🔎 Web Search", "Searching the web for live sources…");
                 const searchPlaceholder = session.messages[session.messages.length - 1];
