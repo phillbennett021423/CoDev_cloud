@@ -18,7 +18,17 @@ What it does:
   approve someone on the Owner page. To that person it looks exactly like the
   Pro plan; nothing they can see mentions testers. At most 10 to start.
 - **The Owner page**, for the account in `OWNER_EMAIL` only: the API keys
-  (stored encrypted), every account, approvals and the limits.
+  (stored encrypted), every account, approvals, the limits and the owner's agents.
+- **The owner's agents** (`src/agents.js`), each with a name, instructions and a
+  memory the owner edits on the Owner page. They see usage numbers and sign-up
+  emails only, never chats, and email the owner:
+  - the **API agent** checks spending every hour, warns once a day at 80% of the
+    daily total, and sends a summary of each day just after midnight UTC;
+  - the **Sign-up agent** writes the notice for each new sign-up, with a
+    suggestion to approve as a tester or skip.
+
+  With the owner's Groq key saved, they write their notes with Groq; otherwise
+  they send the plain numbers.
 
 Not built yet: payments for the Pro plan, chats that follow the account to every
 device, and running code on the server.

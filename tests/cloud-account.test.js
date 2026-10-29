@@ -144,5 +144,16 @@ test('the owner gets the Owner page: keys, sign-ups to approve, limits', async t
     await s.page.waitForSelector('#ownerModal >> text=Remove tester');
     const plan = s.env.DB.raw.prepare('SELECT plan FROM users WHERE email = ?').get('new@example.com').plan;
     assert.equal(plan, 'tester');
+
+    // The owner's agents: rename the Sign-up agent and run the API agent.
+    await s.page.waitForSelector('#ownerModal >> text=Your agents');
+    const name = s.page.locator('#ownerModal input[maxlength="60"]').nth(1);
+    assert.equal(await name.inputValue(), 'Sign-up agent');
+    await name.fill('Gatekeeper');
+    await s.page.locator('#ownerModal button:text-is("Save")').nth(4).click();
+    await s.page.waitForFunction(() => document.querySelectorAll('#ownerModal input[maxlength="60"]')[1]?.value === 'Gatekeeper');
+    assert.equal(s.env.DB.raw.prepare('SELECT name FROM agents WHERE id = ?').get('signups').name, 'Gatekeeper');
+    await s.page.locator('#ownerModal button:text-is("Run now")').first().click();
+    await s.page.waitForSelector('#ownerModal >> text=Last note');
     assert.deepEqual(s.errors, []);
 });

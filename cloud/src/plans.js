@@ -16,6 +16,10 @@ export const PLANS = {
 // How many messages one request counts as. Anthropic costs far more per message.
 export const COST_WEIGHTS = { groq: 1, openrouter: 1, anthropic: 10 };
 
+// A rough cost of one request, in dollars, for the API agent's estimates. Not a bill:
+// typical CoDev requests at each service's usual prices (OpenRouter's free router is $0).
+export const EST_COST_PER_REQUEST = { groq: 0.002, openrouter: 0, anthropic: 0.01 };
+
 // Owner-editable on the Owner page.
 // daily_cap: messages a day for everyone but the owner together; past it shared AI pauses until midnight.
 // tester_cap: the most testers at once.

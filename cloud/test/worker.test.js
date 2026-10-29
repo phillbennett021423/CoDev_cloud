@@ -75,11 +75,12 @@ test('a code stops working after five wrong tries', async t => {
 test('a new sign-up emails the owner; the owner signing up does not', async t => {
     const s = setup(); t.after(s.restore);
     await s.signIn(OWNER);
-    assert.equal(s.emails.filter(e => e.subject.startsWith('New CoDev sign-up')).length, 0);
+    assert.equal(s.emails.filter(e => e.subject.includes('new sign-up')).length, 0);
     await s.signIn('cat@example.com');
-    const notice = s.emails.find(e => e.subject.startsWith('New CoDev sign-up'));
+    const notice = s.emails.find(e => e.subject.includes('new sign-up'));
     assert.equal(notice.to[0], OWNER);
-    assert.match(notice.subject, /cat@example\.com/);
+    assert.match(notice.subject, /^Sign-up agent: new sign-up, cat@example\.com/);
+    assert.match(notice.text, /Approve as tester/);
 });
 
 test('requests need a sign-in, and the owner pages are hidden from everyone else', async t => {
@@ -194,4 +195,66 @@ test('sign-out ends the session, and CORS lets the apps call', async t => {
     assert.equal(pre.headers.get('Access-Control-Allow-Origin'), '*');
     await s.call('POST', '/auth/signout', { token });
     assert.equal((await s.call('GET', '/me', { token })).status, 401);
+});
+
+test("the owner's agents: names, instructions and memory the owner edits, hidden from everyone else", async t => {
+    const s = setup(); t.after(s.restore);
+    const owner = await s.signIn(OWNER);
+    const user = await s.signIn('mo@example.com');
+    assert.equal((await s.call('GET', '/owner/agents', { token: user })).status, 404);
+
+    const { agents } = (await s.call('GET', '/owner/agents', { token: owner })).data;
+    assert.deepEqual(agents.map(a => a.name), ['API agent', 'Sign-up agent']);
+    assert.match(agents[1].memory, /mo@example\.com signed up/);
+
+    const saved = await s.call('PUT', '/owner/agents/signups', { token: owner, body: { name: 'Gatekeeper', instructions: 'Only approve people I know.' } });
+    assert.equal(saved.data.agent.name, 'Gatekeeper');
+    await s.signIn('ned@example.com');
+    const notice = s.emails.find(e => e.subject.startsWith('Gatekeeper: new sign-up, ned@example.com'));
+    assert.ok(notice);
+    // With no Groq key stored, the notice is the plain facts.
+    assert.match(notice.text, /Testers now: 0 of 10/);
+
+    // With the owner's Groq key, the agent writes the note with Groq, following the instructions.
+    await s.call('PUT', '/owner/keys/groq', { token: owner, body: { value: 'gsk_ownerkey123456' } });
+    await s.signIn('oz@example.com');
+    const prompt = s.upstream.at(-1);
+    assert.equal(prompt.url, 'https://api.groq.com/openai/v1/chat/completions');
+    assert.match(prompt.body.messages[0].content, /You are Gatekeeper/);
+    assert.match(prompt.body.messages[0].content, /Only approve people I know\./);
+    assert.match(prompt.body.messages[0].content, /ned@example\.com signed up/, 'the agent reads its memory');
+    assert.match(prompt.body.messages[1].content, /New sign-up: oz@example\.com/);
+});
+
+test('the API agent warns once at 80% of the daily total and sends a summary after midnight', async t => {
+    const s = setup(); t.after(s.restore);
+    const owner = await s.signIn(OWNER);
+    await s.call('PUT', '/owner/keys/groq', { token: owner, body: { value: 'gsk_ownerkey123456' } });
+    await s.call('PUT', '/owner/settings', { token: owner, body: { daily_cap: 5 } });
+    const user = await s.signIn('pia@example.com');
+    const id = (await s.call('GET', '/owner/users', { token: owner })).data.users.find(u => u.email === 'pia@example.com').id;
+    await s.call('POST', `/owner/users/${id}`, { token: owner, body: { action: 'approve' } });
+    for (let i = 0; i < 4; i++) await s.call('POST', '/v1/groq/chat/completions', { token: user, body: chat });
+
+    const noon = Date.parse(`${new Date().toISOString().slice(0, 10)}T12:00:00Z`);
+    const tick = async now => { const waits = []; await worker.scheduled({ scheduledTime: now }, s.env, { waitUntil: p => waits.push(p) }); await Promise.all(waits); };
+    const warnings = () => s.emails.filter(e => e.subject.startsWith("API agent: 80% of today's shared AI used"));
+    await tick(noon);
+    assert.equal(warnings().length, 1);
+    assert.match(warnings()[0].text, /4 of the daily total of 5 \(80%\)/);
+    assert.match(warnings()[0].text, /groq: 4 requests from 1 account\(s\), about \$0\.01/);
+    await tick(noon + 60 * 60 * 1000);
+    assert.equal(warnings().length, 1, 'one warning a day');
+
+    // Just after midnight: yesterday's summary, once.
+    await tick(noon + 12.5 * 60 * 60 * 1000);
+    await tick(noon + 12.75 * 60 * 60 * 1000);
+    const summaries = s.emails.filter(e => e.subject === "API agent: yesterday's API spending");
+    assert.equal(summaries.length, 1);
+    assert.match(summaries[0].text, /groq: 4 requests/);
+
+    const run = await s.call('POST', '/owner/agents/api/run', { token: owner });
+    assert.equal(run.status, 200);
+    assert.match(run.data.agent.last_report, /Day \(UTC\)/);
+    assert.match(run.data.agent.memory, /Warned: 4\/5/);
 });

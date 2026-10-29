@@ -1,7 +1,8 @@
 // The CoDev account: sign-in to CoDev's online server (cloud/), which holds the
 // owner's API keys and forwards AI requests within the account's plan, so the
 // keys never reach this device. Draws the account box in Settings and, for the
-// owner's account only, the Owner page (keys, sign-ups and testers, limits).
+// owner's account only, the Owner page (keys, sign-ups and testers, limits, and
+// the owner's own agents).
 //
 // The page asks CodevCloud.covers(provider) before a chat request; when it's
 // true and there's no key of the user's own, the request goes to
@@ -187,9 +188,9 @@
 
     async function drawOwnerPage(modal, overlay) {
         modal.replaceChildren(el("h3", {}, "Owner page"), el("div", { style: MUTED }, "Loading…"));
-        let users, keys;
+        let users, keys, agents;
         try {
-            [users, keys] = await Promise.all([call("GET", "/owner/users"), call("GET", "/owner/keys")]);
+            [users, keys, agents] = await Promise.all([call("GET", "/owner/users"), call("GET", "/owner/keys"), call("GET", "/owner/agents")]);
         } catch (err) {
             modal.replaceChildren(el("h3", {}, "Owner page"), el("div", { style: "color: var(--danger);" }, err.message));
             return;
@@ -250,6 +251,30 @@
         }
         if (!users.users.length) people.append(el("div", { style: MUTED }, "No accounts yet."));
         modal.append(people);
+
+        // The owner's agents: each one's name, instructions and memory, and its last note.
+        const agentBox = el("div", { style: BOX }, el("div", { style: "font-weight: bold;" }, "Your agents"),
+            el("div", { style: MUTED }, "They work only for you and see usage numbers and sign-up emails, never anyone's chats. They email you; with your Groq key saved they write their notes with it."));
+        const AGENT_JOBS = { api: "Watches API spending, warns you at 80% of the daily total and sends a summary each day.", signups: "Writes your notice for every new sign-up, with a suggestion to approve or skip." };
+        for (const agent of agents.agents) {
+            const name = el("input", { type: "text", maxlength: "60", style: "width: 100%; font-weight: bold;" });
+            name.value = agent.name;
+            const instructions = el("textarea", { rows: "3", style: "width: 100%;" });
+            instructions.value = agent.instructions;
+            const memory = el("textarea", { rows: "4", style: "width: 100%; font-family: monospace; font-size: 0.75rem;" });
+            memory.value = agent.memory;
+            const save = el("button", { type: "button", class: "btn-primary", onclick: () => act(save, () => call("PUT", `/owner/agents/${agent.id}`, { name: name.value, instructions: instructions.value, memory: memory.value })) }, "Save");
+            const run = el("button", { type: "button", class: "btn-secondary", onclick: () => act(run, () => call("POST", `/owner/agents/${agent.id}/run`)) }, "Run now");
+            agentBox.append(el("div", { style: "display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border-color); padding-top: 8px;" },
+                name,
+                el("div", { style: MUTED }, AGENT_JOBS[agent.id] || ""),
+                el("label", { style: MUTED }, "Instructions"), instructions,
+                el("label", { style: MUTED }, "Memory (its notes, newest last; edit or clear it any time)"), memory,
+                agent.last_report ? el("details", { style: MUTED }, el("summary", {}, `Last note${agent.last_run ? `, ${new Date(agent.last_run).toLocaleString()}` : ""}`),
+                    el("div", { style: "white-space: pre-wrap;" }, agent.last_report)) : null,
+                el("div", { style: "display: flex; gap: 8px;" }, save, run)));
+        }
+        modal.append(agentBox);
 
         // Limits
         const cap = el("input", { type: "number", min: "0", value: String(users.settings.daily_cap), style: "width: 120px;" });

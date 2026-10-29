@@ -12,3 +12,7 @@ migrations_dir = "migrations"
 
 [observability]
 enabled = true
+
+# The API agent checks spending every hour and sends its daily summary after midnight UTC.
+[triggers]
+crons = ["0 * * * *"]

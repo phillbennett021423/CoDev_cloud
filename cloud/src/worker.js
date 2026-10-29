@@ -13,10 +13,13 @@
 //   POST /v1/anthropic/messages              forwarded to Anthropic
 //   /owner/...                               the Owner page (owner's account only)
 //
+// Every hour (the cron in wrangler.toml) the owner's API agent checks spending.
+//
 // Testers are a hidden plan: to everyone but the owner they look exactly like
 // the Pro plan (same label, same limits), and nothing a user can reach names them.
 
 import { COST_WEIGHTS, DEFAULT_SETTINGS, KEY_NAMES, planFor, publicPlan } from './plans.js';
+import { AGENT_DEFAULTS, getAgent, saveAgent, runApiAgent, signupNotice } from './agents.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SESSION_DAYS = 90;
@@ -45,8 +48,25 @@ export default {
             console.error(err);
             return withCors(json(500, { error: { message: "CoDev's server hit an error. Try again in a moment." } }));
         }
+    },
+
+    async scheduled(event, env, ctx) {
+        ctx.waitUntil(runApiAgent(env, agentDeps(env), { now: event.scheduledTime || Date.now() }).catch(err => console.error('API agent failed', err)));
     }
 };
+
+// What the owner's agents (agents.js) may use: numbers and the owner's email, nothing else.
+function agentDeps(env) {
+    return {
+        getSecret: name => getSecret(env, name),
+        getSettings: () => getSettings(env),
+        sharedChatTotal: day => sharedChatTotal(env, day),
+        emailOwner: async (subject, text) => {
+            const to = ownerEmails(env)[0];
+            if (to) await sendEmail(env, to, subject, text);
+        }
+    };
+}
 
 // Sign-in is a bearer token, never a cookie, so any origin may call (the Android
 // app, the Windows app and the local page all have different ones).
@@ -193,11 +213,12 @@ async function requireUser(request, env) {
     return user;
 }
 
+// The Sign-up agent writes the notice.
 async function notifyOwner(env, email) {
     const to = ownerEmails(env)[0];
     if (!to) return;
-    await sendEmail(env, to, `New CoDev sign-up: ${email}`,
-        `${email} just signed up for CoDev and is on the trial.\n\nTo make them a tester, open CoDev, go to Settings > Owner page and tap Approve.`);
+    const notice = await signupNotice(env, agentDeps(env), email);
+    await sendEmail(env, to, notice.subject, notice.text);
 }
 
 // Resend (resend.com) sends the codes and the owner's sign-up notices. Without
@@ -269,13 +290,18 @@ async function checkLimits(env, user, plan, provider, owner) {
         throw new HttpError(429, `You've reached today's limit of ${plan.chatPerDay} messages. It resets at midnight (UTC), or add your own API key in Settings.`, 'daily_limit');
     }
     const settings = await getSettings(env);
-    const owners = ownerEmails(env);
-    const placeholders = owners.map(() => '?').join(',') || "''";
-    const total = await env.DB.prepare(`SELECT COALESCE(SUM(usage.amount), 0) AS total FROM usage JOIN users ON users.id = usage.user_id
-        WHERE usage.day = ? AND usage.kind = 'chat' AND users.email NOT IN (${placeholders})`).bind(today(), ...owners).first();
-    if (total.total + weight > settings.daily_cap) {
+    if (await sharedChatTotal(env, today()) + weight > settings.daily_cap) {
         throw new HttpError(503, "CoDev is very busy today and has paused shared AI until midnight (UTC). Your own API key in Settings still works.", 'global_cap');
     }
+}
+
+// Messages that day by everyone but the owner, together.
+async function sharedChatTotal(env, day) {
+    const owners = ownerEmails(env);
+    const placeholders = owners.map(() => '?').join(',') || "''";
+    const row = await env.DB.prepare(`SELECT COALESCE(SUM(usage.amount), 0) AS total FROM usage JOIN users ON users.id = usage.user_id
+        WHERE usage.day = ? AND usage.kind = 'chat' AND users.email NOT IN (${placeholders})`).bind(day, ...owners).first();
+    return row.total;
 }
 
 async function relayChat(request, env, user, provider) {
@@ -312,6 +338,7 @@ async function relayChat(request, env, user, provider) {
     if (upstream.ok) {
         const weight = COST_WEIGHTS[provider] || 1;
         await addUsage(env, user.id, 'chat', weight);
+        await addUsage(env, user.id, `requests_${provider}`, 1);
         if (plan.chatTotal != null) await env.DB.prepare('UPDATE users SET trial_used = trial_used + ? WHERE id = ?').bind(weight, user.id).run();
     } else if (upstream.status === 401 || upstream.status === 403) {
         // The owner's key was refused; say so without passing on the provider's wording.
@@ -402,6 +429,35 @@ async function ownerRoute(request, env, user, method, path) {
             throw new HttpError(400, 'Unknown action.');
         }
         return json(200, { user: await env.DB.prepare('SELECT id, email, plan, reviewed FROM users WHERE id = ?').bind(target.id).first() });
+    }
+
+    if (method === 'GET' && path === '/owner/agents') {
+        const agents = [];
+        for (const id of Object.keys(AGENT_DEFAULTS)) agents.push(await getAgent(env, id));
+        return json(200, { agents });
+    }
+    const agentMatch = /^\/owner\/agents\/([a-z]+)(\/run)?$/.exec(path);
+    if (agentMatch && AGENT_DEFAULTS[agentMatch[1]]) {
+        const id = agentMatch[1];
+        if (method === 'PUT' && !agentMatch[2]) {
+            const update = await readJson(request);
+            const agent = await getAgent(env, id);
+            for (const [field, max] of [['name', 60], ['instructions', 4000], ['memory', 20000]]) {
+                if (update[field] == null) continue;
+                const value = String(update[field]).slice(0, max);
+                agent[field] = field === 'name' ? (value.trim() || AGENT_DEFAULTS[id].name) : value;
+            }
+            await saveAgent(env, agent);
+            return json(200, { agent });
+        }
+        if (method === 'POST' && agentMatch[2]) {
+            // Run now: the API agent reports on today so far; the Sign-up agent writes up the newest sign-up.
+            if (id === 'api') return json(200, { agent: (await runApiAgent(env, agentDeps(env), { force: true })).agent });
+            const newest = await env.DB.prepare("SELECT email FROM users WHERE plan = 'trial' ORDER BY created_at DESC LIMIT 1").first();
+            if (!newest) throw new HttpError(409, 'There are no sign-ups on the trial to write up yet.');
+            await signupNotice(env, agentDeps(env), newest.email);
+            return json(200, { agent: await getAgent(env, id) });
+        }
     }
 
     if (method === 'PUT' && path === '/owner/settings') {
