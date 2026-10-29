@@ -29,6 +29,10 @@
         .sidebar-toggle-btn { background: none; border: none; color: var(--text-main); font-size: 1.2rem; cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: background 0.2s; }
         .sidebar-toggle-btn:hover { background: rgba(255,255,255,0.05); }
         .logo-area { display: flex; align-items: center; gap: 10px; font-weight: bold; font-size: 1.1rem; color: var(--accent); }
+        /* Studio brand mark: shows BRAND.logoSrc when set, otherwise a plain monogram tile (see BRAND in the script). */
+        .brand-mark { display: inline-flex; align-items: center; justify-content: center; width: 1.25em; height: 1.25em; flex-shrink: 0; border-radius: 22%; overflow: hidden; vertical-align: middle; background: var(--accent); color: #fff; font-size: 0.8em; font-weight: 800; letter-spacing: -0.04em; line-height: 1; }
+        .brand-mark img { width: 100%; height: 100%; object-fit: contain; display: block; }
+        .brand-mark:has(img) { background: none; }
         
         .nav-tabs { display: flex; gap: 8px; font-size: 0.8rem; color: var(--text-muted); }
         .nav-tabs span { cursor: pointer; padding: 6px 10px; border-radius: 4px; transition: background 0.2s, color 0.2s; user-select: none; }
@@ -599,7 +603,7 @@
     <header>
         <div class="header-left">
             <button class="sidebar-toggle-btn" onclick="toggleMenuSidebar()" title="Toggle Menu">☰</button>
-            <div class="logo-area">💻 CoDev Studio Pro</div>
+            <div class="logo-area"><span class="brand-mark"></span><span class="brand-name">CoDev Studio Pro</span></div>
         </div>
         <div class="nav-tabs">
             <span id="tab-chat" class="active" onclick="switchView('chat')">Chat & Swarm</span>
@@ -999,8 +1003,8 @@
     <!-- Phone navigation: backdrop for drawers and bottom tab bar -->
     <div class="drawer-backdrop" id="drawerBackdrop" onclick="closeDrawers()"></div>
     <nav class="mobile-tabbar" id="mobileTabbar">
-        <button class="mobile-tab active" data-view="chat" onclick="mobileTab('chat')"><span class="tab-icon">💬</span>Chat</button>
-        <button class="mobile-tab" data-drawer="agents" onclick="mobileTab('agents')"><span class="tab-icon">🤖</span>Agents</button>
+        <button class="mobile-tab active" data-view="chat" onclick="mobileTab('chat')"><span class="tab-icon"><span class="brand-mark"></span></span>Chat</button>
+        <button class="mobile-tab" data-drawer="agents" onclick="mobileTab('agents')"><span class="tab-icon"><span class="brand-mark"></span></span>Agents</button>
         <button class="mobile-tab" data-view="project" onclick="mobileTab('project')"><span class="tab-icon">📁</span>Files</button>
         <button class="mobile-tab" data-view="studio" onclick="mobileTab('studio')"><span class="tab-icon">🎭</span>Story</button>
         <button class="mobile-tab" data-view="codev" onclick="mobileTab('codev')"><span class="tab-icon">⚡</span>Hub</button>
@@ -2225,6 +2229,26 @@
             updateMobileTabs();
         }
 
+        // Studio branding. This is the one place to set the logo: point logoSrc at an image
+        // (e.g. "brand/logo.svg" next to index.html, or a data: URL) and it replaces the
+        // monogram in the header, tabs, chat list and every agent message header.
+        const BRAND = { name: "CoDev Studio Pro", monogram: "VF", logoSrc: null };
+
+        function brandMarkHtml() {
+            const inner = BRAND.logoSrc ? `<img src="${escapeHtml(BRAND.logoSrc)}" alt="">` : escapeHtml(BRAND.monogram);
+            return `<span class="brand-mark" aria-hidden="true">${inner}</span>`;
+        }
+
+        function applyBrand() {
+            document.querySelectorAll(".brand-mark").forEach(el => { el.outerHTML = brandMarkHtml(); });
+            document.querySelectorAll(".brand-name").forEach(el => { el.textContent = BRAND.name; });
+        }
+
+        // Chats saved before the rebrand still carry the old bot/system emoji in their senders.
+        function stripBotIcon(sender) {
+            return sender.replace(/^(?:🤖|⚙️|💻)\s*/u, "");
+        }
+
         function renderChatList() {
             const container = document.getElementById("chatListContainer");
             container.innerHTML = "";
@@ -2236,7 +2260,7 @@
                 infoDiv.className = "chat-item-info";
                 infoDiv.onclick = () => switchChatSession(session.id);
                 infoDiv.innerHTML = `
-                    <div class="chat-item-title">${session.isGroup ? '🌐 ' : '👤 '}${escapeHtml(session.title)}</div>
+                    <div class="chat-item-title">${brandMarkHtml()} ${escapeHtml(session.title)}</div>
                     <div class="chat-item-meta">${escapeHtml([!session.isGroup && agents.find(a => a.id === session.agentId)?.name, session.timestamp].filter(Boolean).join(" · "))}</div>
                 `;
                 item.appendChild(infoDiv);
@@ -2463,7 +2487,7 @@
 
                 div.innerHTML = `
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <div class="sender" style="margin-bottom: 0;">${escapeHtml(msg.sender)}</div>
+                        <div class="sender" style="margin-bottom: 0;">${msg.sender.includes("You") ? "" : brandMarkHtml()}${escapeHtml(stripBotIcon(msg.sender))}</div>
                         ${speakButtonHtml}
                     </div>
                     ${renderMessageAttachments(msg.attachments)}
@@ -8043,6 +8067,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // and Settings opens only from the ⚙️ button.
         window.addEventListener('DOMContentLoaded', async () => {
             document.getElementById("settingsModal").style.display = "none";
+            applyBrand();
             // The mode toggles start folded away too, to leave room for the chat.
             toggleChatControls();
             await checkServerAnthropic();
