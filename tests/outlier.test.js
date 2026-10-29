@@ -331,6 +331,8 @@ test('orphaned lines, the usage vacuum and the game-script check reach the dashb
     assert.match(shown.text, /game script:/);
     assert.equal(shown.sharpBg, 'rgb(14, 165, 233)');
     assert.equal(shown.outs, 'Star Guy, T1, 30');
+    assert.doesNotMatch(shown.text, /\[object /, 'controls nested in lists render as controls, not as text');
+    assert.equal(await page.evaluate(() => [...document.querySelectorAll('label')].find(l => /Parlay tickets/.test(l.textContent)).querySelectorAll('input[type=checkbox]').length), 3);
     assert.deepEqual(errors, []);
 });
 
@@ -1288,6 +1290,27 @@ test('a grid board\'s bare hit-rate cells get their column labels, and a leg is 
     assert.equal(Math.round(under.rates.l5 * 100), 20, 'an Under reads the Over row\'s rate turned around');
     const between = matchLeg({ player: 'Trae Young', stat: 'Assists', line: 10, side: 'Over' }, props);
     assert.ok([9.5, 10.5].includes(between.row.line));
+});
+
+test('a board whose hit rates sit in their own column block (a pinned player column), with sort icons in the header and split % cells, still gets every rate', async t => {
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const page = await launched.browser.newPage();
+    // Left block: player, prop, line and price; right block: the hit-rate boxes, in
+    // another container, lined up only by their height on the screen.
+    const h = 'height:40px;display:flex;align-items:center';
+    const left = (name, line, odds) => `<div style="${h}"><span style="width:160px">${name}</span><span style="width:120px">Under ${line} Assists</span><span style="width:60px">${odds}</span></div>`;
+    const right = rates => `<div style="${h}">${rates.map(r => `<span style="width:60px"><span>${r}</span><span>%</span></span>`).join('')}</div>`;
+    const head = ['L10', 'L5', 'L20', 'H2H'].map(l => `<span style="width:60px">${l}<svg width="8" height="8"></svg></span>`).join('');
+    await page.setContent(`<div style="display:flex"><div><div style="${h}">Player</div>${left('Jalen Johnson', 30.5, '-115')}${left('James Harden', 24.5, '-115')}</div>`
+        + `<div><div style="${h}">${head}</div>${right([70, 80, 65, 50])}${right([40, 60, 55, 33])}</div></div>`);
+    const collected = await page.evaluate(collectPage, null);
+    const { props } = parseCollected([{ kind: 'props', url: 'https://app.outlier.bet/NBA/props', collected }]);
+    const jj = props.find(p => p.player === 'Jalen Johnson');
+    const jh = props.find(p => p.player === 'James Harden');
+    assert.deepEqual(jj.hitRates, { l10: 0.7, l5: 0.8, l20: 0.65, h2h: 0.5 });
+    assert.deepEqual(jh.hitRates, { l10: 0.4, l5: 0.6, l20: 0.55, h2h: 0.33 });
 });
 
 test('a player named differently by the DFS app and Outlier still matches: initials, Jr., III, accents, EVEN odds', () => {
