@@ -12,7 +12,7 @@
 // read-only root filesystem. One job runs at a time, since they're heavy.
 //
 // The image is pulled from GitHub's registry (built by .github/workflows/media-image.yml),
-// or built here from image/ when it can't be pulled. That's about 3 GB, once.
+// or built here from image/ when it can't be pulled. That's about 4 GB, once.
 //
 // The same service can run on a server for other people's phones. The host then
 // passes resolveUser (each user gets their own folder) and authorize (the plan
@@ -95,7 +95,7 @@ function createMedia({ dataDir, log = () => {}, dockerPath, resolveUser, authori
             if (await hasImage(name)) Object.assign(setup, { state: 'ready', image: name, detail: '' });
             if (setup.state === 'ready') return setup;
         }
-        if (setup.state !== 'failed') Object.assign(setup, { state: 'missing', detail: 'The video tools aren\'t downloaded yet (about 3 GB, once).' });
+        if (setup.state !== 'failed') Object.assign(setup, { state: 'missing', detail: 'The video tools aren\'t downloaded yet (about 4 GB, once).' });
         return setup;
     }
 
@@ -107,7 +107,7 @@ function createMedia({ dataDir, log = () => {}, dockerPath, resolveUser, authori
             const up = await dockerUp();
             if (!up.available) throw new MediaError(up.reason);
             if ((await checkImage()).state === 'ready') return setup;
-            Object.assign(setup, { state: 'preparing', startedAt: Date.now(), detail: 'Downloading the video tools (about 3 GB, once)…' });
+            Object.assign(setup, { state: 'preparing', startedAt: Date.now(), detail: 'Downloading the video tools (about 4 GB, once)…' });
             log(`Downloading ${wantedImage} for video editing.`);
             const pull = await run(['pull', wantedImage], { timeoutMs: 60 * 60 * 1000 });
             if (pull.code === 0) return Object.assign(setup, { state: 'ready', image: wantedImage, detail: '' });
@@ -384,6 +384,28 @@ function createMedia({ dataDir, log = () => {}, dockerPath, resolveUser, authori
         return { text: `Copied ${full} into the media folder as ${saved.name}. Use that name in media_edit (the original stays where it was).` };
     }
 
+    async function toolHighlights({ file, length, count, language } = {}, ctx) {
+        await gate(ctx, 'media_highlights', { file });
+        await ready();
+        const dir = folderFor(ctx);
+        const rel = path.relative(dir, fileIn(dir, file)).replace(/\\/g, '/');
+        const result = await runJob(dir, 'highlights', { input: rel, length: length || 30, count: count || 5, language: language || null });
+        if (!result.ok) throw new MediaError(`Couldn't find highlights: ${result.error}`);
+        return { text: `Likely highlights in ${rel} (${Math.round(result.duration)}s long), ranked by how lively the sound is and what's said. Read them and pick; then keep or trim with media_edit:\n`
+            + result.highlights.map(h => `${h.start}s - ${h.end}s (score ${h.score}): ${h.text}`).join('\n') };
+    }
+
+    async function toolSpeak({ text, voice, engine, speed, output_name: outputName } = {}, ctx) {
+        await gate(ctx, 'media_speak', { text });
+        await ready();
+        const dir = folderFor(ctx);
+        const stem = safeName(outputName || 'voiceover').replace(/\.[a-z0-9]+$/i, '');
+        const result = await runJob(dir, 'speak', { text, voice, engine, speed, output: `outputs/${stem}` });
+        if (!result.ok) throw new MediaError(`Couldn't make the voice: ${result.error}`);
+        const files = describe(result, dir);
+        return { text: `Made ${files.map(f => f.name).join(', ')} (${Math.round((result.info || {}).duration || 0)}s). Use it in media_edit (voiceover {file}) or give it to the user as is.`, files };
+    }
+
     const fileProp = { type: 'string', description: 'A file in the media folder, like "uploads/clip.mp4" (from media_files or the attachment note).' };
     const TOOLS = [
         { name: 'media_files', run: toolFiles, annotations: { readOnlyHint: true },
@@ -402,14 +424,22 @@ function createMedia({ dataDir, log = () => {}, dockerPath, resolveUser, authori
             + '- clean_speech {strength?}: remove background noise (wind, hum, crowd, traffic) and keep the people talking (DeepFilterNet).\n'
             + '- keep_voice: keep only voices, removing music and other sounds; remove_voice: keep the music, remove voices (Demucs).\n'
             + '- add_music {file, volume: 0.15, duck: true, start?, fade_out?}: music under the clip, looped, dipping while people talk; "quietly underneath" is 0.1 to 0.15.\n'
-            + '- voiceover {file, start?, volume?}: a voice recording on top, the clip\'s sound dipping under it. replace_audio {file}. mute. volume {volume: "-6dB" or 1.5}. normalize: even loudness for social media.\n'
-            + '- captions {position?: "bottom" | "center" | "top", words_per_line?: 4 (0 = whole sentences), color?, size?, burn?: true, language?}: Whisper writes the captions and burns them in; an .srt file is saved too.\n'
-            + '- text {text, position?, start?, end?, size?, color?, box?}. logo {file, position?: "top-right", scale?: 0.15, opacity?}. fade {in?: 0.5, out?: 1}.\n'
+            + '- voiceover {file, start?, volume?}: a voice recording on top, the clip\'s sound dipping under it. Or voiceover {text, voice?, engine?: "kokoro" | "piper", speed?, start?}: a free AI voice reads the text (voices below). replace_audio {file}. mute. volume {volume: "-6dB" or 1.5}. normalize: even loudness for social media.\n'
+            + '- remove_silence {min_silence?: 0.6, padding?: 0.15}: cut the pauses. remove_fillers {words?: ["you know"]}: cut "um", "uh" and the like (Whisper).\n'
+            + '- captions {position?: "bottom" | "center" | "top", words_per_line?: 4 (0 = whole sentences), style?: "highlight" (each word lights up as it\'s said), color?, size?, burn?: true, language?, translate?: true (English captions for any language)}: Whisper writes them and burns them in; an .srt file is saved too.\n'
+            + '- text {text, position?, start?, end?, size?, color?, box?, animation?: "fade" | "slide_up" | "slide_left" | "pop" | "typewriter"}. logo {file, position?: "top-right", scale?: 0.15, opacity?}. fade {in?: 0.5, out?: 1}.\n'
+            + '- speed_ramp {ranges: [{start, end, factor}]}: fast or slow parts, the rest normal. slow_motion {factor: 0.5, start?, end?}: smooth slow motion (motion-interpolated frames).\n'
+            + '- join also takes transition: "fade" | "dissolve" | "fadeblack" | "wipeleft" | "slideleft" | "slideup" | "circleopen" | "zoomin" | "pixelize"... and duration (0.5).\n'
+            + '- look {preset?: "warm" | "cool" | "vibrant" | "cinematic" | "vintage" | "sepia" | "bw" | "faded" | "bright" | "moody", brightness?, contrast?, saturation?, gamma?, vignette?, strength?: 0-1}.\n'
+            + '- montage {files: [clips and pictures], music, beats_per_cut?: 2, aspect?, duration?}: cuts the input and the files to the beat of the music (pictures get a slow zoom).\n'
+            + '- remove_background {replace?: "green" | "blur" | "color" | "image" | "transparent" (pictures only), color?, file?}: takes the person off the background (RobustVideoMatting; rembg for pictures). Up to 5 minutes of video.\n'
+            + '- upscale {scale: 2 | 3 | 4}: sharper and bigger with Real-ESRGAN. Fast for pictures; video is slow on a CPU (about a second per frame), so keep clips short.\n'
             + '- resize {width?, height?}. rotate {angle: 90 | -90 | 180, or direction: "flip"}. compress {quality: "high" | "medium" | "small", max_height?}. convert {format: mp4 | webm | mov | mp3 | wav}.\n'
             + '- Last step only: gif {start?, duration?, width?, fps?}, extract_audio {format?: "mp3"}, thumbnail {time}.\n'
             + 'Times are seconds or "m:ss". Example, "remove the background noise, keep the people talking and add music quietly underneath": '
             + '[{"op": "clean_speech"}, {"op": "add_music", "file": "uploads/song.mp3", "volume": 0.12}]. '
             + 'Music, logos and voiceovers must be files in the media folder: attached by the user, or found on their computer with media_find_on_computer and copied in with media_import. If none fits, ask the user rather than inventing one. '
+            + 'Voices: Kokoro af_sarah (default), af_bella, af_nicole, af_sky, am_adam, am_michael, bf_emma, bf_isabella, bm_george, bm_lewis (a American, b British, f female, m male); Piper lessac, amy, ryan, alan (quicker). '
             + 'Long clips take minutes (Whisper and Demucs run about as long as the clip). Use it whenever the user asks to change a video or audio file; to only read what is said use media_transcribe instead.',
           inputSchema: { type: 'object', properties: {
               input: fileProp,
@@ -424,7 +454,15 @@ function createMedia({ dataDir, log = () => {}, dockerPath, resolveUser, authori
           inputSchema: { type: 'object', properties: { file: fileProp, query: { type: 'string', description: 'Words or a phrase, like "welcome to the channel".' }, language: { type: 'string', description: 'Optional: a language code like "en"; detected when left out.' } }, required: ['file', 'query'] } },
         { name: 'media_separate', run: toolSeparate, annotations: { readOnlyHint: false, destructiveHint: false },
           description: 'Split a song or a clip\'s sound into separate audio files with Demucs: stems "vocals" gives the voice and everything else (music and sounds); stems "all" gives voice, drums, bass and other. Use it for a karaoke track, an a cappella, or to reuse the music as a file; to only remove noise or voices inside an edit use media_edit instead.',
-          inputSchema: { type: 'object', properties: { file: fileProp, stems: { type: 'string', enum: ['vocals', 'all'], description: 'vocals (voice and the rest) or all (four stems). Default vocals.' } }, required: ['file'] } }
+          inputSchema: { type: 'object', properties: { file: fileProp, stems: { type: 'string', enum: ['vocals', 'all'], description: 'vocals (voice and the rest) or all (four stems). Default vocals.' } }, required: ['file'] } },
+        { name: 'media_highlights', run: toolHighlights, annotations: { readOnlyHint: true },
+          description: 'Find the best moments of a long video (a stream, a podcast, a game) for clips: Whisper\'s transcript plus how loud and lively each part is, ranked. Returns start and end seconds with what\'s said, for media_edit\'s keep or trim.',
+          inputSchema: { type: 'object', properties: { file: fileProp, length: { type: 'number', description: 'About how long each highlight should be, in seconds (default 30).' },
+              count: { type: 'integer', description: 'How many to find (default 5).' }, language: { type: 'string' } }, required: ['file'] } },
+        { name: 'media_speak', run: toolSpeak, annotations: { readOnlyHint: false, destructiveHint: false },
+          description: 'Read text aloud with a free AI voice on the user\'s computer (Kokoro, natural; or Piper, quicker) and save it as an MP3: for voiceovers, narration, intros. Voices: Kokoro af_sarah (default), af_bella, af_nicole, af_sky, am_adam, am_michael, bf_emma, bf_isabella, bm_george, bm_lewis; Piper lessac, amy, ryan, alan. English only.',
+          inputSchema: { type: 'object', properties: { text: { type: 'string' }, voice: { type: 'string' }, engine: { type: 'string', enum: ['kokoro', 'piper'] },
+              speed: { type: 'number', description: '0.5 to 2 (default 1).' }, output_name: { type: 'string' } }, required: ['text'] } }
     ];
 
     // On a server there is no "user's computer" to search, so these two are left out.

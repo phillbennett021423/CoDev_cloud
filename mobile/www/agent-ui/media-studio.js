@@ -15,7 +15,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
     "use strict";
 
-    const TOOL_NAMES = ["media_files", "media_info", "media_edit", "media_transcribe", "media_find", "media_separate", "media_find_on_computer", "media_import"];
+    const TOOL_NAMES = ["media_files", "media_info", "media_edit", "media_transcribe", "media_find", "media_separate", "media_highlights", "media_speak", "media_find_on_computer", "media_import"];
     const UPLOAD_KINDS = ["video", "audio", "image"];
     const STATUS_CACHE_MS = 30000;
 
@@ -179,6 +179,8 @@
             if (name === "media_transcribe") return `📝 Transcribing ${args.file || "the clip"} with Whisper`;
             if (name === "media_find") return `🔎 Finding "${args.query || ""}" in ${args.file || "the clip"}`;
             if (name === "media_separate") return `🎚️ Separating the voice and music in ${args.file || "the clip"}`;
+            if (name === "media_highlights") return `⭐ Finding the best moments in ${args.file || "the clip"}`;
+            if (name === "media_speak") return "🗣️ Recording the voiceover";
             return `🎬 ${name}`;
         }
 

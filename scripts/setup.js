@@ -108,7 +108,7 @@ async function main() {
         const media = createMedia({ dataDir: config.workspace.dataDir });
         let state = (await media.status({})).setup;
         if (state.state !== 'ready' && GET_MEDIA && !CHECK_ONLY) {
-            console.log('  Downloading the video tools (about 3 GB, once; building them here takes 10 to 20 minutes if the download fails)...');
+            console.log('  Downloading the video tools (about 4 GB, once; building them here takes 10 to 20 minutes if the download fails)...');
             state = await media.prepare();
         }
         if (state.state === 'ready') ok(`Ready (${state.image}).`);
