@@ -7,8 +7,9 @@ android {
         applicationId "com.codev.studio"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        // Each GitHub build gets a higher number, so a new APK installs over the old one.
-        versionCode Integer.parseInt(System.getenv("GITHUB_RUN_NUMBER") ?: "1")
+        // On GitHub each build gets a higher number (minutes since 2026-01-01), whichever
+        // workflow built it, so a new APK always installs over the old one.
+        versionCode System.getenv("GITHUB_ACTIONS") ? (int) ((System.currentTimeMillis().intdiv(1000) - 1767225600).intdiv(60)) : 1
         versionName "1.0.${System.getenv("GITHUB_RUN_NUMBER") ?: "0"}"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
