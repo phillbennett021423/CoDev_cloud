@@ -975,6 +975,8 @@
                         <option value="architect">Architect: plans and implements</option>
                         <option value="swarm">Swarm: builds on the team's changes</option>
                         <option value="self_healing">Self-Healing: runs, verifies and fixes</option>
+                        <option value="game_engine">Game Engine: Godot, shaders, 3D math, physics</option>
+                        <option value="architecture">Architecture: finds duplication and dead code, refactors</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -1241,6 +1243,7 @@
     <script src="agent-ui/phone-browser.js"></script>
     <script src="agent-ui/story-studio.js"></script>
     <script src="agent-ui/odds-api.js"></script>
+    <script src="agent-ui/code-intel.js"></script>
     <script src="agent-ui/cloud-account.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
@@ -3285,6 +3288,8 @@
         // Settings) are added to the same list.
         // Autonomous tasks scan, edit and run code in many steps, so the loop allows plenty.
         const MAX_TOOL_ROUNDS = 24;
+        // Code tasks read, edit and re-check many files, so they get more steps; the spending limits still apply.
+        const MAX_CODE_TOOL_ROUNDS = 40;
         const MAX_TOOL_RESULT_CHARS = 12000;
         const PROGRESS_STEPS_SHOWN = 6;
         // On: agents edit files and run commands without a confirm dialog.
@@ -3558,8 +3563,8 @@
             try {
                 const result = await browserRpc("tools/list", {});
                 // server.js's /agent-tools also has the sandbox's tools (offered in sandbox mode);
-                // these are the browser's and the Outlier pipeline's, called the same way.
-                tools = (result.tools || []).filter(t => /^(browser|outlier)_/.test(t.name)).map(t => ({ ...t, transport: "browser" }));
+                // these are the browser's, the Outlier pipeline's and the Godot/Blender ones, called the same way.
+                tools = (result.tools || []).filter(t => /^(browser|outlier|godot|blender|gamedev)_/.test(t.name)).map(t => ({ ...t, transport: "browser" }));
             } catch (err) { /* an older server.js without /agent-tools */ }
             browserMcpCache = { at: Date.now(), tools };
             return tools;
@@ -4151,7 +4156,9 @@
             // A command on the real computer asks too unless it's a plain test or build
             // step: anything else could open apps or drive the mouse and keyboard.
             const hostCommand = tool.transport === "desktop" && tool.name === "run_command" && !isSafeHostCommand(args?.command);
-            if ((!toolsAutoRun || hostCommand) && !tool.annotations?.readOnlyHint && !tool._meta?.["codev/requiresUserApproval"]) {
+            // Tools that run code or change the project outside any review (blender_run, godot_install_bridge) always ask.
+            const alwaysAsk = Boolean(tool._meta?.["codev/alwaysAsk"]);
+            if (alwaysAsk || ((!toolsAutoRun || hostCommand) && !tool.annotations?.readOnlyHint && !tool._meta?.["codev/requiresUserApproval"])) {
                 if (!await askPermission(`An agent wants to use ${shownName}${tool.server ? ` (MCP server "${tool.server}")` : " on your computer"}:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`, ctx?.agentName)) {
                     logConsoleActivity(`[Tool] You declined: ${shownName}`);
                     return "The user declined this tool call.";
@@ -4229,6 +4236,12 @@
             log: logConsoleActivity,
             onChart: filter => openOddsViewer(filter)
         });
+        // The project map behind code_map, find_symbol, file_outline, read_lines,
+        // architecture_review and godot_check (agent-ui/code-intel.js), built on this device.
+        const codeIndexer = CodevCodeIntel.createIndexer({ isIndexable: path => isProjectFileName(path) });
+        async function projectCodeIndex(ctx) {
+            return codeIndexer.index(await getWorkspace(ctx?.sandbox), { changed: [...new Set([...(ctx?.changes || []), ...recentWorkspaceFiles])] });
+        }
         function openOddsViewer(filter) {
             const el = document.getElementById("oddsViewer");
             if (!el) return;
@@ -4326,6 +4339,8 @@
                 for (const tool of await googleApps.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             } catch (err) { logConsoleActivity(`[Google] ${err.message}`); }
             for (const tool of oddsTracker.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
+            // The project map and checks, only for code tasks (they cost tokens on every call).
+            if (ctx?.kind === "code") tools.push(...CodevCodeIntel.buildTools({ getIndex: projectCodeIndex }));
             if (ctx && ctx.sandbox) return buildSandboxTools(tools, ctx);
             const mcpTools = await fetchAllMcpTools();
             // The folder connected in the page gets its own tools. When the Windows app or the
@@ -4475,6 +4490,8 @@
             if (googleStep) return googleStep;
             const oddsStep = oddsTracker.describe(name, args);
             if (oddsStep) return oddsStep;
+            const codeStep = CodevCodeIntel.describe(name, args);
+            if (codeStep) return codeStep;
             if (name === "mcp_list_resources") return "📚 Listing MCP resources";
             if (name === "read_attachment") return `📄 Reading ${args.name || "the attached file"}${args.pages ? `, pages ${args.pages}` : args.query ? ` for "${args.query}"` : ""}`;
             if (name === "query_table") return `📊 ${{ stats: "Measuring", group: "Totaling", search: "Searching", columns: "Looking over" }[args.action] || "Reading rows of"} ${args.name || "the spreadsheet"}${args.group_by ? ` by ${args.group_by}` : ""}`;
@@ -4632,7 +4649,8 @@
             // What this task has cost so far; a spending limit ends the tool steps early.
             ctx.cost = ctx.cost || 0;
             let spendStop = "";
-            for (let round = 0; round < MAX_TOOL_ROUNDS && outlierFailures < 2 && browserFailures < 3; round++) {
+            const maxRounds = ctx.kind === "code" ? MAX_CODE_TOOL_ROUNDS : MAX_TOOL_ROUNDS;
+            for (let round = 0; round < maxRounds && outlierFailures < 2 && browserFailures < 3; round++) {
                 if (round > 0 && taskSpendLimit > 0 && ctx.cost >= taskSpendLimit) spendStop = `this task reached its spending limit of ${formatUsd(taskSpendLimit)}`;
                 else if (round > 0 && dailySpendReached()) spendStop = `CoDev reached today's spending limit of ${formatUsd(dailySpendLimit)}`;
                 if (spendStop) break;
@@ -6912,8 +6930,6 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             return (await groqChatMessage(body)).content || "";
         }
 
-        const GODOT_TASK_PATTERN = /\b(godot|gdscript|tscn|CharacterBody[23]D|move_and_slide)\b|\.gd\b/i;
-
         // CONVERSATION HISTORY
         // Each turn sends the chat's earlier messages too, so a follow-up ("why did that
         // fail?", "try the other one") reaches the model with what was said and done
@@ -6985,9 +7001,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
             // Engine-specific rules only when the task is about that engine, so they don't steer unrelated work.
             const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-            const godotRules = GODOT_TASK_PATTERN.test(`${systemPrompt}\n${userMessage}`) ? `
-- GODOT 4: CharacterBody3D.move_and_slide() takes ZERO arguments. It reads directly from built-in velocity and up_direction.
-- C# IN GODOT: Vector2 and Vector3 are structs, not records. Do NOT use record 'with' expressions. Construct new vectors or mutate component properties directly.` : "";
+            // Godot, shaders, 3D math, physics loops and frame-data state machines (agent-ui/code-intel.js).
+            const engineRules = CodevCodeIntel.engineGuide(`${systemPrompt}\n${userMessage}`);
             // CoDev's core instructions. They are the same for every request (only the date and
             // the engine rules change), so Claude's prompt cache reuses them between calls.
             const technicalGuardrails = `HOW YOU WORK
@@ -7014,7 +7029,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); making and editing pictures (generate_image). For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
 
-12. ENGINE-SPECIFIC RULES:${godotRules || " none for this task."}`;
+12. ENGINE-SPECIFIC RULES:${engineRules ? `\n${engineRules}` : " none for this task."}`;
             
             // A resumed run: the conversation it had saved, from where it stopped.
             if (options.resumeMessages) {
@@ -7114,14 +7129,28 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             self_healing: { label: "Self-Healing", prompt: `ROLE: SELF-HEALING ENGINEER. You verify and repair code autonomously.
 - Re-read every changed file. Run the tests, build, linter or the program itself when a command tool exists, and read the errors.
 - Fix each failure at its root with the edit tools, then run again. Repeat until it passes, or until you have tried 3 fixes for the same error.
-- Report what you checked, what failed, what you fixed and the final result. If no command tool exists, say the code was checked by reading only.` }
+- For Godot files, run godot_check on every changed script, scene and shader, and run Godot headless when a command tool exists (the engine guide says how).
+- Report what you checked, what failed, what you fixed and the final result. If no command tool exists, say the code was checked by reading only.` },
+            game_engine: { label: "Game Engine", prompt: `ROLE: GAME ENGINE ENGINEER, a specialist in Godot 4 (GDScript and C#), shaders, 3D math, physics loops and frame-data state machines. You do the work on the user's game project.
+- Follow the GAME ENGINE GUIDE: map the scripts and scenes involved with code_map, file_outline and find_symbol before editing, write a short plan with the coordinate space, units and callback for each change, then edit.
+- Get the math right: say which space each vector is in, keep velocities in units per second, keep physics in _physics_process with delta, and use quaternions for orientation.
+- After editing, run godot_check on every changed file and fix what it reports; with a command tool, run Godot headless to load the scripts and the main scene.
+- Report what you changed file by file, the frame table or math you used when it matters, and how it was verified.` },
+            architecture: { label: "Architecture", prompt: `ROLE: ARCHITECTURE ENGINEER. You keep large codebases clean: no duplicated code, no redundant layers, no dead code, clear module boundaries.
+- Start with architecture_review (and code_map for the overall structure) and confirm each finding with find_symbol and read_lines before you change anything.
+- Refactor in small steps that keep behavior identical: merge copy-pasted code into one shared function, keep one of several definitions that do the same job, delete code nothing uses, break import cycles by moving the shared part into its own module.
+- After each step, find_symbol the old names to prove nothing still uses them, and run the tests or build when a command tool exists.
+- When asked to build something, reuse what exists and follow the project's patterns; add a new abstraction only when it removes real duplication.
+- Report what you changed and why, what you verified, and the remaining findings ranked by impact.` }
         };
 
         const AUTONOMY_RULES = `AUTONOMOUS DEVELOPER MODE:
 - Treat every user message as an execution directive for the connected project. If it is plainly a question, answer it, checking the real code first.
 - The [Workspace] block in the message already holds the project's file tree and the files most likely involved. Never ask the user for file paths, file contents or code snippets: find them yourself with the search, list and read tools.
 - Act instead of describing: save the changes with the write/edit tools, then run the code, tests or build when a command tool exists. Only paste code in your reply when no write tool is available.
-- Keep going until the task is done or truly blocked. Ask the user only for what the workspace can't tell you, like a product decision or a missing credential.`;
+- Keep going until the task is done or truly blocked. Ask the user only for what the workspace can't tell you, like a product decision or a missing credential.
+
+${CodevCodeIntel.BIG_PROJECT_RULES}`;
 
         function agentDevRole(agent) {
             return DEV_ROLES[agent?.devRole] ? agent.devRole : "architect";
@@ -7132,7 +7161,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // Only a code or file task gets the project's files put in the prompt and the
         // "act on the project" rules; a question, research, a prop list or screenshots go
         // to their own tools instead of a trip through the project folder.
-        const CODE_TASK_STRONG = /```|@[\w./-]+\.\w+|\b[\w./-]+\.(?:js|mjs|cjs|ts|tsx|jsx|py|cs|gd|tscn|html|css|json|java|kt|gradle|xml|ya?ml|toml|md|sh|bat|ps1|c|h|cpp|hpp|rs|go|rb|php|lua|sql|txt)\b|\b(?:code|coding|codebase|repo|repository|function|method|class|variable|bug|debug|stack ?trace|exception|compile|compiler|build|lint|refactor|implement|script|endpoint|component|commit|deploy|godot|gdscript|javascript|typescript|python|kotlin|html|css|npm|gradle|apk|syntax)\b/i;
+        const CODE_TASK_STRONG = /```|@[\w./-]+\.\w+|\b[\w./-]+\.(?:js|mjs|cjs|ts|tsx|jsx|py|cs|gd|tscn|tres|gdshader|shader|html|css|json|java|kt|gradle|xml|ya?ml|toml|md|sh|bat|ps1|c|h|cpp|hpp|rs|go|rb|php|lua|sql|txt)\b|\b(?:code|coding|codebase|repo|repository|function|method|class|variable|bug|debug|stack ?trace|exception|compile|compiler|build|lint|refactor|implement|script|endpoint|component|commit|deploy|godot|gdscript|shaders?|gdshader|hitbox(?:es)?|architecture|game ?engine|javascript|typescript|python|kotlin|html|css|npm|gradle|apk|syntax)\b/i;
         const CODE_TASK_WEAK = /\b(?:project|folder|files?|tests?|app|program|page|website|site|error|crash|feature|install)\b/i;
         const IMAGE_TASK = /\b(?:screenshots?|screen ?shots?|screen ?caps?|images?|pictures?|pics?|photos?)\b/i;
         const PROPS_TASK = /\b(?:outlier|parl[ae]ys?|parley|tickets?|props?|underdog|dabble|prizepicks|slips?|legs?|pick'?em|sportsbooks?|over\/under|odds|betting)\b/i;
@@ -7319,9 +7348,18 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const requestLower = String(request).toLowerCase();
             const terms = requestTerms(request);
             const codeFiles = paths.filter(isProjectFileName);
+            // The project map: files that define a name the request mentions rank first, and
+            // where those names are defined goes in the prompt, so big projects start at the right lines.
+            let index = null;
+            try { index = await codeIndexer.index(ws, { changed: recentWorkspaceFiles }); } catch (err) { logConsoleActivity(`[Code map] ${err.message}`); }
+            const defining = new Map();
+            if (index) for (const word of new Set(String(request).match(/[A-Za-z_]\w{2,}/g) || [])) {
+                const defs = index.defs.get(word) || [];
+                if (defs.length && defs.length <= 6) defs.forEach(d => defining.set(d.path, (defining.get(d.path) || 0) + 30));
+            }
             // A small project goes in whole; a bigger one sends the files that match.
             const ranked = codeFiles
-                .map(path => ({ path, score: scoreWorkspaceFile(path, requestLower, terms, ws.contents) }))
+                .map(path => ({ path, score: scoreWorkspaceFile(path, requestLower, terms, ws.contents) + (defining.get(path) || 0) }))
                 .filter(r => r.score > 0 || codeFiles.length <= MAX_CONTEXT_FILES)
                 .sort((a, b) => b.score - a.score)
                 .slice(0, MAX_CONTEXT_FILES);
@@ -7337,6 +7375,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 text += `\n\n[Workspace File: ${path}${path === activeSelectedFile ? " (open in the editor)" : ""}]\n${shown}`;
                 files.push(path);
             }
+            if (index) text += CodevCodeIntel.contextNote(index, request);
             return { text, files, total: paths.length };
         }
 
@@ -7816,6 +7855,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             tools.attachedImages = aiOptions.images || [];
             // What the task is about, for the tools that are only offered for some tasks.
             tools.task = task;
+            tools.kind = kind;
             if (resume?.toolLog) tools.toolLog.push(...resume.toolLog);
             // The same list as the run's, so a crash mid-run still leaves what was done.
             placeholder.toolLog = tools.toolLog;

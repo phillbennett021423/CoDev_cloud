@@ -10,6 +10,7 @@ const { createNodeMcpHub } = require('./mcp-hub');
 const { createSandboxWorker } = require('./sandbox/remote');
 const { createBrowserService } = require('./browser');
 const { createOutlierBridge } = require('./outlier-bridge');
+const { createGameDevService } = require('./gamedev');
 const { createGoogleConnect } = require('./google-connect');
 const { pathToFileURL } = require('url');
 
@@ -215,7 +216,10 @@ app.whenReady().then(() => {
     // The Outlier pipeline: its agent tools ride along with the browser's, and the
     // 📈 Outlier tab's requests come over their own channel.
     const outlier = createOutlierBridge({ browser: browserTools, getProjectDir, log: line => console.log(line) });
-    ipcMain.handle('codev:browser-mcp', (_event, message) => (outlier ? outlier.handleMcp(message, browserTools.handle) : browserTools.handle(message)));
+    // Godot (editor bridge, headless checks) and Blender: their tools ride along too.
+    const gamedev = createGameDevService({ getProjectDir, log: line => console.log(`[gamedev] ${line}`) });
+    const browserAndOutlier = message => (outlier ? outlier.handleMcp(message, browserTools.handle) : browserTools.handle(message));
+    ipcMain.handle('codev:browser-mcp', (_event, message) => gamedev.handleMcp(message, browserAndOutlier));
     ipcMain.handle('codev:outlier-request', (_event, req) => (outlier ? outlier.request(req || {}) : { status: 404, body: { error: 'The Outlier pipeline isn\'t included in this build.' } }));
     // Live view: frames and inspector events go to the window that asked for them.
     const liveWatches = new Map(); // webContents id -> unsubscribe
