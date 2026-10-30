@@ -850,8 +850,11 @@
     // res:// files a script or scene loads that aren't in the project.
     function missingResources(index, f) {
         const issues = [];
+        const lines = f.text.split("\n");
         for (const imp of f.imports) {
             if (imp.how !== "res" || imp.resolved) continue;
+            // Only paths the file loads; a res:// string it writes to or checks for isn't an error.
+            if (!/\b(pre)?load\s*\(|ext_resource|^\s*extends\s|ResourceLoader\.load|GD\.Load|change_scene_to_file|#include/.test(lines[imp.line - 1] || "")) continue;
             const rel = imp.spec.replace(/^res:\/\//, "").split("::")[0];
             // Imported assets (textures, sounds, models) aren't text, so the index can't see them.
             if (!/\.(gd|cs|tscn|scn|tres|res|gdshader|gdshaderinc|shader|json|cfg)$/i.test(rel)) continue;
@@ -946,7 +949,8 @@
         return clip(`\n\n[Code map] ${out.join("\n")}`, maxChars);
     }
 
-    const GAME_TASK = /\b(godot|gdscript|gdshader|tscn|tres|shaders?|glsl|hlsl|CharacterBody[23]D|RigidBody[23]D|Area[23]D|move_and_slide|MoveAndSlide|_physics_process|PhysicsProcess|quaternions?|euler angles?|transform3d|basis|raycasts?|hit ?box(es)?|hurt ?box(es)?|frame[- ]data|state machines?|game ?engines?|game ?loop|fixed ?time ?step|collisions?|rigid ?body|kinematic|physics (loop|engine|step|tick)|inverse kinematics|netcode|rollback|unity|unreal|monogame|bevy|raylib|sdl2?)\b|\.(gd|gdshader|tscn|tres)\b/i;
+    const GAME_TASK = /\b(godot|gdscript|gdshader|tscn|tres|shaders?|glsl|hlsl|CharacterBody[23]D|RigidBody[23]D|Area[23]D|move_and_slide|MoveAndSlide|_physics_process|PhysicsProcess|quaternions?|euler angles?|transform3d|basis|raycasts?|hit ?box(es)?|hurt ?box(es)?|frame[- ]data|state machines?|game ?engines?|game ?loop|fixed ?time ?step|collisions?|rigid ?body|kinematic|physics (loop|engine|step|tick)|inverse kinematics|netcode|rollback|unity|unreal|monogame|bevy|raylib|sdl2?|blender|bpy|gltf|glb)\b|\.(gd|gdshader|tscn|tres|glb|gltf|blend)\b/i;
+    const BLENDER_TASK = /\b(blender|bpy|gltf|glb|\.blend)\b/i;
 
     function isGameTask(text) { return GAME_TASK.test(String(text || "")); }
 
@@ -956,7 +960,7 @@ WORKFLOW FOR ENGINE CODE
 1. Map before you touch: code_map (focus on the folder or scene), file_outline of each script involved, and find_symbol for every signal, method, node path or class_name you change. Signals connected in the editor live in .tscn files ([connection ... method="_on_x"]), and find_symbol searches those too.
 2. Write a 2-4 line plan first: the coordinate space (local or global), the units (per second or per physics tick), which callback runs it (_physics_process for anything physics), and every file you will edit.
 3. Edit with the file tools, then run godot_check on each changed script, scene and shader, and fix every error it reports.
-4. With a command tool (run_command), check that Godot is installed (\`godot --version\`, or godot4) and validate for real: \`godot --headless --path <folder with project.godot> --check-only --script res://path/to/script.gd\` for each changed script, then \`godot --headless --path <folder> --quit-after 120\` to load the main scene; read every "SCRIPT ERROR", "Parse Error" and "ERROR:" line and fix it. For C#, \`dotnet build\` in the project folder. If Godot isn't installed, say the code was checked statically only.
+4. On the user's computer, godot_validate runs the real Godot headless on the project (as saved on disk) and reports parse and runtime errors; use it after editing scripts (gamedev_status says whether Godot is installed). Otherwise, with a command tool (run_command), check that Godot is installed (\`godot --version\`, or godot4) and validate for real: \`godot --headless --path <folder with project.godot> --check-only --script res://path/to/script.gd\` for each changed script, then \`godot --headless --path <folder> --quit-after 120\` to load the main scene; read every "SCRIPT ERROR", "Parse Error" and "ERROR:" line and fix it. For C#, \`dotnet build\` in the project folder. If Godot isn't installed, say the code was checked statically only.
 
 GDSCRIPT 2.0 (Godot 4)
 - Typed code: \`var speed: float = 5.0\`, \`func hit(damage: int) -> void:\`, \`:=\` to infer. Annotations: @export, @export_range(0, 10, 0.5), @onready, @tool. Indent with tabs only.
@@ -998,9 +1002,27 @@ FRAME-DATA STATE MACHINES (fighters, action games)
 - Hitboxes as Area3D/Area2D toggled per frame (\`monitoring\` via set_deferred) or shape queries in the step; hurtboxes on a separate layer. Frame advantage = attacker recovery remaining minus defender stun.
 - Show the frame table (startup/active/recovery, advantage) in your reply when you add or change a move.
 
+LIVE EDITOR AND BLENDER (Windows app or CoDev on the computer)
+- godot_editor controls the open Godot editor through the CoDev Bridge plugin: inspect the scene_tree, add_node, instantiate scenes and .glb models, set_property, play and stop, save_scene. If it says the plugin is missing, call godot_install_bridge (the user approves) and ask the user to reopen the project. Keep the game loop in GDScript/C#; use the bridge for one-off edits, never frame-by-frame control.
+- blender_run runs a bpy script in Blender in the background and saves to the project (output: "assets/models/x.glb" exports glTF for Godot). Then godot_editor "rescan" imports it and "instantiate" places it. Model in meters, +Z up in Blender (the glTF exporter converts to Godot's +Y up), apply transforms before export, name objects clearly (suffix -col makes Godot generate collision, -rigid a rigid body, -noimp skips the node).
+
 OTHER ENGINES: Unity physics in FixedUpdate with Rigidbody (not transform) moves; Unreal uses Tick(DeltaSeconds) and UPROPERTY for editor values. Same math and fixed-step rules.`;
 
-    function engineGuide(text) { return isGameTask(text) ? ENGINE_GUIDE : ""; }
+    const BLENDER_GUIDE = `BLENDER (bpy, Blender 4.x) for blender_run
+- Start clean: \`bpy.ops.object.select_all(action="SELECT"); bpy.ops.object.delete()\` (the factory scene has a cube, camera and light). Prefer bpy.data and bmesh over bpy.ops where possible: ops depend on context and selection.
+- Primitives: \`bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0))\`, then \`obj = bpy.context.active_object\`. Custom meshes: \`mesh = bpy.data.meshes.new("Rock"); mesh.from_pydata(verts, [], faces); mesh.update(); obj = bpy.data.objects.new("Rock", mesh); bpy.context.collection.objects.link(obj)\`.
+- Modifiers: \`m = obj.modifiers.new("Bevel", "BEVEL"); m.width = 0.05\`; apply with \`bpy.context.view_layer.objects.active = obj; bpy.ops.object.modifier_apply(modifier=m.name)\` (the glTF exporter can also apply them with export_apply=True).
+- Materials (Principled BSDF, what glTF exports): \`mat = bpy.data.materials.new("Stone"); mat.use_nodes = True; bsdf = mat.node_tree.nodes["Principled BSDF"]; bsdf.inputs["Base Color"].default_value = (0.5, 0.5, 0.5, 1); bsdf.inputs["Roughness"].default_value = 0.8; obj.data.materials.append(mat)\`.
+- Transforms: apply before export with \`bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)\` on the selected objects. Units are meters; Blender is +Z up and the exporter converts to Godot's +Y up.
+- Animation: \`obj.location = (0, 0, 0); obj.keyframe_insert("location", frame=1)\`; actions export as glTF animations that Godot imports into an AnimationPlayer.
+- Export: blender_run exports to its output path when the script doesn't; to control it: \`bpy.ops.export_scene.gltf(filepath=CODEV_OUTPUT, export_format="GLB", export_apply=True, use_selection=False)\`.
+- Godot import hints in object names: "-col" (collision from the mesh), "-convcol" (convex collision), "-rigid" (RigidBody3D), "-noimp" (skip).
+- Print what you made (object names, vertex counts) so the result shows in the tool output.`;
+
+    function engineGuide(text) {
+        if (!isGameTask(text)) return "";
+        return BLENDER_TASK.test(String(text)) ? `${ENGINE_GUIDE}\n\n${BLENDER_GUIDE}` : ENGINE_GUIDE;
+    }
 
     const BIG_PROJECT_RULES = `[Large project tools] code_map (the project's files, symbols and who uses what), find_symbol (where a name is defined and every place it's used, scene files included), file_outline (a file's functions and classes with line ranges, its imports and dependents), read_lines (exact line ranges of a long file), architecture_review (copy-pasted code, redundant definitions, unused code, import cycles, oversized files) and godot_check (static checks for Godot scripts, scenes and shaders).
 - Work file by file: before editing a function, class or signal, find_symbol it to see every caller; read the lines you change with read_lines rather than whole long files.
@@ -1071,6 +1093,11 @@ OTHER ENGINES: Unity physics in FixedUpdate with Rigidbody (not transform) moves
         if (name === "read_lines") return `📄 Reading ${args.path} lines ${args.start}${args.end ? `-${args.end}` : "+"}`;
         if (name === "architecture_review") return `🏗️ Reviewing the architecture${args.focus ? ` of ${args.focus}` : ""}`;
         if (name === "godot_check") return `🎮 Checking Godot files${args.path ? ` in ${args.path}` : ""}`;
+        if (name === "gamedev_status") return "🎮 Checking Godot and Blender on this computer";
+        if (name === "godot_validate") return `🎮 Running Godot headless to check ${Array.isArray(args.files) && args.files.length ? args.files.join(", ") : "the scripts"}`;
+        if (name === "godot_editor") return `🎮 Godot editor: ${args.action}${args.args && (args.args.path || args.args.node || args.args.name) ? ` ${args.args.path || args.args.node || args.args.name}` : ""}`;
+        if (name === "godot_install_bridge") return "🎮 Installing the CoDev Bridge plugin (asks you first)";
+        if (name === "blender_run") return `🧊 Running Blender${args.output ? ` to make ${args.output}` : ""} (asks you first)`;
         return "";
     }
 

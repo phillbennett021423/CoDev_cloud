@@ -44,6 +44,7 @@ Settings are read by `config.js` from the environment or `.env`:
 | `CODEV_WORKSPACE` | the project folder agents work in; `start-codev.bat C:\path\to\project` sets it too |
 | `CODEV_DATA_DIR` | where `.codev` goes |
 | `CODEV_VAULT_KEY` | passphrase for the browser tools' saved logins |
+| `CODEV_GODOT_PATH`, `CODEV_BLENDER_PATH` | the Godot 4 and Blender executables for the game tools, when they aren't found on their own |
 | `PORT` | default 3000; `0` picks a free port |
 
 `server.js` loads the agent services through `agent-services.js`: the sandbox containers and diff review (`desktop/sandbox`) and the headless browser (`agents/browser`). A service that isn't installed is skipped. The page reaches their tools at `POST /agent-tools` (MCP JSON-RPC: `initialize`, `tools/list`, `tools/call`), the review gate under `/agent/`, and what's on at `GET /agent/status`. All of these answer CoDev's own page only. Ctrl+C removes the agents' containers and browser profiles.
@@ -189,6 +190,18 @@ For code tasks, CoDev builds a map of the project on your device (`mobile/www/ag
 - **🎮 Game engine work.** Any task about Godot, GDScript, C# in Godot, shaders, 3D math, physics loops, hitboxes or frame data gets a built-in game engine guide. It covers Godot 4 syntax, the shading language, quaternions and coordinate spaces, fixed-step physics, and how to build frame-data state machines. `godot_check` checks scripts, scenes and shaders without running Godot. It flags Godot 3 code in a Godot 4 project, mixed indentation, physics in `_process`, movement that depends on the frame rate, shaders written as raw GLSL or with integer literals, C# classes missing `partial` or `override`, `Velocity.Y = 0` (CS1612), and `res://` files that don't exist. When a command tool is on and Godot is installed, agents also run `godot --headless --check-only --script ...` and load the main scene headless to catch real parse and runtime errors. The **Game Engine** role is the specialist for this work. The Self-Healing pass runs `godot_check` on the Godot files that changed.
 
 `node --test tests/code-intel.test.js` tests the map, the tools, the review and the checks.
+
+### Godot editor and Blender on your computer
+
+In the Windows app and with `npm start`, agents also get tools that work with Godot and Blender installed on the same computer (`desktop/gamedev`). There's nothing to sign up for. Agents send short JSON commands to the editor, while the game's own loop stays in GDScript/C#. Blender and Godot pass models to each other as `.glb` files saved in your project.
+
+- **`gamedev_status`** says what it found: the folder with `project.godot` (the project folder or up to three folders down), Godot, Blender, and whether the editor bridge is connected.
+- **`godot_validate`** runs the real Godot headless on the project as saved on disk. It parse-checks each script (`--check-only --script`) and can run the main scene for a few seconds to catch runtime errors. With sandbox review on, it checks the changes once you've approved them.
+- **`godot_editor`** controls the editor you have open through the **CoDev Bridge** plugin. It can list the scene tree, open and save scenes, add nodes, place `.tscn` scenes and `.glb` models, set and read properties, select nodes, rescan for new files, and play or stop the game. Changes appear in the editor straight away, and `save_scene` writes them to disk.
+- **`godot_install_bridge`** copies the plugin to `addons/codev_bridge` and turns it on in `project.godot`. CoDev asks you first. Then open or reopen the project in Godot 4. The plugin listens on 127.0.0.1 only (port 6510 to 6519). Each time the editor starts, it writes a new random token to `.codev_bridge.json` in the project, which is added to `.gitignore`, and refuses any command without that token.
+- **`blender_run`** runs a bpy script in Blender in the background (`blender --background --python ...`) and saves the result into the project. If the output path ends in `.glb`, the scene is exported for Godot automatically. CoDev asks you before every run, because the script is Python running on your computer. CoDev's own keys are taken out of the environment of Blender and Godot.
+
+CoDev looks for Godot and Blender on the PATH, in their usual install folders, and for Godot also in Downloads and Desktop (`Godot_v4...exe`). Set `CODEV_GODOT_PATH` or `CODEV_BLENDER_PATH` in `.env` (or Windows' environment variables) to point at a specific one. Tasks that mention Blender, bpy or glTF also get a short bpy reference with the game engine guide. Tests: `node --test tests/gamedev.test.js` (it uses stand-in Godot and Blender, so neither has to be installed).
 
 ## Agent sandboxes and change review
 

@@ -3563,8 +3563,8 @@
             try {
                 const result = await browserRpc("tools/list", {});
                 // server.js's /agent-tools also has the sandbox's tools (offered in sandbox mode);
-                // these are the browser's and the Outlier pipeline's, called the same way.
-                tools = (result.tools || []).filter(t => /^(browser|outlier)_/.test(t.name)).map(t => ({ ...t, transport: "browser" }));
+                // these are the browser's, the Outlier pipeline's and the Godot/Blender ones, called the same way.
+                tools = (result.tools || []).filter(t => /^(browser|outlier|godot|blender|gamedev)_/.test(t.name)).map(t => ({ ...t, transport: "browser" }));
             } catch (err) { /* an older server.js without /agent-tools */ }
             browserMcpCache = { at: Date.now(), tools };
             return tools;
@@ -4156,7 +4156,9 @@
             // A command on the real computer asks too unless it's a plain test or build
             // step: anything else could open apps or drive the mouse and keyboard.
             const hostCommand = tool.transport === "desktop" && tool.name === "run_command" && !isSafeHostCommand(args?.command);
-            if ((!toolsAutoRun || hostCommand) && !tool.annotations?.readOnlyHint && !tool._meta?.["codev/requiresUserApproval"]) {
+            // Tools that run code or change the project outside any review (blender_run, godot_install_bridge) always ask.
+            const alwaysAsk = Boolean(tool._meta?.["codev/alwaysAsk"]);
+            if (alwaysAsk || ((!toolsAutoRun || hostCommand) && !tool.annotations?.readOnlyHint && !tool._meta?.["codev/requiresUserApproval"])) {
                 if (!await askPermission(`An agent wants to use ${shownName}${tool.server ? ` (MCP server "${tool.server}")` : " on your computer"}:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`, ctx?.agentName)) {
                     logConsoleActivity(`[Tool] You declined: ${shownName}`);
                     return "The user declined this tool call.";
