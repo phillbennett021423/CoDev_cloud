@@ -179,6 +179,17 @@ When an agent needs your OK, it asks with a card in the bottom corner and waits 
 | Desktop Chrome/Edge via `npm start` | 📁 Connect Local Folder (sub-folders included) | saved to disk | only with the helper |
 | Android app | files picked in Project Files | kept in CoDev; Save copies them | no |
 
+## Big codebases and game engines
+
+For code tasks, CoDev builds a map of the project on your device (`mobile/www/agent-ui/code-intel.js`), so agents work file by file instead of guessing from a few files. Nothing is uploaded, and it costs nothing extra to run.
+
+- **Project map.** For each file, the index holds its functions, classes, methods, GDScript signals and `class_name`s, shader uniforms and scene nodes (with line ranges), plus which files it imports or loads. That covers `import`/`require`, `<script src>`, `preload`/`load("res://...")`, `extends`, `.tscn` resources, `#include` and Python modules. It also reads `project.godot` for the Godot version, main scene and autoloads. The request's prompt gets where the names it mentions are defined, and the files that define them rank first.
+- **Agents' tools.** `code_map` gives the overview, or zooms into a folder or name. `find_symbol` shows where a name is defined and every use, including signals connected in `.tscn` files. `file_outline` lists a file's symbols, imports and dependents. `read_lines` reads exact line ranges of long files. Agents find every caller before they change a signature, plan multi-file changes first, and check afterwards that nothing still uses the old names. Code tasks get up to 40 tool steps instead of 24, within the spending limits.
+- **🏗️ Architecture review.** `architecture_review` lists copy-pasted blocks, the same function or class defined in several files, code nothing mentions, import cycles, files over 800 lines and functions over 100 lines. It never reports engine callbacks (`_ready`, `_physics_process`, shader `fragment`...) or signal handlers connected in scenes. The **Architecture** role (Agent Configuration → Developer Role) starts from this review and refactors in small steps that keep behavior the same.
+- **🎮 Game engine work.** Any task about Godot, GDScript, C# in Godot, shaders, 3D math, physics loops, hitboxes or frame data gets a built-in game engine guide. It covers Godot 4 syntax, the shading language, quaternions and coordinate spaces, fixed-step physics, and how to build frame-data state machines. `godot_check` checks scripts, scenes and shaders without running Godot. It flags Godot 3 code in a Godot 4 project, mixed indentation, physics in `_process`, movement that depends on the frame rate, shaders written as raw GLSL or with integer literals, C# classes missing `partial` or `override`, `Velocity.Y = 0` (CS1612), and `res://` files that don't exist. When a command tool is on and Godot is installed, agents also run `godot --headless --check-only --script ...` and load the main scene headless to catch real parse and runtime errors. The **Game Engine** role is the specialist for this work. The Self-Healing pass runs `godot_check` on the Godot files that changed.
+
+`node --test tests/code-intel.test.js` tests the map, the tools, the review and the checks.
+
 ## Agent sandboxes and change review
 
 On a computer (the Windows app, or `server.js`), agents can work in a sandbox instead of on the project folder itself. The code is in `desktop/sandbox/`.
