@@ -210,7 +210,7 @@
     function createOddsTracker({ storage, http, now = () => Date.now(), onChart = null, log = () => {} }) {
         const read = (key, fallback) => { try { const v = JSON.parse(storage.getItem(key) || "null"); return v == null ? fallback : v; } catch (err) { return fallback; } };
         const write = (key, value) => { try { storage.setItem(key, JSON.stringify(value)); } catch (err) { log(`[Odds] Couldn't save: ${err.message}`); } };
-        const apiKey = () => { try { return String(storage.getItem(STORE.apiKey) || "").trim(); } catch (err) { return ""; } };
+        const apiKey = () => { try { return String(storage.getItem(STORE.apiKey) || "").trim() || (globalThis.codevSharedKey?.("odds") ?? ""); } catch (err) { return ""; } };
         const settings = () => ({ ...DEFAULTS, ...read(STORE.settings, {}) });
         const saveSettings = patch => { const next = { ...settings(), ...patch }; write(STORE.settings, next); return next; };
 
