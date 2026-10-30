@@ -54,7 +54,7 @@ const MAX_IMAGES_PER_TASK = 4;
 const DEFAULT_DAILY_IMAGE_LIMIT = 20;
 const MAX_KEPT_ATTACHMENTS = 40;
 
-let geminiKey = String(localStorage.getItem("codev_gemini_key") || "").replace(/[\s​-‍﻿"'`]+/g, "");
+let geminiKey = String(localStorage.getItem("codev_gemini_key") || "").replace(/[\s​-‍﻿"'`]+/g, "") || codevSharedKey("gemini");
 let imageProvider = localStorage.getItem("codev_image_provider") || "auto";   // auto | gemini | openrouter | free | off
 let geminiImageQuality = localStorage.getItem("codev_image_quality") || "lite";
 let openRouterImageModel = localStorage.getItem("codev_openrouter_image_model") || DEFAULT_OPENROUTER_IMAGE_MODEL;
@@ -1114,7 +1114,7 @@ async function buildMediaTools(ctx) {
 
 function fillMediaSettings() {
     const set = (id, value) => { const el = document.getElementById(id); if (el) el[typeof value === "boolean" ? "checked" : "value"] = value; };
-    set("modalGeminiKey", geminiKey);
+    set("modalGeminiKey", codevOwnKey("gemini", geminiKey));
     set("modalImageProvider", imageProvider === "free" ? "auto" : imageProvider);
     set("modalImageQuality", geminiImageQuality);
     set("modalOpenRouterImageModel", openRouterImageModel);
@@ -1139,12 +1139,12 @@ function saveMediaSettings() {
     const value = id => String(document.getElementById(id)?.value || "").trim();
     const newKey = value("modalGeminiKey").replace(/[\s​-‍﻿"'`]+/g, "");
     if (newKey && !GEMINI_KEY_PATTERN.test(newKey)) return "That doesn't look like a Gemini API key (they start with AIza). Copy it again from aistudio.google.com/apikey.";
-    geminiKey = newKey;
+    geminiKey = newKey || codevSharedKey("gemini");
     imageProvider = ["auto", "gemini", "openrouter", "free", "off"].includes(value("modalImageProvider")) ? value("modalImageProvider") : "auto";
     geminiImageQuality = GEMINI_IMAGE_MODELS[value("modalImageQuality")] ? value("modalImageQuality") : "lite";
     openRouterImageModel = value("modalOpenRouterImageModel") || DEFAULT_OPENROUTER_IMAGE_MODEL;
     dailyImageLimit = Math.max(0, Math.min(500, Math.round(Number(value("modalDailyImageLimit")) || DEFAULT_DAILY_IMAGE_LIMIT)));
-    localStorage.setItem("codev_gemini_key", geminiKey);
+    localStorage.setItem("codev_gemini_key", codevOwnKey("gemini", geminiKey));
     localStorage.setItem("codev_image_provider", imageProvider);
     localStorage.setItem("codev_image_quality", geminiImageQuality);
     localStorage.setItem("codev_openrouter_image_model", openRouterImageModel);
