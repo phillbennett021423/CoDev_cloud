@@ -710,7 +710,9 @@ function createOutlierPipeline({ dataDir = path.join(serverDataDir(), 'outlier')
             const m = leg.metrics || {};
             if (m.consensus == null) continue;
             const seen = market[leg.id] || (market[leg.id] = { firstSeen: at, openPrice: m.consensus, points: [] });
-            seen.lastSeen = at;
+            // A price logged with an earlier time never moves lastSeen back, or the
+            // week cutoff below would drop a prop that was just on the board.
+            if (!seen.lastSeen || Date.parse(at) > Date.parse(seen.lastSeen)) seen.lastSeen = at;
             const last = seen.points[seen.points.length - 1];
             if (!last || last.price !== m.consensus) seen.points.push({ at, price: m.consensus, fair: m.fairProb });
             if (seen.points.length > 60) seen.points.splice(0, seen.points.length - 60);
