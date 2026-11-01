@@ -1,0 +1,249 @@
+/* Companion avatar: 20 animations on one flat image. Body = whole-figure transforms; fx = overlay props.
+   Size the stage with --companion-w / --companion-h; the props scale with --companion-fx. */
+
+.companion-stage {
+  position: relative;
+  width: var(--companion-w, 260px);
+  height: var(--companion-h, 300px);
+  margin: 0 auto;
+  border-radius: 16px;
+}
+
+.companion-body {
+  position: absolute;
+  inset: 0;
+  display: flex; /* several pictures (a duo) stand side by side and move together */
+  align-items: flex-end;
+  justify-content: center;
+  transform-origin: 50% 95%;
+  will-change: transform;
+}
+
+.companion-img {
+  flex: 1 1 0;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+
+.companion-fx {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  overflow: visible;
+}
+
+.fx-el {
+  position: absolute;
+  font-size: calc(22px * var(--companion-fx, 1));
+  line-height: 1;
+  will-change: transform, opacity;
+}
+
+.stage-alert::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 4px #ff3b3b;
+  animation: f-pulse 0.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ---- Body animations (1 per avatar state) ---- */
+.a-frenzy { animation: b-jitter 0.18s linear infinite; }
+.a-blueprint { animation: b-tilt 3s ease-in-out infinite alternate; }
+.a-search { animation: b-lean 2.4s ease-in-out infinite alternate; }
+.a-analyze { animation: b-breathe 2s ease-in-out infinite; }
+.a-gears { animation: b-chin 1.5s ease-in-out infinite alternate; }
+.a-weigh { animation: b-rock 1.6s ease-in-out infinite alternate; }
+.a-sip { animation: b-sip 1.8s ease-in-out 1 both; }
+.a-wait { animation: b-sway 3s ease-in-out infinite alternate; }
+.a-success { animation: b-hop 0.5s ease-out 3; }
+.a-error { animation: b-shake 0.12s linear infinite; }
+/* Spins around its middle, not its feet. */
+.a-network { transform-origin: 50% 50%; animation: b-spin 0.9s linear infinite; }
+.a-timeout { animation: b-slump 1.6s ease-out forwards; }
+.a-stretch { animation: b-stretch 2.2s ease-in-out 1 both; }
+.a-foottap { animation: b-tap 0.5s ease-in-out infinite alternate; }
+.a-glance { animation: b-glance 3s ease-in-out 1 both; }
+.a-toss { animation: b-bounce 1s ease-in-out infinite; }
+.a-doubletake { animation: b-snap 1.6s ease-in-out 1 both; }
+.a-shrug { animation: b-shrug 1.5s ease-out 1 both; }
+.a-vibe { animation: b-bob 0.5s ease-in-out infinite alternate; }
+.a-flex { animation: b-flex 2s ease-out 1 both; }
+
+@keyframes b-jitter {
+  0% { transform: translate(0, 0) rotate(0); }
+  25% { transform: translate(-2px, 1px) rotate(-1.5deg); }
+  50% { transform: translate(2px, -1px) rotate(1.5deg); }
+  75% { transform: translate(-1px, 0) rotate(-0.5deg); }
+  100% { transform: translate(0, 0) rotate(0); }
+}
+@keyframes b-tilt { from { transform: rotate(-4deg); } to { transform: rotate(4deg); } }
+@keyframes b-lean { from { transform: scale(1) translateX(0); } to { transform: scale(1.06) translateX(6px); } }
+@keyframes b-breathe { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(1.015); } }
+@keyframes b-chin { from { transform: rotate(0); } to { transform: rotate(-3deg); } }
+@keyframes b-rock { from { transform: rotate(-6deg); } to { transform: rotate(6deg); } }
+@keyframes b-sip {
+  0% { transform: translateY(0); }
+  50% { transform: translateY(-4px) rotate(-2deg); }
+  100% { transform: translateY(0); }
+}
+@keyframes b-sway { from { transform: rotate(-1.5deg); } to { transform: rotate(1.5deg); } }
+@keyframes b-hop {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10%); }
+}
+@keyframes b-shake {
+  0% { transform: translate(-6px, 0); }
+  50% { transform: translate(6px, 0); }
+  100% { transform: translate(-6px, 0); }
+}
+@keyframes b-spin { to { transform: rotate(360deg); } }
+@keyframes b-slump {
+  from { transform: rotate(0) translateY(0); }
+  to { transform: rotate(18deg) translateY(7%); }
+}
+@keyframes b-stretch {
+  0% { transform: scaleY(1); }
+  50% { transform: scaleY(1.08) translateY(-3%); }
+  100% { transform: scaleY(1); }
+}
+@keyframes b-tap { from { transform: translateY(0); } to { transform: translateY(3px); } }
+@keyframes b-glance {
+  0% { transform: translateX(0); }
+  30% { transform: translateX(-8px); }
+  60% { transform: translateX(8px); }
+  100% { transform: translateX(0); }
+}
+@keyframes b-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@keyframes b-snap {
+  0% { transform: rotate(0); }
+  10% { transform: rotate(-14deg); }
+  70% { transform: rotate(-14deg); }
+  100% { transform: rotate(0); }
+}
+@keyframes b-shrug {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.03) translateY(-4px); }
+  100% { transform: scale(1); }
+}
+@keyframes b-bob { from { transform: translateY(0) rotate(-2deg); } to { transform: translateY(3px) rotate(2deg); } }
+@keyframes b-flex {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.12); }
+  100% { transform: scale(1.05); }
+}
+
+/* ---- Overlay prop animations ---- */
+.fx-spark { color: #ffd166; animation: f-spark 0.8s ease-out infinite; }
+.fx-stylus { width: 0; height: 2px; background: #7cc4ff; animation: f-draw 1.6s ease-out infinite; }
+.fx-mag { animation: f-scan 1.2s ease-in-out infinite alternate; }
+.fx-rain { white-space: pre; font-family: monospace; font-size: calc(12px * var(--companion-fx, 1)); color: #3dff7a; text-shadow: 0 0 4px #3dff7a; animation: f-fall 2s linear infinite; }
+.fx-gear { animation: f-spin 2s linear infinite; }
+.fx-scale { animation: f-rock 1.6s ease-in-out infinite alternate; }
+.fx-mug { animation: f-sip 1.8s ease-in-out infinite; }
+.fx-dots { color: #ddd; font-weight: 700; animation: f-pulse 1s ease-in-out infinite; }
+.fx-confetti { font-size: calc(10px * var(--companion-fx, 1)); animation: f-confetti 1.2s ease-in infinite; }
+.fx-warn { animation: f-pulse 0.4s ease-in-out infinite; }
+/* The ring circles the whole figure, sized from the stage rather than a fixed 70px. */
+.fx-ring { width: 88%; height: 88%; box-sizing: border-box; border: 4px dashed #6ec6ff; border-radius: 50%; animation: f-spin 1.2s linear infinite; }
+.fx-z { color: #c7d2fe; font-weight: 700; animation: f-float 2.4s ease-out infinite; }
+.fx-steam { color: #999; font-size: calc(18px * var(--companion-fx, 1)); animation: f-float 1.8s ease-out infinite; }
+.fx-watch { animation: f-pulse 1.5s ease-in-out infinite; }
+.fx-eyes { animation: f-glance 3s ease-in-out infinite; }
+.fx-orb { width: 12px; height: 12px; border-radius: 50%; background: #ffb703; box-shadow: 0 0 12px #ffb703; animation: f-toss 1s ease-in-out infinite; }
+.fx-q { color: #ff8c42; font-weight: 800; font-size: calc(28px * var(--companion-fx, 1)); animation: f-pop 1.6s ease-out forwards; }
+.fx-shrug { animation: f-pop 1.5s ease-out forwards; }
+.fx-note { color: #a78bfa; animation: f-float 2.4s ease-out infinite; }
+.fx-flex { animation: f-pop 2s ease-out forwards; }
+
+@keyframes f-spark { 0% { opacity: 0; transform: scale(0.2); } 50% { opacity: 1; transform: scale(1.2); } 100% { opacity: 0; transform: scale(0.2) translateY(-10px); } }
+@keyframes f-draw { 0% { width: 0; opacity: 1; } 80% { width: 35%; opacity: 1; } 100% { width: 35%; opacity: 0; } }
+@keyframes f-scan { from { transform: translateX(0) scale(1); } to { transform: translateX(-10px) scale(1.1); } }
+@keyframes f-fall { 0% { transform: translateY(-40%); opacity: 0.2; } 20% { opacity: 1; } 100% { transform: translateY(40%); opacity: 0; } }
+@keyframes f-spin { to { transform: rotate(360deg); } }
+@keyframes f-rock { from { transform: rotate(-10deg); } to { transform: rotate(10deg); } }
+@keyframes f-sip { 0%, 100% { transform: translateY(0) rotate(0); } 50% { transform: translateY(-14px) rotate(-25deg); } }
+@keyframes f-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes f-confetti { 0% { transform: translateY(-30px) rotate(0); opacity: 1; } 100% { transform: translateY(140px) rotate(360deg); opacity: 0; } }
+@keyframes f-float { 0% { transform: translateY(0); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(-40px); opacity: 0; } }
+@keyframes f-glance { 0%, 100% { transform: translateX(-10px); } 50% { transform: translateX(10px); } }
+@keyframes f-toss { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-30px); } }
+@keyframes f-pop { 0% { transform: scale(0.2); opacity: 0; } 30% { transform: scale(1.2); opacity: 1; } 100% { transform: scale(1); opacity: 0; } }
+
+/* Reduced motion: no body or overlay movement. The props still show, held still, so the
+   state is readable; the error frame stays as a solid outline. Props whose resting
+   frame would be invisible (an empty stylus line, a faded pop) are shown at full size. */
+@media (prefers-reduced-motion: reduce) {
+  .companion-body,
+  .companion-body[class*="a-"],
+  .fx-el,
+  .stage-alert::after {
+    animation: none !important;
+    transform: none !important;
+  }
+  .fx-stylus { width: 35%; }
+  .fx-q, .fx-shrug, .fx-flex, .fx-z, .fx-steam, .fx-note, .fx-spark { opacity: 1; }
+  .fx-confetti, .fx-rain { display: none; }
+}
+
+/* ---- CoDev app: the floating companion dock ---- */
+.codev-companion-dock {
+  position: fixed;
+  right: 16px;
+  bottom: 110px;
+  z-index: 700; /* under modals, toasts and the approval tray */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  pointer-events: none;
+  --companion-w: 96px;
+  --companion-h: 110px;
+  --companion-fx: 0.6;
+}
+.codev-companion-dock[hidden], .codev-companion-dock.off-view { display: none; }
+.codev-companion-dock .companion-stage { pointer-events: auto; cursor: pointer; border-radius: 14px; }
+.codev-companion-dock .stage-alert::after { border-radius: 14px; }
+.codev-companion-label {
+  max-width: 130px;
+  font: 600 10px/1.3 system-ui, sans-serif;
+  color: var(--text-muted, #9aa4b2);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--bg-panel, rgba(15, 19, 26, 0.85));
+  border: 1px solid var(--border-color, #2a3242);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+/* Standing figures are narrow; the stage takes their shape so they aren't shrunk. */
+.codev-companion-dock[data-shape="tall"] { --companion-w: 58px; --companion-h: 150px; }
+.codev-companion-dock[data-shape="duo"] { --companion-w: 112px; --companion-h: 150px; }
+/* Tapped: a small bubble that keeps playing, without the label. */
+.codev-companion-dock.collapsed { --companion-w: 44px; --companion-h: 50px; --companion-fx: 0.35; }
+.codev-companion-dock.collapsed[data-shape="tall"] { --companion-w: 24px; --companion-h: 62px; }
+.codev-companion-dock.collapsed[data-shape="duo"] { --companion-w: 46px; --companion-h: 62px; }
+.codev-companion-dock.collapsed .codev-companion-label { display: none; }
+@media (max-width: 900px) {
+  .codev-companion-dock {
+    right: 8px;
+    bottom: calc(150px + env(safe-area-inset-bottom, 0px));
+    --companion-w: 64px;
+    --companion-h: 74px;
+    --companion-fx: 0.45;
+  }
+  .codev-companion-dock[data-shape="tall"] { --companion-w: 42px; --companion-h: 110px; }
+  .codev-companion-dock[data-shape="duo"] { --companion-w: 84px; --companion-h: 110px; }
+  .codev-companion-label { display: none; }
+}
