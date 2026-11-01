@@ -200,7 +200,7 @@
   }
 
   // The avatar stands next to the chat box: beside it when there's room (wide screens),
-  // otherwise just above its right edge, so it never covers the text field or buttons.
+  // otherwise just above its right edge, so it never covers the text field or its buttons.
   // On the other tabs (Story Studio, Outlier, ...) the chat box is hidden and so is the
   // avatar, so it can't sit on top of their controls.
   var anchor = null;
@@ -213,7 +213,11 @@
     if (away) return;
     var w = dock.offsetWidth;
     var right = root.innerWidth - rect.right;
-    if (right >= w + 24) {
+    var beside = right >= w + 24;
+    // Above the chat box it overlaps the bottom of the conversation, so taps go through it
+    // to the messages' buttons; beside the box it's in free space and a tap shrinks it.
+    dock.classList.toggle('pass-through', !beside);
+    if (beside) {
       dock.style.right = Math.round((right - w) / 2) + 'px';
       dock.style.bottom = Math.round(root.innerHeight - rect.bottom) + 'px';
     } else {

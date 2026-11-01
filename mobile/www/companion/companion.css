@@ -213,6 +213,7 @@
 }
 .codev-companion-dock[hidden], .codev-companion-dock.off-view { display: none; }
 .codev-companion-dock .companion-stage { pointer-events: auto; cursor: pointer; border-radius: 14px; }
+.codev-companion-dock.pass-through .companion-stage { pointer-events: none; cursor: default; }
 .codev-companion-dock .stage-alert::after { border-radius: 14px; }
 .codev-companion-label {
   max-width: 130px;
