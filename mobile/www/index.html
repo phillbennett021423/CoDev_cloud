@@ -612,6 +612,7 @@
             <span id="tab-cloud" onclick="switchView('cloud')" style="color: var(--codev-purple); font-weight: bold;">☁️ CoDev Cloud</span>
             <span id="tab-outlier" onclick="switchView('outlier')" style="color: var(--success); font-weight: bold;">📈 Outlier</span>
             <span id="tab-studio" onclick="switchView('studio')" style="color: var(--warning); font-weight: bold;">🎭 Story Studio</span>
+            <span id="tab-insurance" onclick="switchView('insurance')" style="color: var(--codev-blue); font-weight: bold;">🩺 Insurance</span>
             <span id="tab-console" onclick="switchView('console')">Console Logs</span>
         </div>
         <div class="header-right">
@@ -713,6 +714,9 @@
                 </div>
                 <div class="menu-item" onclick="switchView('studio')" title="Your games' characters, lore and scenes, written with your agents">
                     <span class="menu-icon">🎭</span> Story Studio
+                </div>
+                <div class="menu-item" onclick="switchView('insurance')" title="Your health and life insurance clients, alerts, SOAs, commissions and quoting">
+                    <span class="menu-icon">🩺</span> Insurance Desk
                 </div>
                 <div class="menu-item" onclick="switchView('console')">
                     <span class="menu-icon">📜</span> Console Logs
@@ -937,6 +941,9 @@
             <!-- Story Studio: game projects, story bibles, character chats, scenes (agent-ui/story-studio.js) -->
             <div id="view-studio" class="alt-view-content"></div>
 
+            <!-- Insurance Desk: clients, alerts, SOAs, commission checks, quoting (agent-ui/insurance-desk.js) -->
+            <div id="view-insurance" class="alt-view-content"></div>
+
             <div id="view-console" class="alt-view-content">
                 <h3>Runtime & API Telemetry Logs</h3>
                 <div class="console-output" id="consoleOutput">
@@ -1012,6 +1019,7 @@
         <button class="mobile-tab" data-drawer="agents" onclick="mobileTab('agents')"><span class="tab-icon"><span class="brand-mark"></span></span>Agents</button>
         <button class="mobile-tab" data-view="project" onclick="mobileTab('project')"><span class="tab-icon">📁</span>Files</button>
         <button class="mobile-tab" data-view="studio" onclick="mobileTab('studio')"><span class="tab-icon">🎭</span>Story</button>
+        <button class="mobile-tab" data-view="insurance" onclick="mobileTab('insurance')"><span class="tab-icon">🩺</span>Clients</button>
         <button class="mobile-tab" data-view="codev" onclick="mobileTab('codev')"><span class="tab-icon">⚡</span>Hub</button>
         <button class="mobile-tab" data-view="cloud" onclick="mobileTab('cloud')"><span class="tab-icon">☁️</span>Cloud</button>
         <button class="mobile-tab" data-view="console" onclick="mobileTab('console')"><span class="tab-icon">📜</span>Logs</button>
@@ -1245,6 +1253,7 @@
     <script src="agent-ui/google-apps.js"></script>
     <script src="agent-ui/phone-browser.js"></script>
     <script src="agent-ui/story-studio.js"></script>
+    <script src="agent-ui/insurance-desk.js"></script>
     <script src="agent-ui/odds-api.js"></script>
     <script src="agent-ui/code-intel.js"></script>
     <script src="agent-ui/cloud-account.js"></script>
@@ -2007,8 +2016,8 @@
             document.getElementById("statusText").innerText = activeProviderKey() ? `${BACKEND_NAMES[currentBackend]} Live` : "Awaiting API Key";
         }
 
-        const VIEW_NAMES = ["chat", "project", "codev", "cloud", "outlier", "studio", "console"];
-        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", outlier: "Switched to Outlier slips.", studio: "Switched to Story Studio.", console: "Switched to Console Logs." };
+        const VIEW_NAMES = ["chat", "project", "codev", "cloud", "outlier", "studio", "insurance", "console"];
+        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", outlier: "Switched to Outlier slips.", studio: "Switched to Story Studio.", insurance: "Switched to the Insurance Desk.", console: "Switched to Console Logs." };
 
         // STORY STUDIO (agent-ui/story-studio.js): each game project's story bible, kept
         // on this device. Agents get the studio_* tools and the bible's index when a task
@@ -2016,6 +2025,15 @@
         // call, so the spending limits apply.
         const storyStudio = window.CodevStoryStudio ? CodevStoryStudio.createStudioStore(localStorage) : null;
         let storyStudioView = null;
+
+        // INSURANCE DESK (agent-ui/insurance-desk.js): an insurance agent's clients, policies,
+        // SOAs and commission statements, kept on this device (documents in IndexedDB),
+        // encrypted when the user sets a passphrase. Agents get the insurance_* tools only when
+        // the user turns on agent access, and only for insurance requests.
+        const insuranceDesk = window.CodevInsuranceDesk ? (() => {
+            try { return CodevInsuranceDesk.createDeskStore(localStorage, { docs: CodevInsuranceDesk.indexedDbDocs() }); } catch (err) { console.warn(`Insurance Desk is off: ${err.message}`); return null; }
+        })() : null;
+        let insuranceView = null;
 
         // A text file for the user: a download on a computer; on the phone, Android's share
         // sheet (Drive, Files, email…), or the clipboard when sharing isn't available.
@@ -2183,6 +2201,57 @@
             });
         }
 
+        // A binary file (a client's document) for the user: the share sheet on the phone, else a download.
+        async function saveBytesForUser(name, bytes, mime = "application/octet-stream") {
+            const fs = getNativeSpeechPlugin("Filesystem");
+            const share = getNativeSpeechPlugin("Share");
+            if (fs && share) {
+                try {
+                    let binary = "";
+                    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+                    const written = await fs.writeFile({ path: name, data: btoa(binary), directory: "CACHE" });
+                    await share.share({ title: name, files: [written.uri] });
+                    return;
+                } catch (err) {
+                    if (/cancel/i.test(err.message || "")) return;
+                    logConsoleActivity(`[Insurance] Sharing ${name} failed: ${err.message}`);
+                }
+            }
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(new Blob([bytes], { type: mime || "application/octet-stream" }));
+            link.download = name;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+        }
+
+        function showInsuranceView() {
+            if (!insuranceDesk) return;
+            if (insuranceView) return insuranceView.refresh();
+            insuranceView = CodevInsuranceDesk.mount(document.getElementById("view-insurance"), insuranceDesk, {
+                askAgent: text => {
+                    switchView("chat");
+                    const input = document.getElementById("userInput");
+                    input.value = text;
+                    sendChatMessage();
+                },
+                saveFile: saveTextFileForUser,
+                saveBytes: saveBytesForUser,
+                pickFile: accept => pickTextFileFromUser(accept),
+                printHtml: (html, name) => {
+                    if (getNativeSpeechPlugin("CapacitorHttp")) return saveTextFileForUser(name, html, "text/html");
+                    const frame = document.createElement("iframe");
+                    frame.style.cssText = "position: fixed; width: 0; height: 0; border: 0; right: 0; bottom: 0;";
+                    frame.srcdoc = html;
+                    frame.onload = () => { frame.contentWindow.focus(); frame.contentWindow.print(); setTimeout(() => frame.remove(), 60000); };
+                    document.body.appendChild(frame);
+                },
+                confirm: text => confirm(text),
+                prompt: text => prompt(text)
+            });
+        }
+
         // Drawn the first time it's opened, then refreshed on each visit.
         let outlierView = null;
         function showOutlierView() {
@@ -2230,6 +2299,7 @@
             if (viewName === "project") resumeModelViewer();
             if (viewName === "outlier") showOutlierView();
             if (viewName === "studio") showStudioView();
+            if (viewName === "insurance") showInsuranceView();
             if (VIEW_LOG_MESSAGES[viewName]) logConsoleActivity(VIEW_LOG_MESSAGES[viewName]);
             if (isMobileLayout() && openDrawerName) closeDrawers();
             updateMobileTabs();
@@ -4337,6 +4407,13 @@
             // The story bible's tools, only for a task about a game's story (they cost tokens on every call).
             if (storyStudio && CodevStoryStudio.isStudioTask(storyStudio, ctx?.task)) {
                 tools.push(...CodevStoryStudio.buildStudioTools(storyStudio, { writeFile: (path, content) => writeWorkspaceFile(path, content), confirm: async text => confirm(text) }));
+            }
+            // The insurance book's tools: only when the user allowed agents in, and only for insurance requests.
+            if (insuranceDesk && CodevInsuranceDesk.isDeskTask(insuranceDesk, ctx?.task)) {
+                tools.push(...CodevInsuranceDesk.buildDeskTools(insuranceDesk, {
+                    agentName: ctx?.agentName,
+                    onSaved: () => { if (insuranceView && currentViewName === "insurance") insuranceView.refresh(); }
+                }));
             }
             try {
                 for (const tool of await googleApps.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
@@ -7176,6 +7253,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             const t = String(text || "");
             // Sent from Story Studio: writing for a game's story, not work on its files.
             if (/^\[Story Studio\]/.test(t)) return "general";
+            // Sent from the Insurance Desk (a quote to run): not work on the project's files.
+            if (/^\[Insurance Desk\]/.test(t)) return "general";
             let kind = PROPS_TASK.test(t) ? "props"
                 : CODE_TASK_STRONG.test(t) ? "code"
                 : IMAGE_TASK.test(t) || hasImages ? "images"
@@ -7206,7 +7285,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             if (general && /^\[Workspace status\] No project/.test(workspaceNote)) workspaceNote = "[Workspace status] No project folder is connected. That only matters if the task is about project files.";
             else if (!coding && workspaceNote) workspaceNote = "[Workspace status] A project folder is connected; its files only matter if the user asks about them.";
             return [CODEV_IDENTITY, DEV_ROLES[role].prompt, general ? null : AUTONOMY_RULES, coding ? null : REQUEST_KIND_NOTES[kind], workspaceNote,
-                agent.instructions && `[Agent instructions] ${agent.instructions}`, savedMemoryForPrompt(task), storyStudio && CodevStoryStudio.studioPromptBlock(storyStudio, task), memory].filter(Boolean).join("\n\n");
+                agent.instructions && `[Agent instructions] ${agent.instructions}`, savedMemoryForPrompt(task), storyStudio && CodevStoryStudio.studioPromptBlock(storyStudio, task),
+                insuranceDesk && CodevInsuranceDesk.deskPromptBlock(insuranceDesk, task), memory].filter(Boolean).join("\n\n");
         }
 
         // WORKSPACE AUTO-INJECTION
