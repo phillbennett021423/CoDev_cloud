@@ -792,6 +792,9 @@
                                 <label class="checkbox-group" id="sandboxModeLabel" style="color: var(--codev-purple);" title="Checking for CoDev's agent sandbox...">
                                     <input type="checkbox" id="isSandboxCheckbox" disabled onchange="toggleSandboxMode()"> 🧪 Sandbox &amp; Review Changes
                                 </label>
+                                <label class="checkbox-group" id="sandboxAutoSaveLabel" style="color: var(--codev-purple);" title="When the agents finish, every changed file that passes its checks is saved to your project right away, like Claude Code does. Files that fail stay under 📝 Review changes. Untick to review each change first.">
+                                    <input type="checkbox" id="isSandboxAutoSaveCheckbox" disabled onchange="toggleSandboxAutoSave()"> 💾 Save Agents' Code Automatically
+                                </label>
                             </div>
                         </div>
 
@@ -7264,7 +7267,9 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             if (!ws) {
                 return "[Workspace status] No project is connected, so there are no files to work on. Say so in one line and tell the user how to connect one (📁 Connect Local Folder in Project Files, or the project folder under ⚙️ Settings in the Windows app), then still do everything you can without it.";
             }
-            const savedWhere = ws.kind === "sandbox" ? ", which stages them in your sandbox; the user reviews the diff and approves it before anything reaches their disk"
+            const savedWhere = ws.kind === "sandbox" ? (sandboxAutoSaveActive()
+                    ? ", which stages them in your sandbox; when you finish, every file that passes its syntax check is saved to the user's project automatically, so write the complete, working code into the files"
+                    : ", which stages them in your sandbox; the user reviews the diff and approves it before anything reaches their disk")
                 : ws.kind === "loaded" && !connectedDirectoryHandle
                 ? " (these files were picked, not a folder, so edits stay in CoDev until the user saves them from Project Files)" : ", which saves them to disk";
             return [`[Workspace status] Project: ${ws.label}.`,
@@ -7404,6 +7409,10 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
         // run_command is missing. Android and the web have no sandbox.
         const agentInfra = { client: null, status: null, error: "" };
         let sandboxModeEnabled = (localStorage.getItem("codev_sandbox_mode") ?? "1") === "1";
+        // On: when the agents finish, their changes that pass the checks are written to the
+        // project without the review screen, the way Claude Code edits files. Failed files
+        // still wait under 📝 Review changes.
+        let sandboxAutoSave = (localStorage.getItem("codev_sandbox_autosave") ?? "1") === "1";
         let agentToolsCache = { at: 0, tools: [] };
         let reviewQueue = Promise.resolve();
         let reviewOpen = false;
@@ -7456,11 +7465,24 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             const ready = sandboxAvailable();
             box.disabled = !ready;
             box.checked = ready && sandboxModeEnabled;
+            const auto = document.getElementById("isSandboxAutoSaveCheckbox");
+            auto.disabled = !ready;
+            auto.checked = ready && sandboxAutoSave;
             document.getElementById("sandboxModeLabel").title = ready ? sandboxStatusText() : `Sandbox unavailable: ${sandboxUnavailableReason()}`;
         }
 
         function sandboxModeActive() {
             return sandboxAvailable() && document.getElementById("isSandboxCheckbox").checked;
+        }
+
+        function sandboxAutoSaveActive() {
+            return sandboxModeActive() && document.getElementById("isSandboxAutoSaveCheckbox").checked;
+        }
+
+        function toggleSandboxAutoSave() {
+            sandboxAutoSave = document.getElementById("isSandboxAutoSaveCheckbox").checked;
+            localStorage.setItem("codev_sandbox_autosave", sandboxAutoSave ? "1" : "0");
+            logConsoleActivity(sandboxAutoSave ? "[Sandbox] Agents' code is saved to your project automatically when they finish." : "[Sandbox] Agents' code waits for your review before it is saved.");
         }
 
         function toggleSandboxMode() {
@@ -7611,6 +7633,19 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                 if (!changeset || !Array.isArray(changeset.files) || !changeset.files.length) {
                     logConsoleActivity("[Sandbox] The agents made no file changes.");
                     return;
+                }
+                if (sandboxAutoSaveActive() && changeset.id) {
+                    let result = null;
+                    try { result = await agentInfra.client.approve(changeset.id); } catch (err) {
+                        logConsoleActivity(`[Sandbox] Couldn't save the agents' changes automatically (${err.message}), so they wait for your review.`);
+                    }
+                    if (result) {
+                        const written = result.written || [];
+                        const outcome = { decision: "approved", paths: written, result, left: changeset.files.map(f => f.path).filter(p => !written.includes(p)) };
+                        await afterReview(outcome);
+                        appendMessageToSession(session, "💾 Saved", CodevAgentClient.describeReviewOutcome(outcome));
+                        return;
+                    }
                 }
                 logConsoleActivity(`[Sandbox] ${changeset.files.length} changed file(s) are waiting for your review.`);
                 const outcome = await reviewChangeset(changeset);

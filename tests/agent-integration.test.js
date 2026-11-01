@@ -277,6 +277,29 @@ test('a coding prompt through the page is staged, reviewed and saved', async t =
     ctx.greeterSaved = true;
 });
 
+test('with automatic saving on, agents\' code reaches the project without the review screen', async t => {
+    if (ctx.skip) return t.skip(ctx.skip);
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const steps = [
+        [
+            { name: 'write_file', arguments: { path: 'auto/greet.js', content: GREETER_JS } },
+            { name: 'write_file', arguments: { path: 'auto/typo.js', content: 'const = 1;\n' } }
+        ],
+        [{ name: 'submit_changes', arguments: { summary: 'Greeter script' } }],
+        'Wrote auto/greet.js.'
+    ];
+    const { page, errors } = await openPage(launched.browser, ctx.server.url, { steps, autoSave: true });
+    await answerApprovals(page, () => false);
+    await sendPrompt(page, 'Write a greeter script in auto/');
+    await waitForChat(page, /Saved 1 file to your project: auto\/greet\.js/, 120000);
+    assert.equal(await page.evaluate(() => Boolean(document.querySelector('#diffReviewOverlay [data-action="approve"]'))), false, 'no review screen');
+    assert.equal(fs.readFileSync(path.join(ctx.workspace, 'auto', 'greet.js'), 'utf8'), GREETER_JS);
+    assert.equal(fs.existsSync(path.join(ctx.workspace, 'auto', 'typo.js')), false, 'a file that fails its check still waits for review');
+    assert.deepEqual(errors, []);
+});
+
 test('a headless browser verification task checks the saved page', async t => {
     if (ctx.skip) return t.skip(ctx.skip);
     if (!ctx.status.browser.available) return t.skip(`browser service unavailable: ${ctx.status.browser.error || 'not installed'}`);
