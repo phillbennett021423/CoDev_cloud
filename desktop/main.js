@@ -70,6 +70,10 @@ function lastRunCrashed() {
 }
 app.on('will-quit', () => { try { fs.rmSync(heartbeatFile(), { force: true }); } catch { /* gone */ } });
 
+// Set once the sandbox starts: how many agent file changes are still waiting for
+// the user's review. Closing the window asks first, since quitting throws them away.
+let countUnreviewedChanges = null;
+
 function createWindow() {
     const win = new BrowserWindow({
         width: 1280,
@@ -115,6 +119,34 @@ function createWindow() {
     let pageErrors = 0;
     win.webContents.on('console-message', ({ level, message, sourceId, lineNumber }) => {
         if (level === 'error' && pageErrors++ < 50) crashLog('page-error', `${message} (${sourceId}:${lineNumber})`);
+    });
+    // Agents' edits sit in a sandbox copy until the user approves them in the review,
+    // and quitting deletes that copy. So closing with changes still unapproved asks
+    // first and offers the review, instead of silently losing the agents' work.
+    let closeChecked = false;
+    win.on('close', event => {
+        if (closeChecked || !countUnreviewedChanges) return;
+        event.preventDefault();
+        const giveUp = new Promise(resolve => setTimeout(() => resolve(0), 5000));
+        Promise.race([countUnreviewedChanges().catch(() => 0), giveUp]).then(async count => {
+            if (win.isDestroyed()) return;
+            if (count > 0) {
+                const { response } = await dialog.showMessageBox(win, {
+                    type: 'warning',
+                    message: `${count} file change${count === 1 ? '' : 's'} from your agents ${count === 1 ? 'has' : 'have'} not been saved to your project yet.`,
+                    detail: 'Agents write their code in a sandbox copy. It only reaches your project folder after you press Approve in the review. If you quit now, these changes are lost.',
+                    buttons: ['Review and save them', 'Quit and discard them'],
+                    defaultId: 0,
+                    cancelId: 0
+                });
+                if (response === 0) {
+                    if (!win.isDestroyed()) win.webContents.executeJavaScript('typeof openPendingChanges === "function" && openPendingChanges()').catch(() => {});
+                    return;
+                }
+            }
+            closeChecked = true;
+            if (!win.isDestroyed()) win.close();
+        });
     });
     win.loadURL('app://codev/index.html');
     return win;
@@ -209,6 +241,11 @@ app.whenReady().then(() => {
         return reply || { status: 404, body: { error: 'Not found' } };
     });
     app.on('before-quit', () => { sandbox.closeSync(); });
+    countUnreviewedChanges = async () => {
+        const reply = await sandbox.handleRequest('GET', '/agent/sandboxes', {}, {});
+        const boxes = reply && reply.status === 200 && Array.isArray(reply.body) ? reply.body : [];
+        return boxes.reduce((sum, box) => sum + (Number(box.pendingChanges) || 0), 0);
+    };
 
     // Agents' headless browsers. Saved logins are encrypted with safeStorage (DPAPI
     // on Windows) in this app's user data folder; the page asks the user before any is used.
