@@ -557,7 +557,7 @@
         .live-body { flex: 1; display: flex; min-height: 0; }
         .live-screen { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; background: #000; position: relative; outline: none; overscroll-behavior: contain; }
         .live-screen:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
-        .live-screen img { max-width: 100%; max-height: 100%; user-select: none; -webkit-user-drag: none; cursor: crosshair; }
+        .live-screen img { max-width: 100%; max-height: 100%; user-select: none; -webkit-user-drag: none; cursor: default; }
         .live-keys { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; resize: none; overflow: hidden; pointer-events: none; font-size: 16px; }
         .live-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.9rem; text-align: center; padding: 20px; pointer-events: none; }
         .live-banner { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); background: var(--warning); color: #111; font-size: 0.75rem; font-weight: bold; padding: 4px 10px; border-radius: 12px; pointer-events: none; }
@@ -612,7 +612,7 @@
         /* The same live view, embedded in the card of the agent whose browser is open. */
         .agent-browser-panel { position: relative; background: #000; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; outline: none; cursor: default; }
         .agent-browser-panel:focus-visible, .agent-browser-panel:focus { border-color: var(--accent); }
-        #agentViewport { overscroll-behavior: contain; display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: contain; background: #000; cursor: crosshair; user-select: none; -webkit-user-drag: none; }
+        #agentViewport { overscroll-behavior: contain; display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: contain; background: #000; cursor: default; user-select: none; -webkit-user-drag: none; }
         .agent-browser-panel .live-note { font-size: 0.75rem; padding: 8px; bottom: 26px; }
         .agent-browser-bar { display: flex; gap: 4px; align-items: center; padding: 3px 6px; background: var(--bg-panel); border-top: 1px solid var(--border-color); }
         .agent-browser-bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 0.7rem; color: var(--text-muted); }
@@ -4285,10 +4285,17 @@
                         ? await agentBrowserHost.browserLive({ op: "control", agentId, control })
                         : await postJson("/browser/live/control", { agentId, control });
                 } catch (err) { reply = { error: err.message }; }
+                if (control.op === "move" && reply?.cursor) setLiveCursor(reply.cursor);
                 if (reply?.error && control.op !== "move") logConsoleActivity(`[Live] ${reply.error}`);
                 if (reply?.error && (control.op === "open" || control.op === "navigate")) showToast(`The browser didn't open: ${reply.error}`);
             });
             return live.sending;
+        }
+
+        // The page's own pointer over the picture: a hand over links, a text cursor over fields.
+        function setLiveCursor(cursor) {
+            if (!/^[a-z-]{1,20}$/.test(cursor)) return;
+            for (const id of ["liveFrame", "agentViewport"]) { const img = document.getElementById(id); if (img) img.style.cursor = cursor; }
         }
 
         function toggleLiveTakeover() {
@@ -4309,17 +4316,20 @@
             return { x: Math.round(x * live.frame.width), y: Math.round(y * live.frame.height) };
         }
 
+        // Page pixels per screen pixel: the picture is letterboxed, so only its drawn part counts.
+        function liveFrameScale(img) {
+            const box = img.getBoundingClientRect();
+            if (!live.frame || !box.width || !box.height) return 1;
+            const shown = Math.min(box.width, box.height * live.frame.width / live.frame.height);
+            return live.frame.width / shown;
+        }
+
         // A wheel event's movement in the page's own pixels: Firefox and some mice report
         // lines (deltaMode 1) or pages (2), and the picture is usually drawn smaller than
         // the page, so a turn is scaled up to move the page as far as it looks like it should.
         function liveWheelDelta(event, img) {
             const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? (live.frame ? live.frame.height * 0.9 : 720) : 1;
-            const box = img.getBoundingClientRect();
-            let scale = 1;
-            if (live.frame && box.width && box.height) {
-                const shown = Math.min(box.width, box.height * live.frame.width / live.frame.height);
-                scale = live.frame.width / shown;
-            }
+            const scale = liveFrameScale(img);
             const clamp = v => Math.round(Math.max(-2000, Math.min(2000, (Number(v) || 0) * unit * scale)));
             return { deltaX: clamp(event.deltaX), deltaY: clamp(event.deltaY) };
         }
@@ -4354,6 +4364,18 @@
             } catch (err) { logConsoleActivity(`[Live] Couldn't forget sign-ins: ${err.message}`); }
         }
 
+        // The mouse button held down in a live picture. If the picture is redrawn or the
+        // pointer is lost before it's let go, the release is still sent: a button left
+        // down in the browser turns every later click into a drag that clicks nothing.
+        let livePressed = null;
+        function releaseLivePress() {
+            const pressed = livePressed;
+            livePressed = null;
+            if (pressed) liveControl({ op: "up", button: pressed.button, clickCount: pressed.clickCount, ...pressed.p });
+        }
+        window.addEventListener("pointerup", e => { if (livePressed && e.pointerId === livePressed.id) releaseLivePress(); });
+        window.addEventListener("blur", releaseLivePress);
+
         function setupLiveInput(screen = document.getElementById("liveScreen"), img = document.getElementById("liveFrame")) {
             const buttons = ["left", "middle", "right"];
             const keys = document.createElement("textarea");
@@ -4365,44 +4387,99 @@
             screen.appendChild(keys);
             const held = new Set();
             const focusKeys = () => keys.focus({ preventScroll: true });
-            let touch = null;   // a finger: a tap clicks, a drag scrolls the page
+            // A finger: a tap clicks, a drag scrolls the page, and a flick keeps it gliding
+            // after the finger lifts, slowing down like a phone's own browser does.
+            let touch = null;
+            let fling = null;
+            const stopFling = () => { if (fling) cancelAnimationFrame(fling.raf); fling = null; };
+            const startFling = (vx, vy, p) => {
+                stopFling();
+                const max = 6;   // screen px per ms
+                vx = Math.max(-max, Math.min(max, vx)); vy = Math.max(-max, Math.min(max, vy));
+                if (Math.hypot(vx, vy) < 0.3) return;
+                fling = { vx, vy, last: performance.now(), raf: 0 };
+                const step = now => {
+                    if (!fling || !live.frame) return stopFling();
+                    const dt = Math.min(50, now - fling.last);
+                    fling.last = now;
+                    const scale = liveFrameScale(img);
+                    const deltaX = Math.round(fling.vx * dt * scale), deltaY = Math.round(fling.vy * dt * scale);
+                    if (deltaX || deltaY) liveControl({ op: "wheel", deltaX, deltaY, ...p });
+                    const decay = Math.pow(0.996, dt);
+                    fling.vx *= decay; fling.vy *= decay;
+                    if (Math.hypot(fling.vx, fling.vy) < 0.05) return stopFling();
+                    fling.raf = requestAnimationFrame(step);
+                };
+                fling.raf = requestAnimationFrame(step);
+            };
             img.style.touchAction = "none";
             img.addEventListener("pointerdown", e => {
                 e.preventDefault();
+                stopFling();
+                // On the phone app the agents' browser is a real one: touching its picture
+                // puts it over CoDev, full screen, to scroll, zoom and tap with your own fingers.
+                if (isPhoneBrowser && e.pointerType !== "mouse") {
+                    if (live.agentId) liveControl({ op: live.sessions.some(s => s.agentId === live.agentId) ? "takeover" : "open" });
+                    return;
+                }
                 focusKeys();
                 const p = livePoint(e, img);
                 if (!p) return;
-                if (e.pointerType === "touch") { touch = { id: e.pointerId, x: e.clientX, y: e.clientY, p, dragged: false }; return; }
+                if (e.pointerType === "touch") {
+                    if (touch) return;   // a second finger: the first one keeps going
+                    touch = { id: e.pointerId, x: e.clientX, y: e.clientY, p, dragged: false, samples: [{ t: e.timeStamp, x: e.clientX, y: e.clientY }] };
+                    return;
+                }
+                if (livePressed) releaseLivePress();
                 img.setPointerCapture?.(e.pointerId);
-                liveControl({ op: "down", button: buttons[e.button] || "left", ...p });
+                const button = buttons[e.button] || "left";
+                // Pointer events don't count clicks, so a quick second press in the same spot is a double click.
+                const prev = live.lastPress;
+                const clickCount = prev && e.timeStamp - prev.t < 500 && Math.hypot(e.clientX - prev.x, e.clientY - prev.y) < 6 && prev.button === button ? prev.count % 3 + 1 : 1;
+                live.lastPress = { t: e.timeStamp, x: e.clientX, y: e.clientY, button, count: clickCount };
+                livePressed = { id: e.pointerId, button, clickCount, p };
+                liveControl({ op: "down", button, clickCount, ...p });
             });
             img.addEventListener("pointermove", e => {
                 if (touch && e.pointerId === touch.id) {
                     const dx = touch.x - e.clientX, dy = touch.y - e.clientY;
-                    if (!touch.dragged && Math.hypot(dx, dy) < 8) return;
+                    if (!touch.dragged && Math.hypot(dx, dy) < 10) return;
                     touch.dragged = true;
-                    const scale = live.frame ? live.frame.width / img.getBoundingClientRect().width : 1;
-                    liveControl({ op: "wheel", deltaX: dx * scale, deltaY: dy * scale, ...touch.p });
+                    touch.samples.push({ t: e.timeStamp, x: e.clientX, y: e.clientY });
+                    while (touch.samples.length > 2 && e.timeStamp - touch.samples[0].t > 100) touch.samples.shift();
+                    const scale = liveFrameScale(img);
+                    liveControl({ op: "wheel", deltaX: Math.round(dx * scale), deltaY: Math.round(dy * scale), ...touch.p });
                     touch.x = e.clientX; touch.y = e.clientY;
                     return;
                 }
+                const p = livePoint(e, img);
+                if (livePressed && p) livePressed.p = p;
                 // Hover and drags, at most ~25 times a second.
                 if (Date.now() - live.lastMove < 40) return;
                 live.lastMove = Date.now();
-                const p = livePoint(e, img);
                 if (p) liveControl({ op: "move", ...p });
             });
             img.addEventListener("pointerup", e => {
                 if (touch && e.pointerId === touch.id) {
-                    const tap = !touch.dragged && touch.p;
+                    const ended = touch;
                     touch = null;
-                    if (tap) { liveControl({ op: "down", button: "left", ...tap }); liveControl({ op: "up", button: "left", ...tap }); }
+                    if (!ended.dragged) { liveControl({ op: "click", button: "left", ...ended.p }); return; }
+                    const first = ended.samples[0], lastAt = ended.samples[ended.samples.length - 1];
+                    const dt = e.timeStamp - first.t;
+                    // A finger that stopped before lifting doesn't fling.
+                    if (dt > 0 && e.timeStamp - lastAt.t < 80) startFling((first.x - e.clientX) / dt, (first.y - e.clientY) / dt, ended.p);
                     return;
                 }
+                if (!livePressed || e.pointerId !== livePressed.id) return;
                 const p = livePoint(e, img);
-                if (p) liveControl({ op: "up", button: buttons[e.button] || "left", ...p });
+                if (p) livePressed.p = p;
+                releaseLivePress();
             });
-            img.addEventListener("pointercancel", () => { touch = null; });
+            img.addEventListener("pointercancel", e => {
+                if (touch && e.pointerId === touch.id) touch = null;
+                else if (livePressed && e.pointerId === livePressed.id) releaseLivePress();
+            });
+            img.addEventListener("lostpointercapture", e => { if (livePressed && e.pointerId === livePressed.id) releaseLivePress(); });
             img.addEventListener("contextmenu", e => e.preventDefault());
             img.addEventListener("dragstart", e => e.preventDefault());
             // The wheel scrolls the page in the browser, not CoDev: each turn goes over as

@@ -42,6 +42,7 @@ test('typed text becomes an address, a shortcut or a search', () => {
 async function startSite(t) {
     const server = http.createServer((req, res) => {
         const html = body => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(body); };
+        if (req.url === '/clicks') return html('<style>body{margin:0}</style><a href="#" id="a" style="position:absolute;left:10px;top:10px;width:100px;height:30px" onclick="this.dataset.n = (+this.dataset.n || 0) + 1" ondblclick="this.dataset.dbl = 1">link</a><div style="height:5000px"></div>');
         if (req.url === '/ok') return html('<title>Odds</title><h1>Tonight\'s odds</h1>');
         if (req.url === '/parked') return html(PARKED);
         if (req.url === '/board') return html(BOARD);
@@ -140,6 +141,36 @@ test('the user opens and drives a browser while the agent works in a background 
 
     // CoDev's own browsers (ids starting with @) are never an agent's.
     assert.equal(service.context({ 'codev/agentId': '@outlier' }).agentId, 'outlier');
+});
+
+test('the live view acts like a browser: scrollbars, the page\'s pointer, taps and double clicks', async t => {
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    await launched.browser.close();
+    const base = await startSite(t);
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-clicks-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const { createBrowserManager } = require('../desktop/browser/browser-manager');
+    const { createLiveView } = require('../desktop/browser/live-view');
+    const manager = createBrowserManager({ profileRoot: path.join(dataDir, 'profiles'), log: () => {} });
+    t.after(() => manager.closeAll());
+    const live = createLiveView({ manager, isBlockedUrl: () => false, log: () => {} });
+    await live.control('a1', { op: 'navigate', url: `${base}/clicks` });
+    const page = manager.peek('a1').page;
+
+    // Headless browsers hide scrollbars unless told not to; the user needs them to scroll.
+    assert.ok(await page.evaluate(() => innerWidth - document.documentElement.clientWidth) > 0, 'the page has a scrollbar');
+    // Moving over a link answers with the hand pointer, over nothing with the arrow.
+    assert.equal((await live.control('a1', { op: 'move', x: 50, y: 20 })).cursor, 'pointer');
+    assert.equal((await live.control('a1', { op: 'move', x: 500, y: 500 })).cursor, 'default');
+    // A tap is one click; a second press in a row is a double click.
+    await live.control('a1', { op: 'click', x: 50, y: 20 });
+    assert.equal(await page.$eval('#a', a => a.dataset.n), '1');
+    for (const clickCount of [1, 2]) {
+        await live.control('a1', { op: 'down', x: 50, y: 20, clickCount });
+        await live.control('a1', { op: 'up', x: 50, y: 20, clickCount });
+    }
+    assert.equal(await page.$eval('#a', a => [a.dataset.n, a.dataset.dbl].join()), '3,1');
 });
 
 test('a browser the user has used stays open until the user closes it', async t => {
