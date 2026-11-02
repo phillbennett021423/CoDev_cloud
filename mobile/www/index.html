@@ -582,6 +582,7 @@
             .live-side { width: auto; height: 38%; border-left: none; border-top: 1px solid var(--border-color); }
         }
     </style>
+    <link rel="stylesheet" href="companion/companion.css">
 </head>
 <body>
     <!-- Shared gradients for the agent avatars. Not display:none, which would stop url(#...) from resolving. -->
@@ -1171,6 +1172,13 @@
                     <input type="checkbox" id="modalChime"> Play a chime when an agent finishes a response or task
                 </label>
                 <label class="checkbox-group">
+                    <input type="checkbox" id="modalCompanion"> Show the companion avatar, which acts out what the agents are doing (tap it to make it smaller)
+                </label>
+                <div class="form-group" style="margin-left: 24px;">
+                    <label for="modalCompanionAvatar">Companion avatar</label>
+                    <select id="modalCompanionAvatar"></select>
+                </div>
+                <label class="checkbox-group">
                     <input type="checkbox" id="modalToolsAutoRun"> Run file edits and commands without asking me first
                 </label>
                 <div class="form-group" id="desktopMcpGroup" style="display: none;">
@@ -1257,6 +1265,8 @@
     <script src="agent-ui/odds-api.js"></script>
     <script src="agent-ui/code-intel.js"></script>
     <script src="agent-ui/cloud-account.js"></script>
+    <script src="companion/companion.js"></script>
+    <script src="companion/companion-bridge.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
         // text boxes stop taking clicks and typing until the window is refocused.
@@ -4775,7 +4785,7 @@
                         if (callCounts.get(signature) > 2) {
                             result = "Not run: you already made this exact call twice in this task. Repeating it won't change the result. Check what the earlier results actually show, then try a different approach, or stop and tell the user what is blocking you.";
                         } else {
-                            try { result = await tool.run(args, ctx); } catch (err) { result = `Tool failed: ${err.message}`; }
+                            try { result = await CodevCompanion.tool(tool.name, args, () => tool.run(args, ctx)); } catch (err) { result = `Tool failed: ${err.message}`; }
                         }
                         if (watch) clearInterval(watch);
                         trackToolEffect(ctx, tool.name, args, String(result));
@@ -6079,6 +6089,10 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             renderSavedMemories();
             fillMediaSettings();
             document.getElementById("modalChime").checked = chimeEnabled;
+            document.getElementById("modalCompanion").checked = CodevCompanion.enabled();
+            const companionPick = document.getElementById("modalCompanionAvatar");
+            companionPick.replaceChildren(...CodevCompanion.avatars.map(a => new Option(a.name, a.id)));
+            companionPick.value = CodevCompanion.avatar();
             document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
             document.getElementById("modalMcpServers").value = mcpServersConfig;
             if (window.codevDesktop?.mcpFolder) {
@@ -6292,6 +6306,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             localStorage.setItem("codev_task_spend_limit", String(taskSpendLimit));
             chimeEnabled = document.getElementById("modalChime").checked;
             localStorage.setItem("codev_chime", chimeEnabled ? "1" : "0");
+            CodevCompanion.setEnabled(document.getElementById("modalCompanion").checked);
+            CodevCompanion.setAvatar(document.getElementById("modalCompanionAvatar").value);
             readAzureSettings();
             localStorage.setItem("codev_azure_speech_key", azureSpeechKey);
             localStorage.setItem("codev_azure_speech_region", azureSpeechRegion);
@@ -6786,8 +6802,14 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // model from Settings, which serves text, tools and images alike.
         // extras.sources: the run's source list, for Claude's web search citations.
         // extras.wrapUp: the last answer of a task that hit a spending limit, which may still go out.
+        // Every model call goes through here, so the companion avatar shows the thinking
+        // (and "waiting" when a call is slow) without each caller telling it.
         async function groqChatMessage(body, extras = {}) {
             if (!extras.wrapUp) checkDailySpend();
+            return CodevCompanion.inference(() => providerChatMessage(body, extras));
+        }
+
+        async function providerChatMessage(body, extras) {
             if (currentBackend === "anthropic") return anthropicChatMessage(body, extras);
             const openRouter = currentBackend === "openrouter";
             const provider = openRouter
@@ -8255,5 +8277,6 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             });
         });
     </script>
+    <script>CodevCompanion.mount(document.body, { anchor: document.querySelector(".chat-input-wrapper .chat-input-area") });</script>
 </body>
 </html>
