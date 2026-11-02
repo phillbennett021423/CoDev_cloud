@@ -778,7 +778,7 @@ ${entry.tags && entry.tags.length ? `<h2>Tags</h2><p>${esc(entry.tags.join(", ")
             {
                 name: "studio_read",
                 description: "Read the user's game projects in CoDev's Story Studio: each one's story bible of characters, factions, abilities, places, timeline events, lore, quests, items and dialogue. "
-                    + "With no name it lists the project's entries; with name it returns that entry in full; with query it finds entries that mention something. Read what you need before writing new story, characters or dialogue for a project, so it stays consistent.",
+                    + "With no name it lists the project's entries; with name it returns that entry in full; with query it finds entries that mention something. Use it before writing new story, characters or dialogue for a project, so it stays consistent; read only the entries you need rather than every one. Don't use it for the user's code or files: this is the story bible only.",
                 inputSchema: { type: "object", properties: {
                     project: { type: "string", description: "The project's name. Leave it out for the one open in Story Studio." },
                     name: { type: "string", description: "Optional: an entry's name, to read it in full." },
@@ -809,23 +809,23 @@ ${entry.tags && entry.tags.length ? `<h2>Tags</h2><p>${esc(entry.tags.join(", ")
                 description: `Add or update an entry in a game project's story bible in CoDev's Story Studio. Kinds: ${kindList}. Saving an existing name updates it, and only the fields you pass change. `
                     + "Character fields: role, appearance, personality, backstory, powers, speaking_style, goals, relationships. Faction: purpose, members, territory, history. Ability: owner, effect, limits, gameplay. Place: description, history, inhabitants. "
                     + "Timeline event: when, what, who, consequences. Lore: details. Quest: giver, objective, steps, reward. Item: description, effect, where. Dialogue: scene, plus lines. Scene (a cutscene script): location, characters (comma-separated names), goal, plus lines; lines can have type \"direction\" or \"narration\". Story arc: characters, goal, stakes, plus beats. Other field names are kept too. "
-                    + "Save everything you create for the user's game here (characters, scripts, dialogue), so it's remembered and can be exported to their game. If the project doesn't exist yet, it is created.",
+                    + "Use it to save everything you create for the user's game here (characters, scripts, dialogue), so it's remembered and can be exported to their game. If the project doesn't exist yet, it is created. Call studio_read first when the entry may already exist, so you don't overwrite the user's own writing, and don't save a draft the user hasn't agreed to.",
                 inputSchema: { type: "object", properties: {
                     project: { type: "string", description: "The project's name. Leave it out for the one open in Story Studio." },
-                    kind: { type: "string", enum: KIND_NAMES },
+                    kind: { type: "string", enum: KIND_NAMES, description: "What the entry is. Needed for a new entry; leave it out to update an existing entry by name." },
                     name: { type: "string", description: "The entry's name (a character's name, a quest title, a dialogue's title)." },
                     summary: { type: "string", description: "One or two sentences." },
                     fields: { type: "object", description: "Field name to text, like {\"personality\": \"...\", \"powers\": \"...\"}.", additionalProperties: { type: "string" } },
-                    tags: { type: "array", items: { type: "string" } },
+                    tags: { type: "array", items: { type: "string" }, description: "Short labels for filtering, like [\"act 1\", \"villain\"]." },
                     links: { type: "array", description: "Relationships to other entries, for the relationship web. This replaces the entry's old links.", items: { type: "object", properties: {
-                        to: { type: "string", description: "The other entry's name." }, type: { type: "string", enum: LINK_TYPES.map(([t]) => t) }, note: { type: "string" } }, required: ["to", "type"] } },
+                        to: { type: "string", description: "The other entry's name." }, type: { type: "string", enum: LINK_TYPES.map(([t]) => t), description: "How this entry relates to the other one." }, note: { type: "string", description: "Optional: a few words on the relationship, like \"owes him a debt\"." } }, required: ["to", "type"] } },
                     order: { type: "number", description: "Timeline events only: its place in story order (lower comes first)." },
                     beats: { type: "array", description: "Story arcs only: the arc's beats in order. This replaces the old beats.", items: { type: "object", properties: {
-                        text: { type: "string" }, status: { type: "string", enum: BEAT_STATUS.map(([k]) => k) } }, required: ["text"] } },
+                        text: { type: "string", description: "What happens in this beat, in a sentence or two." }, status: { type: "string", enum: BEAT_STATUS.map(([k]) => k), description: "How far along the beat is: idea, written or in_game." } }, required: ["text"] } },
                     lines: { type: "array", description: "Dialogue and scenes only: every line in order (this replaces the old lines).", items: { type: "object", properties: {
-                        speaker: { type: "string" }, text: { type: "string" }, emotion: { type: "string" },
+                        speaker: { type: "string", description: "The character who says it (leave out for direction and narration)." }, text: { type: "string", description: "The words spoken, or the direction or narration." }, emotion: { type: "string", description: "Optional: how it is said, like angry or whispering." },
                         type: { type: "string", enum: ["line", "direction", "narration"], description: "Default line (spoken)." },
-                        choices: { type: "array", items: { type: "object", properties: { text: { type: "string" }, next: { type: "string", description: "The id or title of the dialogue this choice leads to." } } } }
+                        choices: { type: "array", description: "Optional: player choices after this line, for branching dialogue.", items: { type: "object", properties: { text: { type: "string", description: "The choice as the player sees it." }, next: { type: "string", description: "The id or title of the dialogue this choice leads to." } } } }
                     }, required: ["text"] } }
                 }, required: ["name"] },
                 run: async args => {
@@ -848,8 +848,8 @@ ${entry.tags && entry.tags.length ? `<h2>Tags</h2><p>${esc(entry.tags.join(", ")
             },
             {
                 name: "studio_remove",
-                description: "Delete one entry from a game project's story bible, only when the user asks for it to be removed. CoDev asks the user first.",
-                inputSchema: { type: "object", properties: { project: { type: "string" }, name: { type: "string" } }, required: ["name"] },
+                description: "Delete one entry from a game project's story bible. Use it only when the user asks for an entry to be removed; to change an entry use studio_save instead. CoDev asks the user first; if they decline, leave it.",
+                inputSchema: { type: "object", properties: { project: { type: "string", description: "The project's name. Leave it out for the one open in Story Studio." }, name: { type: "string", description: "The entry's exact name, as studio_read lists it." } }, required: ["name"] },
                 run: async args => {
                     const p = pick(args.project);
                     if (!p) return noProject();
@@ -864,9 +864,9 @@ ${entry.tags && entry.tags.length ? `<h2>Tags</h2><p>${esc(entry.tags.join(", ")
             {
                 name: "studio_export",
                 description: "Write a game project's story bible into the user's connected project folder as files the game can use: story_bible.json, game_data.gd (a GDScript file of constants: CHARACTERS, ABILITIES, DIALOGUE, SCENES and so on, plus dialogue_lines() and scene_beats()), one JSON file per dialogue in dialogue/, one cutscene JSON per scene in scenes/, and story_bible.md to read. "
-                    + "Use it when the user wants the characters or dialogue in their game.",
+                    + "Use it when the user wants the characters or dialogue in their game. It needs a connected project folder; don't use it just to show the user the bible (use studio_read).",
                 inputSchema: { type: "object", properties: {
-                    project: { type: "string" },
+                    project: { type: "string", description: "The project's name. Leave it out for the one open in Story Studio." },
                     format: { type: "string", enum: ["all", "json", "gdscript", "dialogue", "scenes", "markdown"], description: "Default all." },
                     folder: { type: "string", description: "Folder inside the project. Default game_data." }
                 } },

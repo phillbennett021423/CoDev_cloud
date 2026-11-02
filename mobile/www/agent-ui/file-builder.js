@@ -883,18 +883,18 @@
             {
                 name: "create_slides",
                 description: "Make a PowerPoint deck (.pptx, opens in PowerPoint, Google Slides and Keynote) the user can download and present. Each slide has a layout: title, section, bullets, table, stats (big numbers) or columns (two or three side-by-side lists). "
-                    + "Keep slides short: a headline title that states the point, 3 to 6 bullets of under 15 words. Use it whenever the user asks for slides, a deck or a presentation.",
+                    + "Keep slides short: a headline title that states the point, 3 to 6 bullets of under 15 words. Use it whenever the user asks for slides, a deck or a presentation, instead of writing slide text in the chat; for a written report use create_document instead.",
                 inputSchema: { type: "object", properties: {
-                    filename: { type: "string" },
+                    filename: { type: "string", description: "File name without the extension, like \"Q3 review\" (default: the title)." },
                     title: { type: "string", description: "Optional: adds a title slide first." },
-                    subtitle: { type: "string" },
+                    subtitle: { type: "string", description: "Optional: the title slide's second line, like a date or the presenter." },
                     theme: { type: "string", enum: Object.keys(THEMES), description: "Colors (default blue)." },
-                    slides: { type: "array", items: { type: "object", properties: {
-                        layout: { type: "string", enum: ["title", "section", "bullets", "table", "stats", "columns"] },
-                        title: { type: "string" },
+                    slides: { type: "array", description: "The slides, in order; each one's layout says which other fields it uses.", items: { type: "object", properties: {
+                        layout: { type: "string", enum: ["title", "section", "bullets", "table", "stats", "columns"], description: "The slide's layout (default bullets)." },
+                        title: { type: "string", description: "The slide's headline: state the point, like \"Sales grew 40% in Q3\"." },
                         subtitle: { type: "string", description: "For title and section slides." },
                         bullets: { type: "array", description: "Text lines; start a line with two spaces per sub-level, or give {\"text\", \"level\"}. **bold** works.", items: {} },
-                        table: { type: "object", description: "{\"columns\": [...], \"rows\": [[...]...]} up to 14 rows.", properties: { columns: { type: "array", items: {} }, rows: { type: "array", items: {} } } },
+                        table: { type: "object", description: "{\"columns\": [...], \"rows\": [[...]...]} up to 14 rows.", properties: { columns: { type: "array", description: "Header cells, like [\"Plan\", \"Price\"].", items: {} }, rows: { type: "array", description: "Rows of cells in column order, up to 14.", items: {} } } },
                         stats: { type: "array", description: "Up to 4 {\"value\": \"$4.2M\", \"label\": \"ARR\"}.", items: { type: "object" } },
                         columns: { type: "array", description: "Up to 3 {\"heading\", \"bullets\": [...]}.", items: { type: "object" } },
                         notes: { type: "string", description: "Speaker notes." }
@@ -913,9 +913,9 @@
             {
                 name: "create_document",
                 description: "Make a Word document (.docx) from Markdown: headings (#, ##, ###), paragraphs, **bold**, *italic*, bullet and numbered lists, tables (| a | b |), quotes and code blocks. "
-                    + "Use it for reports, letters, plans, proposals and research write-ups the user wants as a file.",
+                    + "Use it for reports, letters, plans, proposals and research write-ups the user wants as a file. Don't use it for tables of data (create_spreadsheet) or slides (create_slides).",
                 inputSchema: { type: "object", properties: {
-                    filename: { type: "string" },
+                    filename: { type: "string", description: "File name without the extension, like \"Project plan\" (default: the first heading)." },
                     markdown: { type: "string", description: "The whole document in Markdown. A first # heading becomes the title." }
                 }, required: ["markdown"] },
                 run: async (args, ctx) => {
@@ -929,10 +929,10 @@
             },
             {
                 name: "create_csv",
-                description: "Make a CSV file (opens in Excel, Google Sheets, databases) from rows or a collected dataset. Prefer create_spreadsheet when the user wants formulas or formatting.",
+                description: "Make a CSV file (opens in Excel, Google Sheets, databases) from rows or a collected dataset. Use it when the user asks for CSV or a plain export for another program; use create_spreadsheet instead when the user wants formulas, formatting or several sheets.",
                 inputSchema: { type: "object", properties: {
-                    filename: { type: "string" },
-                    columns: { type: "array", items: { type: "string" } },
+                    filename: { type: "string", description: "File name without the extension, like \"contacts\"." },
+                    columns: { type: "array", items: { type: "string" }, description: "Header names in order, like [\"Name\", \"Email\"] (default: the dataset's columns)." },
                     rows: { type: "array", items: {}, description: "Arrays in column order, or objects keyed by column." },
                     dataset: { type: "string", description: "A dataset id (ds1...) to write instead of rows." }
                 } },
@@ -985,7 +985,7 @@
             },
             {
                 name: "list_datasets",
-                description: "List the tables collected in this session (from browser_extract, wide_research...) with their ids, sizes and first rows, to put them in a spreadsheet or CSV.",
+                description: "List the tables collected in this session (from browser_extract, wide_research...) with their ids, sizes and first rows. Use it when you need a dataset id for create_spreadsheet or create_csv, or the user asks what was collected. Not needed right after browser_extract or wide_research: their result already gives the id.",
                 inputSchema: { type: "object", properties: { id: { type: "string", description: "Optional: show more rows of one dataset." } } },
                 run: async ({ id }) => {
                     if (!datasets) return "No datasets here.";

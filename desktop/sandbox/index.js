@@ -209,41 +209,43 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
     const pathProp = { type: 'string', description: 'Path relative to the project, with / separators.' };
     const TOOLS = [
         { name: 'list_files', run: listFiles, annotations: { readOnlyHint: true },
-          description: 'List files in your sandbox copy of the user\'s project (recursively, skipping .git and node_modules).',
+          description: 'List the files in your sandbox copy of the user\'s project, one path per line, recursively (hidden files, .git and node_modules are skipped; stops at 500). Use it first to see what exists before you read or edit. To find where something is used, use search_files instead.',
           inputSchema: { type: 'object', properties: { path: { ...pathProp, description: 'Sub-folder to list; omit for the whole project.' } } } },
         { name: 'read_file', run: readFile, annotations: { readOnlyHint: true },
-          description: 'Read a text file from your sandbox copy of the project, including changes you staged.',
+          description: 'Read a whole text file from your sandbox copy of the project, including the changes you staged (long files stop at 100,000 characters). Use it before every edit_file so old_text matches exactly. Don\'t use it to look for a name across the project: use search_files.',
           inputSchema: { type: 'object', properties: { path: pathProp }, required: ['path'] } },
         { name: 'search_files', run: searchFiles, annotations: { readOnlyHint: true },
-          description: 'Search the text of every file in your sandbox copy of the project (case-insensitive); results are path:line: text.',
+          description: 'Search the text of every file in your sandbox copy of the project (case-insensitive, plain text, not a regex) and get matching lines as path:line: text (up to 200). Use it to find where a function, setting or message is defined or used. Use list_files instead when you only need file names.',
           inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'Text to look for.' },
               path: { ...pathProp, description: 'Sub-folder to search; omit for the whole project.' } }, required: ['query'] } },
         { name: 'write_file', run: writeFile, annotations: { readOnlyHint: false, destructiveHint: false },
-          description: 'Create or overwrite a file in your sandbox copy of the project. Changes are staged: the user reviews a diff and approves them before anything is written to their disk.',
+          description: 'Create a file, or replace a whole file, in your sandbox copy of the project (folders are made as needed). Changes are staged: the user reviews a diff and approves them before anything is written to their disk. Use it for new files; for a change to part of an existing file use edit_file instead, so you don\'t drop code you didn\'t read.',
           inputSchema: { type: 'object', properties: { path: pathProp, content: { type: 'string', description: 'The complete new file content.' } }, required: ['path', 'content'] } },
         { name: 'edit_file', run: editFile, annotations: { readOnlyHint: false, destructiveHint: false },
-          description: 'Replace one exact snippet of a file in your sandbox copy (staged for review). old_text must appear exactly once; read the file first.',
-          inputSchema: { type: 'object', properties: { path: pathProp, old_text: { type: 'string' }, new_text: { type: 'string' } }, required: ['path', 'old_text', 'new_text'] } },
+          description: 'Replace one exact snippet of a file in your sandbox copy (staged for review). Use it for every change to an existing file: read_file first, then copy old_text exactly, with its spaces and line breaks. If it says old_text appears 0 or 2+ times, read the file again and pass a longer, unique snippet; don\'t fall back to rewriting the whole file.',
+          inputSchema: { type: 'object', properties: { path: pathProp,
+              old_text: { type: 'string', description: 'The exact text to replace, copied from read_file; it must appear exactly once in the file.' },
+              new_text: { type: 'string', description: 'The text to put in its place (empty to delete the snippet).' } }, required: ['path', 'old_text', 'new_text'] } },
         { name: 'delete_file', run: deleteFile, annotations: { readOnlyHint: false, destructiveHint: false },
-          description: 'Delete a file in your sandbox copy (staged for review).',
+          description: 'Delete a file in your sandbox copy of the project (staged: the user approves the deletion in the diff review). Use it only when the task needs the file gone, such as a renamed or obsolete file; to empty or change a file use edit_file or write_file instead.',
           inputSchema: { type: 'object', properties: { path: pathProp }, required: ['path'] } },
         { name: 'run_command', run: runCommand, annotations: { readOnlyHint: false, destructiveHint: false }, needsDocker: true,
-          description: 'Run a shell command (sh, Linux) in your own isolated Docker container, in /workspace, which is your sandbox copy of the project. Use it to run code, tests, builds and scripts. The container has no network unless the user allowed it, and nothing outside /workspace persists.',
+          description: 'Run a shell command (sh, Linux) in your own isolated Docker container, in /workspace, which is your sandbox copy of the project, and get the exit code, stdout and stderr (the last 8,000 characters of each). Use it to run code, tests, builds and scripts and to check your edits work. The container has no network unless the user allowed it, and nothing outside /workspace persists. Don\'t use it to read or edit files: use read_file and edit_file, which the review tracks. A non-zero exit code means the command failed: read stderr and fix the cause.',
           inputSchema: { type: 'object', properties: {
               command: { type: 'string', description: 'The command line to run with sh -c.' },
               cwd: { ...pathProp, description: 'Sub-folder of the project to run in; omit for the project root.' },
               timeout_seconds: { type: 'integer', description: 'Stop after this many seconds (default 120, max 600).' } },
               required: ['command'] } },
         { name: 'sandbox_diff', run: sandboxDiff, annotations: { readOnlyHint: true },
-          description: 'Show the git diff of everything staged in your sandbox so far, with syntax-check results per file. Check it before you finish; files that fail the check can\'t be approved.',
+          description: 'Show the git diff of everything staged in your sandbox so far, with syntax-check results per file. Call it before submit_changes to check your work; fix any file that failed the check with edit_file, since it can\'t be approved. Not needed after every single edit.',
           inputSchema: { type: 'object', properties: {} } },
         { name: 'submit_changes', run: submitChanges, annotations: { readOnlyHint: true },
-          description: 'Hand your staged changes to the user for review when you are done, with a short summary of what changed and why. The user approves them before they are written to disk.',
+          description: 'Hand your staged changes to the user for review when you are done, with a short summary of what changed and why. The user approves them before they are written to disk. Call it once, at the end, after sandbox_diff shows no failed checks; don\'t call it while work is still left.',
           inputSchema: { type: 'object', properties: { summary: { type: 'string', description: 'What you changed and why, in a few lines.' } }, required: ['summary'] } }
     ];
 
     const HOST_RUN_DESCRIPTION = `Run a shell command (${process.platform === 'win32' ? 'cmd.exe on Windows' : 'sh'}) on the user's computer, in your sandbox copy of the project (not their real folder), to run code, tests, builds and scripts. `
-        + 'Docker isn\'t running, so there is no container around it: the user is asked to approve any command that isn\'t a plain test, build or run step. File changes it makes stay in the sandbox copy until the user approves the diff.';
+        + 'Docker isn\'t running, so there is no container around it: the user is asked to approve any command that isn\'t a plain test, build or run step. File changes it makes stay in the sandbox copy until the user approves the diff. Use it to check your edits work; don\'t use it to read or edit files (use read_file and edit_file). If the user declines a command, don\'t run it again.';
 
     async function listTools() {
         if (!enabled || !getProjectDir()) return [];

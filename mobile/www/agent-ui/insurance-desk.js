@@ -1080,8 +1080,8 @@
         return [
             {
                 name: "insurance_clients",
-                description: "Look up the user's insurance clients in CoDev's Insurance Desk. With name, returns that client's full file (household, policies, doctors, prescriptions, latest SOA, notes). With query, finds clients by name, carrier, plan, ZIP, tag or status. With neither, lists everyone.",
-                inputSchema: { type: "object", properties: { name: { type: "string" }, query: { type: "string" } } },
+                description: "Look up the user's insurance clients in CoDev's Insurance Desk. With name, returns that client's full file (household, policies, doctors, prescriptions, latest SOA, notes). With query, finds clients by name, carrier, plan, ZIP, tag or status. With neither, lists everyone. Use it first in any request about a client, to get the exact name the other insurance_ tools need. Don't use it for what's due across the book: use insurance_alerts.",
+                inputSchema: { type: "object", properties: { name: { type: "string", description: "A client's name, to read their full file (part of the name works when it's unique)." }, query: { type: "string", description: "Words to find clients by: a name, carrier, plan, ZIP, tag or status, like \"Humana 33101\"." } } },
                 run: async args => {
                     if (args.name) { const c = find(args.name); return c ? describeClient(c, store) : noClient(args.name); }
                     const list = store.search(args.query || "");
@@ -1092,7 +1092,7 @@
             },
             {
                 name: "insurance_alerts",
-                description: "What's due in the user's book: clients turning 65 (Initial Enrollment Period), Medigap open enrollment, AEP and OEP reviews, renewals, pending policies, term-life conversion deadlines, expiring Scopes of Appointment and follow-ups.",
+                description: "What's due in the user's book: clients turning 65 (Initial Enrollment Period), Medigap open enrollment, AEP and OEP reviews, renewals, pending policies, term-life conversion deadlines, expiring Scopes of Appointment and follow-ups. Use it when the user asks what's coming up, who to call, or for a to-do list for the book; for one client's details use insurance_clients instead.",
                 inputSchema: { type: "object", properties: { days: { type: "integer", description: "Look this many days ahead. Default 30." } } },
                 run: async args => {
                     const alerts = computeAlerts(store.clients(), todayStr(), { horizon: Math.min(365, Math.max(1, args.days || 30)), soas: store.soas() });
@@ -1101,22 +1101,22 @@
             },
             {
                 name: "insurance_save_client",
-                description: "Add a client or update one in the Insurance Desk; only the fields you pass change. You can also add or update one policy at a time. You can't delete clients or policies. Every change is written to the client's activity log.",
+                description: "Add a client or update one in the Insurance Desk; only the fields you pass change. You can also add or update one policy at a time. You can't delete clients or policies. Every change is written to the client's activity log. Use it when the user gives new client details or asks you to record a policy; only save what the user or a document actually said, never guessed values. For a note or call summary use insurance_add_note instead.",
                 inputSchema: { type: "object", properties: {
                     name: { type: "string", description: "The client's full name (finds an existing client by it)." },
-                    phone: { type: "string" }, email: { type: "string" }, dob: { type: "string", description: "YYYY-MM-DD" },
-                    address: { type: "string" }, city: { type: "string" }, state: { type: "string", description: "Two letters" }, zip: { type: "string" }, county: { type: "string" },
-                    status: { type: "string", enum: CLIENT_STATUS.map(([k]) => k) }, tags: { type: "array", items: { type: "string" } },
-                    householdIncome: { type: "number" }, householdSize: { type: "integer" }, tobacco: { type: "boolean" },
-                    partADate: { type: "string" }, partBDate: { type: "string" }, pharmacy: { type: "string" },
-                    followUp: { type: "string", description: "YYYY-MM-DD" }, followUpNote: { type: "string" },
-                    members: { type: "array", description: "Replaces the household members.", items: { type: "object", properties: { name: { type: "string" }, relation: { type: "string", enum: RELATIONS.map(([k]) => k) }, dob: { type: "string" }, tobacco: { type: "boolean" } }, required: ["name"] } },
-                    doctors: { type: "array", description: "Replaces the doctor list.", items: { type: "object", properties: { name: { type: "string" }, specialty: { type: "string" }, location: { type: "string" }, npi: { type: "string" } }, required: ["name"] } },
-                    medications: { type: "array", description: "Replaces the prescription list.", items: { type: "object", properties: { name: { type: "string" }, dose: { type: "string" }, frequency: { type: "string" } }, required: ["name"] } },
+                    phone: { type: "string", description: "Phone number, like 305-555-0142." }, email: { type: "string", description: "Email address." }, dob: { type: "string", description: "Date of birth, YYYY-MM-DD." },
+                    address: { type: "string", description: "Street address." }, city: { type: "string", description: "The city of the address." }, state: { type: "string", description: "Two-letter state, like FL." }, zip: { type: "string", description: "Five-digit ZIP code." }, county: { type: "string", description: "County name (plans depend on it)." },
+                    status: { type: "string", enum: CLIENT_STATUS.map(([k]) => k), description: "Where the client is: lead, prospect, client or inactive." }, tags: { type: "array", items: { type: "string" }, description: "Labels for finding clients later, like [\"referral\", \"spanish\"]." },
+                    householdIncome: { type: "number", description: "Yearly household income in dollars (for ACA subsidies)." }, householdSize: { type: "integer", description: "People in the tax household." }, tobacco: { type: "boolean", description: "true if the client uses tobacco." },
+                    partADate: { type: "string", description: "Medicare Part A start date, YYYY-MM-DD." }, partBDate: { type: "string", description: "Medicare Part B start date, YYYY-MM-DD." }, pharmacy: { type: "string", description: "Preferred pharmacy, like \"CVS on Main St\"." },
+                    followUp: { type: "string", description: "Next follow-up date, YYYY-MM-DD." }, followUpNote: { type: "string", description: "What the follow-up is for, in a few words." },
+                    members: { type: "array", description: "Replaces the household members.", items: { type: "object", properties: { name: { type: "string", description: "The member's full name." }, relation: { type: "string", enum: RELATIONS.map(([k]) => k), description: "spouse, child or dependent." }, dob: { type: "string", description: "Date of birth, YYYY-MM-DD." }, tobacco: { type: "boolean", description: "true if this member uses tobacco." } }, required: ["name"] } },
+                    doctors: { type: "array", description: "Replaces the doctor list.", items: { type: "object", properties: { name: { type: "string", description: "The doctor's name." }, specialty: { type: "string", description: "Like cardiology or primary care." }, location: { type: "string", description: "Office or city, to tell doctors apart." }, npi: { type: "string", description: "The 10-digit NPI number, if known." } }, required: ["name"] } },
+                    medications: { type: "array", description: "Replaces the prescription list.", items: { type: "object", properties: { name: { type: "string", description: "The drug name, like metformin." }, dose: { type: "string", description: "Strength, like 500 mg." }, frequency: { type: "string", description: "How often, like twice a day." } }, required: ["name"] } },
                     policy: { type: "object", description: "One policy to add, or to update when policyNumber matches one on file.", properties: {
-                        planType: { type: "string", enum: planEnum }, carrier: { type: "string" }, planName: { type: "string" }, policyNumber: { type: "string" }, memberId: { type: "string" },
-                        status: { type: "string", enum: POLICY_STATUS.map(([k]) => k) }, effectiveDate: { type: "string" }, renewalDate: { type: "string" }, termDate: { type: "string" },
-                        premium: { type: "number" }, membersCovered: { type: "integer" }, faceAmount: { type: "number" }, beneficiary: { type: "string" }, notes: { type: "string" } } }
+                        planType: { type: "string", enum: planEnum, description: "The kind of plan (Medicare Advantage, Medigap, ACA, life...)." }, carrier: { type: "string", description: "The insurance company, like Humana." }, planName: { type: "string", description: "The plan's name as the carrier writes it." }, policyNumber: { type: "string", description: "The policy number; matches an existing policy to update it." }, memberId: { type: "string", description: "The member id on the client's card." },
+                        status: { type: "string", enum: POLICY_STATUS.map(([k]) => k), description: "quoted, pending, active, terminated or cancelled." }, effectiveDate: { type: "string", description: "Start date, YYYY-MM-DD." }, renewalDate: { type: "string", description: "Next renewal date, YYYY-MM-DD." }, termDate: { type: "string", description: "End date, YYYY-MM-DD, if it ended or will end." },
+                        premium: { type: "number", description: "Monthly premium in dollars." }, membersCovered: { type: "integer", description: "People on the policy (default 1)." }, faceAmount: { type: "number", description: "Life insurance: the death benefit in dollars." }, beneficiary: { type: "string", description: "Life insurance: who receives the benefit." }, notes: { type: "string", description: "Anything else about the policy, in a sentence." } } }
                 }, required: ["name"] },
                 run: async args => {
                     const { policy, ...fields } = args;
@@ -1136,8 +1136,8 @@
             },
             {
                 name: "insurance_add_note",
-                description: "Add a note or a call summary to a client's file in the Insurance Desk.",
-                inputSchema: { type: "object", properties: { client: { type: "string" }, text: { type: "string" }, kind: { type: "string", enum: ["note", "call"] } }, required: ["client", "text"] },
+                description: "Add a note or a call summary to a client's file in the Insurance Desk (dated and signed with your name). Use it when the user tells you what happened on a call or asks you to note something; to change the client's details use insurance_save_client instead.",
+                inputSchema: { type: "object", properties: { client: { type: "string", description: "The client's name, as insurance_clients shows it." }, text: { type: "string", description: "The note itself, in plain sentences." }, kind: { type: "string", enum: ["note", "call"], description: "call for a call summary, note for anything else (default note)." } }, required: ["client", "text"] },
                 run: async args => {
                     const c = find(args.client);
                     if (!c) return noClient(args.client);
@@ -1147,8 +1147,8 @@
             },
             {
                 name: "insurance_quote_brief",
-                description: "Everything a quoting site needs for one client: household ages, ZIP and county, income, doctors, prescriptions, pharmacy and current coverage, plus the quoting sites the user uses. Read it before quoting on a site.",
-                inputSchema: { type: "object", properties: { client: { type: "string" } }, required: ["client"] },
+                description: "Everything a quoting site needs for one client: household ages, ZIP and county, income, doctors, prescriptions, pharmacy and current coverage, plus the quoting sites the user uses. Use it before quoting on a site, and fill the site from it instead of asking the user for details already on file. Don't use it to show a client's file: use insurance_clients.",
+                inputSchema: { type: "object", properties: { client: { type: "string", description: "The client's name, as insurance_clients shows it." } }, required: ["client"] },
                 run: async args => {
                     const c = find(args.client);
                     if (!c) return noClient(args.client);
@@ -1157,12 +1157,12 @@
             },
             {
                 name: "insurance_save_quote",
-                description: "Save a plan comparison you read from a quoting site to a client's file. Only use numbers the site showed; leave out what it didn't.",
+                description: "Save a plan comparison you read from a quoting site to a client's file. Use it after reading quotes on a site for a client, so the comparison stays in their file. Only use numbers the site showed; leave out what it didn't, and never estimate a premium.",
                 inputSchema: { type: "object", properties: {
-                    client: { type: "string" }, portal: { type: "string", description: "The site the quotes came from." }, summary: { type: "string", description: "Your recommendation in a few sentences." },
-                    plans: { type: "array", items: { type: "object", properties: {
-                        carrier: { type: "string" }, plan: { type: "string" }, premium: { type: "number", description: "Monthly" }, deductible: { type: "number" }, moop: { type: "number", description: "Out-of-pocket max" },
-                        drugCost: { type: "number", description: "Estimated yearly drug cost" }, doctorsInNetwork: { type: "string" }, stars: { type: "string" }, notes: { type: "string" } } } }
+                    client: { type: "string", description: "The client's name, as insurance_clients shows it." }, portal: { type: "string", description: "The site the quotes came from." }, summary: { type: "string", description: "Your recommendation in a few sentences." },
+                    plans: { type: "array", description: "The plans compared, one object per plan.", items: { type: "object", properties: {
+                        carrier: { type: "string", description: "The insurance company, like Aetna." }, plan: { type: "string", description: "The plan's name as the site shows it." }, premium: { type: "number", description: "Monthly premium in dollars." }, deductible: { type: "number", description: "Yearly deductible in dollars." }, moop: { type: "number", description: "Out-of-pocket max" },
+                        drugCost: { type: "number", description: "Estimated yearly drug cost" }, doctorsInNetwork: { type: "string", description: "Which of the client's doctors are in network, like \"3 of 4 (not Dr. Lee)\"." }, stars: { type: "string", description: "The plan's star rating, like 4.5." }, notes: { type: "string", description: "Anything else the site showed that matters, in a sentence." } } } }
                 }, required: ["client", "plans"] },
                 run: async args => {
                     const c = find(args.client);
@@ -1173,8 +1173,8 @@
             },
             {
                 name: "insurance_commissions",
-                description: "Check imported carrier commission statements against the book: missing payments, short payments, chargebacks and payments that match no policy, with the total shortfall.",
-                inputSchema: { type: "object", properties: { from: { type: "string", description: "YYYY-MM" }, to: { type: "string", description: "YYYY-MM" } } },
+                description: "Check imported carrier commission statements against the book: missing payments, short payments, chargebacks and payments that match no policy, with the total shortfall. Use it when the user asks whether carriers paid them correctly. It only checks statements the user imported in the 🩺 Insurance tab; if none are, say so instead of guessing.",
+                inputSchema: { type: "object", properties: { from: { type: "string", description: "First month to check, YYYY-MM (default: the earliest statement)." }, to: { type: "string", description: "Last month to check, YYYY-MM (default: the latest statement)." } } },
                 run: async args => {
                     if (!store.statements().length) return "No commission statements imported yet. The user imports carrier CSVs in 🩺 Insurance > Commissions.";
                     const r = reconcile(store.clients(), store.statements(), { from: args.from, to: args.to, tolerance: store.settings().tolerance });

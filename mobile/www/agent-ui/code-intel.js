@@ -1043,19 +1043,19 @@ OTHER ENGINES: Unity physics in FixedUpdate with Rigidbody (not transform) moves
         return [
             {
                 name: "code_map",
-                description: "Get a map of the user's project: languages and size, the Godot version, main scene and autoloads when it's a Godot game, the most depended-on files, and every file with its functions/classes (with line numbers) and which files it uses and is used by. Call it first on an unfamiliar or large project; pass focus to zoom into a folder, file name or symbol.",
+                description: "Get a map of the user's project: languages and size, the Godot version, main scene and autoloads when it's a Godot game, the most depended-on files, and every file with its functions/classes (with line numbers) and which files it uses and is used by. Call it first on an unfamiliar or large project; pass focus to zoom into a folder, file name or symbol. Once per task is usually enough: don't call it again instead of find_symbol or file_outline.",
                 inputSchema: { type: "object", properties: { focus: { type: "string", description: "Optional: a folder (\"scripts/player\"), part of a file name, or a symbol name to limit the map to." } } },
                 run: withIndex((index, { focus }) => codeMap(index, { focus }))
             },
             {
                 name: "find_symbol",
-                description: "Find where a function, class, method, signal, variable or node is defined and every line that uses it, across all project files (scripts, scenes and shaders). Use it before renaming or changing a signature, to find every caller, and to check that nothing still uses old code.",
+                description: "Find where a function, class, method, signal, variable or node is defined and every line that uses it, across all project files (scripts, scenes and shaders). Use it before renaming or changing a signature, to find every caller, and to check that nothing still uses old code. It matches whole names only: for a phrase, a message or a setting value use search_files or search_workspace instead.",
                 inputSchema: { type: "object", properties: { name: { type: "string", description: "The exact name, like take_damage, PlayerController or health_changed." } }, required: ["name"] },
                 run: withIndex((index, { name }) => findSymbol(index, name))
             },
             {
                 name: "file_outline",
-                description: "Outline one project file: its functions, classes, signals and other symbols with their line ranges, what it imports or loads, and which files depend on it. Use it to find the lines to read in a long file.",
+                description: "Outline one project file: its functions, classes, signals and other symbols with their line ranges, what it imports or loads, and which files depend on it. Use it to find the lines to read in a long file, then read_lines for just those lines. Not needed for short files: read them whole.",
                 inputSchema: { type: "object", properties: { path: { type: "string", description: "The file path (a res:// path or just the file name works when it's unique)." } }, required: ["path"] },
                 run: withIndex((index, { path }) => fileOutline(index, path))
             },
@@ -1071,13 +1071,13 @@ OTHER ENGINES: Unity physics in FixedUpdate with Rigidbody (not transform) moves
             },
             {
                 name: "architecture_review",
-                description: "Review the project's structure for technical debt: copy-pasted code blocks, the same function or class defined in several files, functions and classes nothing uses, import cycles, very large files and very long functions, and the files most of the project depends on. Use it for cleanup, refactoring or architecture questions, and after a big change to check nothing redundant was added.",
+                description: "Review the project's structure for technical debt: copy-pasted code blocks, the same function or class defined in several files, functions and classes nothing uses, import cycles, very large files and very long functions, and the files most of the project depends on. Use it for cleanup, refactoring or architecture questions, and after a big change to check nothing redundant was added. Not for finding bugs in one function: read the code instead. Its findings are leads: check each in the code before you change it.",
                 inputSchema: { type: "object", properties: { focus: { type: "string", description: "Optional: limit the findings to paths containing this text, like a folder name." } } },
                 run: withIndex((index, { focus }) => architectureReview(index, { focus }))
             },
             {
                 name: "godot_check",
-                description: "Check Godot files without running Godot: GDScript (Godot 3 code in a Godot 4 project, mixed indentation, physics in _process, frame-rate dependent movement), C# (missing partial or override, struct field assignment, float delta), shaders (missing shader_type, GLSL-isms, int literals in float math, Godot 3 hints) and res:// paths that don't exist. Run it on every Godot file you change.",
+                description: "Check Godot files without running Godot: GDScript (Godot 3 code in a Godot 4 project, mixed indentation, physics in _process, frame-rate dependent movement), C# (missing partial or override, struct field assignment, float delta), shaders (missing shader_type, GLSL-isms, int literals in float math, Godot 3 hints) and res:// paths that don't exist. Use it on every Godot file you change, before you finish. It is a static check: to catch real parse and runtime errors, also call godot_validate when it is available.",
                 inputSchema: { type: "object", properties: { path: { type: "string", description: "Optional: a file or folder to check; leave it out to check the whole project." } } },
                 run: withIndex((index, { path }) => godotCheck(index, path))
             }
