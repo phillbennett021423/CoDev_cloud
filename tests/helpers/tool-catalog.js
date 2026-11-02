@@ -4,7 +4,7 @@
 //  - serverTools():  the agent services server.js serves at /agent-tools (sandbox,
 //                    headless browser, Outlier, Godot/Blender, the art pipeline), plus
 //                    the Windows app's built-in folder tools (desktop/mcp-tools.js)
-//  - moduleTools():  the page's tool modules that also load in Node (code map, files,
+//  - moduleTools():  the page's tool modules that also load in Node (code map, project brain, files,
 //                    workers, page extraction, story studio, insurance desk, Google
 //                    apps, MEGA, notes and tables, Azgaar maps, Odds API, the phone
 //                    browser), with every tool switched on
@@ -76,6 +76,7 @@ async function moduleTools() {
     const Mega = require(path.join(UI, 'mega-cloud.js'));
     const Notes = require(path.join(UI, 'notes-tables.js'));
     const Maps = require(path.join(UI, 'azgaar-maps.js'));
+    const Brain = require(path.join(UI, 'project-brain.js'));
 
     const desk = Desk.createDeskStore(memoryStorage(), { docs: Desk.memoryDocs() });
     desk.saveSettings({ agentAccess: true });
@@ -92,6 +93,7 @@ async function moduleTools() {
     const deps = { saveFile: async () => ({ id: 'x' }), datasets: Files.createDatasetStore(), compile: () => {}, writeProjectFile: async () => '' };
     return [
         ...strip('page', CodeIntel.buildTools({ getIndex: async () => null })),
+        ...strip('page', Brain.createProjectBrain(Brain.memoryFiles(memoryStorage())).buildTools()),
         ...strip('page', Files.buildFileTools(deps)),
         ...strip('page', Tasks.buildTaskTools({ limits: () => Tasks.LIMITS.groq, datasets: deps.datasets })),
         ...strip('page', Studio.buildStudioTools(Studio.createStudioStore(memoryStorage()), {})),
