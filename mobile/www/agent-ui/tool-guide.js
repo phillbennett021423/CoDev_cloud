@@ -72,6 +72,7 @@
         { when: "Facts that may have changed (news, scores, prices, releases, docs, error messages)", tools: ["web_search", "read_webpage"], how: "search, then read the pages that matter; cite them" },
         { when: "Many items to research in the same way (every X in a list)", tools: ["wide_research"], how: "one call, then build the file from its dataset" },
         { when: "A big job with 3+ separable parts", tools: ["delegate_tasks"], how: "give each worker self-contained instructions" },
+        { when: "A long autonomous job the user hands to Q (Manus)", tools: ["start_q_task", "check_q_task"], how: "only when the user asks for Q or no other tool can do it" },
         { when: "A file the user attached in this chat", tools: ["read_attachment", "query_table"], how: "query_table for any number from a spreadsheet" },
         { when: "Screenshots or a folder of images", tools: ["read_screenshots", "read_image"], how: "read_image only for one picture's pixels" },
         { when: "A deliverable file (Excel, PowerPoint, Word, CSV, a web app)", tools: ["create_spreadsheet", "create_slides", "create_document", "create_csv", "create_web_app", "list_datasets"] },
