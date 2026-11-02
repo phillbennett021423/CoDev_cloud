@@ -325,6 +325,17 @@
         .generated-viewer-caption { font-size: 0.8rem; color: var(--text-muted); max-width: 100%; overflow-wrap: anywhere; }
         .generated-viewer-box a { text-decoration: none; padding: 6px 14px; border-radius: 6px; }
         .generated-viewer-close { position: absolute; top: 6px; right: 6px; background: none; border: none; color: var(--text-main); font-size: 1.1rem; cursor: pointer; min-width: 36px; min-height: 36px; }
+        .msg-attachments .made-file { cursor: pointer; border-color: var(--accent); color: var(--text-main); }
+        .msg-attachments .made-file:hover { background: rgba(14, 165, 233, 0.12); }
+        .made-file-box { width: min(96vw, 1000px); align-items: stretch; }
+        .made-file-box h3 { margin: 0 36px 0 0; font-size: 1rem; overflow-wrap: anywhere; }
+        .made-file-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .made-file-preview { max-height: 62vh; overflow: auto; font-size: 0.8rem; border: 1px solid var(--border-color); border-radius: 6px; }
+        .made-file-preview table { border-collapse: collapse; width: 100%; }
+        .made-file-preview th, .made-file-preview td { border: 1px solid var(--border-color); padding: 4px 6px; text-align: left; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+        .made-file-preview th { background: var(--bg-card); position: sticky; top: 0; }
+        .made-file-preview pre { margin: 0; padding: 10px; white-space: pre-wrap; }
+        .made-file-frame { width: 100%; height: 66vh; border: 1px solid var(--border-color); border-radius: 6px; background: #fff; }
         .msg-attachments .file-pill { font-size: 0.75rem; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 8px; align-self: center; }
 
         .btn-ghost { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; display: inline-flex; align-items: center; gap: 6px; }
@@ -1251,11 +1262,14 @@
     <script src="agent-ui/outlier-view.js"></script>
     <script src="media-tools.js"></script>
     <script src="agent-ui/google-apps.js"></script>
+    <script src="agent-ui/page-extract.js"></script>
     <script src="agent-ui/phone-browser.js"></script>
     <script src="agent-ui/story-studio.js"></script>
     <script src="agent-ui/insurance-desk.js"></script>
     <script src="agent-ui/odds-api.js"></script>
     <script src="agent-ui/code-intel.js"></script>
+    <script src="agent-ui/file-builder.js"></script>
+    <script src="agent-ui/task-runner.js"></script>
     <script src="agent-ui/cloud-account.js"></script>
     <script>
         // Windows desktop app (Electron): after a native alert/confirm the page's
@@ -4261,7 +4275,13 @@
                 result = await mcpHubRequest({ op: "callTool", server: tool.server, name: tool.name, arguments: args });
             }
             let text = mcpContentToText(result.content);
-            if (!text && result.structuredContent) text = JSON.stringify(result.structuredContent, null, 2);
+            // browser_extract sends every row here and only a preview as text: the rows
+            // become a dataset for create_spreadsheet / create_csv.
+            const dataset = result.structuredContent && result.structuredContent.dataset;
+            if (dataset && Array.isArray(dataset.rows) && !result.isError) {
+                const ds = agentDatasets.add(dataset);
+                text += `\nSaved all ${ds.rows.length} row(s) as dataset ${ds.id}: put it in a file with create_spreadsheet (a sheet's dataset "${ds.id}") or create_csv.`;
+            } else if (!text && result.structuredContent) text = JSON.stringify(result.structuredContent, null, 2);
             if (result.isError) logConsoleActivity(`[Tool] ${shownName} reported an error.`);
             return (result.isError ? "Error: " : "") + (text || "(no output)");
         }
@@ -4329,6 +4349,217 @@
             setTimeout(() => oddsTracker.autoTrack().catch(() => {}), 60000);
             setInterval(() => oddsTracker.autoTrack().catch(() => {}), 15 * 60000);
         });
+
+        // MADE FILES AND PARALLEL WORK (agent-ui/file-builder.js, agent-ui/task-runner.js).
+        // Files agents make are kept on this device (IndexedDB) and shown under the reply;
+        // tables they collect (browser_extract, wide_research) are datasets for those files.
+        const agentDatasets = CodevFiles.createDatasetStore();
+        const MADE_FILE_ICONS = { xlsx: "📊", pptx: "📽️", docx: "📄", csv: "🧾", webapp: "🌐" };
+        const MAX_MADE_FILES = 60;
+
+        function formatFileSize(bytes) {
+            const n = Number(bytes) || 0;
+            return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+        }
+
+        function madeFileStore(mode, work) {
+            return new Promise(resolve => {
+                try {
+                    const open = indexedDB.open("codev-files", 1);
+                    open.onupgradeneeded = () => open.result.createObjectStore("files", { keyPath: "id" });
+                    open.onerror = () => resolve(null);
+                    open.onsuccess = () => {
+                        const tx = open.result.transaction("files", mode);
+                        const request = work(tx.objectStore("files"));
+                        tx.oncomplete = () => resolve(request ? request.result ?? null : true);
+                        tx.onerror = tx.onabort = () => resolve(null);
+                    };
+                } catch (err) { resolve(null); }
+            });
+        }
+
+        async function saveMadeFile(record) {
+            const id = `file_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+            await madeFileStore("readwrite", store => store.put({ ...record, id, at: Date.now() }));
+            // Only the newest files stay; their ids are listed in localStorage.
+            let index = [];
+            try { index = JSON.parse(localStorage.getItem("codev_made_files") || "[]"); } catch (err) { /* start over */ }
+            index.push(id);
+            const old = index.splice(0, Math.max(0, index.length - MAX_MADE_FILES));
+            if (old.length) await madeFileStore("readwrite", store => { old.forEach(k => store.delete(k)); return null; });
+            try { localStorage.setItem("codev_made_files", JSON.stringify(index)); } catch (err) { /* storage full */ }
+            logConsoleActivity(`[Files] Made ${record.name} (${formatFileSize(record.bytes.length)}).`);
+            return { id };
+        }
+
+        function madeFileTools() {
+            return CodevFiles.buildFileTools({
+                saveFile: saveMadeFile,
+                datasets: agentDatasets,
+                // Only compiled to find syntax errors, never run.
+                compile: code => new Function(code),
+                writeProjectFile: (path, text) => writeWorkspaceFile(path, text)
+            });
+        }
+
+        const MADE_APP_SANDBOX = "allow-scripts allow-forms allow-modals allow-popups";
+        // A sandboxed preview has no storage of its own; apps that save to localStorage get a
+        // stand-in kept in memory, so they work instead of throwing.
+        const MADE_APP_STORAGE_SHIM = "<script>(function(){try{window.localStorage.length;}catch(e){var make=function(){var d={};return{getItem:function(k){return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null;},setItem:function(k,v){d[k]=String(v);},removeItem:function(k){delete d[k];},clear:function(){d={};},key:function(i){return Object.keys(d)[i]||null;},get length(){return Object.keys(d).length;}};};try{Object.defineProperty(window,'localStorage',{value:make()});Object.defineProperty(window,'sessionStorage',{value:make()});}catch(e2){}}})();<\/script>";
+        function madeAppPreview(html) {
+            const at = html.search(/<head[^>]*>/i);
+            return at >= 0 ? html.replace(/<head[^>]*>/i, m => m + MADE_APP_STORAGE_SHIM) : MADE_APP_STORAGE_SHIM + html;
+        }
+
+        // The file under a reply: preview it, download it, or share it on the phone.
+        async function openMadeFile(id) {
+            const saved = await madeFileStore("readonly", store => store.get(id));
+            document.getElementById("generatedImageViewer")?.remove();
+            const viewer = document.createElement("div");
+            viewer.id = "generatedImageViewer";
+            viewer.className = "generated-viewer";
+            viewer.onclick = event => { if (event.target === viewer) viewer.remove(); };
+            const box = document.createElement("div");
+            box.className = "generated-viewer-box made-file-box";
+            const close = document.createElement("button");
+            close.textContent = "✕";
+            close.className = "generated-viewer-close";
+            close.title = "Close";
+            close.onclick = () => viewer.remove();
+            box.appendChild(close);
+            if (!saved) {
+                box.appendChild(Object.assign(document.createElement("div"), { textContent: "This file is no longer saved on this device. Ask the agent to make it again." }));
+            } else {
+                const title = document.createElement("h3");
+                title.textContent = `${MADE_FILE_ICONS[saved.kind] || "📦"} ${saved.name} · ${formatFileSize(saved.bytes.length)}`;
+                const actions = document.createElement("div");
+                actions.className = "made-file-actions";
+                const button = (label, onclick, primary) => {
+                    const b = document.createElement("button");
+                    b.className = primary ? "btn-primary" : "btn-secondary";
+                    b.textContent = label;
+                    b.onclick = onclick;
+                    actions.appendChild(b);
+                    return b;
+                };
+                button(getNativeSpeechPlugin("Share") ? "⬇ Save or share" : "⬇ Download", () => saveBytesForUser(saved.name, saved.bytes, saved.mime), true);
+                const preview = document.createElement("div");
+                preview.className = "made-file-preview";
+                const p = saved.preview || {};
+                if (saved.kind === "webapp" && p.html) {
+                    const frame = document.createElement("iframe");
+                    frame.className = "made-file-frame";
+                    // Its own sandbox: the app's scripts run, but can't reach CoDev or its storage.
+                    frame.setAttribute("sandbox", MADE_APP_SANDBOX);
+                    frame.srcdoc = madeAppPreview(p.html);
+                    // A new tab holds only a sandboxed frame too: a blob page has CoDev's origin.
+                    button("▶ Open in a new tab", () => {
+                        const page = `<!doctype html><meta charset="utf-8"><title>${escapeHtml(saved.name.replace(/\.zip$/, ""))}</title><style>html,body,iframe{margin:0;border:0;width:100%;height:100%;display:block}</style><iframe sandbox="${MADE_APP_SANDBOX}" srcdoc="${escapeHtml(madeAppPreview(p.html))}"></iframe>`;
+                        const url = URL.createObjectURL(new Blob([page], { type: "text/html" }));
+                        window.open(url, "_blank", "noopener");
+                        setTimeout(() => URL.revokeObjectURL(url), 60000);
+                    });
+                    preview.style.border = "none";
+                    preview.appendChild(frame);
+                    const files = document.createElement("div");
+                    files.className = "generated-viewer-caption";
+                    files.textContent = `Files: ${(p.files || []).join(", ")}. To put it online, drag the .zip onto app.netlify.com/drop, or upload the files to GitHub Pages or any static host.`;
+                    preview.appendChild(files);
+                } else if (saved.kind === "csv" && Array.isArray(p.rows)) {
+                    const head = (p.columns || []).map(c => `<th>${escapeHtml(c)}</th>`).join("");
+                    const body = p.rows.map(r => `<tr>${(Array.isArray(r) ? r : (p.columns || []).map(c => r[c])).map(v => `<td>${escapeHtml(v ?? "")}</td>`).join("")}</tr>`).join("");
+                    preview.innerHTML = `<table>${head ? `<thead><tr>${head}</tr></thead>` : ""}<tbody>${body}</tbody></table>`;
+                } else if (saved.kind === "xlsx" && Array.isArray(p.sheets)) {
+                    preview.innerHTML = `<pre>${escapeHtml(p.sheets.map(sh => `${sh.name}: ${sh.rows} rows × ${sh.columns} columns`).join("\n"))}\n\nOpens in Excel, Google Sheets, Numbers and LibreOffice; formulas recalculate when it opens.</pre>`;
+                } else if (saved.kind === "pptx" && Array.isArray(p.slides)) {
+                    preview.innerHTML = `<pre>${escapeHtml(p.slides.map((t, i) => `${i + 1}. ${t}`).join("\n"))}\n\nOpens in PowerPoint, Google Slides and Keynote.</pre>`;
+                } else if (p.text) {
+                    preview.innerHTML = `<pre>${escapeHtml(p.text)}</pre>`;
+                }
+                box.append(title, actions, preview);
+            }
+            viewer.appendChild(box);
+            document.body.appendChild(viewer);
+        }
+
+        // Over the task's or today's spending limit: start no more workers or items.
+        function overSpend(ctx) {
+            return (taskSpendLimit > 0 && (ctx?.cost || 0) >= taskSpendLimit) || dailySpendReached();
+        }
+
+        // One model call for wide research and the workers' checks, counted toward the task's cost.
+        async function askForTask(ctx, system, user) {
+            const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages: [{ role: "system", content: system }, { role: "user", content: user }] });
+            if (ctx) ctx.cost = (ctx.cost || 0) + (message.cost || 0);
+            return message.content || "";
+        }
+
+        let workerSeq = 0;
+        function taskTools() {
+            const limits = () => CodevTasks.LIMITS[currentBackend] || CodevTasks.LIMITS.groq;
+            return CodevTasks.buildTaskTools({
+                limits,
+                shouldStop: overSpend,
+                datasets: agentDatasets,
+                previewTable: CodevPageExtract.previewTable,
+                // A worker is a whole agent run of its own (its own browser, same tools
+                // minus these two), with the planner's instructions and its one sub-task.
+                runWorker: async (task, inputs, attempt, feedback, ctx) => {
+                    const n = ++workerSeq;
+                    const child = {
+                        agentId: `${ctx.agentId || "agent"}-w${(n % 8) + 1}`,
+                        agentName: `${ctx.agentName || "Agent"} · ${task.id}`,
+                        sessionId: ctx.sessionId,
+                        sources: ctx.sources || [],
+                        changes: ctx.changes || [],
+                        commands: ctx.commands || [],
+                        toolLog: [],
+                        kind: ctx.kind,
+                        task: task.task,
+                        sandbox: ctx.sandbox,
+                        attachedImages: [],
+                        worker: true,
+                        cost: 0
+                    };
+                    // Files and pictures a worker makes go under the planner's reply.
+                    child.generatedFiles = ctx.generatedFiles = ctx.generatedFiles || [];
+                    child.generatedImages = ctx.generatedImages = ctx.generatedImages || [];
+                    const system = `${ctx.baseSystem || "You are a careful, autonomous worker agent."}\n\n[Worker] You are one of several worker agents running in parallel on parts of a bigger job. Do only the sub-task below, completely, with your tools. Don't ask the user anything: make reasonable choices and say which. Finish with the result itself, concise and complete (facts with their source URLs, file paths you changed, numbers), not a plan.`;
+                    const given = inputs.length ? `\n\n[Results of the tasks this one depends on]\n${inputs.map(i => `## ${i.id}\n${String(i.result || "").slice(0, 3000)}`).join("\n\n")}` : "";
+                    const user = `Sub-task ${task.id}: ${task.task}${task.expect ? `\n\nA finished result must contain: ${task.expect}` : ""}${given}${feedback ? `\n\n${feedback}` : ""}`;
+                    try {
+                        return await runToolLoop([{ role: "system", content: system }, { role: "user", content: user }], child);
+                    } finally {
+                        ctx.cost = (ctx.cost || 0) + child.cost;
+                        if (ctx.toolLog) child.toolLog.slice(-4).forEach(line => ctx.toolLog.push(`[${task.id}] ${line}`));
+                    }
+                },
+                verify: async (task, text, ctx) => {
+                    const reply = await askForTask(ctx, "You check a worker's result. Reply with only JSON: {\"ok\": true} if the result fully delivers what was expected, or {\"ok\": false, \"problem\": \"what is missing or wrong, in one sentence\"}.",
+                        `Expected: ${task.expect}\n\nTask: ${task.task}\n\nResult:\n${text.slice(0, 6000)}`);
+                    const parsed = CodevTasks.parseJson(reply);
+                    return parsed && typeof parsed.ok === "boolean" ? parsed : { ok: true };
+                },
+                wideDeps: ctx => {
+                    const l = limits();
+                    return {
+                        concurrency: l.wide, maxItems: l.maxItems, pageChars: l.pageChars, pagesPerItem: l.pagesPerItem,
+                        today: new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" }),
+                        shouldStop: () => overSpend(ctx),
+                        search: query => localWebSearch(query),
+                        read: async url => {
+                            const { status, html } = await fetchPageHtml(url);
+                            if (status >= 400) return "";
+                            return htmlToReadableText(html).text;
+                        },
+                        ask: (system, user) => askForTask(ctx, system, user),
+                        onProgress: state => {
+                            if (ctx.onStep) ctx.onStep(`🌐 ${state.phase}\n✓ ${state.done} of ${state.total || "?"} done${state.current.length ? `\n▶ Now: ${state.current.slice(0, 6).join(", ")}` : ""}`);
+                        }
+                    };
+                }
+            });
+        }
 
         async function buildLocalTools(ctx) {
             const tools = [
@@ -4421,6 +4652,11 @@
             for (const tool of oddsTracker.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             // The project map and checks, only for code tasks (they cost tokens on every call).
             if (ctx?.kind === "code") tools.push(...CodevCodeIntel.buildTools({ getIndex: projectCodeIndex }));
+            // Real files (Excel, PowerPoint, Word, CSV, web apps). On Groq's small free tier
+            // only for requests that want a file, or once data was collected.
+            if (currentBackend !== "groq" || CodevFiles.FILE_TASK.test(ctx?.task || "") || agentDatasets.list().length || ctx?.worker) tools.push(...madeFileTools());
+            // Parallel workers and wide research; workers don't get them, so they never nest.
+            if (ctx && !ctx.worker) tools.push(...taskTools());
             if (ctx && ctx.sandbox) return buildSandboxTools(tools, ctx);
             const mcpTools = await fetchAllMcpTools();
             // The folder connected in the page gets its own tools. When the Windows app or the
@@ -4572,6 +4808,9 @@
             if (oddsStep) return oddsStep;
             const codeStep = CodevCodeIntel.describe(name, args);
             if (codeStep) return codeStep;
+            const fileStep = CodevFiles.describe(name, args) || CodevTasks.describe(name, args);
+            if (fileStep) return fileStep;
+            if (name === "browser_extract") return `🧲 Extracting ${Array.isArray(args.fields) && args.fields.length ? args.fields.join(", ") : "the data"} from ${args.url || "the page"}${Number(args.pages) > 1 ? ` (${args.pages} pages)` : ""}`;
             if (name === "mcp_list_resources") return "📚 Listing MCP resources";
             if (name === "read_attachment") return `📄 Reading ${args.name || "the attached file"}${args.pages ? `, pages ${args.pages}` : args.query ? ` for "${args.query}"` : ""}`;
             if (name === "query_table") return `📊 ${{ stats: "Measuring", group: "Totaling", search: "Searching", columns: "Looking over" }[args.action] || "Reading rows of"} ${args.name || "the spreadsheet"}${args.group_by ? ` by ${args.group_by}` : ""}`;
@@ -4707,6 +4946,9 @@
                 try { outlierNote += "\n\n[Outlier guide]\n" + String(await guideTool.run({}, ctx)).slice(0, 16000); } catch (err) { /* the note alone */ }
             }
             if (outlierNote && messages[0]?.role === "system") messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + outlierNote };
+            if (messages[0]?.role === "system" && !ctx.baseSystem) ctx.baseSystem = baseSystem;
+            const workNotes = [tools.some(t => t.name === "create_spreadsheet") ? CodevFiles.FILE_RULES : "", tools.some(t => t.name === "delegate_tasks") ? CodevTasks.TASK_RULES : ""].filter(Boolean);
+            if (workNotes.length && messages[0]?.role === "system") messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + workNotes.join("\n") };
             const oddsNote = oddsToolNote(tools, askedText);
             if (oddsNote && messages[0]?.role === "system") messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + oddsNote };
             // Two failed Outlier calls in one request stop the tools: the agent answers with
@@ -4802,7 +5044,7 @@
                         }
                     }
                     // A researched list of legs is one line each: let a long list through whole.
-                    const limit = /^(outlier_research_list|read_screenshots)$/.test(call.function?.name) ? MAX_TOOL_RESULT_CHARS * 6 : MAX_TOOL_RESULT_CHARS;
+                    const limit = /^(outlier_research_list|read_screenshots|delegate_tasks|wide_research)$/.test(call.function?.name) ? MAX_TOOL_RESULT_CHARS * 6 : MAX_TOOL_RESULT_CHARS;
                     messages.push({ role: "tool", tool_call_id: call.id, name: call.function?.name || "unknown", content: String(result).slice(0, limit) });
                     checkpoint();
                 }
@@ -4929,7 +5171,9 @@
 
         function renderMessageAttachments(attachments) {
             if (!attachments || !attachments.length) return "";
-            return `<div class="msg-attachments">${attachments.map(a => a.generatedId && !a.thumb
+            return `<div class="msg-attachments">${attachments.map(a => a.fileId
+                ? `<button type="button" class="file-pill made-file" title="Open, preview or download ${escapeHtml(a.name)}" onclick="openMadeFile('${escapeHtml(a.fileId)}')">${MADE_FILE_ICONS[a.format] || "📦"} ${escapeHtml(a.name)} <span style="color: var(--text-muted);">${formatFileSize(a.size)}</span></button>`
+                : a.generatedId && !a.thumb
                 ? `<span class="file-pill generated-pill" onclick="openGeneratedImage('${escapeHtml(a.generatedId)}')">🎨 ${escapeHtml(a.name)}</span>`
                 : a.generatedId
                 ? `<img class="generated" src="${a.thumb}" alt="${escapeHtml(a.name)}" title="${escapeHtml(a.name)}: tap to open full size" loading="lazy" onclick="openGeneratedImage('${escapeHtml(a.generatedId)}')">`
@@ -7107,7 +7351,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 10. BE BRIEF: Say what the user needs and stop. Lead with the answer in plain words. No preamble, no restating the question, no repeating what you already said, no closing summary or offers of more help. A simple question gets one to three sentences, and most answers fit in about 150 words. Go longer only when the task needs it: code, a report or deep research, step-by-step instructions, or when the user asks for detail; even then, cut anything that doesn't help. Use lists or code blocks only when they help.
 
-11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); making and editing pictures (generate_image). For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
+11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); making and editing pictures (generate_image); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
 
 12. ENGINE-SPECIFIC RULES:${engineRules ? `\n${engineRules}` : " none for this task."}`;
             
@@ -7980,7 +8224,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                 const at = session.messages.indexOf(placeholder);
                 if (at >= 0) session.messages.splice(at, 1);
                 // Pictures generate_image made go under the reply (previews; full size in IndexedDB).
-                const made = (tools.generatedImages || []).map(({ fullUrl, ...kept }) => kept);
+                const made = (tools.generatedImages || []).map(({ fullUrl, ...kept }) => kept).concat(tools.generatedFiles || []);
                 appendMessageToSession(session, sender, text, made, sources);
                 const reply = session.messages[session.messages.length - 1];
                 if (reply && tools.toolLog.length) {
