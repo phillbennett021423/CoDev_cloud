@@ -48,5 +48,7 @@ contextBridge.exposeInMainWorld('codevDesktop', {
         const listener = (_event, update) => callback(update);
         ipcRenderer.on('codev:browser-live-event', listener);
         return () => ipcRenderer.removeListener('codev:browser-live-event', listener);
-    }
+    },
+    // Q tasks on Manus, called from the main process.
+    manus: req => ipcRenderer.invoke('codev:manus', req)
 });

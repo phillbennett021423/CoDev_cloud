@@ -11,6 +11,8 @@
 // diff review, headless browser) as MCP JSON-RPC; see agent-services.js. Pass a
 // project folder (node server.js C:\path\to\project) or set CODEV_WORKSPACE
 // to give them one. Run `npm run setup` first to check Docker and get Chromium.
+// POST /manus runs Q tasks on Manus with the key from MANUS_API_KEY, so the key
+// stays on this computer (mobile/www/manus/manus-client.js has the details).
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
@@ -23,6 +25,7 @@ const { handleWebFetch } = require('./web-fetch');
 const { createGoogleConnect } = require('./desktop/google-connect');
 const { createMegaConnect } = require('./desktop/mega-connect');
 const { createAzgaarMaps } = require('./desktop/azgaar-map');
+const { createProxyHandler: createManusProxy } = require('./mobile/www/manus/manus-client');
 
 const config = loadConfig();
 const fatal = config.problems.filter(problem => problem.level === 'error');
@@ -65,6 +68,7 @@ const MCP_CONFIG_FILE = path.join(__dirname, 'mcp-servers.json');
 // Filled in once listening, since PORT=0 means "any free port".
 let OWN_ORIGINS = [];
 let mcpHub = null;
+const manusProxy = createManusProxy({ getKey: () => config.keys.manus || '' });
 
 // The agent services need Docker's state and the data folder before they start.
 // Requests that arrive first wait for this.
@@ -102,6 +106,12 @@ function readJsonBody(req, res, onMessage, { allowEmpty = false } = {}) {
             if (!res.headersSent) sendJson(res, 500, { error: err.message });
         }
     });
+}
+
+// Q tasks spend the user's Manus credits, so only CoDev's own page may start them.
+function handleManus(req, res) {
+    if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    readJsonBody(req, res, async message => sendJson(res, 200, await manusProxy(message)));
 }
 
 // Agents' tools run commands and drive a browser, so only CoDev's own page may
@@ -230,6 +240,7 @@ function handleAnthropicRelay(req, res) {
 
 const server = http.createServer(async (req, res) => {
     if (req.url === '/mcp-hub') return handleMcpHub(req, res);
+    if (req.url === '/manus') return handleManus(req, res);
     if (req.url === '/anthropic/status') return sendJson(res, 200, { available: Boolean(anthropic.key) });
     if (req.url === '/anthropic/v1/messages') return handleAnthropicRelay(req, res);
     if (req.url === '/agent-tools') return handleAgentTools(req, res);

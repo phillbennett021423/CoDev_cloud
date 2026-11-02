@@ -112,6 +112,7 @@ async function pageTools(page) {
         window.fetchMcpResources = async () => [{ server: 'docs', uri: 'docs://readme', name: 'README' }];
         window.fetchHelperCommands = async () => [{ name: 'tests', description: 'Run the tests', argv: ['npm', 'test'] }];
         window.fetchAllMcpTools = async () => [];
+        window.qKeyAvailable = async () => true;
         window.chatAttachments = async () => [
             { name: 'report.pdf', text: 'Page 1 text' },
             { name: 'stats.xlsx', sheets: [{ name: 'Sheet1', columns: ['Player', 'Points'] }] }
