@@ -254,6 +254,10 @@ test('live view: frames, take over full screen, the agent in a background tab, h
     await s.phone.browserLive({ op: 'control', agentId: 'ada', control: { op: 'text', text: 'hats' } });
     assert.equal(await s.native.tabs.get('a:ada').inputValue('input[name=q]'), 'hats');
 
+    // A tap from the picture goes to the app as one tap, not a press and a release apart.
+    await s.phone.browserLive({ op: 'control', agentId: 'ada', control: { op: 'click', x: 10, y: 10 } });
+    assert.ok(s.native.calls.some(c => c[0] === 'touch' && c[1] === 'a:ada' && c[2] === 'tap'));
+
     await s.phone.browserLive({ op: 'control', agentId: 'ada', control: { op: 'takeover' } });
     assert.ok(s.native.calls.some(c => c[0] === 'show' && c[1] === 'a:ada'), 'Take over shows the real browser');
     assert.ok(events.some(e => e.type === 'state' && e.userControl === true));

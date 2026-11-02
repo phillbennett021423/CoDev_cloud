@@ -24,7 +24,10 @@ const VIEWPORT = { width: 1280, height: 800 };
 const BROWSER_ARGS = ['--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-sync',
     '--disable-blink-features=AutomationControlled'];
 // --enable-automation sets navigator.webdriver and the "controlled by automated software" banner.
-const IGNORED_DEFAULT_ARGS = ['--enable-automation'];
+// --hide-scrollbars is Playwright's default for headless browsers: without it the pages
+// keep their scrollbars, so the live view shows them and the user can drag them, as in
+// any browser.
+const IGNORED_DEFAULT_ARGS = ['--enable-automation', '--hide-scrollbars'];
 
 // The browser's own user agent, as a normal (not headless) window of it sends it.
 function ordinaryUserAgent(userAgent) {

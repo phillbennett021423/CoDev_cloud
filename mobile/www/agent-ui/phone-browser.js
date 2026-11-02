@@ -991,6 +991,9 @@
                 case "move": await native.touch({ tab, action: "move", x, y }); break;
                 case "down": await native.touch({ tab, action: "down", x, y }); break;
                 case "up": await native.touch({ tab, action: "up", x, y }); break;
+                // A tap in one call: a press and release sent apart can land far enough apart
+                // for the WebView to take them as a long press, which clicks nothing.
+                case "click": await native.touch({ tab, action: "tap", x, y }); break;
                 case "wheel": await run(tab, { op: "scroll", x, y, dx: Number(req.deltaX) || 0, dy: Number(req.deltaY) || 0 }); break;
                 case "keydown": await run(tab, { op: "key", key: String(req.key || "") }); break;
                 case "keyup": break;

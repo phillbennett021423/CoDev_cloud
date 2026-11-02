@@ -11,7 +11,8 @@ const { resolveAddress, checkPage, advice } = require('./page-check');
 
 const SCREENCAST = { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 };
 const MAX_BACKLOG = 300;
-const FRAME_GAP_MS = 200;
+// About 12 pictures a second: enough for scrolling to look like scrolling.
+const FRAME_GAP_MS = 80;
 const MAX_TEXT = 500;
 const DOM_BINDING = '__codevLiveDom';
 
@@ -163,9 +164,12 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
         const cast = casts.get(agentId);
         if (!cast || cast.page.isClosed()) return;
         try {
-            const { cssLayoutViewport: viewport } = await cast.cdp.send('Page.getLayoutMetrics');
+            // The picture is the whole window, scrollbars included (the layout viewport's
+            // clientWidth leaves them out, which would put every click off by their width).
+            const size = cast.page.viewportSize() || (await cast.cdp.send('Page.getLayoutMetrics')).cssLayoutViewport;
+            const width = size.width || size.clientWidth, height = size.height || size.clientHeight;
             const { data } = await cast.cdp.send('Page.captureScreenshot', { format: 'jpeg', quality: SCREENCAST.quality });
-            send(agentId, { type: 'frame', data, width: viewport.clientWidth, height: viewport.clientHeight, url: cast.page.isClosed() ? '' : cast.page.url() });
+            send(agentId, { type: 'frame', data, width, height, url: cast.page.isClosed() ? '' : cast.page.url() });
         } catch { /* page closed or navigating; the screencast sends the next frame */ }
     }
 
@@ -246,11 +250,17 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
         const x = Number(req.x) || 0;
         const y = Number(req.y) || 0;
         const button = ['left', 'right', 'middle'].includes(req.button) ? req.button : 'left';
+        // A double or triple click is the second or third press in a row, as the page sees it.
+        const clickCount = Math.max(1, Math.min(3, Number(req.clickCount) || 1));
         switch (op) {
             case 'takeover': case 'open': break;
-            case 'move': await page.mouse.move(x, y); break;
-            case 'down': await page.mouse.move(x, y); await page.mouse.down({ button }); break;
-            case 'up': await page.mouse.move(x, y); await page.mouse.up({ button }); break;
+            // A move answers with the pointer the page shows there (a hand over links, a
+            // text cursor over fields), so the picture shows the same one.
+            case 'move': await page.mouse.move(x, y); return { ok: true, cursor: await cursorAt(page, x, y) };
+            case 'down': await page.mouse.move(x, y); await page.mouse.down({ button, clickCount }); break;
+            case 'up': await page.mouse.move(x, y); await page.mouse.up({ button, clickCount }); break;
+            // A tap: press and release together, so nothing can come between them.
+            case 'click': await page.mouse.click(x, y, { button, clickCount }); break;
             case 'wheel': await page.mouse.move(x, y); await page.mouse.wheel(Number(req.deltaX) || 0, Number(req.deltaY) || 0); break;
             case 'keydown': await page.keyboard.down(String(req.key)); break;
             case 'keyup': await page.keyboard.up(String(req.key)); break;
@@ -281,6 +291,24 @@ function createLiveView({ manager, isBlockedUrl, log = console.log }) {
             default: throw new LiveError(`Unknown live control: ${op}`);
         }
         return { ok: true };
+    }
+
+    // The CSS cursor of whatever is under x, y: 'pointer', 'text', 'default', ...
+    async function cursorAt(page, x, y) {
+        try {
+            const cursor = await Promise.race([
+                page.evaluate(([px, py]) => {
+                    const el = document.elementFromPoint(px, py);
+                    if (!el) return 'default';
+                    const cursor = getComputedStyle(el).cursor;
+                    if (cursor && cursor !== 'auto') return cursor;
+                    if (el.isContentEditable || el.matches('textarea, select, input:not([type=button], [type=submit], [type=reset], [type=checkbox], [type=radio], [type=image], [type=range], [type=color], [type=file])')) return el.matches('select') ? 'default' : 'text';
+                    return 'default';
+                }, [x, y]),
+                new Promise(resolve => setTimeout(() => resolve(''), 300))
+            ]);
+            return /^[a-z-]{1,20}$/.test(cursor) ? cursor : '';
+        } catch { return ''; }   // navigating
     }
 
     function isUserControlled(agentId) {
