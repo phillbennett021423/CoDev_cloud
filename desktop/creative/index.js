@@ -358,7 +358,9 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             }
         }
         if (args.tileable) for (const f of made) { try { await py('seamless', { input: f, output: f.replace(/\.\w+$/, '.png') }); } catch (err) { warnings.push(`Tiling ${path.basename(f)}: ${err.message}`); } }
-        return text([`Made ${made.length} picture(s) in ${relOf(dir)}:`, ...made.map(f => `- ${relOf(f)}`), ...warnings.map(w => `Note: ${w}`)].join('\n'), false, await preview(made, labels));
+        const result = text([`Made ${made.length} picture(s) in ${relOf(dir)}:`, ...made.map(f => `- ${relOf(f)}`), ...warnings.map(w => `Note: ${w}`)].join('\n'), false, args.no_preview ? [] : await preview(made, labels));
+        result.structuredContent = { files: made.map(relOf), warnings };
+        return result;
     }
 
     async function inputImage(args, key = 'image') {
@@ -731,8 +733,16 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             } else made.push(tiled);
             labels.push(m.slice(0, 28));
         }
-        return text([`Made ${items.length} material concept(s)${args.pbr !== false ? ' with full PBR sets (albedo, normal, roughness, metallic, ao, height, curvature, ORM for Godot)' : ''} in ${relOf(folder('textures'))}:`,
-            ...items.map(m => `- ${slug(m, 32)}/`), ...warnings.map(w => `Note: ${w}`), 'art_weathering ages any of them from factory-fresh to ruined.'].join('\n'), false, await preview(made, labels));
+        const sets = items.map(m => {
+            const d = folder('textures', slug(m, 32));
+            const s = slug(m, 32);
+            const f = k => (isFile(path.join(d, `${s}_${k}.png`)) ? relOf(path.join(d, `${s}_${k}.png`)) : undefined);
+            return { material: m, dir: relOf(d), albedo: f('albedo') || relOf(path.join(d, `${s}_tile.png`)), normal: f('normal'), roughness: f('roughness'), metallic: f('metallic'), ao: f('ao'), curvature: f('curvature'), orm: f('orm'), emission: f('emissive') };
+        });
+        const result = text([`Made ${items.length} material concept(s)${args.pbr !== false ? ' with full PBR sets (albedo, normal, roughness, metallic, ao, height, curvature, ORM for Godot)' : ''} in ${relOf(folder('textures'))}:`,
+            ...items.map(m => `- ${slug(m, 32)}/`), ...warnings.map(w => `Note: ${w}`), 'art_weathering ages any of them from factory-fresh to ruined.'].join('\n'), false, args.no_preview ? [] : await preview(made, labels));
+        result.structuredContent = { sets, warnings };
+        return result;
     }
 
     async function artPbrMaps(args = {}) {
@@ -763,13 +773,15 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
         const res = await py('weather', { albedo, roughness: opt('roughness') || sib('roughness'), metallic: opt('metallic') || sib('metallic'), ao: opt('ao') || sib('ao'), curvature: opt('curvature') || sib('curvature'),
             out_dir: dir, name, stages, seed: Number(args.seed) || 7, overrides: args.overrides || {} });
         const albedos = Object.entries(res.stages).map(([s, f]) => [s, f.albedo]);
-        return text([`Weathered ${name} into ${stages.length} stage(s) in ${relOf(dir)}:`, ...Object.entries(res.stages).map(([s, f]) => `- ${s}: ${Object.values(f).map(relOf).join(', ')}`),
-            'Each stage has albedo, roughness, metallic and a Godot ORM map; normal and height maps stay the same.', 'overrides tunes a stage: {"battle": {"rust": 0.6, "scorch": 0.2}} (edge, scratch, rust, scorch, grime, dust, 0 to 1).'].join('\n'), false, await preview(albedos.map(a => a[1]), albedos.map(a => a[0])));
+        const result = text([`Weathered ${name} into ${stages.length} stage(s) in ${relOf(dir)}:`, ...Object.entries(res.stages).map(([s, f]) => `- ${s}: ${Object.values(f).map(relOf).join(', ')}`),
+            'Each stage has albedo, roughness, metallic and a Godot ORM map; normal and height maps stay the same.', 'overrides tunes a stage: {"battle": {"rust": 0.6, "scorch": 0.2}} (edge, scratch, rust, scorch, grime, dust, 0 to 1).'].join('\n'), false, args.no_preview ? [] : await preview(albedos.map(a => a[1]), albedos.map(a => a[0])));
+        result.structuredContent = { stages: Object.fromEntries(Object.entries(res.stages).map(([s, f]) => [s, Object.fromEntries(Object.entries(f).map(([k, v]) => [k, relOf(v)]))])) };
+        return result;
     }
 
     async function artMesh(args = {}) {
         const op = args.op;
-        if (!['inspect', 'cleanup', 'uv', 'bake', 'rig', 'retarget'].includes(op)) return text('op is inspect, cleanup, uv, bake, rig or retarget.', true);
+        if (!['inspect', 'cleanup', 'uv', 'bake', 'texture', 'rig', 'retarget'].includes(op)) return text('op is inspect, cleanup, uv, bake, texture, rig or retarget.', true);
         const blender = findBlender();
         if (!blender) return text('Blender isn\'t installed where CoDev can find it. It\'s free from blender.org; or set CODEV_BLENDER_PATH.', true);
         const r = rules();
@@ -777,7 +789,7 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
         const category = args.category || 'skin';
         const budget = R.trisBudget(r, category);
         const stem = path.basename(input).replace(/\.\w+$/, '');
-        const outName = args.output ? inProject(args.output) : path.join(folder('models'), `${R.assetName(r, { category, name: args.name || stem.replace(new RegExp(`^${category}_`), ''), variant: { cleanup: 'lod0', uv: 'uv', bake: '', rig: 'rigged', retarget: 'anim' }[op] || '' })}.glb`);
+        const outName = args.output ? inProject(args.output) : path.join(folder('models'), `${R.assetName(r, { category, name: args.name || stem.replace(new RegExp(`^${category}_`), ''), variant: { cleanup: 'lod0', uv: 'uv', bake: '', texture: 'textured', rig: 'rigged', retarget: 'anim' }[op] || '' })}.glb`);
         const work = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-mesh-'));
         const job = { op, input, result: path.join(work, 'result.json') };
         if (op !== 'inspect') job.output = outName;
@@ -787,6 +799,13 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             const size = Math.min(Number(args.size) || r.budgets.texture_size, 4096);
             Object.assign(job, { high_poly: args.high_poly ? inProject(args.high_poly, { mustExist: true, label: 'high_poly' }) : '', size, maps: args.maps, samples: Number(args.samples) || 16,
                 out_dir: path.join(folder('textures'), slug(args.name || stem, 40)), name: slug(args.name || stem, 40), cage_extrusion: Number(args.cage_extrusion) || 0.02, gpu: args.gpu !== false });
+        }
+        if (op === 'texture') {
+            const maps = args.maps && typeof args.maps === 'object' ? args.maps : null;
+            if (!maps || !maps.albedo) { fs.rmSync(work, { recursive: true, force: true }); return text('texture needs maps: {albedo, normal, roughness, metallic, ao, emission} (paths, e.g. from art_materials or art_weathering).', true); }
+            const full = {};
+            for (const [k, v] of Object.entries(maps)) if (v) full[k] = inProject(v, { mustExist: true, label: `maps.${k}` });
+            Object.assign(job, { maps: full, tile_scale: Number(args.tile_scale) || 1, name: slug(args.name || stem, 40) });
         }
         if (op === 'rig') {
             if (!args.base) { fs.rmSync(work, { recursive: true, force: true }); return text('Rigging needs base: the base character (.glb/.fbx) with its skeleton and body.', true); }
@@ -816,8 +835,10 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
         if (report.animations_made) lines.push(`Retargeted ${report.animations_made.length} animation(s) (${report.bones_matched} bones matched): ${report.animations_made.map(a => a.name).join(', ')}.${report.bones_unmatched.length ? ` Unmatched bones: ${report.bones_unmatched.join(', ')} (bone_map fixes them).` : ''}`);
         if (op === 'inspect') lines.push(JSON.stringify(report, null, 2));
         if (report.output) { const c = R.checkName(r, report.output); if (!c.ok) lines.push(`Naming: ${path.basename(report.output)} doesn't follow ${r.naming.pattern}; ${c.suggestion} would.`); }
-        if (report.output && /\.glb$/i.test(report.output)) lines.push('For Godot: godot_editor action "rescan" imports it.');
-        return text(lines.join('\n'), false, report.maps ? await preview(Object.values(report.maps), Object.keys(report.maps)) : []);
+        if (report.output && /\.glb$/i.test(report.output)) lines.push('For Godot: art_godot_skin installs it as an equippable skin, or godot_editor action "rescan" imports it.');
+        const result = text(lines.join('\n'), false, report.maps && !args.no_preview ? await preview(Object.values(report.maps), Object.keys(report.maps)) : []);
+        result.structuredContent = { ...report, output: report.output ? relOf(report.output) : undefined, budget, over_budget: report.triangles > budget };
+        return result;
     }
 
     // ---------- Layer 4: marketing ----------
@@ -997,6 +1018,163 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
         return [].concat(list || []).map(f => inProject(f, { mustExist: true, label: 'reference_audio' })).filter(f => /\.(wav|mp3|flac|ogg|m4a)$/i.test(f)).slice(0, 6);
     }
 
+    // ---------- into Godot: the skin compiler and the one-command pipeline ----------
+
+    function godotRootFor(args) {
+        const dir = args.godot_dir ? inProject(args.godot_dir, { mustExist: true, label: 'godot_dir' }) : require('../gamedev').findGodotRoot(root());
+        if (!dir || !isFile(path.join(dir, 'project.godot'))) throw new Error('No Godot project (project.godot) in the project folder or up to three folders down. Pass godot_dir if it lives elsewhere in the project.');
+        return dir;
+    }
+
+    async function artGodotSkin(args = {}) {
+        for (const k of ['model', 'name', 'character', 'slot']) if (!String(args[k] || '').trim()) return text(`art_godot_skin needs ${k}.`, true);
+        const r = rules();
+        const g = { ...R.DEFAULT_RULES.godot, ...(r.godot || {}) };
+        const godot = godotRootFor(args);
+        const inGodot = rel => {
+            const full = path.resolve(godot, rel);
+            if (!full.startsWith(godot + path.sep)) throw new Error(`${rel} would land outside the Godot project.`);
+            return full;
+        };
+        const model = inProject(args.model, { mustExist: true, label: 'model' });
+        if (!/\.(glb|gltf)$/i.test(model)) return text('model must be a .glb or .gltf (art_mesh exports .glb).', true);
+        const warnings = [];
+        const character = slug(args.character, 30);
+        const slot = slug(args.slot, 30);
+        if (!g.slots.includes(slot)) warnings.push(`"${slot}" isn't one of the studio's slots (${g.slots.join(', ')}); add it with art_rules if it's new.`);
+        const tier = Number(args.tier) || 0;
+        const rarity = args.rarity ? slug(args.rarity, 20) : (g.tiers[tier] || '');
+        const id = args.id ? slug(args.id, 60) : R.assetName({ naming: { pattern: '{category}_{name}_{variant}', case: 'snake' } }, { category: `${character} ${slot}`, name: args.name, variant: rarity });
+        const dir = inGodot(path.join(g.skins_dir, character, id));
+        fs.mkdirSync(path.join(dir, 'textures'), { recursive: true });
+        const modelDest = path.join(dir, `${id}${path.extname(model).toLowerCase()}`);
+        fs.copyFileSync(model, modelDest);
+        const G = require('./godot-skins');
+        const variants = args.variants && typeof args.variants === 'object' ? args.variants : args.maps ? { [g.default_variant]: args.maps } : {};
+        const materials = {};
+        const maxTex = r.budgets.texture_size;
+        for (const [stage, maps] of Object.entries(variants)) {
+            const copied = {};
+            for (const kind of ['albedo', 'orm', 'normal', 'emission']) {
+                if (!maps || !maps[kind]) continue;
+                const src = inProject(maps[kind], { mustExist: true, label: `${stage}.${kind}` });
+                const size = T.imageSize(src);
+                if (size && Math.max(size.width, size.height) > maxTex) warnings.push(`${stage} ${kind} is ${size.width}×${size.height}, over the ${maxTex}px texture budget.`);
+                const dest = path.join(dir, 'textures', `${slug(stage, 20)}_${kind}${path.extname(src).toLowerCase()}`);
+                fs.copyFileSync(src, dest);
+                copied[kind] = G.res(godot, dest);
+            }
+            if (!copied.albedo) { warnings.push(`Variant "${stage}" has no albedo; skipped.`); continue; }
+            const tres = path.join(dir, `${id}_${slug(stage, 20)}.tres`);
+            fs.writeFileSync(tres, G.materialTres({ ...copied, tile: Number(args.tile_scale) || 1 }));
+            materials[slug(stage, 20)] = G.res(godot, tres);
+        }
+        let icon;
+        if (args.icon) {
+            const out = path.join(dir, 'icon.png');
+            try { await py('thumb', { input: inProject(args.icon, { mustExist: true, label: 'icon' }), output: out, size: g.icon_size || 256 }); icon = G.res(godot, out); } catch (err) { warnings.push(`Icon: ${err.message}`); }
+        }
+        // Triangles and bones from Blender when it's there, checked against the budget.
+        let tris = Number(args.tris) || undefined;
+        let bones;
+        const category = args.category || 'skin';
+        if (!tris && findBlender()) {
+            const inspect = await artMesh({ op: 'inspect', input: relOf(model), category });
+            if (inspect.structuredContent) { tris = inspect.structuredContent.triangles; bones = (inspect.structuredContent.armatures || [])[0]; }
+        }
+        if (tris && tris > R.trisBudget(r, category)) warnings.push(`${tris} triangles is over the ${category} budget of ${R.trisBudget(r, category)} (art_mesh op "cleanup" fixes it).`);
+        const entry = {
+            id, name: String(args.display_name || args.name), character, slot, tier: tier || undefined, rarity: rarity || undefined,
+            model: G.res(godot, modelDest), rigged: Boolean(args.rigged), materials, default_variant: materials[g.default_variant] ? g.default_variant : Object.keys(materials)[0] || '',
+            icon, description: args.description ? String(args.description) : undefined, stats: args.stats && typeof args.stats === 'object' ? args.stats : undefined,
+            tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined, triangles: tris, bones: bones ? bones.bones : undefined,
+            created: new Date().toISOString(), updated: new Date().toISOString()
+        };
+        const manifest = inGodot(g.manifest);
+        fs.mkdirSync(path.dirname(manifest), { recursive: true });
+        fs.writeFileSync(manifest, G.upsertManifest(isFile(manifest) ? fs.readFileSync(manifest, 'utf8') : '', JSON.parse(JSON.stringify(entry))));
+        const lines = [`Installed skin "${id}" in the Godot project:`, `- model ${entry.model}`, ...Object.entries(materials).map(([s, m]) => `- ${s} material ${m}`), icon ? `- icon ${icon}` : '', `- manifest ${G.res(godot, manifest)} (${JSON.parse(fs.readFileSync(manifest, 'utf8')).skins.length} skin(s))`].filter(Boolean);
+        if (args.registry !== false) {
+            const reg = inGodot(g.registry);
+            const existing = isFile(reg) ? fs.readFileSync(reg, 'utf8') : '';
+            if (!existing || existing.includes('(made by CoDev)')) {
+                fs.mkdirSync(path.dirname(reg), { recursive: true });
+                fs.writeFileSync(reg, G.registryScript(G.res(godot, manifest)));
+            } else warnings.push(`${G.res(godot, reg)} was changed by hand, so CoDev left it alone.`);
+            const projFile = path.join(godot, 'project.godot');
+            const before = fs.readFileSync(projFile, 'utf8');
+            const after = G.addAutoload(before, g.autoload, G.res(godot, reg));
+            if (after !== before) { fs.writeFileSync(projFile, after); lines.push(`- added the ${g.autoload} autoload to project.godot`); }
+            lines.push(`In GDScript: ${g.autoload}.equip($Relay, "${id}", "${entry.default_variant || 'factory'}"). The skin goes on a child node named "${slot}" (a BoneAttachment3D works)${entry.rigged ? '; as a rigged skin it binds to the character\'s Skeleton3D instead' : ''}.`);
+        }
+        lines.push('godot_editor action "rescan" imports the new files if the editor is open.');
+        const result = text([...lines, ...warnings.map(w => `Note: ${w}`)].join('\n'));
+        result.structuredContent = { id, entry, manifest: G.res(godot, manifest), warnings };
+        return result;
+    }
+
+    async function artSkinPipeline(args = {}) {
+        const brief = String(args.brief || '').trim();
+        if (!brief) return text('art_skin_pipeline needs brief: what the skin is (e.g. "A.E.G.I.S. armour for Relay, angular plates, cyan energy seams").', true);
+        if (!args.character || !args.slot) return text('art_skin_pipeline needs character (e.g. relay) and slot (e.g. chest).', true);
+        const r = rules();
+        const name = String(args.name || brief.split(/[,.]/)[0]).slice(0, 40);
+        const variants = Array.isArray(args.variants) ? args.variants.map(String).slice(0, 6) : Array.from({ length: Math.min(Math.max(Number(args.variants) || 1, 1), 6) }, (_, i) => (Number(args.variants) > 1 ? `variant ${i + 1}` : ''));
+        const stages = [].concat(args.stages || ['factory', 'worn', 'battle']);
+        const category = args.category || 'skin';
+        const log = [];
+        const sheet = [];
+        const labels = [];
+        const step = async (label, fn) => {
+            const res = await fn();
+            if (res.isError) throw new Error(`${label}: ${textOf(res)}`);
+            log.push(`✓ ${label}`);
+            return res.structuredContent || {};
+        };
+        const textOf = res => res.content.filter(c => c.type === 'text').map(c => c.text).join(' ').slice(0, 600);
+        const installed = [];
+        try {
+            let base = null;
+            if (args.mesh) {
+                const clean = await step(`mesh cleaned to the ${category} budget`, () => artMesh({ op: 'cleanup', input: args.mesh, category, name, remesh: Boolean(args.remesh), no_preview: true }));
+                const uv = await step('UVs unwrapped', () => artMesh({ op: 'uv', input: clean.output, category, name, no_preview: true }));
+                base = uv.output;
+            }
+            for (const v of variants) {
+                const vName = v ? `${name} ${v}` : name;
+                let concept;
+                if (args.concepts !== false) {
+                    try {
+                        const c = await step(`concept for ${vName}`, () => artGenerate({ prompt: `${brief}${v ? `, ${v}` : ''}`, count: 1, category, name: vName, style: args.style, no_preview: true }));
+                        concept = c.files && c.files[0];
+                        if (concept) { sheet.push(inProject(concept)); labels.push(`${vName} concept`); }
+                    } catch (err) { log.push(`✗ concept for ${vName} (${err.message.slice(0, 200)}); carrying on`); }
+                }
+                const mats = await step(`PBR material for ${vName}`, () => artMaterials({ materials: [`${args.material || brief}${v ? `, ${v}` : ''}`], style: args.style, size: args.texture_size, no_preview: true }));
+                const set = mats.sets[0];
+                const aged = await step(`weathering (${stages.join(', ')}) for ${vName}`, () => artWeathering({ albedo: set.albedo, roughness: set.roughness, metallic: set.metallic, ao: set.ao, curvature: set.curvature, stages, name: slug(vName, 40), no_preview: true }));
+                for (const [s, f] of Object.entries(aged.stages)) { if (s === stages[stages.length - 1]) { sheet.push(inProject(f.albedo)); labels.push(`${vName} ${s}`); } }
+                if (!base) continue;
+                const maps = { albedo: set.albedo, normal: set.normal, roughness: set.roughness, metallic: set.metallic, emission: set.emission };
+                const tex = await step(`material on the mesh for ${vName}`, () => artMesh({ op: 'texture', input: base, category, name: vName, maps, tile_scale: args.tile_scale || 2, no_preview: true }));
+                let model = tex.output;
+                if (args.base) model = (await step(`rigged to ${args.base}`, () => artMesh({ op: 'rig', input: model, base: args.base, category, name: vName, no_preview: true }))).output;
+                if (args.install !== false) {
+                    const variantsMaps = Object.fromEntries(Object.entries(aged.stages).map(([s, f]) => [s, { albedo: f.albedo, orm: f.orm, normal: set.normal, emission: set.emission }]));
+                    const done = await step(`installed ${vName} in Godot`, () => artGodotSkin({ model, name: vName, character: args.character, slot: args.slot, tier: args.tier, rarity: args.rarity, variants: variantsMaps,
+                        icon: concept, rigged: Boolean(args.base), tile_scale: args.tile_scale || 2, description: brief, stats: args.stats, tags: args.tags, category, godot_dir: args.godot_dir }));
+                    installed.push(done.id);
+                }
+            }
+        } catch (err) {
+            return text([`Stopped: ${err.message}`, 'Done before that:', ...log].join('\n'), true, await preview(sheet, labels));
+        }
+        if (!args.mesh) log.push('No mesh was given, so the 3D steps were skipped: pass mesh (a .glb/.fbx/.obj of the armour, from Blender, Tripo or any image-to-3D tool) to texture, rig and install it in Godot.');
+        const result = text([`Skin pipeline for "${name}" (${variants.length} variant(s)):`, ...log, installed.length ? `Equippable in Godot: ${installed.join(', ')}` : '', R.summary(r).split('\n')[0]].filter(Boolean).join('\n'), false, await preview(sheet, labels));
+        result.structuredContent = { installed, log };
+        return result;
+    }
+
     // ---------- tool list ----------
 
     const str = (description, extra = {}) => ({ type: 'string', description, ...extra });
@@ -1027,8 +1205,8 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             inputSchema: { type: 'object', properties: { image: str('Texture picture'), name: str('Material name'), out_dir: str('Folder'), size: num('Resize to (px, square)'), seamless: bool('Make it tile first'), metallic: num('Metallic 0-1'), metallic_mask: str('Or a mask picture'), metal_from_color: bool('Guess metal from grey, bright areas'), normal_format: str('gl or dx'), normal_strength: num('Default 2'), roughness_bias: num('-0.5 to 0.5'), delight: num('0-1: remove baked-in shading') }, required: ['image'] } },
         { name: 'art_weathering', description: 'Surface weathering and age variations: turns a texture set into stages from factory-fresh to light wear, worn, battle-damaged and ruined (edge wear and chipped paint on convex edges, scratches, rust in cavities, scorch marks, grime, dust), each with albedo, roughness, metallic and ORM. Uses the curvature and AO maps next to the albedo when present.',
             inputSchema: { type: 'object', properties: { albedo: str('Albedo/base colour picture'), roughness: str('Optional'), metallic: str('Optional'), ao: str('Optional'), curvature: str('Optional'), stages: arr('Any of factory, light, worn, battle, ruined'), overrides: { type: 'object', description: '{"battle": {"rust": 0.6}}: edge, scratch, rust, scorch, grime, dust 0-1' }, name: str('Name'), out_dir: str('Folder'), seed: num('Seed') }, required: ['albedo'] } },
-        { name: 'art_mesh', description: 'Game-ready 3D in Blender (runs in the background): "inspect" counts triangles, materials, bones; "cleanup" fixes raw AI meshes (merge, loose parts, normals, optional voxel remesh) and decimates to the studio\'s triangle budget for the category; "uv" unwraps and packs; "bake" bakes PBR maps (albedo, normal, roughness, metallic, emission, AO, curvature), from a high-poly when given, into one material; "rig" puts a cosmetic mesh on a base character\'s skeleton (copies the body\'s skin weights); "retarget" moves animations from another skeleton (Mixamo, Rigify, UE names matched). Exports .glb for Godot and checks budgets and naming.',
-            inputSchema: { type: 'object', properties: { op: str('inspect, cleanup, uv, bake, rig or retarget', { enum: ['inspect', 'cleanup', 'uv', 'bake', 'rig', 'retarget'] }), input: str('.glb/.gltf/.fbx/.obj/.stl/.blend in the project'), output: str('Where to save (.glb by default)'), category: str('Budget category: character, skin, weapon, vehicle, prop, environment'), name: str('Asset name for file names'), target_tris: num('cleanup: triangle target (default: the budget)'), remesh: bool('cleanup: voxel remesh first'), remesh_resolution: num('cleanup: voxels across the longest side'), high_poly: str('bake: high-poly source'), maps: arr('bake: which maps'), size: num('bake: map size'), samples: num('bake: Cycles samples'), base: str('rig: base character with skeleton'), method: str('rig: transfer or auto'), keep_body: bool('rig: keep the base body in the file'), animations: str('retarget: file with the animations'), bone_map: { type: 'object', description: 'retarget: {target_bone: source_bone}' }, actions: arr('retarget: only these animations'), timeout_seconds: num('Default 900') }, required: ['op', 'input'] } },
+        { name: 'art_mesh', description: 'Game-ready 3D in Blender (runs in the background): "inspect" counts triangles, materials, bones; "cleanup" fixes raw AI meshes (merge, loose parts, normals, optional voxel remesh) and decimates to the studio\'s triangle budget for the category; "uv" unwraps and packs; "bake" bakes PBR maps (albedo, normal, roughness, metallic, emission, AO, curvature), from a high-poly when given, into one material; "texture" puts a tileable PBR set (maps) on the mesh, tiled by tile_scale; "rig" puts a cosmetic mesh on a base character\'s skeleton (copies the body\'s skin weights); "retarget" moves animations from another skeleton (Mixamo, Rigify, UE names matched). Exports .glb for Godot and checks budgets and naming.',
+            inputSchema: { type: 'object', properties: { op: str('inspect, cleanup, uv, bake, texture, rig or retarget', { enum: ['inspect', 'cleanup', 'uv', 'bake', 'texture', 'rig', 'retarget'] }), maps: { type: 'object', description: 'texture: {albedo, normal, roughness, metallic, ao, emission} paths' }, tile_scale: num('texture: how many times the material repeats across the UVs'), input: str('.glb/.gltf/.fbx/.obj/.stl/.blend in the project'), output: str('Where to save (.glb by default)'), category: str('Budget category: character, skin, weapon, vehicle, prop, environment'), name: str('Asset name for file names'), target_tris: num('cleanup: triangle target (default: the budget)'), remesh: bool('cleanup: voxel remesh first'), remesh_resolution: num('cleanup: voxels across the longest side'), high_poly: str('bake: high-poly source'), maps: arr('bake: which maps'), size: num('bake: map size'), samples: num('bake: Cycles samples'), base: str('rig: base character with skeleton'), method: str('rig: transfer or auto'), keep_body: bool('rig: keep the base body in the file'), animations: str('retarget: file with the animations'), bone_map: { type: 'object', description: 'retarget: {target_bone: source_bone}' }, actions: arr('retarget: only these animations'), timeout_seconds: num('Default 900') }, required: ['op', 'input'] } },
         { name: 'art_reframe', description: 'Dynamic reframing: expands a hero key-art picture to every ad and store size (vertical mobile 9:16, square, feed 4:5, widescreen 16:9, banner 1.91:1, headers...) without stretching or cropping it, painting the new space with ComfyUI outpainting (or a soft colour-matched fill without ComfyUI).',
             inputSchema: { type: 'object', properties: { image: str('Key art'), aspects: arr('e.g. ["9:16", "16:9"]'), presets: arr(`Named sizes: ${Object.keys(ASPECT_PRESETS).join(', ')}`), prompt: str('What the extended background is'), method: str('auto, ai or fill'), checkpoint: str('Model'), name: str('Name'), out_dir: str('Folder'), seed: num('Seed') }, required: ['image'] } },
         { name: 'art_cutout', description: 'Batch background removal: transparent PNG cut-outs of characters and items (rembg, on this computer), trimmed to the subject.',
@@ -1041,14 +1219,19 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             inputSchema: { type: 'object', properties: { op: str('speak, fx or sfx', { enum: ['speak', 'fx', 'sfx'] }), text: str('speak: the line'), voice: str('speak: Piper voice name or .onnx path'), speed: num('speak: 0.5-2'), input: str('fx: recording'), fx: str(`Filter: ${Object.keys(VOICE_FX).join(', ')}`), preset: str('sfx: preset'), duration: num('sfx: seconds'), pitch: num('sfx: 0.5-2'), seed: num('sfx: variation'), name: str('File name'), output: str('Where to save') }, required: ['op'] } },
         { name: 'art_voice_clone', description: 'Say a line in a specific person\'s voice from a few clean recordings (XTTS-v2, on this computer). Only for voices the user owns or has the owner\'s consent for: ask the user, then pass voice_owner and consent_confirmed true. Consent is logged. XTTS-v2 is licensed for non-commercial use.',
             inputSchema: { type: 'object', properties: { text: str('The line'), reference_audio: arr('6-30 s WAV recordings of the voice'), voice_owner: str('Whose voice it is'), consent_confirmed: bool('The owner agreed to this use'), consent_note: str('How consent was given'), language: str('e.g. en, es, fr, de, ja'), fx: str('Optional voice filter'), name: str('File name'), output: str('Where to save') }, required: ['text', 'reference_audio', 'voice_owner', 'consent_confirmed'] },
-            _meta: { 'codev/alwaysAsk': true } }
+            _meta: { 'codev/alwaysAsk': true } },
+        { name: 'art_godot_skin', description: 'Install a finished skin in the Godot 4 project as an equippable item: copies the .glb, its textures and an icon into the skins folder, writes one ORMMaterial3D per weathering stage, adds or updates the skin in the skin manifest JSON (id, name, character, slot, tier, rarity, model, materials, icon, stats, triangles), and keeps a SkinRegistry autoload that equips skins by slot (SkinRegistry.equip(character, id, variant)). Folders, slots and tiers come from the godot section of codev-studio.json.',
+            inputSchema: { type: 'object', properties: { model: str('.glb from art_mesh'), name: str('Skin name, e.g. AEGIS armour'), display_name: str('Shown in game, if different'), character: str('e.g. relay'), slot: str('e.g. helmet, chest, arms, legs, weapon, full_body'), tier: num('1-5 (studio tiers map to rarities)'), rarity: str('Or the rarity itself'), variants: { type: 'object', description: '{stage: {albedo, orm, normal, emission}} from art_weathering' }, maps: { type: 'object', description: 'Or one map set {albedo, orm, normal, emission}' }, icon: str('Picture for the icon (a concept or render)'), rigged: bool('Skinned to the character\'s skeleton (art_mesh op "rig")'), tile_scale: num('Texture tiling used on the mesh'), stats: { type: 'object', description: 'Game stats to store' }, tags: arr('Tags'), description: str('Item description'), tris: num('Triangle count if known'), category: str('Budget category (default skin)'), id: str('Fixed id'), godot_dir: str('Folder with project.godot'), registry: bool('Write the SkinRegistry autoload (default true)') }, required: ['model', 'name', 'character', 'slot'] } },
+        { name: 'art_skin_pipeline', description: 'One command from a skin brief to an equippable skin in Godot, run locally end to end: concept art per variant, a tileable PBR material per variant, the mesh cleaned to the poly budget and UV-unwrapped, the material put on it, weathering stages (factory to battle-worn), rigged onto the base character, then art_godot_skin installs it with the manifest entry. E.g. "three tier-3 epic variants of Relay\'s A.E.G.I.S. armour". Without a mesh it stops after concepts, materials and weathering.',
+            inputSchema: { type: 'object', properties: { brief: str('What the skin is'), character: str('e.g. relay'), slot: str('e.g. chest'), name: str('Skin name'), variants: { type: ['array', 'number'], items: { type: 'string' }, description: 'Variant names (e.g. ["crimson", "void", "gold"]) or a count, max 6' }, tier: num('1-5'), rarity: str('Rarity'), mesh: str('The armour/garment mesh (.glb/.fbx/.obj/.blend) in the project'), base: str('Base character with skeleton, to rig onto'), material: str('Material words if different from the brief'), stages: arr('Weathering stages (default factory, worn, battle)'), style: str('Saved style'), tile_scale: num('Texture tiling (default 2)'), texture_size: num('Map size'), remesh: bool('Voxel remesh raw AI meshes first'), concepts: bool('Make concept art (default true)'), install: bool('Install in Godot (default true)'), stats: { type: 'object', description: 'Game stats' }, tags: arr('Tags'), category: str('Budget category (default skin)'), godot_dir: str('Folder with project.godot') }, required: ['brief', 'character', 'slot'] } }
     ];
 
     const handlers = {
         art_status: artStatus, art_rules: artRules, art_models: artModels, art_generate: artGenerate, art_edit: artEdit, art_try_on: artTryOn,
         art_style: artStyle, art_captions: artCaptions, art_lora_train: artLoraTrain, art_materials: artMaterials, art_pbr_maps: artPbrMaps,
         art_weathering: artWeathering, art_mesh: artMesh, art_reframe: artReframe, art_cutout: artCutout, art_upscale: artUpscale,
-        art_playable_ad: artPlayableAd, art_audio: artAudio, art_voice_clone: artVoiceClone
+        art_playable_ad: artPlayableAd, art_audio: artAudio, art_voice_clone: artVoiceClone,
+        art_godot_skin: artGodotSkin, art_skin_pipeline: artSkinPipeline
     };
 
     async function callTool(name, args = {}) {

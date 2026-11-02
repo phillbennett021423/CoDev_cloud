@@ -15,6 +15,9 @@ file gets a JSON report (triangle counts, maps written, bones matched...). Ops:
   rig        puts a cosmetic mesh on a base character's skeleton: copies the skin
              weights from the base body (or Blender's automatic weights) and
              parents it to the armature; exports .glb with the skeleton
+  texture    puts a tileable PBR set (albedo, normal, roughness, metallic, ao,
+             emission) on the mesh as one material, tiled by tile_scale; exports
+             .glb (the tiling travels as KHR_texture_transform)
   retarget   copies the animations of one skeleton onto another by bone names
              (Mixamo, Rigify, UE and generic names are matched), baking them into
              actions the .glb carries
@@ -418,6 +421,65 @@ def op_bake():
         export(JOB["output"], [target])
 
 
+# ---------- texturing ----------
+
+def op_texture():
+    objs = import_any(JOB["input"])
+    ms = meshes(objs)
+    if not ms:
+        raise ValueError("no mesh in the input")
+    maps = JOB.get("maps") or {}
+    if not maps.get("albedo"):
+        raise ValueError("texture needs maps.albedo")
+    name = JOB.get("name", "skin")
+    mat = bpy.data.materials.new(f"{name}_mat")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = principled(mat)
+    coord = nt.nodes.new("ShaderNodeTexCoord")
+    mapping = nt.nodes.new("ShaderNodeMapping")
+    scale = float(JOB.get("tile_scale", 1.0))
+    mapping.inputs["Scale"].default_value = (scale, scale, 1.0)
+    nt.links.new(coord.outputs["UV"], mapping.inputs["Vector"])
+
+    def tex(kind, non_color):
+        path = maps.get(kind)
+        if not path or not os.path.exists(path):
+            return None
+        n = nt.nodes.new("ShaderNodeTexImage")
+        n.image = bpy.data.images.load(path)
+        if non_color:
+            n.image.colorspace_settings.name = "Non-Color"
+        nt.links.new(mapping.outputs["Vector"], n.inputs["Vector"])
+        return n
+    t = tex("albedo", False)
+    nt.links.new(t.outputs["Color"], bsdf.inputs["Base Color"])
+    for kind, sock in (("roughness", "Roughness"), ("metallic", "Metallic")):
+        t = tex(kind, True)
+        if t:
+            nt.links.new(t.outputs["Color"], bsdf.inputs[sock])
+    t = tex("normal", True)
+    if t:
+        nm = nt.nodes.new("ShaderNodeNormalMap")
+        nt.links.new(t.outputs["Color"], nm.inputs["Color"])
+        nt.links.new(nm.outputs["Normal"], bsdf.inputs["Normal"])
+    t = tex("emission", False)
+    es = socket(bsdf, "Emission Color", "Emission")
+    if t and es:
+        nt.links.new(t.outputs["Color"], es)
+        if "Emission Strength" in bsdf.inputs:
+            bsdf.inputs["Emission Strength"].default_value = 1.0
+    for ob in ms:
+        if not ob.data.uv_layers:
+            ob.data.uv_layers.new(name="UVMap")
+            unwrap(ob)
+        ob.data.materials.clear()
+        ob.data.materials.append(mat)
+    REPORT["material"] = mat.name
+    REPORT.update(stats(objs))
+    export(JOB["output"], objs)
+
+
 # ---------- rigging ----------
 
 def op_rig():
@@ -571,7 +633,7 @@ def op_inspect():
 
 try:
     clear_scene()
-    {"inspect": op_inspect, "cleanup": op_cleanup, "uv": op_uv, "bake": op_bake, "rig": op_rig, "retarget": op_retarget}[JOB["op"]]()
+    {"inspect": op_inspect, "cleanup": op_cleanup, "uv": op_uv, "bake": op_bake, "texture": op_texture, "rig": op_rig, "retarget": op_retarget}[JOB["op"]]()
 except Exception as err:
     import traceback
     REPORT["ok"] = False

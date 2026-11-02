@@ -257,6 +257,15 @@ Point CoDev at them in `.env` (see `.env.example`): `CODEV_COMFYUI_URL`, `CODEV_
 
   Each one exports a `.glb` for Godot and reports triangle, material and bone counts against the budgets.
 
+**Into Godot, in one command.**
+- `art_godot_skin` installs a finished skin in the Godot 4 project as an equippable item:
+  - It copies the `.glb`, its textures and an icon into `assets/skins/<character>/<id>/`.
+  - It writes one ORMMaterial3D per weathering stage.
+  - It adds the skin to `data/skin_manifest.json` (id, character, slot, tier and rarity, model, materials, icon, stats, triangle and bone counts).
+  - It keeps a `SkinRegistry` autoload: `SkinRegistry.equip($Relay, "relay_chest_aegis_epic", "battle")` puts the skin on the child node named after its slot (a BoneAttachment3D works). A rigged skin binds to the character's skeleton instead.
+- `art_skin_pipeline` runs the whole chain from one brief ("three tier-3 epic variants of Relay's A.E.G.I.S. armour"): concepts, a PBR material per variant, the mesh cleaned to budget and UV-unwrapped, the material put on it (`art_mesh` op "texture"), weathering stages, rigging onto the base character, and the Godot install.
+- Folders, slots and tiers are in the `godot` section of `codev-studio.json`.
+
 **Layer 4: marketing.**
 - `art_playable_ad` builds an offline, single-file MRAID playable (reveal, equip, runner or spin template) ending on a store card.
 - `art_reframe` expands key art to 9:16, 1:1, 4:5, 16:9, 1.91:1 and more without stretching it.
