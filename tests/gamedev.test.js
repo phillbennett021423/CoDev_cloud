@@ -123,15 +123,64 @@ fs.writeFileSync(process.env.CODEV_OUTPUT, 'glTF');`);
     assert.match(textOf(await service.callTool('blender_run', { script: 'x', output: '../outside.glb' })), /inside the project folder/);
     assert.match(textOf(await service.callTool('blender_run', { script: 'x', output: '.hidden/a.glb' })), /inside the project folder/);
     const tools = service.tools.filter(t => t._meta && t._meta['codev/alwaysAsk']).map(t => t.name).sort();
-    assert.deepEqual(tools, ['blender_run', 'godot_install_bridge']);
+    assert.deepEqual(tools, ['blender_run', 'checkpoint_restore', 'godot_install_bridge']);
 });
 
 test('server.js\'s agent-tools router offers the game tools', async () => {
     const dir = project();
     const router = await loadServices({ workspace: { root: dir } }, { log: () => {}, specs: [{ name: 'gamedev', module: path.join(__dirname, '..', 'agents', 'gamedev') }] });
     const list = await router.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-    assert.deepEqual(list.result.tools.map(t => t.name), ['gamedev_status', 'godot_validate', 'godot_editor', 'godot_install_bridge', 'blender_run', 'scene_assets', 'scene_dress', 'scene_edit', 'scene_learn']);
+    assert.deepEqual(list.result.tools.map(t => t.name), ['gamedev_status', 'godot_validate', 'godot_screenshot', 'godot_editor', 'godot_install_bridge', 'blender_run', 'scene_assets', 'scene_dress', 'scene_edit', 'scene_learn', 'checkpoint_create', 'checkpoint_list', 'checkpoint_restore']);
     const status = await router.handle({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'gamedev_status', arguments: {} } });
     assert.match(status.result.content[0].text, /Godot project: .*game/);
     await router.close();
+});
+
+test('godot_screenshot runs the scene with Movie Maker and returns the last frame with the errors it printed', { skip: !unix && 'needs a Unix shell for the stand-in Godot' }, async () => {
+    const dir = project();
+    fs.writeFileSync(path.join(dir, 'game', 'level.tscn'), '[gd_scene format=3]\n');
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-bin-'));
+    const godot = fakeExe(bin, 'godot', `
+const movie = args[args.indexOf('--write-movie') + 1];
+fs.writeFileSync(movie + '.args', JSON.stringify(args));
+const frames = Number(args[args.indexOf('--quit-after') + 1]);
+for (let i = 0; i < 3; i++) fs.writeFileSync(movie.replace('.png', String(i).padStart(8, '0') + '.png'), 'frame' + i);
+console.log('frames ' + frames + ' scene ' + (args[args.length - 1].startsWith('res://') ? args[args.length - 1] : 'main'));
+console.error('ERROR: Shader compilation failed.');`);
+    const service = createGameDevService({ getProjectDir: () => dir, env: { PATH: '', CODEV_GODOT_PATH: godot } });
+    const result = await service.callTool('godot_screenshot', { scene: 'res://level.tscn', seconds: 1 });
+    assert.ok(!result.isError, textOf(result));
+    assert.match(result.content[0].text, /res:\/\/level\.tscn after 1s at 1280x720: frame 3\. 1 error line\(s\):\n  ERROR: Shader compilation failed\./);
+    assert.equal(result.content[1].type, 'image');
+    assert.equal(Buffer.from(result.content[1].data, 'base64').toString(), 'frame2');
+    assert.match(textOf(await service.callTool('godot_screenshot', { scene: 'res://nope.tscn' })), /No scene res:\/\/nope\.tscn/);
+});
+
+test('checkpoints snapshot the folder outside its own git and roll back changed, deleted and new files', async () => {
+    const dir = project();
+    const data = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-data-'));
+    const service = createGameDevService({ getProjectDir: () => dir, env: { ...process.env, CODEV_DATA_DIR: data } });
+    fs.mkdirSync(path.join(dir, 'game', 'node_modules'));
+    fs.writeFileSync(path.join(dir, 'game', 'node_modules', 'big.js'), 'x');
+    const made = textOf(await service.callTool('checkpoint_create', { label: 'Before the refactor' }));
+    const id = (made.match(/^Checkpoint ([0-9a-f]+) saved \("Before the refactor", (\d+) files\)/) || [])[1];
+    assert.ok(id, made);
+    assert.ok(!fs.existsSync(path.join(dir, '.git')), 'the project gets no .git of its own');
+    // The agent's changes: an edit, a deletion and a new file.
+    fs.writeFileSync(path.join(dir, 'game', 'scripts', 'ok.gd'), 'extends Node2D\n');
+    fs.rmSync(path.join(dir, 'game', 'scripts', 'bad.gd'));
+    fs.writeFileSync(path.join(dir, 'game', 'scripts', 'new.gd'), 'extends Node\n');
+    assert.match(textOf(await service.callTool('checkpoint_list')), new RegExp(`${id}  .*  Before the refactor`));
+    const back = textOf(await service.callTool('checkpoint_restore', { id }));
+    assert.match(back, new RegExp(`Rolled back to checkpoint ${id}; removed 1 file\\(s\\) made since \\(game/scripts/new\\.gd\\)\\. To undo the rollback, restore checkpoint ([0-9a-f]+)\\.`));
+    assert.equal(fs.readFileSync(path.join(dir, 'game', 'scripts', 'ok.gd'), 'utf8'), 'extends Node\n');
+    assert.ok(fs.existsSync(path.join(dir, 'game', 'scripts', 'bad.gd')));
+    assert.ok(!fs.existsSync(path.join(dir, 'game', 'scripts', 'new.gd')));
+    assert.ok(fs.existsSync(path.join(dir, 'game', 'node_modules', 'big.js')), 'excluded folders are left alone');
+    // The rollback can itself be undone.
+    const undo = back.match(/restore checkpoint ([0-9a-f]+)\.$/)[1];
+    await service.callTool('checkpoint_restore', { id: undo });
+    assert.equal(fs.readFileSync(path.join(dir, 'game', 'scripts', 'ok.gd'), 'utf8'), 'extends Node2D\n');
+    assert.ok(fs.existsSync(path.join(dir, 'game', 'scripts', 'new.gd')));
+    assert.match(textOf(await service.callTool('checkpoint_restore', { id: 'zz' })), /checkpoint id/);
 });

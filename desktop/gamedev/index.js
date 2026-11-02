@@ -3,6 +3,9 @@
 // Blender run in the background with bpy scripts. Assets go from Blender to Godot as
 // .glb files saved into the project folder, which the editor imports.
 //
+// Also here: godot_screenshot (run a scene with Movie Maker and return the last frame)
+// and the project checkpoints (checkpoints.js).
+//
 //   createGameDevService({ getProjectDir, log, env }) ->
 //     { name, tools, callTool(name, args), status(), handleMcp(message, next), close() }
 //
@@ -22,6 +25,7 @@ const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
 const { createSceneDressing } = require('./scene-dressing');
+const { createCheckpoints } = require('./checkpoints');
 
 const PLUGIN_DIR = path.join(__dirname, 'godot-plugin', 'addons', 'codev_bridge');
 const BRIDGE_FILE = '.codev_bridge.json';
@@ -331,8 +335,41 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
         return text(lines.join('\n'), result.code !== 0 || result.timedOut);
     }
 
+    // Movie Maker mode writes every frame as a PNG at a fixed frame rate; the last one is
+    // the picture. It needs a real renderer, so a window opens for the run.
+    async function screenshot({ scene = '', seconds = 2, resolution = '1280x720' } = {}) {
+        const root = godotRoot();
+        if (!root) return text('No Godot project (project.godot) in the project folder.', true);
+        const godot = findGodot(env);
+        if (!godot) return text('Godot isn\'t installed where CoDev can find it. The user can set CODEV_GODOT_PATH to their Godot 4 executable, or put godot on the PATH.', true);
+        const secs = Math.min(Math.max(Number(seconds) || 2, 0.5), 20);
+        const size = /^\d{2,4}x\d{2,4}$/.test(String(resolution)) ? String(resolution) : '1280x720';
+        const out = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-shot-'));
+        try {
+            const args = ['--path', root, '--write-movie', path.join(out, 'frame.png'), '--fixed-fps', '30', '--quit-after', String(Math.round(secs * 30)), '--resolution', size, '--disable-vsync'];
+            if (scene) {
+                const file = insideProject(root, scene);
+                if (!file || !file.endsWith('.tscn') || !fs.existsSync(file)) return text(`No scene ${scene} in the project. Pass a .tscn path like res://levels/main.tscn, or leave scene out for the main scene.`, true);
+                args.push(toRes(root, file));
+            }
+            const result = await run(godot, args, { cwd: root, timeoutMs: (secs + 90) * 1000, env: childEnv(env) });
+            const problems = godotProblems(result.output);
+            const frames = fs.readdirSync(out).filter(f => /\.png$/i.test(f)).sort();
+            if (!frames.length) return text(`Godot didn't write a frame (exit ${result.code}${result.timedOut ? ', timed out' : ''}).${problems.length ? `\nErrors:\n  ${problems.slice(0, 30).join('\n  ')}` : `\n${tail(result.output, 1500)}`}`, true);
+            const png = fs.readFileSync(path.join(out, frames[frames.length - 1]));
+            return { content: [
+                { type: 'text', text: `${scene ? toRes(root, insideProject(root, scene)) : 'Main scene'} after ${secs}s at ${size}: frame ${frames.length}. ${problems.length ? `${problems.length} error line(s):\n  ${problems.slice(0, 30).join('\n  ')}` : 'No errors printed.'}` },
+                { type: 'image', data: png.toString('base64'), mimeType: 'image/png' }
+            ] };
+        } finally {
+            fs.rmSync(out, { recursive: true, force: true });
+        }
+    }
+
     // Scene dressing: the asset library, placement rules and learning from the user's edits.
     const dressing = createSceneDressing({ getRoot: () => godotRoot() || getProjectDir(), bridge, log });
+    // Checkpoints of the whole project folder, with one-step rollback (checkpoints.js).
+    const checkpoints = createCheckpoints({ getRoot: () => getProjectDir() || godotRoot(), env });
 
     const tools = [
         {
@@ -347,6 +384,16 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
             inputSchema: { type: 'object', properties: {
                 files: { type: 'array', items: { type: 'string' }, description: 'Scripts to check (res:// or project-relative paths). Leave it out to check every script (up to 60).' },
                 run_seconds: { type: 'number', description: 'Optional: also run the main scene headless for this many seconds (up to 60) and report errors it prints.' }
+            } },
+            annotations: { readOnlyHint: true }
+        },
+        {
+            name: 'godot_screenshot',
+            description: 'Run the user\'s Godot game (the main scene, or another scene) for a moment with Godot\'s Movie Maker and return the last frame as a picture, plus any errors it printed, so you can see whether a change looks right: a camera, UI layout, a shader, lighting, a placed model. It opens a game window briefly on the user\'s computer (real rendering can\'t run headless). Use it after a visual change, once godot_validate passes; don\'t use it to check logic or parse errors (godot_validate is faster for those), and don\'t call it again without changing something first.',
+            inputSchema: { type: 'object', properties: {
+                scene: { type: 'string', description: 'Optional: the scene to run, as a res:// or project-relative path to a .tscn. Leave it out for the main scene.' },
+                seconds: { type: 'number', description: 'Optional: how long to run before the picture is taken (default 2, up to 20), so animations and physics settle.' },
+                resolution: { type: 'string', description: 'Optional: the window size as WIDTHxHEIGHT, like 1280x720 (the default).' }
             } },
             annotations: { readOnlyHint: true }
         },
@@ -379,7 +426,8 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
             }, required: ['script'] },
             _meta: { 'codev/alwaysAsk': true }
         },
-        ...dressing.tools
+        ...dressing.tools,
+        ...checkpoints.tools
     ];
 
     async function callTool(name, args = {}) {
@@ -395,9 +443,11 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
             }
             if (name === 'godot_validate') return await validate(args);
             if (name === 'godot_editor') return await editor(args);
+            if (name === 'godot_screenshot') return await screenshot(args);
             if (name === 'godot_install_bridge') return await installBridge();
             if (name === 'blender_run') return await blenderRun(args);
             if (dressing.names.includes(name)) return await dressing.callTool(name, args);
+            if (checkpoints.names.includes(name)) return await checkpoints.callTool(name, args);
             return text(`Unknown tool: ${name}`, true);
         } catch (err) {
             return text(err.message || String(err), true);

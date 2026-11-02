@@ -902,6 +902,7 @@
                                 <option value="medium">Medium</option>
                                 <option value="long">Long</option>
                             </select>
+                            <button id="undoTaskBtn" class="tool-btn" onclick="rollBackLastTask()" title="Undo the last coding task: put the project folder back as it was before it" style="display: none;">↩</button>
                             <button class="send-btn" onclick="sendChatMessage()">Send Task</button>
                         </div>
                     </div>
@@ -1095,7 +1096,7 @@
                         <option value="general">General: adapts to any task or domain</option>
                         <option value="architect">Architect: plans and implements</option>
                         <option value="swarm">Swarm: builds on the team's changes</option>
-                        <option value="self_healing">Self-Healing: runs, verifies and fixes</option>
+                        <option value="self_healing">QA / Self-Healing: independent reviewer, minimal fixes</option>
                         <option value="game_engine">Game Engine: Godot, shaders, 3D math, physics</option>
                         <option value="architecture">Architecture: finds duplication and dead code, refactors</option>
                     </select>
@@ -1416,6 +1417,8 @@
     <script src="agent-ui/odds-api.js"></script>
     <script src="agent-ui/prop-model.js"></script>
     <script src="agent-ui/code-intel.js"></script>
+    <script src="agent-ui/project-brain.js"></script>
+    <script src="agent-ui/qa-loop.js"></script>
     <script src="agent-ui/file-builder.js"></script>
     <script src="agent-ui/task-runner.js"></script>
     <script src="agent-ui/tool-guide.js"></script>
@@ -3871,7 +3874,7 @@
                 const result = await browserRpc("tools/list", {});
                 // server.js's /agent-tools also has the sandbox's tools (offered in sandbox mode);
                 // these are the browser's, the Outlier pipeline's and the Godot/Blender ones, called the same way.
-                tools = (result.tools || []).filter(t => /^(browser|outlier|godot|blender|gamedev|art|scene)_/.test(t.name)).map(t => ({ ...t, transport: "browser" }));
+                tools = (result.tools || []).filter(t => /^(browser|outlier|godot|blender|gamedev|art|scene|checkpoint)_/.test(t.name)).map(t => ({ ...t, transport: "browser" }));
             } catch (err) { /* an older server.js without /agent-tools */ }
             browserMcpCache = { at: Date.now(), tools };
             return tools;
@@ -4972,6 +4975,8 @@
             if (!ctx || ctx.kind === "props" || PROPS_TASK.test(ctx.task || "")) for (const tool of propModel.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             // The project map and checks, only for code tasks (they cost tokens on every call).
             if (ctx?.kind === "code") tools.push(...CodevCodeIntel.buildTools({ getIndex: projectCodeIndex }));
+            // The project's decisions, templates and data sources (codev/ in the project).
+            if (ctx?.kind === "code") tools.push(...(await projectBrain()).buildTools());
             // Real files (Excel, PowerPoint, Word, CSV, web apps). On Groq's small free tier
             // only for requests that want a file, or once data was collected.
             if (currentBackend !== "groq" || CodevFiles.FILE_TASK.test(ctx?.task || "") || agentDatasets.list().length || ctx?.worker) tools.push(...madeFileTools());
@@ -5167,6 +5172,8 @@
             if (oddsStep) return oddsStep;
             const modelStep = propModel.describe(name, args);
             if (modelStep) return modelStep;
+            const brainStep = CodevProjectBrain.describe(name, args);
+            if (brainStep) return brainStep;
             const codeStep = CodevCodeIntel.describe(name, args);
             if (codeStep) return codeStep;
             const fileStep = CodevFiles.describe(name, args) || CodevTasks.describe(name, args);
@@ -8367,16 +8374,17 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 - Use the tools when they help: search the web for facts you aren't sure of, read the connected files when the task is about them, and make changes with the write tools when asked.
 - Answer directly and completely, say what you verified and what you assumed, and ask only when the task is truly ambiguous.` },
             architect: { label: "Architect", prompt: `ROLE: ARCHITECT, the autonomous lead developer on the user's project. You are not a chat assistant: you do the work.
-- Plan briefly, then execute: locate the files the task touches, read what you need, make the edits with the write/edit tools, and run the code, tests or build when a command tool exists.
+- Plan first, then execute: locate the files the task touches and read what you need, then before your first edit write a short plan (the files you will change, the data structures and signals involved, how you will verify it). Follow the [Project decisions] and [Project snippets] in your prompt. Then make the edits with the write/edit tools, and run the code, tests or build when a command tool exists.
+- When you settle how something will be built (a data structure, a pattern, a folder layout), record it with record_decision so later sessions follow it.
 - Design changes to fit the project's existing structure, naming and style.
 - Finish with a short report: what you changed file by file, what you ran and its result, and anything the user still has to do.` },
             swarm: { label: "Swarm", prompt: `ROLE: SWARM ENGINEER, one of a team of developer agents working on the same project in turn.
 - Read the [Swarm progress] notes from the agents before you. Build on their changes; never redo or revert them without a concrete reason.
 - Take the part of the task that is still open (implementation, missing files, wiring, tests, docs), make those edits yourself with the tools, and verify them.
 - Report only what you changed and verified.` },
-            self_healing: { label: "Self-Healing", prompt: `ROLE: SELF-HEALING ENGINEER. You verify and repair code autonomously.
+            self_healing: { label: "QA / Self-Healing", prompt: `ROLE: QA ENGINEER, the independent reviewer. Find what's broken and write the minimal patch. You verify and repair code; you don't redesign it.
 - Re-read every changed file. Run the tests, build, linter or the program itself when a command tool exists, and read the errors.
-- Fix each failure at its root with the edit tools, then run again. Repeat until it passes. After 3 failed fixes for the same error, step back and try a different approach.
+- Fix each failure at its root with the smallest edit that makes it right, then run again. Don't refactor, restyle or add features. After 3 failed fixes for the same error, step back and try a different approach.
 - For Godot files, run godot_check on every changed script, scene and shader, and run Godot headless when a command tool exists (the engine guide says how).
 - Report what you checked, what failed, what you fixed and the final result. If no command tool exists, say the code was checked by reading only.` },
             game_engine: { label: "Game Engine", prompt: `ROLE: GAME ENGINE ENGINEER, a specialist in Godot 4 (GDScript and C#), shaders, 3D math, physics loops and frame-data state machines. You do the work on the user's game project.
@@ -8493,6 +8501,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                     label: server ? `the project folder served by MCP server "${server}"` : "the project folder chosen in the Windows app",
                     list: async () => (await callMcpTool(byName.list_files, {})).split("\n").filter(line => line && !/^(\[|Error: |The folder is empty)/.test(line)),
                     read: path => callMcpTool(byName.read_file, { path }),
+                    write: byName.write_file ? (path, content) => callMcpTool(byName.write_file, { path, content }) : null,
                     canWrite: Boolean(byName.write_file || byName.edit_file),
                     writeTools: `${prefix}edit_file and ${prefix}write_file`,
                     canRun
@@ -8506,6 +8515,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                 list: async () => names,
                 read: async path => (path === activeSelectedFile ? document.getElementById("fileEditorContent").value : loadedProjectFiles[path]),
                 contents: loadedProjectFiles,
+                // CoDev's own notes (codev/) are saved without asking, like save_memory.
+                write: (path, content) => writeWorkspaceFile(path, content, { asked: true }),
                 canWrite: true,
                 writeTools: "edit_workspace_file and write_workspace_file",
                 canRun
@@ -8619,6 +8630,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             }
             // A small project goes in whole; a bigger one sends the files that match.
             const ranked = codeFiles
+                // codev/ (templates, decisions, pulled data) reaches the prompt only through the project brain, which picks what fits.
+                .filter(path => !path.startsWith(`${CodevProjectBrain.DIR}/`))
                 .map(path => ({ path, score: scoreWorkspaceFile(path, requestLower, terms, ws.contents) + (defining.get(path) || 0) }))
                 .filter(r => r.score > 0 || codeFiles.length <= MAX_CONTEXT_FILES)
                 .sort((a, b) => b.score - a.score)
@@ -9184,7 +9197,9 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                 const context = kind === "code" ? await buildWorkspaceContext(task, ws) : { text: "", files: [], total: 0 };
                 if (ws && kind === "code") logConsoleActivity(`[Workspace] ${agent.name}: tree of ${context.total} files${context.files.length ? ` + ${context.files.join(", ")}` : ""}.`);
                 placeholder.text = "Working on it…";
-                const response = await callAI(agentSystemPrompt(agent, workspaceNote(ws), memory, kind, task), task + context.text + extraContext + notes, { ...aiOptions, tools });
+                // The project's decisions, the templates that fit this task, lessons from earlier runs.
+                const brain = kind === "code" && ws ? await projectBrainContext(task, [...context.files, ...recentWorkspaceFiles].filter(p => !p.startsWith(`${CodevProjectBrain.DIR}/`)), tools) : "";
+                const response = await callAI(agentSystemPrompt(agent, workspaceNote(ws), [memory, brain].filter(Boolean).join("\n\n"), kind, task), task + context.text + extraContext + notes, { ...aiOptions, tools });
                 finish(title ? title(agent) : `🤖 ${agent.name}`, response, tools.sources);
                 setAgentState(agent.id, "success");
                 return { ok: true, agent, response, changes: tools.changes, commands: tools.commands };
@@ -9195,29 +9210,155 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             }
         }
 
-        // After agents changed files, the Self-Healing agent re-reads them, runs what can
-        // be run and fixes what fails. A reply with code but no file changes gets a
-        // read-through audit instead; anything else needs no pass.
+        // THE PROJECT'S BRAIN (agent-ui/project-brain.js): architecture decisions, the user's
+        // templates, data sources and the run log, kept as files in codev/ inside the project
+        // so they last across sessions and travel with it. With no writable project they are
+        // kept on this device instead, per project.
+        async function projectBrainFiles() {
+            const ws = await getWorkspace(null).catch(() => null);
+            if (ws && ws.write) return { listFiles: () => ws.list(), readFile: async path => {
+                const text = await ws.read(path);
+                return typeof text === "string" && !/^(Error: |\[)/.test(text) ? text : null;
+            }, writeFile: ws.write };
+            return CodevProjectBrain.memoryFiles(localStorage, `codev_project_brain:${ws ? ws.label : "no-project"}`);
+        }
+        async function projectBrain() {
+            const files = await projectBrainFiles();
+            return CodevProjectBrain.createProjectBrain({ ...files,
+                fetchUrl: readWebpage,
+                listHelpers: fetchHelperCommands,
+                runHelper: async name => runHelperCommand((await fetchHelperCommands()).find(c => c.name === name), {}) });
+        }
+        // The block for an agent's prompt, and a line in its progress saying which templates went in and why.
+        async function projectBrainContext(task, files, tools) {
+            try {
+                const brainFiles = await projectBrainFiles();
+                const brain = CodevProjectBrain.createProjectBrain(brainFiles);
+                const { text, templates } = await brain.promptContext(task, files);
+                const lessons = CodevQaLoop.runLessons(CodevQaLoop.parseRunLog(await brainFiles.readFile(CodevQaLoop.RUN_LOG_FILE) || ""), task, files);
+                if (templates.length) {
+                    const line = `📚 Templates: ${templates.map(t => `${t.name} (${t.reasons.join(", ")})`).join("; ")}`;
+                    logConsoleActivity(`[Templates] ${line.slice(3)}`);
+                    if (tools?.toolLog) tools.toolLog.push(line);
+                }
+                return [text, lessons].filter(Boolean).join("\n\n");
+            } catch (err) {
+                logConsoleActivity(`[Project brain] ${err.message}`);
+                return "";
+            }
+        }
+
+        // ↩ CHECKPOINTS: before a coding task changes the project, CoDev snapshots the folder
+        // (checkpoint_create, desktop/gamedev/checkpoints.js); ↩ puts it back.
+        let lastTaskCheckpoint = null;
+        async function takeTaskCheckpoint(task) {
+            const tool = (await fetchBrowserMcpTools()).find(t => t.name === "checkpoint_create");
+            if (!tool) return null;
+            try {
+                const result = await callMcpTool(tool, { label: `Before: ${task.slice(0, 120)}` }, { agentId: "checkpoints", agentName: "Checkpoints" });
+                const id = (String(result).match(/^Checkpoint ([0-9a-f]+) saved/) || [])[1];
+                if (!id) { logConsoleActivity(`[Checkpoint] ${String(result).slice(0, 200)}`); return null; }
+                lastTaskCheckpoint = { id, task };
+                document.getElementById("undoTaskBtn").style.display = "";
+                document.getElementById("undoTaskBtn").title = `Undo "${task.slice(0, 60)}": put the project back to checkpoint ${id}`;
+                logConsoleActivity(`[Checkpoint] Saved ${id} before this task. ↩ rolls the project back to it.`);
+                return id;
+            } catch (err) {
+                logConsoleActivity(`[Checkpoint] ${err.message}`);
+                return null;
+            }
+        }
+        async function rollBackLastTask() {
+            if (!lastTaskCheckpoint) return;
+            const { id, task } = lastTaskCheckpoint;
+            if (!await askPermission(`Undo the last coding task ("${task.slice(0, 100)}")?\n\nThe project folder goes back to checkpoint ${id}: changed files come back and files made since are removed. The state right now is saved first, so this can be undone too.`)) return;
+            try {
+                const reply = await browserRpc("tools/call", { name: "checkpoint_restore", arguments: { id }, _meta: { "codev/agentId": "checkpoints", "codev/agentName": "Checkpoints" } });
+                const text = mcpContentToText(reply.content);
+                const session = chatSessions.find(s => s.id === activeChatId);
+                if (session) appendMessageToSession(session, reply.isError ? "❌ Rollback" : "↩ Rolled back", text);
+                if (!reply.isError) { lastTaskCheckpoint = null; document.getElementById("undoTaskBtn").style.display = "none"; }
+                if (connectedDirectoryHandle) await scanConnectedDirectory().catch(() => {});
+            } catch (err) {
+                logConsoleActivity(`[Checkpoint] ${err.message}`);
+            }
+        }
+
+        // THE ENGINE GATE: CoDev itself runs the Godot checks on the Godot files agents
+        // changed (agent-ui/qa-loop.js): godot_check, and Godot headless when it's installed.
+        async function runEngineGateFor(changes, sandbox) {
+            const validateTool = sandbox ? null : (await fetchBrowserMcpTools()).find(t => t.name === "godot_validate");
+            return CodevQaLoop.runEngineGate({
+                changes,
+                staticCheck: async path => CodevCodeIntel.godotCheck(await projectCodeIndex({ changes }), path),
+                // With sandbox review on, the edits aren't on disk yet: only the static check applies.
+                validate: validateTool ? async files => {
+                    const reply = await browserRpc("tools/call", { name: "godot_validate", arguments: { files }, _meta: { "codev/agentId": "qa", "codev/agentName": "QA" } });
+                    return { text: mcpContentToText(reply.content), isError: Boolean(reply.isError) };
+                } : null
+            });
+        }
+
+        // After agents changed files, an independent QA agent checks and repairs them, from a
+        // clean context: the task, the changed files, what was run, the engine checks CoDev
+        // ran and the coder's claims to verify. Not the chat, web results or the coder's
+        // reasoning. Godot changes loop until the engine checks pass (up to 3 QA rounds).
+        // A reply with code but no file changes gets a read-through audit instead.
         async function runSelfHealingPass(session, results, task, opts) {
             const done = results.filter(r => r.ok);
             if (!done.length || done.every(r => agentDevRole(r.agent) === "self_healing")) return null;
             const lead = done[0].agent;
             const healer = agents.find(a => agentDevRole(a) === "self_healing")
-                || { id: lead.id, name: "Self-Healing", devRole: "self_healing", instructions: "", memory: "" };
+                || { id: lead.id, name: "QA", devRole: "self_healing", instructions: "", memory: "" };
+            // The reviewer's clean slate: no chat history, pictures, web snippets or memory.
+            const clean = { dispatch: opts.dispatch, kind: "code", aiOptions: {}, extraContext: "", webSources: [], memory: "" };
             const changes = [...new Set(done.flatMap(r => r.changes))];
             const commands = done.flatMap(r => r.commands);
-            const reports = "\n\n[Reports]\n" + done.map(r => `${r.agent.name}: ${r.response.slice(0, 3000)}`).join("\n\n");
             if (changes.length) {
-                logConsoleActivity(`[Self-Healing Loop] Verifying ${changes.length} changed file(s): ${changes.join(", ")}`);
-                const notes = `\n\n[Changes to verify]\n${changes.join("\n")}` + (commands.length ? `\n\n[Commands already run]\n${commands.join("\n")}` : "") + reports;
-                return runAgentStep(session, healer, `Verify and repair the changes just made for this task: ${task}`, { ...opts, kind: "code", notes, title: a => `🛡️ ${a.name}` });
+                logConsoleActivity(`[QA] Checking ${changes.length} changed file(s) from a clean context: ${changes.join(", ")}`);
+                let gate = await runEngineGateFor(changes, Boolean(opts.dispatch));
+                const failures = [];
+                if (gate.applies) logConsoleActivity(`[QA] Engine checks (${gate.ran.join(", ")}): ${gate.ok ? "passed" : "failed"}.`);
+                let result = null;
+                for (let round = 1; round <= CodevQaLoop.GATE_ROUNDS; round++) {
+                    if (gate.applies && !gate.ok) failures.push(gate.report.split("\n").filter(l => /\[error\]|✗|SCRIPT ERROR|Parse Error|ERROR:/.test(l)).slice(0, 3).join(" "));
+                    const claims = round === 1 ? done.map(r => `${r.agent.name}: ${r.response}`) : [`QA round ${round - 1}: ${result ? result.response : ""}`];
+                    const brief = CodevQaLoop.qaBrief({ task, changes: [...new Set([...changes, ...(result ? result.changes : [])])], commands, gate, claims, round });
+                    result = await runAgentStep(session, healer, brief, { ...clean, title: a => `🛡️ ${a.name}${round > 1 ? ` (round ${round})` : ""}` });
+                    if (!gate.applies) break;
+                    gate = await runEngineGateFor([...changes, ...result.changes], Boolean(opts.dispatch));
+                    logConsoleActivity(`[QA] Engine checks after round ${round}: ${gate.ok ? "passed" : "still failing"}.`);
+                    if (gate.ok) break;
+                }
+                if (gate.applies) appendMessageToSession(session, gate.ok ? "🎮 Engine checks passed" : "⚠️ Engine checks still failing", gate.ok
+                    ? `CoDev ran ${gate.ran.join(" and ")} on ${gate.files.length} changed Godot file(s): no errors.`
+                    : `After ${CodevQaLoop.GATE_ROUNDS} QA rounds, ${gate.ran.join(" and ")} still report:\n\n${gate.report}`);
+                await appendRunLog({ task, files: [...changes, ...(result ? result.changes : [])], failures, fixes: failures.length && result ? result.response : "",
+                    outcome: !gate.applies ? (result && result.ok ? "QA reviewed" : "QA failed to run") : gate.ok ? (failures.length ? "engine checks pass after QA fixes" : "engine checks passed") : "engine checks still failing" });
+                return result;
             }
             if (!done.some(r => r.response.includes("```"))) {
-                logConsoleActivity("[Self-Healing Loop] No file changes or code to check.");
+                logConsoleActivity("[QA] No file changes or code to check.");
                 return null;
             }
-            logConsoleActivity("[Self-Healing Loop] Auditing the code in the reply for compiler traps and syntax bugs...");
-            return runAgentStep(session, healer, `Audit the code in these replies to "${task}" for syntax errors, API mismatches and claims the sources don't support. Reply with the corrected code, or say it is clean. Don't change project files for this.`, { ...opts, kind: "code", notes: reports, title: a => `🛡️ ${a.name} (code audit)` });
+            logConsoleActivity("[QA] Auditing the code in the reply for compiler traps and syntax bugs...");
+            const reports = "\n\n[Code to audit]\n" + done.map(r => `${r.agent.name}: ${r.response.slice(0, 6000)}`).join("\n\n");
+            return runAgentStep(session, healer, `Audit the code in these replies to "${task}" for syntax errors, API mismatches and claims the sources don't support. Reply with the corrected code, or say it is clean. Don't change project files for this.`, { ...clean, notes: reports, title: a => `🛡️ ${a.name} (code audit)` });
+        }
+
+        // codev/runlog.md: what each coding task changed, what failed and what fixed it.
+        // Later tasks on the same files get the failures as lessons (CodevQaLoop.runLessons).
+        async function appendRunLog(entry) {
+            try {
+                const files = await projectBrainFiles();
+                const before = await files.readFile(CodevQaLoop.RUN_LOG_FILE) || "# CoDev run log\n\nOne entry per coding task: what failed and what fixed it. Agents read the relevant failures before similar work.\n";
+                // The newest 200 entries are kept.
+                const parts = before.split(/^(?=## )/m);
+                const kept = parts.length > 201 ? [parts[0], ...parts.slice(-200)].join("") : before;
+                await files.writeFile(CodevQaLoop.RUN_LOG_FILE, `${kept.replace(/\s*$/, "\n")}\n${CodevQaLoop.runLogEntry({ date: new Date().toISOString().slice(0, 10), ...entry })}`);
+            } catch (err) {
+                logConsoleActivity(`[Run log] ${err.message}`);
+            }
         }
 
         // ▶ Resume on an interrupted run's note (or "continue" typed after one): that agent
@@ -9363,6 +9504,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
 
             // 🧪 Sandbox: the agents' edits are staged and reviewed (finishSandboxDispatch) before they are saved.
             const dispatch = sandboxModeActive() ? CodevAgentClient.createSandboxDispatch(agentInfra.client, { task: userText }) : null;
+            // ↩ A coding task that writes straight to disk gets a checkpoint first (sandbox edits are reviewed instead).
+            if (requestKind === "code" && !dispatch) await takeTaskCheckpoint(userText);
             const stepOptions = { extraContext: injectedContext, aiOptions, webSources, memory: collectiveMemory, dispatch, kind: requestKind };
 
             if (isBackground) {
