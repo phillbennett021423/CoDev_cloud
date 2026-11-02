@@ -1,0 +1,137 @@
+name: Private build with built-in keys
+
+# Builds the Android app and the Windows installer with the owner's keys built in,
+# for the people the owner shares CoDev with. Run it by hand (Actions > Private build
+# with built-in keys > Run workflow). It never publishes a release: the files are
+# zipped with the PRIVATE_BUILD_PASSWORD secret, because anyone signed in to GitHub
+# can download this public repo's workflow files. Unzip with 7-Zip and send the APK
+# or installer to those people directly.
+on:
+  workflow_dispatch:
+
+env:
+  CODEV_SHARED_GROQ: ${{ secrets.CODEV_SHARED_GROQ }}
+  CODEV_SHARED_OPENROUTER: ${{ secrets.CODEV_SHARED_OPENROUTER }}
+  CODEV_SHARED_ANTHROPIC: ${{ secrets.CODEV_SHARED_ANTHROPIC }}
+  CODEV_SHARED_GEMINI: ${{ secrets.CODEV_SHARED_GEMINI }}
+  CODEV_SHARED_TAVILY: ${{ secrets.CODEV_SHARED_TAVILY }}
+  CODEV_SHARED_AZURE_SPEECH: ${{ secrets.CODEV_SHARED_AZURE_SPEECH }}
+  CODEV_SHARED_AZURE_SPEECH_REGION: ${{ secrets.CODEV_SHARED_AZURE_SPEECH_REGION }}
+  CODEV_SHARED_ODDS: ${{ secrets.CODEV_SHARED_ODDS }}
+  PRIVATE_BUILD_PASSWORD: ${{ secrets.PRIVATE_BUILD_PASSWORD }}
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Check the password is set
+        run: |
+          if [ -z "$PRIVATE_BUILD_PASSWORD" ]; then echo "::error::Add the PRIVATE_BUILD_PASSWORD secret first, so the build can be zipped with a password."; exit 1; fi
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Build the keys in
+        run: node scripts/write-shared-keys.js
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-36
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: npm ci
+
+      - name: Copy web app into the Android project
+        working-directory: mobile
+        run: npx cap sync android
+
+      - name: Use CoDev's signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then echo "::warning::No ANDROID_KEYSTORE_BASE64 secret: this APK won't install over the last one."; exit 0; fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/codev.keystore"
+          echo "CODEV_KEYSTORE_FILE=$RUNNER_TEMP/codev.keystore" >> "$GITHUB_ENV"
+          echo "CODEV_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "CODEV_KEY_ALIAS=codev" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        working-directory: mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Zip with the password
+        run: 7z a -tzip -mem=AES256 -p"$PRIVATE_BUILD_PASSWORD" "$RUNNER_TEMP/CoDev-private-android.zip" ./mobile/android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: codev-private-android
+          path: ${{ runner.temp }}/CoDev-private-android.zip
+          if-no-files-found: error
+          retention-days: 3
+
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Check the password is set
+        shell: bash
+        run: |
+          if [ -z "$PRIVATE_BUILD_PASSWORD" ]; then echo "::error::Add the PRIVATE_BUILD_PASSWORD secret first, so the build can be zipped with a password."; exit 1; fi
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Build the keys in
+        run: node scripts/write-shared-keys.js
+
+      - name: Install dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build Windows installer
+        working-directory: desktop
+        run: npm run dist
+
+      - name: Zip with the password
+        shell: bash
+        run: 7z a -tzip -mem=AES256 -p"$PRIVATE_BUILD_PASSWORD" "$RUNNER_TEMP/CoDev-private-windows.zip" ./desktop/dist/CoDev-Studio-Setup.exe
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: codev-private-windows
+          path: ${{ runner.temp }}/CoDev-private-windows.zip
+          if-no-files-found: error
+          retention-days: 3

@@ -2,9 +2,11 @@
 
 The app is a single page, `mobile/www/index.html`. It talks to Groq directly from the browser, so there's no backend server to run. The Android app is in `mobile/` (see `mobile/README.md`).
 
-## CoDev accounts
+## Sharing CoDev with your keys built in
 
-People can sign in to a CoDev account (Settings > Sign in to CoDev) instead of pasting API keys. CoDev's online server in `cloud/` holds the owner's keys and forwards their requests within their plan, so the keys never reach their devices; the owner's account gets the Owner page. Putting the server online and the plans are in [`cloud/README.md`](cloud/README.md). A key pasted in Settings is still used first.
+To give someone CoDev with your keys already in it, add your keys as repository secrets (Settings > Secrets and variables > Actions): `CODEV_SHARED_GROQ`, `CODEV_SHARED_OPENROUTER`, `CODEV_SHARED_ANTHROPIC`, `CODEV_SHARED_GEMINI`, `CODEV_SHARED_TAVILY`, `CODEV_SHARED_AZURE_SPEECH` (and `CODEV_SHARED_AZURE_SPEECH_REGION`), `CODEV_SHARED_ODDS`, plus a `PRIVATE_BUILD_PASSWORD`. Any you leave out are simply not built in. Then run **Actions > Private build with built-in keys > Run workflow**, download the zips from the run, open them with 7-Zip using the password, and send the APK or installer to the person directly. These builds are never published as releases, and the public downloads have no keys.
+
+The app uses a built-in key only when its own Settings has none, and Settings never shows it. Someone determined could still dig a key out of the app file, so only share it with people you trust and set a spending limit with each provider.
 
 ## Windows desktop app
 
