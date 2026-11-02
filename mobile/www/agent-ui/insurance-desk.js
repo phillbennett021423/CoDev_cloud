@@ -1265,8 +1265,65 @@ ${soa.notes ? `<p>Notes: ${esc(soa.notes)}</p>` : ""}
 .ins-sign { width: 100%; max-width: 520px; height: 160px; background: #fff; border-radius: 8px; touch-action: none; cursor: crosshair; }
 .ins-log { font-size: 0.76rem; color: var(--text-muted); max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .ins-lock { max-width: 420px; margin: 40px auto; }
+/* CRM-style pages: object home, record highlights, stage path, related lists, activity timeline */
+.ins-card { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ins-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.88rem; }
+.ins-objhead { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+.ins-objtitle { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.ins-objtitle > div { min-width: 0; }
+.ins-objtitle small { display: block; font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.ins-objtitle h3 { overflow: hidden; text-overflow: ellipsis; }
+.ins-objtitle select { font-weight: bold; font-size: 0.95rem; }
+.ins-avatar { width: 40px; height: 40px; border-radius: 8px; background: var(--accent); color: #031623; display: flex; align-items: center; justify-content: center; font-weight: bold; flex: none; font-size: 1rem; }
+.ins-icon { width: 24px; height: 24px; border-radius: 6px; background: var(--bg-card); display: inline-flex; align-items: center; justify-content: center; font-size: 0.8rem; }
+.ins-hls { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px 14px; border-top: 1px solid var(--border-color); padding-top: 8px; }
+.ins-hl, .ins-field { display: flex; flex-direction: column; min-width: 0; font-size: 0.84rem; }
+.ins-hl small, .ins-field small { font-size: 0.72rem; color: var(--text-muted); }
+.ins-hl span, .ins-field span { overflow-wrap: anywhere; }
+.ins-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 14px; }
+.ins-field { border-bottom: 1px solid var(--border-color); padding-bottom: 4px; }
+.ins-path { display: flex; gap: 2px; overflow-x: auto; }
+.ins-step { flex: 1 1 0; min-width: 84px; background: var(--bg-card); color: var(--text-muted); border: none; padding: 8px 14px 8px 20px; font-size: 0.8rem; cursor: pointer; white-space: nowrap;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%, 10px 50%); }
+.ins-step:first-child { clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%); border-radius: 999px 0 0 999px; }
+.ins-step:last-child { clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 10px 50%); border-radius: 0 999px 999px 0; }
+.ins-step.done { background: color-mix(in srgb, var(--success) 35%, var(--bg-card)); color: var(--text-main); }
+.ins-step.current { background: var(--accent); color: #031623; font-weight: bold; }
+.ins-step:hover:not(.current) { color: var(--text-main); }
+.ins-record { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+.ins-record-main, .ins-record-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ins-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.ins-timeline li { display: flex; gap: 8px; align-items: flex-start; position: relative; font-size: 0.82rem; min-width: 0; }
+.ins-timeline li > div { min-width: 0; }
+.ins-timeline li:not(:last-child)::after { content: ""; position: absolute; left: 13px; top: 28px; bottom: -10px; width: 2px; background: var(--border-color); }
+.ins-timeline b { display: block; }
+.ins-timeline small { color: var(--text-muted); font-size: 0.72rem; }
+.ins-timeline li.due.now b { color: var(--danger); }
+.ins-dot { width: 28px; height: 28px; border-radius: 50%; background: var(--bg-card); display: flex; align-items: center; justify-content: center; flex: none; font-size: 0.8rem; }
+.ins-tl-body { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-main); margin-top: 2px; }
+.ins-listview tr[data-client] { cursor: pointer; }
+.ins-listview tr[data-client]:hover td { background: var(--bg-card); }
+.ins-listview td { white-space: nowrap; }
+.ins-sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.ins-link { color: var(--accent); }
+.ins-seg { display: inline-flex; }
+.ins-seg .ins-btn { border-radius: 0; }
+.ins-seg .ins-btn:first-child { border-radius: 6px 0 0 6px; }
+.ins-seg .ins-btn:last-child { border-radius: 0 6px 6px 0; }
+.ins-btn.on { background: var(--accent); color: #031623; border-color: var(--accent); }
+.ins-board { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; align-items: flex-start; }
+.ins-lane { flex: 0 0 250px; max-width: 80vw; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
+.ins-lane.over { border-color: var(--accent); }
+.ins-lane-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; border-bottom: 2px solid var(--accent); padding-bottom: 4px; }
+.ins-kcard { background: var(--bg-card); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 4px; cursor: grab; font-size: 0.82rem; min-width: 0; }
+.ins-kcard small { color: var(--text-muted); font-size: 0.74rem; }
+.ins-kcard .ins-pill { align-self: flex-start; white-space: normal; }
+.ins-kcard select { font-size: 0.74rem; padding: 3px 6px; }
+.ins-pill.stage-client { border-color: var(--success); color: var(--success); }
+.ins-pill.stage-prospect { border-color: var(--accent); color: var(--accent); }
 .ins-brief { white-space: pre-wrap; font-size: 0.8rem; background: var(--bg-dark); border-radius: 8px; padding: 10px; max-height: 300px; overflow: auto; }
-@media (max-width: 600px) { .ins-row > label { flex-basis: 100%; } .ins-table { font-size: 0.74rem; } }
+@media (max-width: 900px) { .ins-record { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) { .ins-row > label { flex-basis: 100%; } .ins-table { font-size: 0.74rem; } .ins-hide-sm { display: none; } .ins-hls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 `;
 
     function el(tag, attrs = {}, ...children) {
@@ -1306,7 +1363,8 @@ ${soa.notes ? `<p>Notes: ${esc(soa.notes)}</p>` : ""}
         if (!document.getElementById(STYLE_ID)) document.head.append(el("style", { id: STYLE_ID, text: CSS }));
         const today = () => (deps.today ? deps.today() : todayStr());
         const confirmIt = async text => (deps.confirm ? deps.confirm(text) : true);
-        const ui = { section: "clients", clientId: "", editing: null, query: "", filter: "", recon: null, mapping: null, pending: null, quoteClient: "", soaClient: "" };
+        const ui = { section: "clients", clientId: "", editing: null, query: "", listView: "all", display: "table", sort: { key: "name", dir: "asc" }, recordTab: "details", composer: "call",
+            activityFilter: "all", mapping: null, pending: null, quoteClient: "", soaClient: "" };
         const root = el("div", { class: "ins" });
         container.textContent = "";
         container.append(root);
@@ -1361,7 +1419,31 @@ ${soa.notes ? `<p>Notes: ${esc(soa.notes)}</p>` : ""}
                 pass, el("button", { class: "ins-btn primary", text: "Unlock", onclick: go }), note);
         }
 
-        // ---- clients ----
+        // ---- clients: list views (table or Kanban), like a CRM's object home ----
+        // [id, label, filter(client, today)]
+        const LIST_VIEWS = [
+            ["all", "All clients", () => true],
+            ["open", "Leads and prospects", c => c.status === "lead" || c.status === "prospect"],
+            ["clients", "Clients", c => c.status === "client"],
+            ["t65", "Turning 65 in the next year", (c, t) => [c.dob, ...c.members.map(m => m.dob)].some(d => d && ageOn(d, t) >= 63 && ageOn(d, t) <= 64 && addMonths(d, 65 * 12) <= addMonths(t, 12))],
+            ["medicare", "Medicare", c => c.policies.some(p => p.status !== "cancelled" && PLAN_GROUP[p.planType] === "medicare")],
+            ["health", "ACA and health", c => c.policies.some(p => p.status !== "cancelled" && PLAN_GROUP[p.planType] === "health")],
+            ["life", "Life and annuity", c => c.policies.some(p => p.status !== "cancelled" && PLAN_GROUP[p.planType] === "life")],
+            ["followups", "Follow-ups due", (c, t) => c.followUp && c.followUp <= addDays(t, 7)],
+            ["recent", "Recently changed", (c, t) => String(c.updatedAt).slice(0, 10) >= addDays(t, -14)]
+        ];
+        const premiumOf = c => round2(c.policies.filter(p => p.status === "active" && p.premium != null).reduce((t, p) => t + p.premium, 0));
+        const coverageOf = c => c.policies.filter(p => p.status === "active" || p.status === "pending").map(p => `${PLAN_LABEL[p.planType]}${p.carrier ? ` · ${p.carrier}` : ""}`).join("; ");
+        const stageLabel = s => (CLIENT_STATUS.find(([k]) => k === s) || CLIENT_STATUS[0])[1];
+        const initials = name => String(name).split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join("");
+        const COLUMNS = [
+            ["name", "Name", c => c.name], ["status", "Stage", c => CLIENT_STATUS.findIndex(([k]) => k === c.status)],
+            ["dob", "Birth date", c => c.dob || "9999"], ["age", "Age", c => (c.dob ? ageOn(c.dob, today()) : -1)], ["phone", "Phone", c => c.phone], ["email", "Email", c => c.email],
+            ["place", "City", c => [c.city, c.state].filter(Boolean).join(", ")], ["zip", "ZIP", c => c.zip], ["coverage", "Coverage", c => coverageOf(c)],
+            ["premium", "Premium/mo", c => premiumOf(c)], ["next", "Next date", c => c._next ? c._next.start : "9999"],
+            ["updated", "Updated", c => String(c.updatedAt)]
+        ];
+
         function clientsSection() {
             if (ui.clientId) {
                 const c = store.client(ui.clientId);
@@ -1369,33 +1451,81 @@ ${soa.notes ? `<p>Notes: ${esc(soa.notes)}</p>` : ""}
                 ui.clientId = "";
             }
             if (ui.editing) return clientForm(ui.editing === "new" ? null : store.client(ui.editing));
-            const q = el("input", { type: "search", placeholder: "Search name, carrier, plan, ZIP, phone, tag…", value: ui.query, style: "flex: 1 1 220px" });
-            const statusFilter = select([["", "Everyone"], ...CLIENT_STATUS], ui.filter);
-            const list = el("div", { class: "ins-list" });
+            const t = today();
+            const view = LIST_VIEWS.find(v => v[0] === ui.listView) || LIST_VIEWS[0];
+            const picker = select(LIST_VIEWS.map(([k, l]) => [k, l]), view[0], { "data-field": "list-view", "aria-label": "List view" });
+            picker.addEventListener("change", () => { ui.listView = picker.value; render(); });
+            const q = el("input", { type: "search", placeholder: "Search this list…", value: ui.query, style: "flex: 1 1 200px" });
+            const body = el("div", { class: "ins" });
+            const next = {};
+            for (const a of computeAlerts(store.clients(), t, { horizon: 365, soas: store.soas() })) if (!next[a.clientId]) next[a.clientId] = a;
+            const rows = () => store.search(ui.query).filter(c => view[2](c, t)).map(c => Object.assign(Object.create(c), { _next: next[c.id] || null, _real: c }));
             const draw = () => {
-                ui.query = q.value; ui.filter = statusFilter.value;
-                list.textContent = "";
-                const shown = store.search(q.value).filter(c => !statusFilter.value || c.status === statusFilter.value)
-                    .slice().sort((a, b) => a.name.localeCompare(b.name));
-                if (!shown.length) list.append(el("div", { class: "ins-note", text: store.clients().length ? "No clients match." : "No clients yet. Add your first one, or import a CSV from your old CRM." }));
-                for (const c of shown.slice(0, 300)) {
-                    const active = c.policies.filter(p => p.status === "active");
-                    list.append(el("button", { class: "ins-item", "data-client": c.name, onclick: () => { ui.clientId = c.id; render(); } },
-                        el("div", {}, el("b", { text: c.name }), el("small", { text: [c.dob && `age ${ageOn(c.dob, today())}`, c.phone, [c.city, c.state].filter(Boolean).join(", "),
-                            active.length ? active.map(p => `${PLAN_LABEL[p.planType]}${p.carrier ? ` · ${p.carrier}` : ""}`).join("; ") : ""].filter(Boolean).join(" · ") })),
-                        el("span", { class: "ins-pill", text: CLIENT_STATUS.find(([k]) => k === c.status)[1] })));
-                }
-                if (shown.length > 300) list.append(el("div", { class: "ins-note", text: `Showing 300 of ${shown.length}. Search to narrow it down.` }));
+                ui.query = q.value;
+                body.textContent = "";
+                const shown = rows();
+                count.textContent = `${shown.length} item${shown.length === 1 ? "" : "s"} · sorted by ${(COLUMNS.find(([k]) => k === ui.sort.key) || COLUMNS[0])[1].toLowerCase()}`;
+                if (!shown.length) return body.append(el("div", { class: "ins-note", text: store.clients().length ? "Nothing in this list view." : "No clients yet. Add your first one, or import a CSV from your old CRM." }));
+                body.append(ui.display === "kanban" ? kanban(shown) : table(shown));
             };
+            const table = shown => {
+                const col = COLUMNS.find(([k]) => k === ui.sort.key) || COLUMNS[0];
+                const dir = ui.sort.dir === "desc" ? -1 : 1;
+                shown.sort((a, b) => { const x = col[2](a), y = col[2](b); return (x < y ? -1 : x > y ? 1 : a.name.localeCompare(b.name)) * dir; });
+                const head = el("tr", {}, COLUMNS.map(([k, label]) => el("th", { class: "ins-sortable", "data-sort": k, onclick: () => {
+                    ui.sort = { key: k, dir: ui.sort.key === k && ui.sort.dir === "asc" ? "desc" : "asc" }; draw();
+                } }, label, ui.sort.key === k ? (ui.sort.dir === "desc" ? " ▼" : " ▲") : "")));
+                return el("div", { class: "ins-scroll ins-card" }, el("table", { class: "ins-table ins-listview" }, head, shown.slice(0, 500).map(c => el("tr", {
+                    "data-client": c.name, tabindex: "0", onclick: () => { ui.clientId = c.id; render(); }, onkeydown: e => { if (e.key === "Enter") { ui.clientId = c.id; render(); } }
+                },
+                    el("td", {}, el("a", { class: "ins-link", text: c.name })), el("td", {}, el("span", { class: `ins-pill stage-${c.status}`, text: stageLabel(c.status) })),
+                    el("td", { text: c.dob || "" }), el("td", { text: c.dob ? String(ageOn(c.dob, t)) : "" }), el("td", { text: c.phone }), el("td", { text: c.email }),
+                    el("td", { text: [c.city, c.state].filter(Boolean).join(", ") }), el("td", { text: c.zip }),
+                    el("td", { text: coverageOf(c) }), el("td", { text: premiumOf(c) ? money(premiumOf(c)) : "" }),
+                    el("td", { title: c._next ? c._next.title : "" }, c._next ? el("span", { class: `ins-pill ${c._next.urgency}`, text: `${c._next.type} · ${c._next.start.slice(5)}` }) : ""),
+                    el("td", { text: String(c.updatedAt).slice(0, 10) })))),
+                    shown.length > 500 ? el("div", { class: "ins-note", text: `Showing 500 of ${shown.length}. Search to narrow it down.` }) : null);
+            };
+            // Drag a card to another stage, or pick it from the card's menu (phones can't drag).
+            const kanban = shown => el("div", { class: "ins-board" }, CLIENT_STATUS.map(([stage, label]) => {
+                const cards = shown.filter(c => c.status === stage).sort((a, b) => a.name.localeCompare(b.name));
+                const total = round2(cards.reduce((s, c) => s + premiumOf(c), 0));
+                const lane = el("div", { class: "ins-lane", "data-stage": stage,
+                    ondragover: e => { e.preventDefault(); lane.classList.add("over"); }, ondragleave: () => lane.classList.remove("over"),
+                    ondrop: e => { e.preventDefault(); lane.classList.remove("over"); moveTo(e.dataTransfer.getData("text/plain"), stage); } },
+                    el("div", { class: "ins-lane-head" }, el("b", { text: label }), el("span", { class: "ins-note", text: `${cards.length}${total ? ` · ${money(total)}/mo` : ""}` })),
+                    cards.slice(0, 200).map(c => {
+                        const move = select(CLIENT_STATUS.map(([k, l]) => [k, `Move to ${l}`]), stage, { "aria-label": `Stage for ${c.name}`, onclick: e => e.stopPropagation() });
+                        move.addEventListener("change", () => moveTo(c.id, move.value));
+                        return el("div", { class: "ins-kcard", draggable: "true", "data-client": c.name,
+                            ondragstart: e => { e.dataTransfer.setData("text/plain", c.id); e.dataTransfer.effectAllowed = "move"; },
+                            onclick: () => { ui.clientId = c.id; render(); } },
+                            el("b", { text: c.name }), el("small", { text: [c.dob && `age ${ageOn(c.dob, t)}`, [c.city, c.state].filter(Boolean).join(", "), coverageOf(c)].filter(Boolean).join(" · ") }),
+                            c._next ? el("span", { class: `ins-pill ${c._next.urgency}`, text: c._next.title }) : null, move);
+                    }));
+                return lane;
+            }));
+            const moveTo = (id, stage) => {
+                const c = store.client(id);
+                if (!c || c.status === stage) return;
+                store.saveClient({ id: c.id, status: stage });
+                say(`${c.name} moved to ${stageLabel(stage)}.`);
+                draw();
+            };
+            const count = el("span", { class: "ins-note" });
             q.addEventListener("input", draw);
-            statusFilter.addEventListener("change", draw);
+            const toggle = (mode, icon, label) => el("button", { class: `ins-btn small${ui.display === mode ? " on" : ""}`, title: label, "aria-pressed": String(ui.display === mode), "data-display": mode,
+                onclick: () => { ui.display = mode; render(); } }, icon, el("span", { class: "ins-hide-sm", text: ` ${label}` }));
             draw();
             return el("div", { class: "ins" },
-                el("div", { class: "ins-bar" }, q, statusFilter,
-                    el("button", { class: "ins-btn primary", text: "+ New client", onclick: () => { ui.editing = "new"; render(); } }),
-                    el("button", { class: "ins-btn", text: "⬆ Import CSV", onclick: importClientsCsv }),
-                    el("button", { class: "ins-btn", text: "⬇ Export CSV", onclick: exportClientsCsv })),
-                list);
+                el("div", { class: "ins-objhead" },
+                    el("div", { class: "ins-objtitle" }, el("span", { class: "ins-avatar", text: "👥" }), el("div", {}, el("small", { text: "Clients" }), picker)),
+                    el("div", { class: "ins-bar" },
+                        el("button", { class: "ins-btn primary", text: "+ New", "aria-label": "+ New client", onclick: () => { ui.editing = "new"; render(); } }),
+                        el("button", { class: "ins-btn", text: "⬆ Import", title: "Import CSV", onclick: importClientsCsv }),
+                        el("button", { class: "ins-btn", text: "⬇ Export", title: "Export CSV", onclick: exportClientsCsv }))),
+                el("div", { class: "ins-bar" }, count, el("span", { style: "flex: 1" }), q, el("span", { class: "ins-seg" }, toggle("table", "☰", "Table"), toggle("kanban", "▦", "Kanban"))),
+                body);
         }
 
         function clientForm(c) {
@@ -1483,21 +1613,45 @@ ${soa.notes ? `<p>Notes: ${esc(soa.notes)}</p>` : ""}
             return box;
         }
 
+        // ---- a client's record page: highlights, stage path, related lists and details, activity ----
         function clientDetail(c) {
             const t = today();
-            const people = [`${c.name}${c.dob ? ` (${ageOn(c.dob, t)})` : ""}`, ...c.members.map(m => `${m.name}${m.dob ? ` (${ageOn(m.dob, t)})` : ""}, ${m.relation}`)];
             const alerts = computeAlerts([c], t, { horizon: 120, soas: store.soas(c.id) });
-            const noteText = el("textarea", { placeholder: "Call summary or note…" });
-            const noteKind = select([["call", "Call"], ["note", "Note"]], "call");
-            const fileKind = select(DOC_KINDS, "application");
-            const fileInput = el("input", { type: "file", style: "display:none", onchange: async () => {
-                const file = fileInput.files[0];
-                if (!file) return;
-                say(`Saving ${file.name}…`);
-                const r = await store.addDocument(c.id, { name: file.name, type: file.type, bytes: new Uint8Array(await file.arrayBuffer()), kind: fileKind.value });
-                say(r.error || `Saved ${file.name}.`, Boolean(r.error));
-                render();
-            } });
+            const active = c.policies.filter(p => p.status === "active");
+            const soas = store.soas(c.id);
+            const back = el("button", { class: "ins-btn small", text: "← Clients", onclick: () => { ui.clientId = ""; ui.pending = null; render(); } });
+
+            // Highlights panel: who they are and the numbers that matter, at a glance.
+            const highlight = (label, value) => el("div", { class: "ins-hl" }, el("small", { text: label }), el("span", { text: value || "—" }));
+            const highlights = el("div", { class: "ins-card ins-highlights" },
+                el("div", { class: "ins-objhead" },
+                    el("div", { class: "ins-objtitle" }, el("span", { class: "ins-avatar", text: initials(c.name) }), el("div", {}, el("small", { text: "Client" }), el("h3", { text: c.name }))),
+                    el("div", { class: "ins-bar" },
+                        el("button", { class: "ins-btn small", text: "Edit", onclick: () => { ui.editing = c.id; ui.clientId = ""; render(); } }),
+                        el("button", { class: "ins-btn small", text: "✍️ New SOA", onclick: () => { ui.section = "soa"; ui.soaClient = c.id; render(); } }),
+                        el("button", { class: "ins-btn small", text: "🧭 Quote", onclick: () => { ui.section = "quote"; ui.quoteClient = c.id; render(); } }),
+                        el("button", { class: "ins-btn small danger", text: "Delete", title: "Delete client", onclick: async () => {
+                            if (!(await confirmIt(`Delete ${c.name}, their documents and SOAs from this device? CMS expects Medicare records kept for 10 years, so export a backup first if you may need them.`))) return;
+                            await store.removeClient(c.id); ui.clientId = ""; render();
+                        } }))),
+                el("div", { class: "ins-hls" },
+                    highlight("Stage", stageLabel(c.status)), highlight("Phone", c.phone), highlight("Age", c.dob ? `${ageOn(c.dob, t)} (born ${niceDate(c.dob)})` : ""),
+                    highlight("Location", [c.city, c.state, c.zip].filter(Boolean).join(", ")), highlight("Active policies", String(active.length)),
+                    highlight("Premium", premiumOf(c) ? `${money(premiumOf(c))}/mo` : ""), highlight("Next date", alerts[0] ? `${niceDate(alerts[0].start)}: ${alerts[0].title}` : "")));
+
+            // The stage path: done stages are ticked, the current one is filled; click one to move there.
+            const stages = CLIENT_STATUS.map(([k]) => k);
+            const at = stages.indexOf(c.status);
+            const path = el("div", { class: "ins-path", role: "list", "aria-label": "Stage" }, CLIENT_STATUS.map(([k, label], i) => el("button", {
+                class: `ins-step${i < at ? " done" : ""}${i === at ? " current" : ""}`, role: "listitem", "data-stage": k, "aria-current": i === at ? "step" : null,
+                title: i === at ? "Current stage" : `Mark as ${label}`,
+                onclick: () => { if (k !== c.status) { store.saveClient({ id: c.id, status: k }); say(`${c.name} is now ${label}.`); render(); } }
+            }, i < at ? "✓ " : "", label)));
+
+            // Related lists.
+            const card = (icon, title, count, body, action) => el("div", { class: "ins-card ins-related", "data-related": title },
+                el("div", { class: "ins-card-head" }, el("span", { class: "ins-icon", text: icon }), el("b", { text: `${title} (${count})` }), el("span", { style: "flex: 1" }), action || null),
+                body);
             const policies = el("div", { class: "ins-list" });
             for (const p of c.policies) {
                 if (ui.pending === p.id) { policies.append(policyForm(c, p)); continue; }
@@ -1510,46 +1664,105 @@ ${soa.notes ? `<p>Notes: ${esc(soa.notes)}</p>` : ""}
                         el("button", { class: "ins-btn small danger", text: "✕", title: "Delete policy", onclick: async () => { if (await confirmIt(`Delete this ${PLAN_LABEL[p.planType]} policy from ${c.name}'s file?`)) { store.removePolicy(c.id, p.id); render(); } } }))));
             }
             if (ui.pending === "new") policies.append(policyForm(c, null));
-            const docs = el("div", { class: "ins-list" }, c.documents.map(d => el("div", { class: "ins-item", style: "cursor: default" },
-                el("div", {}, el("b", { text: d.name }), el("small", { text: `${(DOC_KINDS.find(([k]) => k === d.kind) || [, "Other"])[1]} · ${Math.max(1, Math.round(d.size / 1024))} KB · added ${d.addedAt.slice(0, 10)} · SHA-256 ${d.sha256.slice(0, 16)}…` })),
-                el("div", { class: "ins-bar" },
-                    el("button", { class: "ins-btn small", text: "Open", onclick: async () => {
-                        const doc = await store.readDocument(d.id);
-                        if (!doc) return say("That file is missing from this device.", true);
-                        const ok = (await sha256Hex(doc.bytes)) === d.sha256;
-                        if (!ok) say("Warning: this file's fingerprint doesn't match the one taken when it was added.", true);
-                        if (deps.saveBytes) deps.saveBytes(d.name, doc.bytes, d.type);
-                    } }),
-                    el("button", { class: "ins-btn small danger", text: "✕", onclick: async () => { if (await confirmIt(`Delete ${d.name}? Audit rules may require you to keep it.`)) { await store.removeDocument(c.id, d.id); render(); } } })))));
-            const soas = store.soas(c.id);
-            return el("div", { class: "ins" },
-                el("div", { class: "ins-bar" }, el("button", { class: "ins-btn", text: "← All clients", onclick: () => { ui.clientId = ""; ui.pending = null; render(); } }),
-                    el("h3", { text: c.name }), el("span", { class: "ins-pill", text: CLIENT_STATUS.find(([k]) => k === c.status)[1] }),
-                    el("button", { class: "ins-btn small", text: "Edit", onclick: () => { ui.editing = c.id; ui.clientId = ""; render(); } }),
-                    el("button", { class: "ins-btn small", text: "✍️ New SOA", onclick: () => { ui.section = "soa"; ui.soaClient = c.id; render(); } }),
-                    el("button", { class: "ins-btn small", text: "🧭 Quote", onclick: () => { ui.section = "quote"; ui.quoteClient = c.id; render(); } }),
-                    el("button", { class: "ins-btn small danger", text: "Delete client", onclick: async () => {
-                        if (!(await confirmIt(`Delete ${c.name}, their documents and SOAs from this device? CMS expects Medicare records kept for 10 years, so export a backup first if you may need them.`))) return;
-                        await store.removeClient(c.id); ui.clientId = ""; render();
-                    } })),
-                el("div", { class: "ins-panel" },
-                    el("div", { class: "ins-note", text: [people.join(" · "), c.phone, c.email, [c.address, c.city, c.state, c.zip].filter(Boolean).join(", "), c.county && `${c.county} County`].filter(Boolean).join("  ·  ") }),
-                    c.summary ? el("div", { text: c.summary }) : null,
-                    alerts.length ? el("div", { class: "ins-list" }, alerts.slice(0, 5).map(a => el("div", { class: "ins-bar" }, el("span", { class: `ins-pill ${a.urgency}`, text: a.urgency }), el("span", { text: a.title })))) : null,
-                    c.doctors.length || c.medications.length ? el("div", { class: "ins-note", text: [c.doctors.length && `Doctors: ${c.doctors.map(d => d.name).join(", ")}`, c.medications.length && `Prescriptions: ${c.medications.map(m => [m.name, m.dose].filter(Boolean).join(" ")).join(", ")}`].filter(Boolean).join("  ·  ") }) : null),
-                el("details", { class: "ins-sub", open: true }, el("summary", { text: `Policies (${c.policies.length})` }), policies,
-                    ui.pending ? null : el("button", { class: "ins-btn small", text: "+ Add policy", "data-action": "add-policy", onclick: () => { ui.pending = "new"; render(); } })),
-                el("details", { class: "ins-sub", open: true }, el("summary", { text: `Notes and calls (${c.notes.length})` }),
-                    el("div", { class: "ins-row" }, noteKind, el("button", { class: "ins-btn small", text: "Add", onclick: () => { const r = store.addNote(c.id, noteText.value, { kind: noteKind.value }); if (r.error) say(r.error, true); else render(); } })),
-                    noteText,
-                    el("div", { class: "ins-list" }, c.notes.slice().reverse().slice(0, 30).map(n => el("div", { class: "ins-note" }, el("b", { text: `${n.at.slice(0, 16).replace("T", " ")} ${n.kind === "call" ? "📞" : "📝"}${n.by ? ` ${n.by}` : ""} ` }), n.text)))),
-                el("details", { class: "ins-sub" }, el("summary", { text: `Documents (${c.documents.length})` }),
-                    el("div", { class: "ins-note", text: "Signed applications, drug lists, call recordings. Each keeps a SHA-256 fingerprint so you can show it wasn't changed." }),
-                    el("div", { class: "ins-row" }, fileKind, el("button", { class: "ins-btn small", text: "⬆ Add file", onclick: () => fileInput.click() }), fileInput), docs),
-                el("details", { class: "ins-sub" }, el("summary", { text: `Scopes of Appointment (${soas.length})` }), soaList(soas)),
-                c.quotes.length ? el("details", { class: "ins-sub" }, el("summary", { text: `Quotes (${c.quotes.length})` }), c.quotes.slice().reverse().map(quoteTable)) : null,
-                el("details", { class: "ins-sub" }, el("summary", { text: "Activity log" }),
-                    el("div", { class: "ins-log" }, c.log.slice().reverse().map(l => el("div", { text: `${l.at.replace("T", " ").slice(0, 19)}  ${l.what}` })))));
+            if (!c.policies.length && ui.pending !== "new") policies.append(el("div", { class: "ins-note", text: "No policies yet." }));
+
+            const fileKind = select(DOC_KINDS, "application", { "aria-label": "Document type" });
+            const fileInput = el("input", { type: "file", style: "display:none", onchange: async () => {
+                const file = fileInput.files[0];
+                if (!file) return;
+                say(`Saving ${file.name}…`);
+                const r = await store.addDocument(c.id, { name: file.name, type: file.type, bytes: new Uint8Array(await file.arrayBuffer()), kind: fileKind.value });
+                say(r.error || `Saved ${file.name}.`, Boolean(r.error));
+                render();
+            } });
+            const docs = el("div", { class: "ins-list" },
+                el("div", { class: "ins-note", text: "Signed applications, drug lists, call recordings. Each keeps a SHA-256 fingerprint so you can show it wasn't changed." }),
+                el("div", { class: "ins-row" }, fileKind, el("button", { class: "ins-btn small", text: "⬆ Add file", onclick: () => fileInput.click() }), fileInput),
+                c.documents.map(d => el("div", { class: "ins-item", style: "cursor: default" },
+                    el("div", {}, el("b", { text: d.name }), el("small", { text: `${(DOC_KINDS.find(([k]) => k === d.kind) || [, "Other"])[1]} · ${Math.max(1, Math.round(d.size / 1024))} KB · added ${d.addedAt.slice(0, 10)} · SHA-256 ${d.sha256.slice(0, 16)}…` })),
+                    el("div", { class: "ins-bar" },
+                        el("button", { class: "ins-btn small", text: "Open", onclick: async () => {
+                            const doc = await store.readDocument(d.id);
+                            if (!doc) return say("That file is missing from this device.", true);
+                            if ((await sha256Hex(doc.bytes)) !== d.sha256) say("Warning: this file's fingerprint doesn't match the one taken when it was added.", true);
+                            if (deps.saveBytes) deps.saveBytes(d.name, doc.bytes, d.type);
+                        } }),
+                        el("button", { class: "ins-btn small danger", text: "✕", onclick: async () => { if (await confirmIt(`Delete ${d.name}? Audit rules may require you to keep it.`)) { await store.removeDocument(c.id, d.id); render(); } } })))));
+            const household = el("div", { class: "ins-list" }, c.members.length ? c.members.map(m => el("div", { class: "ins-item", style: "cursor: default" },
+                el("div", {}, el("b", { text: m.name }), el("small", { text: [RELATIONS.find(([k]) => k === m.relation)[1], m.dob && `age ${ageOn(m.dob, t)}`, m.tobacco && "tobacco"].filter(Boolean).join(" · ") })))) : el("div", { class: "ins-note", text: "Only the client." }));
+            const related = el("div", { class: "ins" },
+                card("📄", "Policies", c.policies.length, policies, ui.pending ? null : el("button", { class: "ins-btn small", text: "New", "data-action": "add-policy", onclick: () => { ui.pending = "new"; render(); } })),
+                card("👪", "Household", c.members.length, household, el("button", { class: "ins-btn small", text: "Edit", onclick: () => { ui.editing = c.id; ui.clientId = ""; render(); } })),
+                card("✍️", "Scopes of Appointment", soas.length, soaList(soas), el("button", { class: "ins-btn small", text: "New", onclick: () => { ui.section = "soa"; ui.soaClient = c.id; render(); } })),
+                card("🗂️", "Documents", c.documents.length, docs),
+                card("🧭", "Quotes", c.quotes.length, c.quotes.length ? el("div", { class: "ins-list" }, c.quotes.slice().reverse().map(quoteTable)) : el("div", { class: "ins-note", text: "No quotes saved yet." })));
+
+            // Details: every field, read-only, in sections.
+            const fieldBox = (label, value) => el("div", { class: "ins-field" }, el("small", { text: label }), el("span", { text: value == null || value === "" ? "—" : String(value) }));
+            const section = (title, ...fields) => el("div", { class: "ins-card" }, el("div", { class: "ins-card-head" }, el("b", { text: title })), el("div", { class: "ins-fields" }, fields));
+            const details = el("div", { class: "ins" },
+                section("Contact", fieldBox("Name", c.name), fieldBox("Stage", stageLabel(c.status)), fieldBox("Phone", c.phone), fieldBox("Email", c.email), fieldBox("Birth date", c.dob ? niceDate(c.dob) : ""), fieldBox("Lead source", c.leadSource), fieldBox("Tags", c.tags.join(", "))),
+                section("Address", fieldBox("Street", c.address), fieldBox("City", c.city), fieldBox("State", c.state), fieldBox("ZIP", c.zip), fieldBox("County", c.county)),
+                section("Household and income", fieldBox("Household size", c.householdSize), fieldBox("Expected income", c.householdIncome == null ? "" : money(c.householdIncome)), fieldBox("Tobacco", c.tobacco ? "Yes" : "No"), fieldBox("Members", c.members.map(m => m.name).join(", "))),
+                section("Medicare", fieldBox("Part A", c.partADate), fieldBox("Part B", c.partBDate), fieldBox("Pharmacy", c.pharmacy)),
+                section("Doctors and prescriptions", fieldBox("Doctors", c.doctors.map(d => [d.name, d.specialty, d.location, d.npi && `NPI ${d.npi}`].filter(Boolean).join(", ")).join("; ")), fieldBox("Prescriptions", c.medications.map(m => [m.name, m.dose, m.frequency].filter(Boolean).join(" ")).join("; "))),
+                section("Coverage", ...(c.policies.length ? c.policies.map(p => fieldBox(`${PLAN_LABEL[p.planType]} (${p.status})`, [[p.carrier, p.planName].filter(Boolean).join(" "), p.policyNumber && `#${p.policyNumber}`, p.memberId && `member ${p.memberId}`,
+                    p.effectiveDate && `effective ${p.effectiveDate}`, p.premium != null && `${money(p.premium)}/mo`, p.faceAmount != null && `face ${money(p.faceAmount)}`, p.beneficiary && `beneficiary ${p.beneficiary}`].filter(Boolean).join(" · "))) : [fieldBox("Policies", "")])),
+                section("Summary", fieldBox("What they need", c.summary), fieldBox("Follow up", c.followUp ? `${niceDate(c.followUp)}${c.followUpNote ? `: ${c.followUpNote}` : ""}` : "")),
+                el("div", { class: "ins-bar" }, el("button", { class: "ins-btn", text: "✏️ Edit details", onclick: () => { ui.editing = c.id; ui.clientId = ""; render(); } })));
+            // Details opens first, so all of the client's information is on screen when the record opens.
+            const tab = ui.recordTab === "related" ? "related" : "details";
+            const mainTabs = el("div", { class: "ins-tabs" }, [["details", "Details"], ["related", `Related (${c.policies.length + c.documents.length + soas.length + c.quotes.length})`]].map(([k, l]) => el("button", { class: tab === k ? "on" : "", "data-record-tab": k, onclick: () => { ui.recordTab = k; render(); }, text: l })));
+
+            return el("div", { class: "ins" }, el("div", { class: "ins-bar" }, back), highlights, path,
+                el("div", { class: "ins-record" },
+                    el("div", { class: "ins-record-main" }, mainTabs, tab === "details" ? details : related),
+                    el("div", { class: "ins-record-side" }, activityPanel(c, alerts))));
+        }
+
+        // The activity timeline: quick actions at the top, what's coming up, then everything that happened.
+        function activityPanel(c, alerts) {
+            const mode = ui.composer || "call";
+            const text = el("textarea", { placeholder: mode === "call" ? "What did you talk about?" : mode === "note" ? "Write a note…" : "What to follow up on", "data-field": "activity-text" });
+            const when = el("input", { type: "date", value: c.followUp || addDays(today(), 3), "aria-label": "Follow-up date" });
+            const save = () => {
+                if (mode === "followup") {
+                    if (!when.value) return say("Pick a date.", true);
+                    store.saveClient({ id: c.id, followUp: when.value, followUpNote: text.value });
+                    say(`Follow-up set for ${niceDate(when.value)}.`);
+                } else {
+                    const r = store.addNote(c.id, text.value, { kind: mode });
+                    if (r.error) return say(r.error, true);
+                }
+                render();
+            };
+            const composer = el("div", { class: "ins-card" },
+                el("div", { class: "ins-tabs" }, [["call", "📞 Log a call"], ["note", "📝 New note"], ["followup", "📅 Follow-up"]].map(([k, l]) => el("button", { class: mode === k ? "on" : "", "data-composer": k, text: l, onclick: () => { ui.composer = k; render(); } }))),
+                mode === "followup" ? field("Follow up on", when) : null, text,
+                el("div", { class: "ins-bar" }, el("span", { style: "flex: 1" }), el("button", { class: "ins-btn primary small", text: "Save", "data-action": "save-activity", onclick: save })));
+            const filter = ui.activityFilter || "all";
+            const items = [];
+            for (const n of c.notes) items.push({ at: n.at, kind: n.kind === "call" ? "call" : "note", icon: n.kind === "call" ? "📞" : "📝", title: n.kind === "call" ? `Call${n.by ? ` (${n.by})` : ""}` : `Note${n.by ? ` (${n.by})` : ""}`, body: n.text });
+            for (const s of store.soas(c.id)) items.push({ at: s.signedAt, kind: "compliance", icon: "✍️", title: "Scope of Appointment signed", body: s.products.map(p => SOA_PRODUCTS.find(([k]) => k === p)[1]).join("; ") });
+            for (const q of c.quotes) items.push({ at: q.at, kind: "quote", icon: "🧭", title: `Quote from ${q.portal || "a quoting site"}`, body: q.summary || `${q.plans.length} plans` });
+            for (const d of c.documents) items.push({ at: d.addedAt, kind: "compliance", icon: "🗂️", title: `Document: ${d.name}`, body: "" });
+            for (const l of c.log) if (!/^(Call note|Note) added|^Document added|^Scope of Appointment|^Quote saved/.test(l.what)) items.push({ at: l.at, kind: "change", icon: "✏️", title: l.what, body: "" });
+            items.sort((a, b) => (a.at < b.at ? 1 : -1));
+            const shown = items.filter(i => filter === "all" || i.kind === filter || (filter === "note" && i.kind === "call"));
+            const filters = select([["all", "All activity"], ["call", "Calls"], ["note", "Calls and notes"], ["compliance", "SOAs and documents"], ["quote", "Quotes"], ["change", "Changes"]], filter, { "aria-label": "Show" });
+            filters.addEventListener("change", () => { ui.activityFilter = filters.value; render(); });
+            const upcoming = alerts.slice(0, 6);
+            return el("div", { class: "ins" }, composer,
+                el("div", { class: "ins-card" },
+                    el("div", { class: "ins-card-head" }, el("b", { text: "Upcoming and overdue" })),
+                    upcoming.length ? el("ul", { class: "ins-timeline" }, upcoming.map(a => el("li", { class: `due ${a.urgency}`, "data-upcoming": a.type },
+                        el("span", { class: "ins-dot", text: "🔔" }), el("div", {}, el("b", { text: a.title }), el("small", { text: a.start === a.end ? niceDate(a.start) : `${niceDate(a.start)} → ${niceDate(a.end)}` })))))
+                        : el("div", { class: "ins-note", text: "Nothing due in the next 4 months." })),
+                el("div", { class: "ins-card" },
+                    el("div", { class: "ins-card-head" }, el("b", { text: "Activity" }), el("span", { style: "flex: 1" }), filters),
+                    shown.length ? el("ul", { class: "ins-timeline", "data-timeline": "past" }, shown.slice(0, 60).map(i => el("li", { "data-kind": i.kind },
+                        el("span", { class: "ins-dot", text: i.icon }), el("div", {}, el("b", { text: i.title }), el("small", { text: i.at.slice(0, 16).replace("T", " ") }), i.body ? el("div", { class: "ins-tl-body", text: i.body }) : null))))
+                        : el("div", { class: "ins-note", text: "No activity yet." })));
         }
 
         function quoteTable(q) {
