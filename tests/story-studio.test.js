@@ -59,7 +59,7 @@ test('agents read, save, create projects and export through the studio tools', a
     const { store } = sampleStore();
     const written = {};
     const tools = Object.fromEntries(Studio.buildStudioTools(store, { writeFile: async (p, c) => { written[p] = c; return `Saved ${p}`; }, confirm: async () => true }).map(t => [t.name, t]));
-    assert.deepEqual(Object.keys(tools), ['studio_read', 'studio_save', 'studio_remove', 'studio_export']);
+    assert.deepEqual(Object.keys(tools), ['studio_read', 'studio_save', 'studio_remove', 'studio_import', 'studio_export']);
     assert.match(await tools.studio_read.run({}), /Character: Mara Vex/);
     assert.match(await tools.studio_read.run({ name: 'Mara Vex' }), /How they talk: Clipped, sarcastic\./);
     assert.match(await tools.studio_read.run({ query: 'mentor' }), /Old Tomas/);

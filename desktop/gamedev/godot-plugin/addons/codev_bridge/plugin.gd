@@ -159,6 +159,14 @@ func _describe(node: Node) -> Dictionary:
 		info["scene"] = node.scene_file_path
 	if node is Node3D or node is Node2D:
 		info["position"] = var_to_str(node.get("position"))
+	# World-space transform, so CoDev's scene dressing can measure nested props.
+	if node is Node3D and node.is_inside_tree():
+		var g: Vector3 = node.global_position
+		var r: Vector3 = node.global_rotation_degrees
+		var s: Vector3 = node.scale
+		info["global_position"] = [g.x, g.y, g.z]
+		info["global_rotation_degrees"] = [r.x, r.y, r.z]
+		info["scale"] = [s.x, s.y, s.z]
 	return info
 
 

@@ -377,6 +377,9 @@ test('scrolling up in the chat stops auto-scroll until you return to the bottom,
     const url = await backend.listen();
     t.after(() => backend.close());
     const { page, errors } = await openPage(launched.browser, url, { steps: ['ok'] });
+    // Let the fonts load and the layout settle first: text re-wrapping above the reading
+    // position moves it (the browser's scroll anchoring), which isn't what's tested here.
+    await page.evaluate(() => document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))));
 
     const state = () => page.evaluate(() => {
         const feed = document.getElementById('chatFeed');

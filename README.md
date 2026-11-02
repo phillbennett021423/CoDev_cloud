@@ -86,6 +86,13 @@ The **🎭 Story Studio** tab (on the phone, the **Story** tab) is for writing a
 - **🎬 Scene Builder:** set where the scene happens, who is in it and the goal or conflict. Agents play each character a line (or four) at a time. You can add a director's note, pick who speaks next, step in with your own line, narration or stage direction, redo the last line, undo, rewind to any line, or tap a line to edit it. Each scene saves as you go. A scene stops after 30 agent turns in one sitting until you say to go on. **🎨 Storyboard** draws up to 4 frames per scene with the picture service set in Settings (free Pollinations by default).
 - **📦 Export to your game:** writes `story_bible.json`, `game_data.gd` (GDScript constants such as `CHARACTERS`, `DIALOGUE` and `SCENES`, plus `dialogue_lines()` and `scene_beats()`), one JSON file per dialogue in `dialogue/`, one cutscene JSON per scene in `scenes/`, and `story_bible.md`. Every line has an `id` and the `next` line's id, so the game can play it as a cutscene or walk it as a dialogue tree. With a project folder connected, they save straight into it (`game_data/` by default). Otherwise they download, or on Android they go to the share sheet (Drive, Files, email).
 
+- **🧭 World tools:** join the bible to free tools you may already write in. Everything stays on your device.
+  - **Obsidian:** save the bible as an Obsidian vault (one note per character, faction, place and event, with relationships as `[[links]]`, so Obsidian's graph shows the web), edit it in [Obsidian](https://obsidian.md) or any notes app, and import it back. Notes you write yourself come in too: the folder (Characters, Factions, Places…), a `kind:` property or a `#tag` says what each note is, `## headings` become fields, and links under `## Relationships` (like `- Enemy: [[Null]]`) join the web. Saved into `lore/`, the desktop art tools read it as well.
+  - **Azgaar's Fantasy Map Generator:** make a map at [azgaar.github.io/Fantasy-Map-Generator](https://azgaar.github.io/Fantasy-Map-Generator/), then Menu › Export › Export to JSON › Full, and import that file. Each state becomes a faction (territory, provinces, borders, wars, and its ally, enemy, rival and vassal ties), provinces and cities become places with their map positions, cultures and religions become lore, and the roads and sea routes between cities become a routes entry. Every capital comes in, plus the largest cities up to the number you pick (60 by default).
+  - **StoryCraftr:** writes the bible into a [StoryCraftr](https://github.com/raestrada/storycraftr) book folder (`worldbuilding/geography.md`, `history.md`, `culture.md`, `magic_system.md`, `technology.md`, `outline/character_summary.md`, `plot_points.md`). StoryCraftr reads every Markdown file in the folder, so its outline, worldbuilding and chat commands stay on canon, with your own OpenRouter key or a local Ollama model. What it writes imports back as lore.
+  - Importing adds new names and gives existing entries the imported fields; everything else on them stays, and locked entries aren't touched. Agents can do all of it with `studio_import` ("import my Obsidian vault from lore", "import the Azgaar map maps/continuum.json") and `studio_export` format `obsidian` or `storycraftr`.
+  - **Agents and Azgaar maps.** In any chat about maps or worlds, agents also get `map_read` and `map_generate`. `map_read` answers from a map's full JSON export in the project folder: an overview, one state (capital, people, borders, allies, enemies, wars, provinces), city, province, culture or religion, the largest cities by state, markers, and the distance and towns between two cities over the map's roads and sea routes ("how far is Tessel from Hollow Gate by road?"). `map_generate` makes a new map with Azgaar's Fantasy Map Generator from a seed (a number or a word; the same seed always makes the same map), runs the generator in a hidden Chromium on your computer, saves the export to `maps/` and describes it, after asking you. It works in the Windows app and with `start-codev.bat`/`npm start` (it needs internet; `CODEV_AZGAAR_URL` points it at your own copy of the generator). On the phone, make the map on the website and put the export in the project folder.
+
 Every one of these is optional; use only what helps:
 
 - **🎭 Mood faces:** up to seven portraits per character (calm, happy, angry, sad, scared, determined, surprised). Each is drawn to match the calm face, using the character's own seed on the free service, or the calm face as a reference on a paid one. Chats and scenes show the face that fits each line's mood.
@@ -99,6 +106,19 @@ Every one of these is optional; use only what helps:
 - **🖨️ Character sheets:** a printable page per character, with portrait, card, relationships and moods. On a phone it goes to the share sheet.
 
 Talking to characters, scenes, lore checks and growth suggestions use the provider picked in Settings through the same call as the chat, so the spending limits apply to them too. Agents' `studio_save` only changes story content, never pictures, voices, locks, growth settings or snapshots.
+
+## Insurance Desk (health and life insurance)
+
+The **🩺 Insurance** tab (on the phone, the **Clients** tab) is a book of business for a licensed health and life insurance agent. Everything is kept on the device: client records in the browser's storage, documents in IndexedDB. Nothing goes to a server unless you export it.
+
+1. **Clients**, laid out like a CRM (Salesforce Lightning style). The list has saved list views (All, Leads and prospects, Clients, Turning 65 in the next year, Medicare, ACA and health, Life and annuity, Follow-ups due, Recently changed), a sortable table with each client's birth date, phone, email, city, ZIP, coverage, premium and next date, and a **Kanban** board by stage: drag a card to another stage, or pick it from the card's menu on a phone. A client's record page has a highlights panel, a stage path (Lead › Prospect › Client › Inactive, click to move), **Details** (opens first, every field in sections, including coverage) and **Related** (policies, household, SOAs, documents, quotes) tabs, and an activity panel to log a call, add a note or set a follow-up, with what's coming up and a timeline of everything that happened. Each client holds households (members, birth dates, tobacco), contact details, ZIP and county, expected income for ACA subsidies, Medicare Part A/B dates, doctors, prescriptions and pharmacy. Each client has policies (ACA, Medicare Advantage, MAPD, Medicare Supplement, PDP, group, ICHRA, dental/vision/hearing, hospital indemnity, term, whole, final expense, IUL, annuities) with carrier, policy and member numbers, effective, renewal and end dates, premium, face amount and the commission schedule. Notes and call summaries, documents (signed applications, drug lists, call recordings) and saved quotes sit on the client too, with an activity log of every change. Clients import from and export to CSV.
+2. **Alerts.** Turning 65 (the Initial Enrollment Period, 3 months either side of the birthday month, shown from 90 days before it opens), Medigap open enrollment after Part B starts, AEP reviews (October 15 to December 7) for MA and PDP clients, the MA open enrollment (January 1 to March 31), ACA open enrollment (November 1 to January 15), renewals and anniversaries, policies still pending after their start date, term-life conversion deadlines, expiring SOAs and your own follow-ups. **📅 Add to calendar** saves them as an .ics file for Google or Outlook.
+3. **Scope of Appointment.** The CMS product list, appointment date and type, who started the contact, and a signature: drawn on the device, typed, or verbal consent on a recorded call. A signed SOA can't be edited (a correction is a new SOA), keeps a SHA-256 fingerprint so a changed copy shows as altered, and is checked against the 48-hour rule and its exceptions (walk-ins, the last 4 days of an enrollment period) and the 12-month expiry. **🖨 Print / save** gives a page for the file.
+4. **Commissions.** Import each carrier's statement as CSV. CoDev finds the policy number, name, amount and period columns (you can change them), matches each payment to a policy by number, or by name and carrier, and compares it with what the policy should pay that month (per member per month, flat monthly, percent of premium, or yearly, with a separate renewal rate). It flags missing and short payments, chargebacks and payments that match no policy, totals what you're owed, and exports the issues as CSV.
+5. **Quoting.** A quote brief from the client's file (ages, ZIP and county, income, doctors, drugs, pharmacy, current plan) to paste into a quoting site, and **🤖 Quote with an agent**, which has an agent open the site in CoDev's browser (sign in through the live view), enter the household, compare 3 to 5 plans and save the comparison to the client. It never starts or submits an application or signs anything. Medicare's Plan Finder and HealthCare.gov are listed by default; add your own Sunfire, HealthSherpa, Quotit and carrier links. CoDev doesn't include those engines, carrier contracts or leads: they come with your own licenses and accounts.
+6. **🔒 Privacy & backup.** A passphrase encrypts the whole desk and its documents (AES-256-GCM, key from PBKDF2), and the desk locks itself after 15 minutes idle. A forgotten passphrase can't be recovered. **Export backup** writes one file with everything (encrypted when a passphrase is set) that **Restore backup** opens on another device. Agents can't see client files until you turn on **Let agents use client files**, because the details they read go to your AI provider. With it on they get the `insurance_*` tools for insurance requests only, and can look clients up, add or update them (not commission rates), add notes, read alerts, quote and check commissions, but not delete anything or sign SOAs.
+
+The dates follow CMS and HealthCare.gov rules as of 2026. They're reminders, not compliance advice: your FMO and carriers have the final word. Tests: `node --test tests/insurance-desk.test.js`.
 
 ## Line tracking with The Odds API
 
@@ -114,11 +134,22 @@ Agents can compare every sportsbook's lines and player props, follow how they mo
 - `odds_lookup_list`: the players, props and lines worth checking on Outlier for a game: props whose line or odds moved, props where the books disagree, and props the juice leans on, each with the reason and every book's price. It ends with the legs ready for `outlier_research_list`, so an agent asked for a ticket goes straight to those players on Outlier.
 - `odds_player_props` and `odds_game_lines`: one game's props, or a sport's moneylines, spreads and totals, side by side at every book, with the best price for each side and the fair chance with the book's margin taken out.
 - `odds_line_movement`: how a line moved, snapshot by snapshot, book by book.
+- `odds_steam`: steam and sharp moves in the saved lines: several books moving the same way between two snapshots (steam when it's within 90 minutes), whether a sharp book like Pinnacle moved first, and sharp moves the other books haven't followed yet (a stale price to grab).
 - `odds_show_chart`, or **📉 View tracked lines** in Settings: a chart of a line at each book over time and a table comparing the books.
 
 **Credits.** The free plan has 500 credits a month. Listing games is free; a sport's game lines cost about 3 credits; a game's props cost 1 credit per stat (3 for the default stats). CoDev keeps them safe on its own: it saves every answer and reuses it (lines for 30 minutes, props for an hour), spreads the month's credits over its days, always keeps 25 back, and stops before going over. Settings shows how many are left. Each extra group of sportsbooks you tick (DFS apps, Pinnacle in Europe...) multiplies a call's cost. With **Re-check** on, CoDev takes a new snapshot of the lines agents looked at every few hours while it's open, using at most half of the day's credits, so movement builds up by itself.
 
 Without a key, or once the day's credits are used, agents read the odds on Outlier in the browser as before. The numbers are what the sportsbooks show, not picks.
+
+## CoDev's own prop model (free)
+
+The odds tools are the market side; this is the research side, so a prop can be checked with no Outlier visit. It needs nothing to set up: game logs come from ESPN's free public stats, and the market side uses whatever lines the odds tools saved.
+
+- `stats_player_log`: a player's game log, pulled automatically (NBA, WNBA, NCAAB, NFL, NCAAF, MLB, NHL): hit rate at the line over L5, L10, L20 and the whole log, average, median, the last 10 games, minutes trend, home/away and vs the opponent. Early in a season last season's games are added.
+- `model_prop_edge`: up to 8 legs at once. Each gets the game-log chance (a recency-weighted hit rate blended with a distribution fitted to the log), the market's no-vig chance at your line, a blend of the two (60% market to start), the edge and EV at your price or against a pick'em breakeven, a Kelly stake for priced bets, and a **market check**: the market agrees; money is moving against you; or a **possible trap**, when sharp money is on the other side or the log likes the leg far more than the books do (usually news the log can't see, like an injury or a role change).
+- `model_backtest`: every prop line CoDev saved is archived at its close when the game starts, settled from ESPN after the game, and the model is re-run on it with only the games before it. It reports bets, record and ROI at closing prices for a rule (minimum edge, L10 floor, side, stat), calibration, how the market alone, the game log alone and the blend compare, the best market weight (saved only when you ask and there are 100+ settled props), and your own picks' record and closing line value.
+
+**What free data can't match.** ESPN's stats JSON is unofficial and can change shape. The free Odds API plan gives snapshots every 30 minutes or more, not a live feed, so steam is seen after it happens rather than as it happens. US regions don't include Pinnacle; add the Europe region (more credits per call) to see which book moved first. There's no free source of public betting splits or ticket counts. The backtest starts empty and grows with every slate you track; trust it after a few hundred settled props. Tests: `node --test tests/prop-model.test.js`.
 
 ## Agents start blank
 
@@ -126,7 +157,7 @@ Every agent, the three built in (Architect, Swarm, Self-Healing) and any you add
 
 ## Reading screenshots (Dabble slips and more)
 
-You never upload anything: tell CoDev where the folder is, like you would Gemini. Either name its full path in the chat ("look in G:\My Drive\continuumUniverse\New folder and research the props"; the Windows app and CoDev opened from start-codev.bat can read any folder by path, images only), or click **📸** next to the chat box and pick it (on a phone, pick the screenshots themselves). CoDev remembers the folder, so after that "read my screenshots" is enough. Then ask in plain words: "look at my screenshots and research these props", or "read the newest 3 screenshots". The agent's `read_screenshots` tool sends the images, newest first, to the vision model, which writes down every leg on a slip (player, stat, line, Over/Under, sport, game) or the text of any other image. Prop legs go straight on to `outlier_research_list`, the same research a typed list gets. It reads every screenshot in the folder (up to 100), counts a leg that shows up on several screenshots once, and remembers what it already read, so when you swap screenshots in and out only the new ones go to the vision model. CoDev remembers the folder after a restart; the first time you ask after one, the browser asks you to allow it again. A Google Drive for Desktop folder (like `G:\My Drive\...`) works, online-only files included: they download as they're read, and a slow one is tried again. A folder inside your project works too ("read the screenshots in the Dabble folder"), and so do screenshots attached with 📎 (up to 50 in one message): the vision model reads them 3 at a time first, so the agent can still use its tools and gets each leg once.
+You never upload anything: tell CoDev where the folder is, like you would Gemini. Either name its full path in the chat ("look in G:\My Drive\continuumUniverse\New folder and research the props"; the Windows app and CoDev opened from start-codev.bat can read any folder by path, images only), or click **📸** next to the chat box and pick it (on a phone, pick the screenshots themselves). CoDev remembers the folder, so after that "read my screenshots" is enough. Then ask in plain words: "look at my screenshots and research these props", or "read the newest 3 screenshots". The agent's `read_screenshots` tool sends the images, newest first, to the vision model, which writes down every leg on a slip (player, stat, line, Over/Under, sport, game) or the text of any other image. Prop legs go straight on to `outlier_research_list`, the same research a typed list gets. It reads every screenshot in the folder (up to 100), counts a leg that shows up on several screenshots once, and remembers what it already read, so when you swap screenshots in and out only the new ones go to the vision model. CoDev remembers the folder after a restart; the first time you ask after one, the browser asks you to allow it again. A MEGAsync folder (like `C:\Users\me\MEGA\Screenshots`) or a Google Drive for Desktop folder (like `G:\My Drive\...`) works, online-only files included: they download as they're read, and a slow one is tried again. A folder inside your project works too ("read the screenshots in the Dabble folder"), and so do screenshots attached with 📎 (up to 50 in one message): the vision model reads them 3 at a time first, so the agent can still use its tools and gets each leg once.
 
 ## Big files, video, audio and pictures
 
@@ -136,15 +167,40 @@ One free key adds the rest: get a Gemini API key at [aistudio.google.com/apikey]
 
 Ask for a picture ("make a logo for my team", "draw this as a cartoon") and the agent's `generate_image` tool makes it with Pollinations (Flux), which is free and needs no key; without a key it allows about one picture every 15 to 45 seconds, and CoDev waits once and retries when it says to slow down. Gemini (Nano Banana) and OpenRouter can be picked in Settings instead, and are needed to edit an attached picture, but both cost money: Gemini's free tier has no image models, so a free Gemini key covers video, audio and scanned PDFs, not pictures. Pictures show under the reply; tap one to see it full size and download it. To keep usage down, one task makes at most 4 pictures and a day at most the limit in Settings (20 to start), and the Settings section shows today's count.
 
-## Google apps (YouTube, Maps, Gmail, Drive)
+## Google apps (YouTube, Maps, Gmail)
 
-Agents can search YouTube, find places and directions, and read Gmail and Google
-Drive. YouTube and Maps work with no setup through free basic versions (web
-search and OpenStreetMap). A Google API key gives full YouTube and Google Maps
-results, and signing in with Google adds Gmail and Drive. Sending email and saving
-to Drive are off unless you turn them on, and CoDev asks before each one. The
-one-time Google Cloud setup is in [docs/google-apps.md](docs/google-apps.md); then
-use **Settings > Google apps**.
+Agents can search YouTube, find places and directions, and read Gmail. YouTube and
+Maps work with no setup through free basic versions (web search and OpenStreetMap).
+A Google API key gives full YouTube and Google Maps results, and signing in with
+Google adds Gmail. Sending email is off unless you turn it on, and CoDev asks before
+each one. The one-time Google Cloud setup is in [docs/google-apps.md](docs/google-apps.md);
+then use **Settings > Google apps**.
+
+## MEGA cloud (replaces Google Drive)
+
+Agents can search and read the files in your MEGA cloud drive and, if you turn it
+on, save new files there (`mega_status`, `mega_search`, `mega_read_file`,
+`mega_save_file`). Sign in with your free MEGA account under **Settings > MEGA
+cloud**, on the computer or the phone; there's nothing to set up in a developer
+console. CoDev uses the free, open-source megajs SDK, keeps MEGA's session but
+never your password, asks before every save, and never changes or deletes existing
+files. With MEGAsync installed, its synced folder (`C:\Users\<you>\MEGA`) also works
+as a screenshots folder. Details in [docs/mega-cloud.md](docs/mega-cloud.md).
+
+## Notes and tables: Obsidian, CSV and JSON (replace Google Docs and Sheets)
+
+Agents read and write an [Obsidian](https://obsidian.md) vault, a folder of Markdown
+notes, in place of Google Docs, and CSV, TSV or JSON tables in the same folder in
+place of Google Sheets. `notes_search` finds notes by text or `#tag`, `notes_read`
+reads one with its `[[links]]` and backlinks, and `notes_write` creates a note, adds
+to it (at the end or under a heading), changes one piece of text or rewrites it.
+`table_read` does exact math over every row (filters, sums, averages, group totals),
+and `table_write` creates a table, adds, changes or deletes rows, or adds a column,
+keeping CSV as CSV and JSON as JSON. `notes_status` says where the vault is. Keep the
+vault in a MEGA folder (it works on the phone too, and MEGAsync puts it on your
+computer for Obsidian) or in the connected project folder, and pick it in **Settings >
+Notes & tables**. Editing is off until you turn it on there, and CoDev asks before
+every change. Details in [docs/notes-and-tables.md](docs/notes-and-tables.md).
 
 ## Memory, web reading and self-checks
 
@@ -203,7 +259,87 @@ In the Windows app and with `npm start`, agents also get tools that work with Go
 - **`godot_install_bridge`** copies the plugin to `addons/codev_bridge` and turns it on in `project.godot`. CoDev asks you first. Then open or reopen the project in Godot 4. The plugin listens on 127.0.0.1 only (port 6510 to 6519). Each time the editor starts, it writes a new random token to `.codev_bridge.json` in the project, which is added to `.gitignore`, and refuses any command without that token.
 - **`blender_run`** runs a bpy script in Blender in the background (`blender --background --python ...`) and saves the result into the project. If the output path ends in `.glb`, the scene is exported for Godot automatically. CoDev asks you before every run, because the script is Python running on your computer. CoDev's own keys are taken out of the environment of Blender and Godot.
 
+### Scene dressing: furnishing rooms from your own assets
+
+Agents can furnish and arrange a 3D scene with the models already in your project, put things where they'd really go, and adapt to what you change. It's all local code in `desktop/gamedev` (`asset-index.js`, `scene-dressing.js`): free, no model or service is called, and the same seed gives the same layout.
+
+- **`scene_assets`** scans every `.glb`/`.gltf` model and `.png`/`.jpg` texture in the project and works out what each one is from the file itself, with no manifest or naming rules: its kind (desk, desk lamp or floor lamp, office chair, rug...), its real size in meters from the geometry (a model exported in centimeters is spotted and scaled), its materials, its colors (embedded PNG textures are averaged) and its style (retro, modern, industrial, wood, chrome, dark, warm...). A plain "lamp" 0.45 m tall is a desk lamp and one 1.6 m tall is a floor lamp. Only changed files are read again. **search** finds "80s desk lamp" or "dark wood table".
+- **`scene_dress`** places things by built-in rules: lamps, monitors and mugs stand on the desk's measured top, the office chair is tucked in front of the desk facing it, chairs go around a dining table, nightstands beside the head of the bed, rugs under tables, pictures on the wall above the sofa, plants in corners. Nothing overlaps, everything stays inside the room, and big furniture keeps a walkway clear in front. It picks the assets that match the style asked for and what you've shown you like, and builds on the open scene (a desk already there gets the lamp rather than a second desk). Rooms: `office`, `bedroom`, `living_room`, `dining_room`, `kitchen`, or any list of items. Kinds missing from your library get gray placeholder boxes. In Godot it places everything under a `Dressing` node in the open editor (then `save_scene`); for Blender it writes a bpy script for `blender_run`.
+- **Learning from your edits.** Every placement is logged. Before each new dressing (and on **`scene_learn`**), CoDev compares the open scene with the log: a prop you moved teaches where that kind of thing goes on that kind of surface, one you deleted counts against that asset and its look (decor you keep deleting is left out after twice), an asset you swapped in is preferred next time along with its style, and a prop you put on a surface teaches a new "goes on" rule. `scene_learn` also takes feedback in words ("more wood", "I don't like this lamp") and corrections ("this is a nightstand"). It's kept in the project's `.codev/scene/` folder, so committing it shares the taste with a team.
+- **`scene_edit`** works the way furniture does: **clear** takes everything off a surface and keeps the surface, **remove** takes a thing away with what's on it, **move** carries what's on it along.
+
+The CoDev Bridge plugin now reports world positions; run `godot_install_bridge` again in a project that has the older one. Shelf levels, wall-mounted lights and Unreal or Maya aren't covered yet. Tests: `node --test tests/scene-dressing.test.js` (it builds its own `.glb` files and uses a stand-in editor).
+
 CoDev looks for Godot and Blender on the PATH, in their usual install folders, and for Godot also in Downloads and Desktop (`Godot_v4...exe`). Set `CODEV_GODOT_PATH` or `CODEV_BLENDER_PATH` in `.env` (or Windows' environment variables) to point at a specific one. Tasks that mention Blender, bpy or glTF also get a short bpy reference with the game engine guide. Tests: `node --test tests/gamedev.test.js` (it uses stand-in Godot and Blender, so neither has to be installed).
+
+## Game art pipeline (skins, textures, 3D, marketing)
+
+CoDev covers what an AI creative platform like Layer does for cosmetics and skins, with free, open-source tools that run on your own computer. Agents get the `art_*` tools in the Windows app and with `npm start`/`start-codev.bat`, and Claude Code or Cursor can drive the same tools through `codev-mcp.js`. Ask in plain words ("pitch 4 directions for a mech knight skin", "weather these plates from new to battle-damaged", "rig this armour on our base character") and the agent picks the tools. `art_status` says what is installed and what each missing piece unlocks.
+
+**What it runs on.** Everything is optional. Without any of it, concepts still come from the free Pollinations service, and PBR maps, weathering, reframing, upscaling and sound effects run on Python.
+
+| Tool | Free from | Unlocks |
+| --- | --- | --- |
+| Python 3 + `pip install numpy pillow rembg` | python.org | PBR maps, weathering, cut-outs, contact sheets, sound effects |
+| ComfyUI | github.com/comfyanonymous/ComfyUI or the ComfyUI Desktop app | every checkpoint you install (FLUX, SDXL, your own), LoRAs, inpainting, try-on, sketch-to-image, outpainting. Add ComfyUI_IPAdapter_plus for style references and outfit pictures, and a scribble/lineart ControlNet for sketches |
+| kohya sd-scripts / ostris ai-toolkit | GitHub | training style, character and edit LoRAs on your GPU |
+| Blender 4 | blender.org | remesh, UVs, PBR baking, rigging, retargeting |
+| Real-ESRGAN ncnn, Piper, FFmpeg, Coqui TTS | GitHub / ffmpeg.org / pip | 4x upscaling, offline voice lines, voice filters, consented voice cloning |
+
+Point CoDev at them in `.env` (see `.env.example`): `CODEV_COMFYUI_URL`, `CODEV_COMFYUI_DIR`, `CODEV_KOHYA_DIR`, `CODEV_AITOOLKIT_DIR`, `CODEV_REALESRGAN_PATH`, `CODEV_PIPER_PATH`, `CODEV_PIPER_VOICES`, `CODEV_FFMPEG_PATH`, `CODEV_TTS_PATH`, `CODEV_PYTHON`.
+
+**Layer 1: your studio's look.**
+- `art_lora_train` trains a style or character LoRA from your own art (kohya on SDXL/SD 1.5, ai-toolkit on FLUX). It can also train an edit LoRA from before/after pairs (FLUX Kontext or Qwen-Image-Edit), which learns a post-processing pass like your colour grade, edge highlights or weathering.
+- "prepare" lays out the dataset and picks the settings from the picture count and your GPU memory. "start" trains in the background. When it's done, the LoRA is copied into ComfyUI and attached to the style.
+- `art_captions` reviews the captions: missing ones, missing trigger words, style words that would leak, duplicates, pictures too small. "auto" captions with BLIP.
+- `art_style` clones a style on the spot from a few reference pictures. It saves the references and palette under a name that every generation can use.
+
+**Layer 2: concepts.**
+- `art_generate` pitches several directions across several models in one call, with your style, LoRA and references applied, and shows a contact sheet.
+- `art_edit` inpaints part of a picture (swap a pauldron, recolour a visor) or reworks the whole picture.
+- `art_try_on` fits an outfit or armour onto a character's pose inside their silhouette.
+- **🖍️ Sketch to image** in the menu is a drawing pad that redraws your sketch in the studio style each time you pause (ComfyUI; a turbo or schnell model keeps it near real time).
+
+**Layer 3: 3D and surfaces.**
+- `art_materials` makes up to 40 tileable material concepts at once, each with a full PBR set.
+- `art_pbr_maps` turns any texture into albedo, normal, roughness, metallic, AO, height, curvature and a Godot ORM map.
+- `art_weathering` ages a texture set from factory-fresh through light, worn and battle-damaged to ruined: chipped edges, scratches, rust in cavities, scorch, grime and dust.
+- `art_mesh` works in Blender:
+  - "cleanup" repairs raw AI meshes and decimates them to your triangle budget.
+  - "uv" unwraps and packs.
+  - "bake" bakes PBR maps, from a high-poly when you have one.
+  - "rig" copies a base character's skin weights onto a cosmetic mesh.
+  - "retarget" moves animations from another skeleton (Mixamo, Rigify and UE names are matched).
+
+  Each one exports a `.glb` for Godot and reports triangle, material and bone counts against the budgets.
+
+**Into Godot, in one command.**
+- `art_godot_skin` installs a finished skin in the Godot 4 project as an equippable item:
+  - It copies the `.glb`, its textures and an icon into `assets/skins/<character>/<id>/`.
+  - It writes one ORMMaterial3D per weathering stage.
+  - It adds the skin to `data/skin_manifest.json` (id, character, slot, tier and rarity, model, materials, icon, stats, triangle and bone counts).
+  - It keeps a `SkinRegistry` autoload: `SkinRegistry.equip($Relay, "relay_chest_aegis_epic", "battle")` puts the skin on the child node named after its slot (a BoneAttachment3D works). A rigged skin binds to the character's skeleton instead.
+- `art_skin_pipeline` runs the whole chain from one brief ("three tier-3 epic variants of Relay's A.E.G.I.S. armour"): concepts, a PBR material per variant, the mesh cleaned to budget and UV-unwrapped, the material put on it (`art_mesh` op "texture"), weathering stages, rigging onto the base character, and the Godot install.
+- Folders, slots and tiers are in the `godot` section of `codev-studio.json`.
+
+**On canon.** The art tools read the universe bible: the Obsidian vault in `lore/` and Story Studio's `game_data/story_bible.json` (set other places in the `lore` section of `codev-studio.json`). When a brief names a character, item, place or faction, or an alias from a note's `aliases:`, `art_generate` and `art_skin_pipeline` add how it looks (its Appearance or Description) to the prompt and say so in the reply, so a skin for Relay starts from Relay's canon look. Pass `lore: false` to skip it. `art_lore` lets an agent, Claude Code or Cursor read an entry first.
+
+**Layer 4: marketing.**
+- `art_playable_ad` builds an offline, single-file MRAID playable (reveal, equip, runner or spin template) ending on a store card.
+- `art_reframe` expands key art to 9:16, 1:1, 4:5, 16:9, 1.91:1 and more without stretching it.
+- `art_cutout` removes backgrounds in batches, and `art_upscale` upscales 2x or 4x.
+- `art_audio` says barks with Piper, applies robot/mech/radio/helmet/hologram voice filters and makes sound effects.
+- `art_voice_clone` only clones a voice whose owner agreed. You're asked every time, and consent is logged. XTTS-v2's licence is non-commercial.
+
+**Layer 5: the bridge and the studio's memory.**
+- `codev-studio.json` in the project holds the art direction, saved styles, triangle budgets per category (Godot 4 mobile to start), texture size, bone and material limits, the naming pattern, output folders and free-text notes. Every art tool follows it, and `art_rules` reads and changes it.
+- `codev-mcp.js` serves all the art tools and the Godot/Blender tools to Claude Code, Cursor or Claude Desktop, with those rules as its instructions:
+
+```
+claude mcp add codev -- node C:\path\to\CoDev_cloud\codev-mcp.js --workspace C:\path\to\game
+```
+
+Tests: `node --test tests/creative.test.js` (stand-in ComfyUI, Blender and trainer; the Python tests run when numpy and Pillow are installed).
 
 ## Agent sandboxes and change review
 
@@ -216,6 +352,17 @@ On a computer (the Windows app, or `server.js`), agents can work in a sandbox in
 Without Docker, the staging copy and the review still work, and `run_command` runs on your computer instead, in the staging copy (never your real folder), with CoDev's own keys removed from its environment. There's no container around it, so CoDev asks you before each command unless it's a plain test, build or check step of the project's own tooling (`npm test`, `npm run build`, `pytest`, `dotnet build`, `cargo test`, `git status` and the like, with no `&&`, pipes or redirects) and **Run file edits and commands without asking me first** is on. Docker stays the safer choice: when it's running, commands go to the container as before. The status says whether Docker is missing or just not running. The Android app and the web version have no sandbox, since a phone or a browser tab can't run Docker.
 
 Tests: `node --test desktop/sandbox/test/sandbox.test.js` (the container tests run when Docker is running).
+
+## Files, scraping, parallel workers and wide research
+
+Agents finish jobs as real products, not text to copy:
+
+- **Native files.** `create_spreadsheet` makes an Excel workbook (`.xlsx`) with several sheets, working formulas (also across sheets), currency, percent and date formats, a styled header with filters and frozen panes, and an optional totals row. CoDev also works out the common formulas itself (arithmetic, `SUM`, `AVERAGE`, `MIN`, `MAX`, `COUNT`, `ROUND`, `IF`, `IFERROR`...), stores the results so phone and mail previews show numbers, and tells the agent each formula's value, so a wrong range or a `#DIV/0!` is fixed before you open the file. `create_slides` makes a 16:9 PowerPoint deck (title, section, bullets, table, big-number and column slides, five color themes, speaker notes). `create_document` turns Markdown into a Word document (headings, lists, tables, quotes, code). `create_csv` writes a CSV that Excel opens with the right characters. `create_web_app` builds an app, site, dashboard or game from its files, checks every script for syntax errors and every link for missing files, and hands you a live preview (in a sandbox that can't reach CoDev or its storage) and a `.zip` ready to drag onto Netlify Drop or upload to GitHub Pages. Each file shows under the reply: tap it to preview, download, or share it on the phone. Everything is built on your device by `mobile/www/agent-ui/file-builder.js`, with no library, server or upload.
+- **Web pages into tables.** `browser_extract` (in the agents' browser on the computer and on the phone) reads the rendered page after its scripts ran and finds the data on its own: schema.org data (products, offers, events, jobs, places), tables and ARIA grids, and repeated cards like product grids, search results and listings. Ask for fields (`name`, `price`, `rating`, `url`...) and it maps them by name and by what the values look like. It follows **Next** links and buttons for several pages, presses **Load more**, scrolls infinite feeds, and drops duplicate rows. When a saved selector stops matching because a site was redesigned, it finds the data again and says so. It doesn't solve CAPTCHAs or get around bot checks: a page that shows one is handed to you in the live view. All rows are kept as a dataset (`list_datasets`) that `create_spreadsheet` and `create_csv` take directly, so the agent never retypes them (`mobile/www/agent-ui/page-extract.js`).
+- **Planner and parallel workers.** For a job with separable parts, the agent plans it and calls `delegate_tasks`: worker agents with the same tools (each with its own browser, starting signed out) run the parts at the same time, steps that need other steps' results wait for them, and each result is checked against what it was meant to deliver. A result that falls short, or a worker that hit an error, is retried once with the problem spelled out so it tries another source or method; tasks whose prerequisites failed are skipped and reported. The agent's card shows the board of tasks while they run. Up to 2 workers at a time on Groq, 4 on OpenRouter and 5 on Anthropic, within the spending limits: CoDev starts no new worker once the task or daily limit is reached.
+- **Wide research.** `wide_research` fills the same fields for many items at once (companies, products, people, schools, stocks...), 3 to 8 at a time by provider and up to 20, 60 or 100 items. Give it the items, or `discover` ("the 30 largest US credit unions") and it builds the list from the web first. Each item gets a search, its best pages read, and a row filled from those sources only, with the sources kept; an item with gaps gets a second, targeted search, and what the sources don't give stays empty instead of guessed. The table is a dataset for a spreadsheet, and the report says how complete each field is (`mobile/www/agent-ui/task-runner.js`).
+
+Tests: `node --test tests/file-builder.test.js tests/page-extract.test.js tests/task-runner.test.js tests/made-files.test.js`.
 
 ## Agents' web browser
 
@@ -231,7 +378,7 @@ The browser is Playwright's Chromium (`npx playwright install chromium`, which `
 
 **Browsing yourself.** Pick any agent in the live view's list, even one whose browser isn't open, and type in the address bar: a full address, a bare domain (`espn.com`), a shortcut (`outlier`, `espn`) or words to search for (DuckDuckGo). That opens the browser with you in control, so you can search, sign in or set up a page before the agent starts. A page that doesn't load, returns 404, or turns out to be a parked "this domain is for sale" page (GoDaddy, Sedo, Afternic…) opens with a warning instead of passing as the real site. When an agent's `browser_navigate` or an Outlier scrape lands on one (or Outlier redirects to its sign-in page), the browser isn't closed: it stays open on that page, paused and handed to you in the live view (which opens on it), and the agent is told to wait; it can't close a paused browser, and idle browsers that are paused aren't closed either. Fix the address or sign in, then press **Hand back**. Addresses on outlierbet.com (and similar look-alikes) always go to Outlier's real sign-in portal, https://app.outlier.bet/login. On CoDev's server the list also has **📈 Outlier (signed in)**: the Outlier pipeline's own browser with your saved sign-in. Browse it yourself (or press **🖥️ Browse** in the Outlier view, which opens it at Outlier's sign-in portal, https://app.outlier.bet/login), then **📄 Read this page** adds the props on the open page to the analysis without taking the browser from you; **Scrape & analyze** reads your configured pages in a background tab while you browse. Agents can run the same extraction on their own browser with `outlier_extract_page`, never on the signed-in one.
 
-**On the Android app.** Agents get a browser on the phone too, with the same tools, live view and saved logins. It is the phone's own browser engine (Android WebView) running inside CoDev, out of sight while you chat, so nothing runs on a computer or in the cloud. Tap the 🖥️ computer icon to watch an agent's browser, or to open one yourself on a search page with no task running. **✋ Take over** puts the real browser over CoDev, full screen: tap, scroll and type with your own keyboard (and your password manager), then press **↩ Hand back** at the top, or the phone's back button on the first page. While you have it, the agent keeps working in a background tab, as on the computer. Sites you sign in to stay signed in between tasks and restarts. On a phone the agents share one set of sign-ins (sign in once, every agent can use it), kept apart from CoDev's own storage where the phone's WebView supports separate profiles (Android System WebView 128 or newer). **🧹 Forget sign-ins** signs every agent's browser out. Saved logins are encrypted with a key in the phone's secure key store, and the app types the password into the login's own site itself. `browser_save_session` and `browser_load_session` aren't on the phone, because sign-ins already stay. Screenshots show the visible part of the page and aren't saved to a folder. Some sites, Google's own sign-in among them, refuse to sign in inside an app's built-in browser; for Gmail and Drive use **Settings > Google apps**, which signs in through the phone's normal browser.
+**On the Android app.** Agents get a browser on the phone too, with the same tools, live view and saved logins. It is the phone's own browser engine (Android WebView) running inside CoDev, out of sight while you chat, so nothing runs on a computer or in the cloud. Tap the 🖥️ computer icon to watch an agent's browser, or to open one yourself on a search page with no task running. **✋ Take over** puts the real browser over CoDev, full screen: tap, scroll and type with your own keyboard (and your password manager), then press **↩ Hand back** at the top, or the phone's back button on the first page. While you have it, the agent keeps working in a background tab, as on the computer. Sites you sign in to stay signed in between tasks and restarts. On a phone the agents share one set of sign-ins (sign in once, every agent can use it), kept apart from CoDev's own storage where the phone's WebView supports separate profiles (Android System WebView 128 or newer). **🧹 Forget sign-ins** signs every agent's browser out. Saved logins are encrypted with a key in the phone's secure key store, and the app types the password into the login's own site itself. `browser_save_session` and `browser_load_session` aren't on the phone, because sign-ins already stay. Screenshots show the visible part of the page and aren't saved to a folder. Some sites, Google's own sign-in among them, refuse to sign in inside an app's built-in browser; for Gmail use **Settings > Google apps**, which signs in through the phone's normal browser, and for cloud files **Settings > MEGA cloud**.
 
 A browser tab with no CoDev server behind it has no browser tools: a web page can't start a browser of its own.
 

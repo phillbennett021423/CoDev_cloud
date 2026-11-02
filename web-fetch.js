@@ -6,6 +6,8 @@ const DDG_HTML_URL = 'https://html.duckduckgo.com/html/';
 const TIMEOUT_MS = 10000;
 const TAVILY_SEARCH_URL = 'https://api.tavily.com/search';
 const ODDS_API = /^https:\/\/api\.the-odds-api\.com\/v4\/sports(\/|\?)/;
+// ESPN's free public stats JSON, for the prop model's game logs (agent-ui/prop-model.js).
+const ESPN_API = /^https:\/\/site\.(web\.)?api\.espn\.com\/apis\//;
 const MAX_BYTES = 3 * 1024 * 1024;
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
 
@@ -89,6 +91,13 @@ async function handleWebFetch(message) {
             const headers = {};
             for (const name of ['x-requests-remaining', 'x-requests-used', 'x-requests-last']) if (response.headers.get(name) != null) headers[name] = response.headers.get(name);
             return { status: response.status, url, contentType: response.headers.get('content-type') || '', html: await response.text(), headers };
+        }
+        // ESPN's stats JSON for the prop model: only its public API hosts.
+        if (message?.kind === 'espn') {
+            const url = String(message.url || '');
+            if (!ESPN_API.test(url)) return { error: 'Only ESPN\'s stats API is fetched this way.' };
+            const response = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS), headers: { 'User-Agent': USER_AGENT } });
+            return { status: response.status, url, contentType: response.headers.get('content-type') || '', html: await response.text() };
         }
         if (message?.kind === 'page') {
             const page = await fetchText(String(message.url || ''));

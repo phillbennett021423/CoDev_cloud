@@ -949,7 +949,7 @@
         return clip(`\n\n[Code map] ${out.join("\n")}`, maxChars);
     }
 
-    const GAME_TASK = /\b(godot|gdscript|gdshader|tscn|tres|shaders?|glsl|hlsl|CharacterBody[23]D|RigidBody[23]D|Area[23]D|move_and_slide|MoveAndSlide|_physics_process|PhysicsProcess|quaternions?|euler angles?|transform3d|basis|raycasts?|hit ?box(es)?|hurt ?box(es)?|frame[- ]data|state machines?|game ?engines?|game ?loop|fixed ?time ?step|collisions?|rigid ?body|kinematic|physics (loop|engine|step|tick)|inverse kinematics|netcode|rollback|unity|unreal|monogame|bevy|raylib|sdl2?|blender|bpy|gltf|glb)\b|\.(gd|gdshader|tscn|tres|glb|gltf|blend)\b/i;
+    const GAME_TASK = /\b(godot|gdscript|gdshader|tscn|tres|shaders?|glsl|hlsl|CharacterBody[23]D|RigidBody[23]D|Area[23]D|move_and_slide|MoveAndSlide|_physics_process|PhysicsProcess|quaternions?|euler angles?|transform3d|basis|raycasts?|hit ?box(es)?|hurt ?box(es)?|frame[- ]data|state machines?|game ?engines?|game ?loop|fixed ?time ?step|collisions?|rigid ?body|kinematic|physics (loop|engine|step|tick)|inverse kinematics|netcode|rollback|unity|unreal|monogame|bevy|raylib|sdl2?|blender|bpy|gltf|glb|scene ?dress(ing)?|set ?dress(ing)?|furnish(ing)?|level ?dressing|3d props?)\b|\.(gd|gdshader|tscn|tres|glb|gltf|blend)\b/i;
     const BLENDER_TASK = /\b(blender|bpy|gltf|glb|\.blend)\b/i;
 
     function isGameTask(text) { return GAME_TASK.test(String(text || "")); }
@@ -1006,6 +1006,12 @@ LIVE EDITOR AND BLENDER (Windows app or CoDev on the computer)
 - godot_editor controls the open Godot editor through the CoDev Bridge plugin: inspect the scene_tree, add_node, instantiate scenes and .glb models, set_property, play and stop, save_scene. If it says the plugin is missing, call godot_install_bridge (the user approves) and ask the user to reopen the project. Keep the game loop in GDScript/C#; use the bridge for one-off edits, never frame-by-frame control.
 - blender_run runs a bpy script in Blender in the background and saves to the project (output: "assets/models/x.glb" exports glTF for Godot). Then godot_editor "rescan" imports it and "instantiate" places it. Model in meters, +Z up in Blender (the glTF exporter converts to Godot's +Y up), apply transforms before export, name objects clearly (suffix -col makes Godot generate collision, -rigid a rigid body, -noimp skips the node).
 
+SCENE DRESSING (furnishing rooms and placing props from the user's own assets)
+- scene_assets says what every .glb/.gltf and texture in the project is, worked out from the files (kind, real size in meters, units, materials, colors, style). Use it instead of guessing from file names; search it for "80s desk lamp" or "dark wood table".
+- scene_dress places things by real-world rules (lamps and monitors on the desk top, chairs facing desks and around tables, nightstands by the bed's head, rugs under tables, pictures above the sofa), never overlapping, inside the room, matching the style asked for and what the user has liked. Turn the request into a preset (office, bedroom, living_room, dining_room, kitchen) and/or items like {"category": "desk_lamp", "on": "Desk"}; pass the room size when the user gives it. target "godot" places it in the open editor (then godot_editor save_scene); "blender" returns a bpy script for blender_run.
+- It learns by itself from what the user moved, deleted or swapped; scene_learn shows what it learned and takes feedback in words ({"style": "more wood", "verdict": "like"}) or corrections ({"asset": ..., "category": ...}). When the user says "I don't like X", record it with scene_learn rather than only changing the scene.
+- scene_edit clears a surface, removes something with what's on it, or moves it with what's on it. Use it rather than godot_editor remove_node for furniture.
+
 OTHER ENGINES: Unity physics in FixedUpdate with Rigidbody (not transform) moves; Unreal uses Tick(DeltaSeconds) and UPROPERTY for editor values. Same math and fixed-step rules.`;
 
     const BLENDER_GUIDE = `BLENDER (bpy, Blender 4.x) for blender_run
@@ -1043,19 +1049,19 @@ OTHER ENGINES: Unity physics in FixedUpdate with Rigidbody (not transform) moves
         return [
             {
                 name: "code_map",
-                description: "Get a map of the user's project: languages and size, the Godot version, main scene and autoloads when it's a Godot game, the most depended-on files, and every file with its functions/classes (with line numbers) and which files it uses and is used by. Call it first on an unfamiliar or large project; pass focus to zoom into a folder, file name or symbol.",
+                description: "Get a map of the user's project: languages and size, the Godot version, main scene and autoloads when it's a Godot game, the most depended-on files, and every file with its functions/classes (with line numbers) and which files it uses and is used by. Call it first on an unfamiliar or large project; pass focus to zoom into a folder, file name or symbol. Once per task is usually enough: don't call it again instead of find_symbol or file_outline.",
                 inputSchema: { type: "object", properties: { focus: { type: "string", description: "Optional: a folder (\"scripts/player\"), part of a file name, or a symbol name to limit the map to." } } },
                 run: withIndex((index, { focus }) => codeMap(index, { focus }))
             },
             {
                 name: "find_symbol",
-                description: "Find where a function, class, method, signal, variable or node is defined and every line that uses it, across all project files (scripts, scenes and shaders). Use it before renaming or changing a signature, to find every caller, and to check that nothing still uses old code.",
+                description: "Find where a function, class, method, signal, variable or node is defined and every line that uses it, across all project files (scripts, scenes and shaders). Use it before renaming or changing a signature, to find every caller, and to check that nothing still uses old code. It matches whole names only: for a phrase, a message or a setting value use search_files or search_workspace instead.",
                 inputSchema: { type: "object", properties: { name: { type: "string", description: "The exact name, like take_damage, PlayerController or health_changed." } }, required: ["name"] },
                 run: withIndex((index, { name }) => findSymbol(index, name))
             },
             {
                 name: "file_outline",
-                description: "Outline one project file: its functions, classes, signals and other symbols with their line ranges, what it imports or loads, and which files depend on it. Use it to find the lines to read in a long file.",
+                description: "Outline one project file: its functions, classes, signals and other symbols with their line ranges, what it imports or loads, and which files depend on it. Use it to find the lines to read in a long file, then read_lines for just those lines. Not needed for short files: read them whole.",
                 inputSchema: { type: "object", properties: { path: { type: "string", description: "The file path (a res:// path or just the file name works when it's unique)." } }, required: ["path"] },
                 run: withIndex((index, { path }) => fileOutline(index, path))
             },
@@ -1071,13 +1077,13 @@ OTHER ENGINES: Unity physics in FixedUpdate with Rigidbody (not transform) moves
             },
             {
                 name: "architecture_review",
-                description: "Review the project's structure for technical debt: copy-pasted code blocks, the same function or class defined in several files, functions and classes nothing uses, import cycles, very large files and very long functions, and the files most of the project depends on. Use it for cleanup, refactoring or architecture questions, and after a big change to check nothing redundant was added.",
+                description: "Review the project's structure for technical debt: copy-pasted code blocks, the same function or class defined in several files, functions and classes nothing uses, import cycles, very large files and very long functions, and the files most of the project depends on. Use it for cleanup, refactoring or architecture questions, and after a big change to check nothing redundant was added. Not for finding bugs in one function: read the code instead. Its findings are leads: check each in the code before you change it.",
                 inputSchema: { type: "object", properties: { focus: { type: "string", description: "Optional: limit the findings to paths containing this text, like a folder name." } } },
                 run: withIndex((index, { focus }) => architectureReview(index, { focus }))
             },
             {
                 name: "godot_check",
-                description: "Check Godot files without running Godot: GDScript (Godot 3 code in a Godot 4 project, mixed indentation, physics in _process, frame-rate dependent movement), C# (missing partial or override, struct field assignment, float delta), shaders (missing shader_type, GLSL-isms, int literals in float math, Godot 3 hints) and res:// paths that don't exist. Run it on every Godot file you change.",
+                description: "Check Godot files without running Godot: GDScript (Godot 3 code in a Godot 4 project, mixed indentation, physics in _process, frame-rate dependent movement), C# (missing partial or override, struct field assignment, float delta), shaders (missing shader_type, GLSL-isms, int literals in float math, Godot 3 hints) and res:// paths that don't exist. Use it on every Godot file you change, before you finish. It is a static check: to catch real parse and runtime errors, also call godot_validate when it is available.",
                 inputSchema: { type: "object", properties: { path: { type: "string", description: "Optional: a file or folder to check; leave it out to check the whole project." } } },
                 run: withIndex((index, { path }) => godotCheck(index, path))
             }
@@ -1097,6 +1103,10 @@ OTHER ENGINES: Unity physics in FixedUpdate with Rigidbody (not transform) moves
         if (name === "godot_validate") return `🎮 Running Godot headless to check ${Array.isArray(args.files) && args.files.length ? args.files.join(", ") : "the scripts"}`;
         if (name === "godot_editor") return `🎮 Godot editor: ${args.action}${args.args && (args.args.path || args.args.node || args.args.name) ? ` ${args.args.path || args.args.node || args.args.name}` : ""}`;
         if (name === "godot_install_bridge") return "🎮 Installing the CoDev Bridge plugin (asks you first)";
+        if (name === "scene_assets") return args.action === "search" ? `🪑 Searching your 3D assets for ${args.query || args.category || (args.tags || []).join(", ")}` : "🪑 Scanning your 3D assets";
+        if (name === "scene_dress") return `🛋️ Dressing the scene${args.preset ? ` as a ${String(args.preset).replace(/_/g, " ")}` : ""}${args.target === "blender" ? " for Blender" : args.target === "plan" ? " (plan only)" : " in Godot"}`;
+        if (name === "scene_edit") return `🛋️ ${args.action === "move" ? "Moving" : args.action === "clear" ? "Clearing" : "Removing"} ${args.node}${args.action === "clear" ? "" : " with what's on it"}`;
+        if (name === "scene_learn") return "🧠 Learning from your scene edits";
         if (name === "blender_run") return `🧊 Running Blender${args.output ? ` to make ${args.output}` : ""} (asks you first)`;
         return "";
     }

@@ -130,7 +130,7 @@ test('server.js\'s agent-tools router offers the game tools', async () => {
     const dir = project();
     const router = await loadServices({ workspace: { root: dir } }, { log: () => {}, specs: [{ name: 'gamedev', module: path.join(__dirname, '..', 'agents', 'gamedev') }] });
     const list = await router.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-    assert.deepEqual(list.result.tools.map(t => t.name), ['gamedev_status', 'godot_validate', 'godot_editor', 'godot_install_bridge', 'blender_run']);
+    assert.deepEqual(list.result.tools.map(t => t.name), ['gamedev_status', 'godot_validate', 'godot_editor', 'godot_install_bridge', 'blender_run', 'scene_assets', 'scene_dress', 'scene_edit', 'scene_learn']);
     const status = await router.handle({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'gamedev_status', arguments: {} } });
     assert.match(status.result.content[0].text, /Godot project: .*game/);
     await router.close();
