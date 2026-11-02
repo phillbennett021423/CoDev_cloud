@@ -21,6 +21,7 @@ Nothing here goes online. Commands:
   contact       a labelled contact sheet of pictures
   box_mask      a white-on-black mask for a box in a picture
   region_mask   a try-on mask: a body region of a character, inside its silhouette
+  thumb         a square icon from a picture
   sfx           procedural sound effects (whoosh, zap, power_up, impact, hum,
                 servo, shield, coin, explosion, laser)
 """
@@ -443,6 +444,17 @@ def cmd_region_mask(a):
     mask = Image.fromarray((m * sil_grown * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(float(a.get("feather", 4))))
     save(mask.convert("RGB"), a["output"])
     return {"ok": True, "files": {"mask": a["output"]}, "box": [int(xs.min()), y0, int(xs.max()), y1]}
+
+
+def cmd_thumb(a):
+    """A square icon: the picture fitted on a transparent (or given) background."""
+    img = Image.open(a["input"]).convert("RGBA")
+    size = int(a.get("size", 256))
+    img.thumbnail((size, size), Image.LANCZOS)
+    bg = Image.new("RGBA", (size, size), tuple(a.get("background", (0, 0, 0, 0))))
+    bg.paste(img, ((size - img.width) // 2, (size - img.height) // 2), img)
+    save(bg, a["output"])
+    return {"ok": True, "files": {"icon": a["output"]}}
 
 
 def cmd_size(a):

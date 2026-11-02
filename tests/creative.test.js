@@ -412,3 +412,108 @@ test('the Windows app path: handleMcp adds art tools to the list and answers the
     const call = await svc.handleMcp({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'art_rules', arguments: { op: 'name', name: 'a' } } }, next);
     assert.equal(call.result.content[0].text, 'a');
 });
+
+test('Godot skin files: ORM materials, manifest upserts, the autoload entry and the registry script', () => {
+    const G = require('../desktop/creative/godot-skins');
+    const tres = G.materialTres({ albedo: 'res://a.png', orm: 'res://o.png', normal: 'res://n.png', tile: 2 });
+    assert.match(tres, /^\[gd_resource type="ORMMaterial3D" load_steps=4 format=3\]/);
+    assert.match(tres, /\[ext_resource type="Texture2D" path="res:\/\/o.png" id="2"\]/);
+    assert.match(tres, /orm_texture = ExtResource\("2"\)\nmetallic = 1.0/);
+    assert.match(tres, /normal_enabled = true\nnormal_texture = ExtResource\("3"\)/);
+    assert.match(tres, /uv1_scale = Vector3\(2, 2, 1\)/);
+    let m = G.upsertManifest('', { id: 'relay_chest_a', character: 'relay', slot: 'chest', created: 't1' });
+    m = G.upsertManifest(m, { id: 'relay_helmet_b', character: 'relay', slot: 'helmet', created: 't2' });
+    m = G.upsertManifest(m, { id: 'relay_chest_a', character: 'relay', slot: 'chest', name: 'New', created: 't3' });
+    const data = JSON.parse(m);
+    assert.equal(data.version, 1);
+    assert.deepEqual(data.skins.map(s => s.id), ['relay_chest_a', 'relay_helmet_b']);
+    assert.equal(data.skins[0].name, 'New');
+    assert.equal(data.skins[0].created, 't1', 'first install time kept');
+    assert.throws(() => G.upsertManifest('{"items": []}', { id: 'x' }), /no "skins" list/);
+    assert.throws(() => G.upsertManifest('{oops', { id: 'x' }), /isn't valid JSON/);
+    const fresh = G.addAutoload('config_version=5\n\n[application]\nconfig/name="G"\n', 'SkinRegistry', 'res://s.gd');
+    assert.match(fresh, /\[autoload\]\n\nSkinRegistry="\*res:\/\/s.gd"\n$/);
+    const other = G.addAutoload('[autoload]\n\nAudio="*res://audio.gd"\n\n[rendering]\nx=1\n', 'SkinRegistry', 'res://s.gd');
+    assert.match(other, /Audio="\*res:\/\/audio.gd"\nSkinRegistry="\*res:\/\/s.gd"\n\n\[rendering\]\nx=1/);
+    assert.equal(G.addAutoload(other, 'SkinRegistry', 'res://s.gd'), other);
+    const gd = G.registryScript('res://data/skin_manifest.json');
+    assert.match(gd, /^extends Node/);
+    assert.match(gd, /const MANIFEST := "res:\/\/data\/skin_manifest.json"/);
+    assert.match(gd, /func equip\(character_node: Node3D, skin_id: String, variant: String = ""\) -> Node3D:/);
+    assert.ok(!/^ {2,}\S/m.test(gd), 'GDScript indented with tabs only');
+});
+
+function godotProject() {
+    const dir = project();
+    fs.mkdirSync(path.join(dir, 'game'));
+    fs.writeFileSync(path.join(dir, 'game', 'project.godot'), 'config_version=5\n\n[application]\n\nconfig/name="Continuum"\n');
+    return dir;
+}
+
+test('art_godot_skin installs an equippable skin: files, materials per stage, manifest, autoload', async () => {
+    const dir = godotProject();
+    fs.writeFileSync(path.join(dir, 'refs', 'aegis.glb'), 'glb');
+    for (const s of ['factory', 'battle']) for (const k of ['albedo', 'orm']) fs.writeFileSync(path.join(dir, 'refs', `${s}_${k}.png`), PNG);
+    fs.writeFileSync(path.join(dir, 'refs', 'normal.png'), PNG);
+    const svc = createCreativeService({ getProjectDir: () => dir, env: { ...process.env, CODEV_COMFYUI_URL: 'http://127.0.0.1:1' }, findBlender: () => '' });
+    const variants = Object.fromEntries(['factory', 'battle'].map(s => [s, { albedo: `refs/${s}_albedo.png`, orm: `refs/${s}_orm.png`, normal: 'refs/normal.png' }]));
+    const res = await svc.callTool('art_godot_skin', { model: 'refs/aegis.glb', name: 'AEGIS Armour', character: 'Relay', slot: 'chest', tier: 3, variants, tile_scale: 2, stats: { armor: 40 }, tris: 9000 });
+    const out = textOf(res);
+    assert.ok(!res.isError, out);
+    const id = 'relay_chest_aegis_armour_epic';
+    assert.equal(res.structuredContent.id, id);
+    const skinDir = path.join(dir, 'game/assets/skins/relay', id);
+    assert.ok(fs.existsSync(path.join(skinDir, `${id}.glb`)));
+    assert.match(fs.readFileSync(path.join(skinDir, `${id}_battle.tres`), 'utf8'), new RegExp(`path="res://assets/skins/relay/${id}/textures/battle_orm.png"`));
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'game/data/skin_manifest.json'), 'utf8'));
+    const entry = manifest.skins[0];
+    assert.equal(entry.model, `res://assets/skins/relay/${id}/${id}.glb`);
+    assert.equal(entry.rarity, 'epic');
+    assert.equal(entry.default_variant, 'factory');
+    assert.deepEqual(Object.keys(entry.materials), ['factory', 'battle']);
+    assert.deepEqual(entry.stats, { armor: 40 });
+    assert.match(fs.readFileSync(path.join(dir, 'game/project.godot'), 'utf8'), /\[autoload\]\n\nSkinRegistry="\*res:\/\/scripts\/codev\/skin_registry.gd"/);
+    assert.match(fs.readFileSync(path.join(dir, 'game/scripts/codev/skin_registry.gd'), 'utf8'), /res:\/\/data\/skin_manifest.json/);
+    assert.match(out, /SkinRegistry\.equip\(\$Relay, "relay_chest_aegis_armour_epic", "factory"\)/);
+    // A second install updates, doesn't duplicate, and a hand-edited registry is left alone.
+    fs.writeFileSync(path.join(dir, 'game/scripts/codev/skin_registry.gd'), 'extends Node\n# mine\n');
+    const again = await svc.callTool('art_godot_skin', { model: 'refs/aegis.glb', name: 'AEGIS Armour', character: 'relay', slot: 'chest', tier: 3, maps: variants.factory, tris: 20000 });
+    assert.match(textOf(again), /was changed by hand/);
+    assert.match(textOf(again), /20000 triangles is over the skin budget of 12000/);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'game/data/skin_manifest.json'), 'utf8')).skins.length, 1);
+    assert.equal(fs.readFileSync(path.join(dir, 'game/project.godot'), 'utf8').match(/SkinRegistry=/g).length, 1);
+    const noGodot = await createCreativeService({ getProjectDir: () => project(), findBlender: () => '' }).callTool('art_godot_skin', { model: 'x.glb', name: 'a', character: 'b', slot: 'c' });
+    assert.match(textOf(noGodot), /No Godot project|There's no x.glb/);
+});
+
+test('art_skin_pipeline: one command from brief to equippable skins in Godot', { skip: !hasPython || !unix }, async () => {
+    const fake = await fakeComfy();
+    const dir = godotProject();
+    try {
+        fs.writeFileSync(path.join(dir, 'refs', 'aegis_raw.glb'), 'glb');
+        fs.writeFileSync(path.join(dir, 'refs', 'relay_base.glb'), 'glb');
+        const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-fakeblender-'));
+        const blender = path.join(bin, 'blender');
+        const ops = path.join(bin, 'ops.log');
+        fs.writeFileSync(blender, `#!${process.execPath}\nconst fs = require('fs');\nconst a = process.argv.slice(2);\nconst job = JSON.parse(fs.readFileSync(a[a.indexOf('--') + 1], 'utf8'));\nfs.appendFileSync(${JSON.stringify(ops)}, job.op + (job.maps ? ' ' + Object.keys(job.maps).join(',') : '') + '\\n');\nif (job.output) fs.writeFileSync(job.output, 'glb');\nfs.writeFileSync(job.result, JSON.stringify({ ok: true, op: job.op, output: job.output, triangles: 8000, materials: 1, armatures: job.op === 'rig' || job.op === 'inspect' ? [{ name: 'Armature', bones: 40 }] : [] }));\n`);
+        fs.chmodSync(blender, 0o755);
+        const svc = createCreativeService({ getProjectDir: () => dir, env: { ...process.env, CODEV_COMFYUI_URL: fake.url }, findBlender: () => blender });
+        const res = await svc.callTool('art_skin_pipeline', { brief: 'A.E.G.I.S. armour for Relay, angular plates, cyan energy seams', name: 'AEGIS', character: 'relay', slot: 'chest', tier: 3,
+            variants: ['crimson', 'void'], mesh: 'refs/aegis_raw.glb', base: 'refs/relay_base.glb', stages: ['factory', 'battle'] });
+        const out = textOf(res);
+        assert.ok(!res.isError, out);
+        assert.match(out, /✓ mesh cleaned to the skin budget/);
+        assert.match(out, /✓ concept for AEGIS crimson/);
+        assert.match(out, /✓ weathering \(factory, battle\) for AEGIS void/);
+        assert.match(out, /✓ rigged to refs\/relay_base.glb/);
+        assert.deepEqual(res.structuredContent.installed, ['relay_chest_aegis_crimson_epic', 'relay_chest_aegis_void_epic']);
+        assert.deepEqual(fs.readFileSync(ops, 'utf8').trim().split('\n').map(l => l.split(' ')[0]), ['cleanup', 'uv', 'texture', 'rig', 'inspect', 'texture', 'rig', 'inspect']);
+        assert.match(fs.readFileSync(ops, 'utf8'), /texture albedo,normal,roughness,metallic/);
+        const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'game/data/skin_manifest.json'), 'utf8'));
+        assert.equal(manifest.skins.length, 2);
+        assert.ok(manifest.skins.every(s => s.rigged && s.icon && s.materials.battle && s.bones === 40));
+        assert.ok(fs.existsSync(path.join(dir, 'game/assets/skins/relay/relay_chest_aegis_void_epic/icon.png')));
+        const noMesh = await svc.callTool('art_skin_pipeline', { brief: 'chitin gauntlets', character: 'relay', slot: 'arms', concepts: false });
+        assert.match(textOf(noMesh), /No mesh was given/);
+    } finally { fake.close(); }
+});

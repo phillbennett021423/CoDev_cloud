@@ -29,6 +29,13 @@ const DEFAULT_RULES = {
         playable_ad_mb: 5
     },
     naming: { pattern: '{category}_{name}_{variant}', case: 'snake' },
+    // Where finished skins go in the Godot project (relative to project.godot's folder).
+    godot: {
+        skins_dir: 'assets/skins', manifest: 'data/skin_manifest.json', registry: 'scripts/codev/skin_registry.gd', autoload: 'SkinRegistry',
+        slots: ['helmet', 'head', 'chest', 'arms', 'hands', 'legs', 'feet', 'back', 'weapon', 'full_body'],
+        tiers: { 1: 'common', 2: 'rare', 3: 'epic', 4: 'legendary', 5: 'mythic' },
+        default_variant: 'factory', icon_size: 256
+    },
     folders: {
         concepts: 'art/concepts', textures: 'art/textures', models: 'art/models', styles: 'art/styles',
         training: 'art/training', marketing: 'marketing', audio: 'audio'
