@@ -38,6 +38,11 @@ jobs:
             -filter_complex "[1:a]aresample=48000,apad[s];[2:a]aresample=48000[n];[3:a]aresample=48000,volume=0.3[m];[s][n][m]amix=inputs=3:duration=first[a]" \
             -map 0:v -map "[a]" -t 10 -c:v libx264 -pix_fmt yuv420p -c:a aac clip.mp4
           ffmpeg -loglevel error -y -f lavfi -i "sine=frequency=440:duration=5" song.mp3
+          ffmpeg -loglevel error -y -f lavfi -i "aevalsrc='sin(2*PI*80*t)*exp(-30*mod(t\,0.5))':s=22050:d=12" beat.wav
+          # A "person": a skin-colored figure moving over a busy background.
+          ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=480x270:rate=25 -f lavfi -i "color=c=0xE0AC69:s=120x200" \
+            -filter_complex "[0][1]overlay=x='180+60*sin(t)':y=50" -t 2 -c:v libx264 -pix_fmt yuv420p person.mp4
+          ffmpeg -loglevel error -y -i person.mp4 -frames:v 1 person.png
           chmod -R a+rwX /tmp/media
 
       - name: Check all four tools in the container (no network, read-only)
@@ -58,6 +63,18 @@ jobs:
           run transcribe '{"input":"uploads/clip.mp4"}'
           run find '{"input":"uploads/clip.mp4","query":"subscribe"}'
           python3 -c "import json; r=json.load(open('/tmp/result.json')); assert r['matches'], r"
+          # Round 2: free voices, word-by-word captions, cutting pauses and fillers, highlights.
+          run speak '{"text":"This is Kokoro, a free voice.","voice":"af_sarah","output":"outputs/kokoro"}'
+          run speak '{"text":"This is Piper, a quicker free voice.","engine":"piper","voice":"amy","output":"outputs/piper"}'
+          run edit '{"input":"uploads/clip.mp4","steps":[{"op":"remove_fillers"},{"op":"remove_silence"},{"op":"captions","style":"highlight"},{"op":"voiceover","text":"Welcome back.","voice":"am_michael","start":1}],"output":"outputs/talk"}'
+          run highlights '{"input":"uploads/clip.mp4","length":5,"count":2}'
+          # Motion and looks, a beat-cut montage, background removal and upscaling.
+          run edit '{"input":"uploads/clip.mp4","steps":[{"op":"speed_ramp","ranges":[{"start":1,"end":3,"factor":2}]},{"op":"slow_motion","factor":0.5,"start":0,"end":1},{"op":"look","preset":"cinematic"},{"op":"text","text":"Round 2","animation":"pop"}],"output":"outputs/motion"}'
+          run edit '{"input":"uploads/clip.mp4","steps":[{"op":"montage","files":["uploads/clip.mp4"],"music":"uploads/beat.wav","beats_per_cut":2,"aspect":"9:16"}],"output":"outputs/montage"}'
+          run edit '{"input":"uploads/person.mp4","steps":[{"op":"remove_background","replace":"blur"}],"output":"outputs/nobg"}'
+          run edit '{"input":"uploads/person.png","steps":[{"op":"remove_background"}],"output":"outputs/cutout"}'
+          run edit '{"input":"uploads/person.png","steps":[{"op":"upscale","scale":2}],"output":"outputs/bigger"}'
+          run edit '{"input":"uploads/person.mp4","steps":[{"op":"trim","start":0,"end":0.5},{"op":"upscale","scale":2}],"output":"outputs/bigger-clip"}'
           ls -la /tmp/media/outputs
 
       - name: Run CoDev's media tests against the image

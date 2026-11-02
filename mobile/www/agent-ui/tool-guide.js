@@ -90,7 +90,7 @@
         { when: "Textures, 3D meshes and skins in Godot", tools: ["art_skin_pipeline", "art_materials", "art_pbr_maps", "art_weathering", "art_mesh", "art_godot_skin"], how: "art_skin_pipeline for a skin from a brief, the others for one step" },
         { when: "Marketing art, ads and audio", tools: ["art_reframe", "art_cutout", "art_upscale", "art_playable_ad", "art_audio", "art_voice_clone"], how: "voice cloning only with the voice owner's consent" },
         { when: "Furnishing and arranging a 3D scene from the user's assets", tools: ["scene_assets", "scene_dress", "scene_edit", "scene_learn"], how: "scene_dress for a room, scene_edit for one thing already placed" },
-        { when: "Editing a video or audio file the user attached", tools: ["media_files", "media_info", "media_edit", "media_transcribe", "media_find", "media_separate", "media_find_on_computer", "media_import"], how: "media_find for when something is said, then media_edit" },
+        { when: "Editing a video or audio file the user attached", tools: ["media_files", "media_info", "media_edit", "media_transcribe", "media_find", "media_separate", "media_highlights", "media_speak", "media_find_on_computer", "media_import"], how: "media_find for when something is said, then media_edit" },
         { when: "One picture for the chat (not game art)", tools: ["generate_image"] },
         { when: "A game's story, characters and lore", tools: ["studio_read", "studio_save", "studio_remove", "studio_export", "studio_import"], how: "read before you write" },
         { when: "A fantasy world map (Azgaar's Fantasy Map Generator)", tools: ["map_read", "map_generate"], how: "map_read for anything about a map the user has" },
