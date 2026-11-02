@@ -18,8 +18,12 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     flushStorage: () => ipcRenderer.send('codev:flush-storage'),
     // Gives keyboard focus back to the page after a native alert or confirm.
     refocus: () => ipcRenderer.send('codev:refocus'),
-    // The Google account for the YouTube, Maps, Gmail and Drive tools: { op, ... } (see google-connect.js).
+    // The Google account for the YouTube, Maps and Gmail tools: { op, ... } (see google-connect.js).
     google: req => ipcRenderer.invoke('codev:google', req),
+    // The MEGA session for the MEGA cloud tools: { op, ... } (see mega-connect.js).
+    mega: req => ipcRenderer.invoke('codev:mega', req),
+    // Azgaar's Fantasy Map Generator for the map_generate tool: { op: "generate", seed, ... } (see azgaar-map.js).
+    azgaar: req => ipcRenderer.invoke('codev:azgaar', req),
     // Built-in MCP tools for the chosen project folder.
     mcp: message => ipcRenderer.invoke('codev:mcp', message),
     mcpFolder: () => ipcRenderer.invoke('codev:mcp-folder'),

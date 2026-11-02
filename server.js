@@ -21,6 +21,8 @@ const { checkDocker } = require('./scripts/checks');
 const { handleImageFolder } = require('./desktop/image-folder');
 const { handleWebFetch } = require('./web-fetch');
 const { createGoogleConnect } = require('./desktop/google-connect');
+const { createMegaConnect } = require('./desktop/mega-connect');
+const { createAzgaarMaps } = require('./desktop/azgaar-map');
 
 const config = loadConfig();
 const fatal = config.problems.filter(problem => problem.level === 'error');
@@ -35,13 +37,21 @@ const anthropic = config.keys.anthropic ? { key: config.keys.anthropic } : {
         + '(copy .env.example) or set it in your environment, then restart.'
 };
 if (anthropic.error) console.warn(`Note: ${anthropic.error}`);
-// The Google account for the page's YouTube, Maps, Gmail and Drive tools. The sign-in
+// The Google account for the page's YouTube, Maps and Gmail tools. The sign-in
 // is kept in the data folder (gitignored), never sent to the page except as a phone link code.
 const google = createGoogleConnect({
     tokenFile: path.join(config.workspace.dataDir, 'google-account.json'),
     env: config.google,
     log: line => console.log(`[google] ${line}`)
 });
+// The MEGA session for the page's MEGA cloud tools (they replaced Google Drive). Kept
+// in the data folder (gitignored); the password is never saved.
+const mega = createMegaConnect({
+    sessionFile: path.join(config.workspace.dataDir, 'mega-session.json'),
+    log: line => console.log(`[mega] ${line}`)
+});
+// New fantasy maps from Azgaar's Fantasy Map Generator, made in a headless Chromium.
+const azgaar = createAzgaarMaps({ log: line => console.log(line) });
 
 const PORT = config.port;
 const ROOT = path.join(__dirname, 'mobile', 'www');
@@ -228,6 +238,16 @@ const server = http.createServer(async (req, res) => {
         if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
         return readJsonBody(req, res, async message => sendJson(res, 200, await google.handle(message)));
     }
+    // Azgaar map making for the agents' map_generate tool: CoDev's own page only.
+    if (req.url === '/azgaar') {
+        if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
+        return readJsonBody(req, res, async message => sendJson(res, 200, await azgaar.handle(message)));
+    }
+    // MEGA cloud for the agents' tools and Settings > MEGA cloud: CoDev's own page only.
+    if (req.url === '/mega') {
+        if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
+        return readJsonBody(req, res, async message => sendJson(res, 200, await mega.handle(message)));
+    }
     if (req.url === '/agent/status') {
         if (req.method !== 'GET' || !isOwnPageCall(req)) return sendJson(res, 403, { error: 'Forbidden' });
         return sendJson(res, 200, await agentStatus());
@@ -280,6 +300,7 @@ async function shutdown() {
     stopping = true;
     const router = await agentServices;
     google.close();
+    mega.close();
     await Promise.all([mcpHub && mcpHub.close(), router && router.close()]);
     process.exit(0);
 }

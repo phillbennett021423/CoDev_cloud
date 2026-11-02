@@ -13,6 +13,8 @@ const { createOutlierBridge } = require('./outlier-bridge');
 const { createGameDevService } = require('./gamedev');
 const { createCreativeService } = require('./creative');
 const { createGoogleConnect } = require('./google-connect');
+const { createMegaConnect } = require('./mega-connect');
+const { createAzgaarMaps } = require('./azgaar-map');
 const { pathToFileURL } = require('url');
 
 const WWW = path.join(__dirname, 'www');
@@ -208,7 +210,7 @@ app.whenReady().then(() => {
     const handleMcp = createMcpTools(getProjectDir);
     ipcMain.handle('codev:mcp', (_event, message) => handleMcp(message));
 
-    // The Google account for the YouTube, Maps, Gmail and Drive tools, encrypted
+    // The Google account for the YouTube, Maps and Gmail tools, encrypted
     // with safeStorage when Windows offers it. Sign-in opens in the normal browser.
     const canEncrypt = () => { try { return safeStorage.isEncryptionAvailable(); } catch { return false; } };
     const google = createGoogleConnect({
@@ -220,6 +222,18 @@ app.whenReady().then(() => {
     });
     ipcMain.handle('codev:google', (_event, req) => google.handle(req));
     app.on('will-quit', () => google.close());
+    // The MEGA session for the MEGA cloud tools (they replaced Google Drive), encrypted
+    // the same way. The password is used once to sign in and never saved.
+    const mega = createMegaConnect({
+        sessionFile: path.join(app.getPath('userData'), 'mega-session.json'),
+        protect: text => (canEncrypt() ? `enc:${safeStorage.encryptString(text).toString('base64')}` : text),
+        unprotect: text => (text.startsWith('enc:') ? safeStorage.decryptString(Buffer.from(text.slice(4), 'base64')) : text)
+    });
+    ipcMain.handle('codev:mega', (_event, req) => mega.handle(req));
+    // New fantasy maps from Azgaar's Fantasy Map Generator, made in a headless Chromium.
+    const azgaar = createAzgaarMaps({ log: line => console.log(line) });
+    ipcMain.handle('codev:azgaar', (_event, req) => azgaar.handle(req));
+    app.on('will-quit', () => mega.close());
     ipcMain.handle('codev:mcp-folder', () => getProjectDir());
     // Chromium writes the page's storage to disk only every few seconds, so a crash
     // could lose the last chat messages and run checkpoint. The page asks for a write

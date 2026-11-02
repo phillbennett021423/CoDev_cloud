@@ -89,6 +89,7 @@ The **🎭 Story Studio** tab (on the phone, the **Story** tab) is for writing a
   - **Azgaar's Fantasy Map Generator:** make a map at [azgaar.github.io/Fantasy-Map-Generator](https://azgaar.github.io/Fantasy-Map-Generator/), then Menu › Export › Export to JSON › Full, and import that file. Each state becomes a faction (territory, provinces, borders, wars, and its ally, enemy, rival and vassal ties), provinces and cities become places with their map positions, cultures and religions become lore, and the roads and sea routes between cities become a routes entry. Every capital comes in, plus the largest cities up to the number you pick (60 by default).
   - **StoryCraftr:** writes the bible into a [StoryCraftr](https://github.com/raestrada/storycraftr) book folder (`worldbuilding/geography.md`, `history.md`, `culture.md`, `magic_system.md`, `technology.md`, `outline/character_summary.md`, `plot_points.md`). StoryCraftr reads every Markdown file in the folder, so its outline, worldbuilding and chat commands stay on canon, with your own OpenRouter key or a local Ollama model. What it writes imports back as lore.
   - Importing adds new names and gives existing entries the imported fields; everything else on them stays, and locked entries aren't touched. Agents can do all of it with `studio_import` ("import my Obsidian vault from lore", "import the Azgaar map maps/continuum.json") and `studio_export` format `obsidian` or `storycraftr`.
+  - **Agents and Azgaar maps.** In any chat about maps or worlds, agents also get `map_read` and `map_generate`. `map_read` answers from a map's full JSON export in the project folder: an overview, one state (capital, people, borders, allies, enemies, wars, provinces), city, province, culture or religion, the largest cities by state, markers, and the distance and towns between two cities over the map's roads and sea routes ("how far is Tessel from Hollow Gate by road?"). `map_generate` makes a new map with Azgaar's Fantasy Map Generator from a seed (a number or a word; the same seed always makes the same map), runs the generator in a hidden Chromium on your computer, saves the export to `maps/` and describes it, after asking you. It works in the Windows app and with `start-codev.bat`/`npm start` (it needs internet; `CODEV_AZGAAR_URL` points it at your own copy of the generator). On the phone, make the map on the website and put the export in the project folder.
 
 Every one of these is optional; use only what helps:
 
@@ -154,7 +155,7 @@ Every agent, the three built in (Architect, Swarm, Self-Healing) and any you add
 
 ## Reading screenshots (Dabble slips and more)
 
-You never upload anything: tell CoDev where the folder is, like you would Gemini. Either name its full path in the chat ("look in G:\My Drive\continuumUniverse\New folder and research the props"; the Windows app and CoDev opened from start-codev.bat can read any folder by path, images only), or click **📸** next to the chat box and pick it (on a phone, pick the screenshots themselves). CoDev remembers the folder, so after that "read my screenshots" is enough. Then ask in plain words: "look at my screenshots and research these props", or "read the newest 3 screenshots". The agent's `read_screenshots` tool sends the images, newest first, to the vision model, which writes down every leg on a slip (player, stat, line, Over/Under, sport, game) or the text of any other image. Prop legs go straight on to `outlier_research_list`, the same research a typed list gets. It reads every screenshot in the folder (up to 100), counts a leg that shows up on several screenshots once, and remembers what it already read, so when you swap screenshots in and out only the new ones go to the vision model. CoDev remembers the folder after a restart; the first time you ask after one, the browser asks you to allow it again. A Google Drive for Desktop folder (like `G:\My Drive\...`) works, online-only files included: they download as they're read, and a slow one is tried again. A folder inside your project works too ("read the screenshots in the Dabble folder"), and so do screenshots attached with 📎 (up to 50 in one message): the vision model reads them 3 at a time first, so the agent can still use its tools and gets each leg once.
+You never upload anything: tell CoDev where the folder is, like you would Gemini. Either name its full path in the chat ("look in G:\My Drive\continuumUniverse\New folder and research the props"; the Windows app and CoDev opened from start-codev.bat can read any folder by path, images only), or click **📸** next to the chat box and pick it (on a phone, pick the screenshots themselves). CoDev remembers the folder, so after that "read my screenshots" is enough. Then ask in plain words: "look at my screenshots and research these props", or "read the newest 3 screenshots". The agent's `read_screenshots` tool sends the images, newest first, to the vision model, which writes down every leg on a slip (player, stat, line, Over/Under, sport, game) or the text of any other image. Prop legs go straight on to `outlier_research_list`, the same research a typed list gets. It reads every screenshot in the folder (up to 100), counts a leg that shows up on several screenshots once, and remembers what it already read, so when you swap screenshots in and out only the new ones go to the vision model. CoDev remembers the folder after a restart; the first time you ask after one, the browser asks you to allow it again. A MEGAsync folder (like `C:\Users\me\MEGA\Screenshots`) or a Google Drive for Desktop folder (like `G:\My Drive\...`) works, online-only files included: they download as they're read, and a slow one is tried again. A folder inside your project works too ("read the screenshots in the Dabble folder"), and so do screenshots attached with 📎 (up to 50 in one message): the vision model reads them 3 at a time first, so the agent can still use its tools and gets each leg once.
 
 ## Big files, video, audio and pictures
 
@@ -164,15 +165,40 @@ One free key adds the rest: get a Gemini API key at [aistudio.google.com/apikey]
 
 Ask for a picture ("make a logo for my team", "draw this as a cartoon") and the agent's `generate_image` tool makes it with Pollinations (Flux), which is free and needs no key; without a key it allows about one picture every 15 to 45 seconds, and CoDev waits once and retries when it says to slow down. Gemini (Nano Banana) and OpenRouter can be picked in Settings instead, and are needed to edit an attached picture, but both cost money: Gemini's free tier has no image models, so a free Gemini key covers video, audio and scanned PDFs, not pictures. Pictures show under the reply; tap one to see it full size and download it. To keep usage down, one task makes at most 4 pictures and a day at most the limit in Settings (20 to start), and the Settings section shows today's count.
 
-## Google apps (YouTube, Maps, Gmail, Drive)
+## Google apps (YouTube, Maps, Gmail)
 
-Agents can search YouTube, find places and directions, and read Gmail and Google
-Drive. YouTube and Maps work with no setup through free basic versions (web
-search and OpenStreetMap). A Google API key gives full YouTube and Google Maps
-results, and signing in with Google adds Gmail and Drive. Sending email and saving
-to Drive are off unless you turn them on, and CoDev asks before each one. The
-one-time Google Cloud setup is in [docs/google-apps.md](docs/google-apps.md); then
-use **Settings > Google apps**.
+Agents can search YouTube, find places and directions, and read Gmail. YouTube and
+Maps work with no setup through free basic versions (web search and OpenStreetMap).
+A Google API key gives full YouTube and Google Maps results, and signing in with
+Google adds Gmail. Sending email is off unless you turn it on, and CoDev asks before
+each one. The one-time Google Cloud setup is in [docs/google-apps.md](docs/google-apps.md);
+then use **Settings > Google apps**.
+
+## MEGA cloud (replaces Google Drive)
+
+Agents can search and read the files in your MEGA cloud drive and, if you turn it
+on, save new files there (`mega_status`, `mega_search`, `mega_read_file`,
+`mega_save_file`). Sign in with your free MEGA account under **Settings > MEGA
+cloud**, on the computer or the phone; there's nothing to set up in a developer
+console. CoDev uses the free, open-source megajs SDK, keeps MEGA's session but
+never your password, asks before every save, and never changes or deletes existing
+files. With MEGAsync installed, its synced folder (`C:\Users\<you>\MEGA`) also works
+as a screenshots folder. Details in [docs/mega-cloud.md](docs/mega-cloud.md).
+
+## Notes and tables: Obsidian, CSV and JSON (replace Google Docs and Sheets)
+
+Agents read and write an [Obsidian](https://obsidian.md) vault, a folder of Markdown
+notes, in place of Google Docs, and CSV, TSV or JSON tables in the same folder in
+place of Google Sheets. `notes_search` finds notes by text or `#tag`, `notes_read`
+reads one with its `[[links]]` and backlinks, and `notes_write` creates a note, adds
+to it (at the end or under a heading), changes one piece of text or rewrites it.
+`table_read` does exact math over every row (filters, sums, averages, group totals),
+and `table_write` creates a table, adds, changes or deletes rows, or adds a column,
+keeping CSV as CSV and JSON as JSON. `notes_status` says where the vault is. Keep the
+vault in a MEGA folder (it works on the phone too, and MEGAsync puts it on your
+computer for Obsidian) or in the connected project folder, and pick it in **Settings >
+Notes & tables**. Editing is off until you turn it on there, and CoDev asks before
+every change. Details in [docs/notes-and-tables.md](docs/notes-and-tables.md).
 
 ## Memory, web reading and self-checks
 
@@ -350,7 +376,7 @@ The browser is Playwright's Chromium (`npx playwright install chromium`, which `
 
 **Browsing yourself.** Pick any agent in the live view's list, even one whose browser isn't open, and type in the address bar: a full address, a bare domain (`espn.com`), a shortcut (`outlier`, `espn`) or words to search for (DuckDuckGo). That opens the browser with you in control, so you can search, sign in or set up a page before the agent starts. A page that doesn't load, returns 404, or turns out to be a parked "this domain is for sale" page (GoDaddy, Sedo, Afternic…) opens with a warning instead of passing as the real site. When an agent's `browser_navigate` or an Outlier scrape lands on one (or Outlier redirects to its sign-in page), the browser isn't closed: it stays open on that page, paused and handed to you in the live view (which opens on it), and the agent is told to wait; it can't close a paused browser, and idle browsers that are paused aren't closed either. Fix the address or sign in, then press **Hand back**. Addresses on outlierbet.com (and similar look-alikes) always go to Outlier's real sign-in portal, https://app.outlier.bet/login. On CoDev's server the list also has **📈 Outlier (signed in)**: the Outlier pipeline's own browser with your saved sign-in. Browse it yourself (or press **🖥️ Browse** in the Outlier view, which opens it at Outlier's sign-in portal, https://app.outlier.bet/login), then **📄 Read this page** adds the props on the open page to the analysis without taking the browser from you; **Scrape & analyze** reads your configured pages in a background tab while you browse. Agents can run the same extraction on their own browser with `outlier_extract_page`, never on the signed-in one.
 
-**On the Android app.** Agents get a browser on the phone too, with the same tools, live view and saved logins. It is the phone's own browser engine (Android WebView) running inside CoDev, out of sight while you chat, so nothing runs on a computer or in the cloud. Tap the 🖥️ computer icon to watch an agent's browser, or to open one yourself on a search page with no task running. **✋ Take over** puts the real browser over CoDev, full screen: tap, scroll and type with your own keyboard (and your password manager), then press **↩ Hand back** at the top, or the phone's back button on the first page. While you have it, the agent keeps working in a background tab, as on the computer. Sites you sign in to stay signed in between tasks and restarts. On a phone the agents share one set of sign-ins (sign in once, every agent can use it), kept apart from CoDev's own storage where the phone's WebView supports separate profiles (Android System WebView 128 or newer). **🧹 Forget sign-ins** signs every agent's browser out. Saved logins are encrypted with a key in the phone's secure key store, and the app types the password into the login's own site itself. `browser_save_session` and `browser_load_session` aren't on the phone, because sign-ins already stay. Screenshots show the visible part of the page and aren't saved to a folder. Some sites, Google's own sign-in among them, refuse to sign in inside an app's built-in browser; for Gmail and Drive use **Settings > Google apps**, which signs in through the phone's normal browser.
+**On the Android app.** Agents get a browser on the phone too, with the same tools, live view and saved logins. It is the phone's own browser engine (Android WebView) running inside CoDev, out of sight while you chat, so nothing runs on a computer or in the cloud. Tap the 🖥️ computer icon to watch an agent's browser, or to open one yourself on a search page with no task running. **✋ Take over** puts the real browser over CoDev, full screen: tap, scroll and type with your own keyboard (and your password manager), then press **↩ Hand back** at the top, or the phone's back button on the first page. While you have it, the agent keeps working in a background tab, as on the computer. Sites you sign in to stay signed in between tasks and restarts. On a phone the agents share one set of sign-ins (sign in once, every agent can use it), kept apart from CoDev's own storage where the phone's WebView supports separate profiles (Android System WebView 128 or newer). **🧹 Forget sign-ins** signs every agent's browser out. Saved logins are encrypted with a key in the phone's secure key store, and the app types the password into the login's own site itself. `browser_save_session` and `browser_load_session` aren't on the phone, because sign-ins already stay. Screenshots show the visible part of the page and aren't saved to a folder. Some sites, Google's own sign-in among them, refuse to sign in inside an app's built-in browser; for Gmail use **Settings > Google apps**, which signs in through the phone's normal browser, and for cloud files **Settings > MEGA cloud**.
 
 A browser tab with no CoDev server behind it has no browser tools: a web page can't start a browser of its own.
 
