@@ -686,6 +686,31 @@
             ], isError: false };
         }
 
+        // Rows and columns from the page (and the pages after it), via page-extract.js.
+        async function extract(args, ctx) {
+            const PE = typeof CodevPageExtract !== "undefined" ? CodevPageExtract : (typeof require === "function" ? require("./page-extract.js") : null);
+            if (!PE) throw new ToolError("browser_extract is not available in this copy of CoDev.");
+            const tab = await workTab(ctx.agentId);
+            const adapter = {
+                evaluate: async (source, arg) => {
+                    const reply = await native.eval({ tab, script: `JSON.stringify((${source})(${JSON.stringify(arg)}))` });
+                    let value = reply && reply.value;
+                    for (let i = 0; i < 2 && typeof value === "string"; i++) { try { value = JSON.parse(value); } catch (err) { break; } }
+                    return value && typeof value === "object" ? value : null;
+                },
+                navigate: async url => {
+                    const target = checkUrl(url);
+                    const { info } = await loadAndCheck(tab, target.href);
+                    if (info.timedOut && !info.url) throw new ToolError(`${target.href} took more than 30 seconds to load.`);
+                },
+                click: async selector => { await tapElement(tab, selector, false); await sleep(400); },
+                settle: () => settle(tab),
+                sleep
+            };
+            const result = await PE.runExtraction(adapter, args);
+            return PE.toolResult(result, { name: args.name });
+        }
+
         async function closeBrowser(_args, ctx) {
             const session = sessions.get(ctx.agentId);
             if (session && session.paused) return failure("Your browser is paused for the user in the live view. Leave it open; the user hands it back when they're done.");
@@ -785,6 +810,7 @@
                   selector: { ...selectorProp, description: "Part of the page to read; omit for the whole page." },
                   mode: { type: "string", enum: ["text", "aria", "html"], description: "text (default), aria for the roles-and-names outline, or html." },
                   max_chars: { type: "integer", description: `Most characters to return (default ${DEFAULT_TEXT_CHARS}, max ${MAX_TEXT_CHARS}).` } } } },
+            ...(typeof CodevPageExtract !== "undefined" || typeof require === "function" ? [{ ...(typeof CodevPageExtract !== "undefined" ? CodevPageExtract : require("./page-extract.js")).TOOL, run: extract, annotations: { readOnlyHint: true, openWorldHint: true } }] : []),
             { name: "browser_wait_for", run: waitFor, annotations: { readOnlyHint: true },
               description: "Wait until an element or some text is visible, or (with neither) until the page finishes loading.",
               inputSchema: { type: "object", properties: { selector: selectorProp, text: { type: "string", description: "Text to wait for." },

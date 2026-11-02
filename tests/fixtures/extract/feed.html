@@ -1,0 +1,7 @@
+<!doctype html><html><head><title>Feed</title></head><body><ul id="feed"></ul>
+<script>
+let n = 0; const feed = document.getElementById('feed');
+function add(k){ for (let i=0;i<k;i++){ n++; const li=document.createElement('li'); li.className='post'; li.innerHTML=`<span class="post-author">user${n}</span><p class="post-body">Post number ${n} says something long enough</p><time datetime="2026-10-${String(n).padStart(2,'0')}">Oct ${n}</time>`; feed.appendChild(li);} }
+add(5);
+window.addEventListener('scroll', () => { if (n < 15) add(5); });
+</script></body></html>
