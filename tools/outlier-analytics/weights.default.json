@@ -1,0 +1,378 @@
+{
+  "version": 1,
+  "filters": {
+    "min_juice": 130,
+    "min_l5_hit_rate": 0.7,
+    "min_floor_margin": 0.0,
+    "max_volatility": 0.35,
+    "min_leg_probability": 0.56,
+    "min_books": 1
+  },
+  "bounds": {
+    "min_juice": [
+      110,
+      200
+    ],
+    "min_l5_hit_rate": [
+      0.6,
+      1.0
+    ],
+    "min_floor_margin": [
+      -0.25,
+      0.3
+    ],
+    "max_volatility": [
+      0.15,
+      0.6
+    ],
+    "min_leg_probability": [
+      0.52,
+      0.7
+    ]
+  },
+  "model": {
+    "market_weight": 0.65,
+    "history_prior_games": 5,
+    "assumed_vig": 0.045
+  },
+  "slips": {
+    "sizes": [
+      4
+    ],
+    "max_legs_per_game": 2,
+    "max_legs_per_team": 2,
+    "candidate_pool": 14,
+    "slips_per_type": 3
+  },
+  "payouts": {
+    "power": {
+      "4": {
+        "4": 10
+      },
+      "6": {
+        "6": 37.5
+      }
+    },
+    "flex": {
+      "4": {
+        "4": 6,
+        "3": 1.5
+      },
+      "6": {
+        "6": 25,
+        "5": 2,
+        "4": 0.4
+      }
+    }
+  },
+  "avoid_markets": [],
+  "market_penalty": {},
+  "correlation": {
+    "enabled": true,
+    "groups": {
+      "playmaking": [
+        "assists"
+      ],
+      "scoring": [
+        "points",
+        "threes",
+        "3-pointers made",
+        "3pt made",
+        "three pointers",
+        "pts+reb+ast",
+        "pra",
+        "pts+reb",
+        "pts+ast",
+        "fantasy score",
+        "fantasy points"
+      ],
+      "rebounding": [
+        "rebounds",
+        "reb+ast"
+      ],
+      "passing": [
+        "passing yards",
+        "pass yards",
+        "passing tds",
+        "pass tds",
+        "completions",
+        "pass attempts"
+      ],
+      "receiving": [
+        "receiving yards",
+        "rec yards",
+        "receptions",
+        "longest reception"
+      ],
+      "rushing": [
+        "rushing yards",
+        "rush yards",
+        "rush+rec yards"
+      ],
+      "hitting": [
+        "hits",
+        "total bases",
+        "runs",
+        "rbis",
+        "hits+runs+rbis",
+        "home runs",
+        "singles"
+      ],
+      "pitching": [
+        "strikeouts",
+        "pitcher strikeouts",
+        "outs recorded"
+      ],
+      "total": [
+        "team total",
+        "game total",
+        "alt total",
+        "alternate total",
+        "total points"
+      ]
+    },
+    "rules": [
+      {
+        "relation": "teammates",
+        "a": "playmaking",
+        "b": "scoring",
+        "rho": 0.12,
+        "why": "assists need teammates' made shots"
+      },
+      {
+        "relation": "teammates",
+        "a": "passing",
+        "b": "receiving",
+        "rho": 0.2,
+        "why": "the QB's yards are the receiver's yards"
+      },
+      {
+        "relation": "teammates",
+        "a": "scoring",
+        "b": "scoring",
+        "rho": -0.04,
+        "why": "teammates share shots"
+      },
+      {
+        "relation": "teammates",
+        "a": "rebounding",
+        "b": "rebounding",
+        "rho": -0.05,
+        "why": "teammates share rebounds"
+      },
+      {
+        "relation": "teammates",
+        "a": "rushing",
+        "b": "passing",
+        "rho": -0.05,
+        "why": "run-heavy script means fewer passes"
+      },
+      {
+        "relation": "teammates",
+        "a": "hitting",
+        "b": "hitting",
+        "rho": 0.08,
+        "why": "a big inning lifts the lineup"
+      },
+      {
+        "relation": "opponents",
+        "a": "scoring",
+        "b": "scoring",
+        "rho": 0.05,
+        "why": "shootout script"
+      },
+      {
+        "relation": "opponents",
+        "a": "passing",
+        "b": "passing",
+        "rho": 0.08,
+        "why": "both QBs throw in a shootout"
+      },
+      {
+        "relation": "opponents",
+        "a": "passing",
+        "b": "receiving",
+        "rho": 0.05,
+        "why": "shootout script"
+      },
+      {
+        "relation": "opponents",
+        "a": "pitching",
+        "b": "hitting",
+        "rho": -0.15,
+        "why": "the pitcher's strikeouts are the hitters' outs"
+      },
+      {
+        "relation": "any",
+        "a": "total",
+        "b": "scoring",
+        "rho": 0.12,
+        "why": "a high-scoring game lifts scorers"
+      },
+      {
+        "relation": "any",
+        "a": "total",
+        "b": "passing",
+        "rho": 0.12,
+        "why": "a high-scoring game lifts passers"
+      },
+      {
+        "relation": "any",
+        "a": "total",
+        "b": "receiving",
+        "rho": 0.1,
+        "why": "a high-scoring game lifts receivers"
+      }
+    ],
+    "pace_totals": {
+      "NBA": 230,
+      "WNBA": 165,
+      "NCAAB": 145,
+      "CBB": 145,
+      "NFL": 47,
+      "NCAAF": 55,
+      "CFB": 55,
+      "MLB": 9,
+      "NHL": 6.5
+    },
+    "pace_boost": 0.04,
+    "pace_groups": [
+      "scoring",
+      "playmaking",
+      "passing",
+      "receiving",
+      "total"
+    ]
+  },
+  "bankroll": {
+    "units": 100,
+    "kelly_fraction": 0.25,
+    "max_stake_pct": 0.03,
+    "drawdown_cut": 0.2
+  },
+  "strategy": "sharp",
+  "consistency": {
+    "target_juice": 119,
+    "juice_band": 12,
+    "hit_rate_min": 0.6,
+    "hit_rate_max": 0.75,
+    "windows": [
+      3,
+      4,
+      5
+    ],
+    "min_minutes": 24,
+    "min_edge": 0.02,
+    "anchor_floor_margin": -0.15,
+    "anchor_max_volatility": 0.3
+  },
+  "insights": {
+    "league_teams": {
+      "NBA": 30,
+      "WNBA": 13,
+      "NCAAB": 360,
+      "CBB": 360,
+      "NFL": 32,
+      "NCAAF": 130,
+      "CFB": 130,
+      "MLB": 30,
+      "NHL": 32
+    },
+    "soft_defense_share": 0.3,
+    "defense_adjust": 0.02,
+    "pace_lines": {
+      "NBA": 99.5,
+      "WNBA": 96,
+      "NCAAB": 68,
+      "CBB": 68,
+      "NFL": 63,
+      "NCAAF": 70,
+      "CFB": 70
+    },
+    "pace_adjust": 0.01,
+    "high_usage": 0.25,
+    "usage_adjust": 0.01,
+    "usage_groups": [
+      "scoring",
+      "playmaking"
+    ],
+    "potential_conversion": {
+      "assists": 0.55,
+      "rebounds": 0.58,
+      "points": 1.0,
+      "receptions": 0.65
+    },
+    "potential_edge": 0.08,
+    "potential_adjust": 0.015,
+    "role_shift_minutes": 3,
+    "role_adjust": 0.01,
+    "max_adjust": 0.05
+  },
+  "tickets": {
+    "sizes": [
+      4,
+      5,
+      6
+    ],
+    "anchor_pool": 12,
+    "variance_pool": 4,
+    "max_variance_legs": 1,
+    "tickets_per_size": 2,
+    "min_pair_rho": -0.04,
+    "min_game_script": 0.0
+  },
+  "divergence": {
+    "sharp_books": [
+      "pinnacle",
+      "circa",
+      "betonline",
+      "bookmaker",
+      "lowvig",
+      "novig",
+      "prophetx",
+      "sporttrade"
+    ],
+    "soft_juice_max": 125,
+    "sharp_juice_min": 130,
+    "min_gap": 0.01,
+    "score_bonus": 0.02
+  },
+  "vacuum": {
+    "groups": [
+      "scoring",
+      "playmaking",
+      "rebounding"
+    ],
+    "starter_usage": 0.22,
+    "elasticity": 0.6,
+    "sensitivity": 0.25,
+    "max_adjust": 0.04,
+    "min_vacated": 0.1,
+    "manual_out": []
+  },
+  "decay": {
+    "minutes_drop": 0.1,
+    "brutal_defense_share": 0.1,
+    "miss_streak": 2,
+    "miss_penalty": 0.03
+  },
+  "under": {
+    "enabled": true,
+    "min_signals": 2,
+    "min_edge": 0.02,
+    "total_margin": 4,
+    "lockdown_share": 0.2,
+    "chalk_juice": 150,
+    "public_pct": 0.7,
+    "chalk_gap": 0.03,
+    "return_min_usage": 0.1,
+    "return_sensitivity": 0.25,
+    "return_max_adjust": 0.03,
+    "returning_statuses": [
+      "returning",
+      "probable",
+      "available",
+      "active"
+    ]
+  }
+}

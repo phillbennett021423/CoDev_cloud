@@ -1,0 +1,92 @@
+name: Media image (video editing tools)
+
+# Builds the codev-media image (FFmpeg, Whisper, Demucs, DeepFilterNet), checks
+# all four on a test clip, and on main publishes it to GitHub's registry, where
+# CoDev downloads it the first time an agent edits a video.
+on:
+  push:
+    paths:
+      - desktop/media/**
+      - tests/media.test.js
+      - .github/workflows/media-image.yml
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/phillbennett021423/codev-media
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t codev-media:local desktop/media/image
+
+      - name: Make a test clip (speech, noise and music)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q espeak-ng ffmpeg
+          mkdir -p /tmp/media/uploads && cd /tmp/media/uploads
+          espeak-ng -w speech.wav "Hello everyone and welcome to the channel. Today we are editing videos for free. Remember to subscribe."
+          ffmpeg -loglevel error -y -f lavfi -i testsrc=size=1280x720:rate=30 -i speech.wav \
+            -f lavfi -i "anoisesrc=color=pink:amplitude=0.12" -f lavfi -i "sine=frequency=220" \
+            -filter_complex "[1:a]aresample=48000,apad[s];[2:a]aresample=48000[n];[3:a]aresample=48000,volume=0.3[m];[s][n][m]amix=inputs=3:duration=first[a]" \
+            -map 0:v -map "[a]" -t 10 -c:v libx264 -pix_fmt yuv420p -c:a aac clip.mp4
+          ffmpeg -loglevel error -y -f lavfi -i "sine=frequency=440:duration=5" song.mp3
+          ffmpeg -loglevel error -y -f lavfi -i "aevalsrc='sin(2*PI*80*t)*exp(-30*mod(t\,0.5))':s=22050:d=12" beat.wav
+          # A "person": a skin-colored figure moving over a busy background.
+          ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=480x270:rate=25 -f lavfi -i "color=c=0xE0AC69:s=120x200" \
+            -filter_complex "[0][1]overlay=x='180+60*sin(t)':y=50" -t 2 -c:v libx264 -pix_fmt yuv420p person.mp4
+          ffmpeg -loglevel error -y -i person.mp4 -frames:v 1 person.png
+          chmod -R a+rwX /tmp/media
+
+      - name: Check all four tools in the container (no network, read-only)
+        run: |
+          run() { echo "$2" > /tmp/media/job.json; docker run --rm --network none --read-only --tmpfs /tmp:rw,exec,size=1g --cap-drop ALL \
+            --security-opt no-new-privileges -e HOME=/tmp -v /tmp/media:/media codev-media:local $1 job.json | tail -1 | tee /tmp/result.json; \
+            python3 -c "import json,sys; r=json.load(open('/tmp/result.json')); sys.exit(0 if r.get('ok') else 1)"; }
+          # DeepFilterNet, then FFmpeg mixing (the user's example), then Whisper captions burned in.
+          run edit '{"input":"uploads/clip.mp4","steps":[{"op":"clean_speech"},{"op":"add_music","file":"uploads/song.mp3","volume":0.12},{"op":"reframe","aspect":"9:16","fit":"blur"},{"op":"captions"}],"output":"outputs/reel"}'
+          test -s /tmp/media/outputs/reel.mp4 && test -s /tmp/media/outputs/reel.srt
+          cat /tmp/media/outputs/reel.srt
+          grep -qi "welcome\|channel\|subscribe" /tmp/media/outputs/reel.srt
+          # Demucs, inside an edit and on its own.
+          run edit '{"input":"uploads/clip.mp4","steps":[{"op":"keep_voice"},{"op":"trim","start":0,"end":6}],"output":"outputs/voice"}'
+          run separate '{"input":"uploads/clip.mp4","stems":"vocals","output":"outputs/clip"}'
+          test -s /tmp/media/outputs/clip-voice.mp3 && test -s /tmp/media/outputs/clip-music-and-sounds.mp3
+          # Whisper on its own.
+          run transcribe '{"input":"uploads/clip.mp4"}'
+          run find '{"input":"uploads/clip.mp4","query":"subscribe"}'
+          python3 -c "import json; r=json.load(open('/tmp/result.json')); assert r['matches'], r"
+          # Round 2: free voices, word-by-word captions, cutting pauses and fillers, highlights.
+          run speak '{"text":"This is Kokoro, a free voice.","voice":"af_sarah","output":"outputs/kokoro"}'
+          run speak '{"text":"This is Piper, a quicker free voice.","engine":"piper","voice":"amy","output":"outputs/piper"}'
+          run edit '{"input":"uploads/clip.mp4","steps":[{"op":"remove_fillers"},{"op":"remove_silence"},{"op":"captions","style":"highlight"},{"op":"voiceover","text":"Welcome back.","voice":"am_michael","start":1}],"output":"outputs/talk"}'
+          run highlights '{"input":"uploads/clip.mp4","length":5,"count":2}'
+          # Motion and looks, a beat-cut montage, background removal and upscaling.
+          run edit '{"input":"uploads/clip.mp4","steps":[{"op":"speed_ramp","ranges":[{"start":1,"end":3,"factor":2}]},{"op":"slow_motion","factor":0.5,"start":0,"end":1},{"op":"look","preset":"cinematic"},{"op":"text","text":"Round 2","animation":"pop"}],"output":"outputs/motion"}'
+          run edit '{"input":"uploads/clip.mp4","steps":[{"op":"montage","files":["uploads/clip.mp4"],"music":"uploads/beat.wav","beats_per_cut":2,"aspect":"9:16"}],"output":"outputs/montage"}'
+          run edit '{"input":"uploads/person.mp4","steps":[{"op":"remove_background","replace":"blur"}],"output":"outputs/nobg"}'
+          run edit '{"input":"uploads/person.png","steps":[{"op":"remove_background"}],"output":"outputs/cutout"}'
+          run edit '{"input":"uploads/person.png","steps":[{"op":"upscale","scale":2}],"output":"outputs/bigger"}'
+          run edit '{"input":"uploads/person.mp4","steps":[{"op":"trim","start":0,"end":0.5},{"op":"upscale","scale":2}],"output":"outputs/bigger-clip"}'
+          ls -la /tmp/media/outputs
+
+      - name: Run CoDev's media tests against the image
+        run: |
+          npm ci --ignore-scripts
+          CODEV_MEDIA_IMAGE=codev-media:local node --test tests/media.test.js
+
+      - name: Publish the image
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag codev-media:local "$IMAGE:1"
+          docker tag codev-media:local "$IMAGE:sha-${GITHUB_SHA::7}"
+          docker push "$IMAGE:1"
+          docker push "$IMAGE:sha-${GITHUB_SHA::7}"
