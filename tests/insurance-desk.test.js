@@ -265,7 +265,7 @@ test('in the page: add a client and a policy, see the alert, sign an SOA, import
     if (launched.skip) return t.skip(launched.skip);
     const { page, errors } = await openDeskPage(t, []);
     await page.evaluate(() => switchView('insurance'));
-    await page.click('#view-insurance button:has-text("+ New client")');
+    await page.click('#view-insurance button[aria-label="+ New client"]');
     await page.fill('#view-insurance input[data-field="name"]', 'Gloria Mendes');
     // Born 64 years and 11 months ago, so her Initial Enrollment Period is open now.
     const dob = await page.evaluate(() => { const d = new Date(); d.setFullYear(d.getFullYear() - 65); d.setMonth(d.getMonth() + 1); return d.toISOString().slice(0, 10); });
@@ -273,7 +273,10 @@ test('in the page: add a client and a policy, see the alert, sign an SOA, import
     await page.fill('#view-insurance input[data-field="zip"]', '85004');
     await page.click('#view-insurance [data-action="save-client"]');
     await page.waitForSelector('#view-insurance h3:has-text("Gloria Mendes")');
+    // The record opens on Details, with the client's information in view.
+    await page.waitForSelector('#view-insurance .ins-field:has-text("85004")');
 
+    await page.click('#view-insurance [data-record-tab="related"]');
     await page.click('#view-insurance [data-action="add-policy"]');
     await page.selectOption('#view-insurance .ins-panel select >> nth=0', 'dvh');
     await page.fill('#view-insurance input[data-field="carrier"]', 'Delta Dental');
@@ -350,16 +353,58 @@ test('in the page: the desk fits a phone screen', async t => {
         insuranceDesk.savePolicy(c.id, { planType: 'mapd', carrier: 'UnitedHealthcare', planName: 'AARP Medicare Advantage Choice Plan 2 (PPO)', status: 'active' });
         mobileTab('insurance');
     });
-    await page.waitForSelector('#view-insurance .ins-item');
+    await page.waitForSelector('#view-insurance tr[data-client]');
     for (const section of ['clients', 'alerts', 'soa', 'commissions', 'quote', 'privacy']) {
         await page.click(`#view-insurance [data-section="${section}"]`);
         const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
         assert.ok(overflow <= 1, `${section} scrolls sideways by ${overflow}px`);
     }
     await page.click('#view-insurance [data-section="clients"]');
-    await page.click('#view-insurance .ins-item');
+    await page.click('#view-insurance tr[data-client]');
+    await page.waitForSelector('#view-insurance .ins-highlights');
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     assert.ok(overflow <= 1, `client page scrolls sideways by ${overflow}px`);
     assert.ok(await page.$('.mobile-tab[data-view="insurance"].active'), 'the Clients tab is lit');
+    assert.deepEqual(errors, []);
+});
+
+test('in the page: list views, a Kanban board, the stage path and the activity timeline', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { page, errors } = await openDeskPage(t, []);
+    await page.evaluate(() => {
+        const d = insuranceDesk;
+        d.saveClient({ name: 'Ann Lee', status: 'lead', phone: '555-0101', email: 'ann@example.com', zip: '10001' });
+        const b = d.saveClient({ name: 'Bo Diaz', status: 'client' }).client;
+        d.savePolicy(b.id, { planType: 'medsupp', carrier: 'Aetna', status: 'active', premium: 150 });
+        switchView('insurance');
+    });
+    await page.waitForSelector('#view-insurance tr[data-client="Ann Lee"]:has-text("ann@example.com")');
+    await page.selectOption('#view-insurance select[data-field="list-view"]', 'medicare');
+    assert.deepEqual(await page.$$eval('#view-insurance tr[data-client]', rows => rows.map(r => r.dataset.client)), ['Bo Diaz']);
+    await page.selectOption('#view-insurance select[data-field="list-view"]', 'all');
+    await page.click('#view-insurance th[data-sort="name"]');
+    assert.deepEqual(await page.$$eval('#view-insurance tr[data-client]', rows => rows.map(r => r.dataset.client)), ['Bo Diaz', 'Ann Lee'], 'a second click sorts the other way');
+
+    await page.click('#view-insurance [data-display="kanban"]');
+    await page.dragAndDrop('#view-insurance .ins-kcard[data-client="Ann Lee"]', '#view-insurance .ins-lane[data-stage="prospect"]', { sourcePosition: { x: 12, y: 10 } });
+    await page.waitForSelector('#view-insurance .ins-lane[data-stage="prospect"] .ins-kcard[data-client="Ann Lee"]');
+    assert.equal(await page.evaluate(() => insuranceDesk.client('Ann Lee').status), 'prospect');
+    await page.selectOption('#view-insurance select[aria-label="Stage for Ann Lee"]', 'client');
+    await page.waitForSelector('#view-insurance .ins-lane[data-stage="client"] .ins-kcard[data-client="Ann Lee"]');
+
+    await page.click('#view-insurance .ins-kcard[data-client="Ann Lee"] b');
+    await page.waitForSelector('#view-insurance .ins-step.current[data-stage="client"]');
+    assert.equal(await page.locator('#view-insurance .ins-step.done').count(), 2);
+    await page.click('#view-insurance .ins-step[data-stage="prospect"]');
+    await page.waitForSelector('#view-insurance .ins-step.current[data-stage="prospect"]');
+
+    await page.fill('#view-insurance textarea[data-field="activity-text"]', 'Wants dental added.');
+    await page.click('#view-insurance [data-action="save-activity"]');
+    await page.waitForSelector('#view-insurance [data-timeline="past"] li[data-kind="call"]:has-text("Wants dental added.")');
+    await page.click('#view-insurance [data-composer="followup"]');
+    await page.fill('#view-insurance textarea[data-field="activity-text"]', 'Send dental quotes');
+    await page.click('#view-insurance [data-action="save-activity"]');
+    await page.waitForSelector('#view-insurance li[data-upcoming="followUp"]');
+    assert.ok(await page.$('#view-insurance [data-timeline="past"] li[data-kind="change"]:has-text("Edited status")'), 'stage changes show in the timeline');
     assert.deepEqual(errors, []);
 });
