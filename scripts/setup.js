@@ -7,10 +7,11 @@
 //   3. Docker daemon, for agent sandboxes
 //   4. Playwright Chromium, for the browser tools (npx playwright install chromium)
 //   5. The .codev data folder for sandboxes, staged diffs and browser profiles
+//   6. The video editing tools (Docker image): reported, and downloaded only with --media
 // Missing Docker or optional keys are warnings. Setup exits with code 1 only
 // for problems that stop server.js itself: old Node, failed npm install, a
 // malformed key or an unusable PORT.
-// Options: --check (report only, install nothing), --skip-browsers.
+// Options: --check (report only, install nothing), --skip-browsers, --media.
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
@@ -19,6 +20,7 @@ const { checkDocker, checkPlaywright, REPO_DIR } = require('./checks');
 const args = new Set(process.argv.slice(2));
 const CHECK_ONLY = args.has('--check');
 const SKIP_BROWSERS = args.has('--skip-browsers');
+const GET_MEDIA = args.has('--media');
 const MIN_NODE_MAJOR = 18;
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -97,6 +99,21 @@ async function main() {
     else {
         const err = ensureDataDirs(config);
         if (err) fail(err); else ok(`Data folder ready: ${config.workspace.dataDir}`);
+    }
+
+    step('6. Video editing tools (FFmpeg, Whisper, Demucs, DeepFilterNet)');
+    if (!docker.available) warn('Video editing needs Docker; it is off until Docker Desktop runs.');
+    else {
+        const { createMedia } = require('../desktop/media');
+        const media = createMedia({ dataDir: config.workspace.dataDir });
+        let state = (await media.status({})).setup;
+        if (state.state !== 'ready' && GET_MEDIA && !CHECK_ONLY) {
+            console.log('  Downloading the video tools (about 3 GB, once; building them here takes 10 to 20 minutes if the download fails)...');
+            state = await media.prepare();
+        }
+        if (state.state === 'ready') ok(`Ready (${state.image}).`);
+        else if (state.state === 'failed') warn(state.detail);
+        else ok('Not downloaded yet: it happens the first time an agent edits a video, or run "npm run setup -- --media".');
     }
 
     console.log(`\n${errors ? `Setup found ${errors} problem(s) to fix` : 'Setup complete'}${warnings ? `, ${warnings} warning(s)` : ''}.`);

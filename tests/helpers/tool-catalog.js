@@ -49,9 +49,12 @@ async function serverTools() {
         const list = await router.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
         const desktop = require(path.join(ROOT, 'desktop', 'mcp-tools.js')).createMcpTools(() => scratch);
         const desk = await desktop({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+        // The media tools are listed only where Docker runs, so read them from the module.
+        const media = require(path.join(ROOT, 'desktop', 'media')).createMedia({ dataDir: path.join(scratch, 'media') });
+        const mediaTools = [...media.TOOLS, ...media.LOCAL_TOOLS];
         return {
             skipped: router.skipped,
-            tools: [...strip('server', list.result.tools), ...strip('windows-app', desk.result.tools)]
+            tools: [...strip('server', list.result.tools), ...strip('windows-app', desk.result.tools), ...strip('server', mediaTools.filter(t => !list.result.tools.some(s => s.name === t.name)))]
         };
     } finally {
         await router.close();
