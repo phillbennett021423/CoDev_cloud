@@ -1279,6 +1279,7 @@
     <script src="agent-ui/lore-bridges.js"></script>
     <script src="agent-ui/insurance-desk.js"></script>
     <script src="agent-ui/odds-api.js"></script>
+    <script src="agent-ui/prop-model.js"></script>
     <script src="agent-ui/code-intel.js"></script>
     <script src="agent-ui/file-builder.js"></script>
     <script src="agent-ui/task-runner.js"></script>
@@ -4385,6 +4386,16 @@
             log: logConsoleActivity,
             onChart: filter => openOddsViewer(filter)
         });
+        // CoDev's own prop model (agent-ui/prop-model.js): game logs from ESPN's free stats,
+        // the model's chance against the saved market, steam and a trap check, and a
+        // backtest over every past slate the odds tracker saved.
+        const propModel = CodevPropModel.createPropModel({
+            storage: localStorage,
+            http: CodevPropModel.detectStatsHttp(window),
+            tracker: oddsTracker,
+            odds: CodevOddsApi,
+            log: logConsoleActivity
+        });
         // The project map behind code_map, find_symbol, file_outline, read_lines,
         // architecture_review and godot_check (agent-ui/code-intel.js), built on this device.
         const codeIndexer = CodevCodeIntel.createIndexer({ isIndexable: path => isProjectFileName(path) });
@@ -4404,6 +4415,10 @@
             // Re-snapshots the lines agents looked at, a few times a day, within the credit limits.
             setTimeout(() => oddsTracker.autoTrack().catch(() => {}), 60000);
             setInterval(() => oddsTracker.autoTrack().catch(() => {}), 15 * 60000);
+            // Saved props go into the backtest archive at their close (free), and finished
+            // games are settled from ESPN about once an hour, a few players at a time.
+            setInterval(() => { try { propModel.archiveSlate(); } catch (err) { logConsoleActivity(`[Model] ${err.message}`); } }, 15 * 60000);
+            setInterval(() => propModel.settle({ maxPlayers: 8 }).catch(err => logConsoleActivity(`[Model] ${err.message}`)), 60 * 60000);
         });
 
         // MADE FILES AND PARALLEL WORK (agent-ui/file-builder.js, agent-ui/task-runner.js).
@@ -4706,6 +4721,8 @@
                 for (const tool of await googleApps.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             } catch (err) { logConsoleActivity(`[Google] ${err.message}`); }
             for (const tool of oddsTracker.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
+            // The prop model's tools only for props and betting requests (they cost tokens on every call).
+            if (!ctx || ctx.kind === "props" || PROPS_TASK.test(ctx.task || "")) for (const tool of propModel.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             // The project map and checks, only for code tasks (they cost tokens on every call).
             if (ctx?.kind === "code") tools.push(...CodevCodeIntel.buildTools({ getIndex: projectCodeIndex }));
             // Real files (Excel, PowerPoint, Word, CSV, web apps). On Groq's small free tier
@@ -4892,6 +4909,8 @@
             if (googleStep) return googleStep;
             const oddsStep = oddsTracker.describe(name, args);
             if (oddsStep) return oddsStep;
+            const modelStep = propModel.describe(name, args);
+            if (modelStep) return modelStep;
             const codeStep = CodevCodeIntel.describe(name, args);
             if (codeStep) return codeStep;
             const fileStep = CodevFiles.describe(name, args) || CodevTasks.describe(name, args);
@@ -7611,7 +7630,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
         const CODEV_IDENTITY = "[CoDev] You are CoDev, a capable general assistant and agent: you write and fix code, answer any question, research on the web and read pages, analyze sports props on Outlier, read screenshots, images and documents, drive a browser, remember what the user asks you to keep, and help with writing, planning and anything else the user needs. "
             + "Before acting, work out what kind of request this is and use only the tools it needs. Touch the user's project files only when the task is about them or the user asks.";
         const REQUEST_KIND_NOTES = {
-            props: "[Request type] Sports props and betting research, not a coding task. Use the Odds API tools (when offered) to find what to look up, the Outlier tools, read_screenshots for slip screenshots, and web_search. Don't list, search or read the project files unless the user asks about a file.",
+            props: "[Request type] Sports props and betting research, not a coding task. Use the Odds API tools (when offered) to find what to look up and odds_steam for steam and sharp moves, model_prop_edge for CoDev's own model and market check on the legs (game logs from ESPN, the market's no-vig price, EV, trap check), stats_player_log for a player's game log, model_backtest for how the model did on past slates, the Outlier tools, read_screenshots for slip screenshots, and web_search. Don't list, search or read the project files unless the user asks about a file.",
             images: "[Request type] A request about screenshots or images. Read a folder of them with read_screenshots, or use the attached images. If they turn out to be prop slips, research the legs like any prop list. Don't browse the project's code for this.",
             general: "[Request type] A general question or task, not about the project files. Answer it directly, using web_search for facts you aren't sure of. List, search or read the project files only if the user asks about them."
         };

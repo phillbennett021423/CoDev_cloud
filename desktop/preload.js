@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('codevDesktop', {
         get: ({ url, headers }) => ipcRenderer.invoke('codev:http-get', { url, headers }),
         // The Odds API for line tracking, with its credit headers (x-requests-remaining...).
         odds: ({ url }) => ipcRenderer.invoke('codev:http-odds', { url }),
+        // ESPN's free stats JSON for the prop model's game logs.
+        espn: ({ url }) => ipcRenderer.invoke('codev:http-espn', { url }),
         // Tavily web search with the key from Settings: ({ key, body }) -> { status, data }.
         tavily: ({ key, body }) => ipcRenderer.invoke('codev:http-tavily', { key, body })
     },

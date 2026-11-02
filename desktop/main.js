@@ -27,6 +27,8 @@ protocol.registerSchemesAsPrivileged([
 // routes, and YouTube's video titles.
 const ODDS_API = /^https:\/\/api\.the-odds-api\.com\/v4\/sports(\/|\?)/;
 const ODDS_HEADERS = ['x-requests-remaining', 'x-requests-used', 'x-requests-last'];
+// ESPN's free stats JSON for the prop model's game logs.
+const ESPN_API = /^https:\/\/site\.(web\.)?api\.espn\.com\/apis\//;
 const TAVILY_SEARCH_URL = 'https://api.tavily.com/search';
 const TAVILY_FIELDS = ['query', 'search_depth', 'max_results', 'include_answer', 'topic', 'time_range'];
 const ALLOWED_HTTP = /^https:\/\/(html\.duckduckgo\.com\/html\/\?|nominatim\.openstreetmap\.org\/search\?|router\.project-osrm\.org\/route\/v1\/|www\.youtube\.com\/oembed\?)/;
@@ -174,6 +176,13 @@ app.whenReady().then(() => {
         const headers = {};
         for (const name of ODDS_HEADERS) if (response.headers.get(name) != null) headers[name] = response.headers.get(name);
         return { status: response.status, data: await response.text(), headers };
+    });
+
+    // ESPN's public stats API (game logs for the prop model): only its API hosts.
+    ipcMain.handle('codev:http-espn', async (_event, { url }) => {
+        if (typeof url !== 'string' || !ESPN_API.test(url)) throw new Error('This address is not allowed.');
+        const response = await net.fetch(url);
+        return { status: response.status, data: await response.text(), headers: {} };
     });
 
     // Tavily search with the key from the page's Settings: only its search endpoint and
