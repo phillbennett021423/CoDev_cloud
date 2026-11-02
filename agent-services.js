@@ -1,5 +1,5 @@
 // Loads the agent services (sandbox containers + diff review, headless browser,
-// the Outlier pipeline, the Godot and Blender tools)
+// the Outlier pipeline, the Godot and Blender tools, the art pipeline)
 // and routes the page's tool calls to them. server.js serves the result at
 // POST /agent-tools as MCP JSON-RPC (initialize, tools/list, tools/call), the
 // same messages the Windows app's built-in tools take over IPC.
@@ -24,7 +24,8 @@ const SERVICES = [
     { name: 'sandbox', module: path.join(__dirname, 'desktop', 'sandbox') },
     { name: 'browser', module: path.join(__dirname, 'agents', 'browser') },
     { name: 'outlier', module: path.join(__dirname, 'agents', 'outlier') },
-    { name: 'gamedev', module: path.join(__dirname, 'agents', 'gamedev') }
+    { name: 'gamedev', module: path.join(__dirname, 'agents', 'gamedev') },
+    { name: 'creative', module: path.join(__dirname, 'agents', 'creative') }
 ];
 
 function isMissingModule(err, modulePath) {

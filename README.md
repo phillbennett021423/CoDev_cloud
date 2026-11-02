@@ -84,6 +84,12 @@ The **🎭 Story Studio** tab (on the phone, the **Story** tab) is for writing a
 - **🎬 Scene Builder:** set where the scene happens, who is in it and the goal or conflict. Agents play each character a line (or four) at a time. You can add a director's note, pick who speaks next, step in with your own line, narration or stage direction, redo the last line, undo, rewind to any line, or tap a line to edit it. Each scene saves as you go. A scene stops after 30 agent turns in one sitting until you say to go on. **🎨 Storyboard** draws up to 4 frames per scene with the picture service set in Settings (free Pollinations by default).
 - **📦 Export to your game:** writes `story_bible.json`, `game_data.gd` (GDScript constants such as `CHARACTERS`, `DIALOGUE` and `SCENES`, plus `dialogue_lines()` and `scene_beats()`), one JSON file per dialogue in `dialogue/`, one cutscene JSON per scene in `scenes/`, and `story_bible.md`. Every line has an `id` and the `next` line's id, so the game can play it as a cutscene or walk it as a dialogue tree. With a project folder connected, they save straight into it (`game_data/` by default). Otherwise they download, or on Android they go to the share sheet (Drive, Files, email).
 
+- **🧭 World tools:** join the bible to free tools you may already write in. Everything stays on your device.
+  - **Obsidian:** save the bible as an Obsidian vault (one note per character, faction, place and event, with relationships as `[[links]]`, so Obsidian's graph shows the web), edit it in [Obsidian](https://obsidian.md) or any notes app, and import it back. Notes you write yourself come in too: the folder (Characters, Factions, Places…), a `kind:` property or a `#tag` says what each note is, `## headings` become fields, and links under `## Relationships` (like `- Enemy: [[Null]]`) join the web. Saved into `lore/`, the desktop art tools read it as well.
+  - **Azgaar's Fantasy Map Generator:** make a map at [azgaar.github.io/Fantasy-Map-Generator](https://azgaar.github.io/Fantasy-Map-Generator/), then Menu › Export › Export to JSON › Full, and import that file. Each state becomes a faction (territory, provinces, borders, wars, and its ally, enemy, rival and vassal ties), provinces and cities become places with their map positions, cultures and religions become lore, and the roads and sea routes between cities become a routes entry. Every capital comes in, plus the largest cities up to the number you pick (60 by default).
+  - **StoryCraftr:** writes the bible into a [StoryCraftr](https://github.com/raestrada/storycraftr) book folder (`worldbuilding/geography.md`, `history.md`, `culture.md`, `magic_system.md`, `technology.md`, `outline/character_summary.md`, `plot_points.md`). StoryCraftr reads every Markdown file in the folder, so its outline, worldbuilding and chat commands stay on canon, with your own OpenRouter key or a local Ollama model. What it writes imports back as lore.
+  - Importing adds new names and gives existing entries the imported fields; everything else on them stays, and locked entries aren't touched. Agents can do all of it with `studio_import` ("import my Obsidian vault from lore", "import the Azgaar map maps/continuum.json") and `studio_export` format `obsidian` or `storycraftr`.
+
 Every one of these is optional; use only what helps:
 
 - **🎭 Mood faces:** up to seven portraits per character (calm, happy, angry, sad, scared, determined, surprised). Each is drawn to match the calm face, using the character's own seed on the free service, or the calm face as a reference on a paid one. Chats and scenes show the face that fits each line's mood.
@@ -125,11 +131,22 @@ Agents can compare every sportsbook's lines and player props, follow how they mo
 - `odds_lookup_list`: the players, props and lines worth checking on Outlier for a game: props whose line or odds moved, props where the books disagree, and props the juice leans on, each with the reason and every book's price. It ends with the legs ready for `outlier_research_list`, so an agent asked for a ticket goes straight to those players on Outlier.
 - `odds_player_props` and `odds_game_lines`: one game's props, or a sport's moneylines, spreads and totals, side by side at every book, with the best price for each side and the fair chance with the book's margin taken out.
 - `odds_line_movement`: how a line moved, snapshot by snapshot, book by book.
+- `odds_steam`: steam and sharp moves in the saved lines: several books moving the same way between two snapshots (steam when it's within 90 minutes), whether a sharp book like Pinnacle moved first, and sharp moves the other books haven't followed yet (a stale price to grab).
 - `odds_show_chart`, or **📉 View tracked lines** in Settings: a chart of a line at each book over time and a table comparing the books.
 
 **Credits.** The free plan has 500 credits a month. Listing games is free; a sport's game lines cost about 3 credits; a game's props cost 1 credit per stat (3 for the default stats). CoDev keeps them safe on its own: it saves every answer and reuses it (lines for 30 minutes, props for an hour), spreads the month's credits over its days, always keeps 25 back, and stops before going over. Settings shows how many are left. Each extra group of sportsbooks you tick (DFS apps, Pinnacle in Europe...) multiplies a call's cost. With **Re-check** on, CoDev takes a new snapshot of the lines agents looked at every few hours while it's open, using at most half of the day's credits, so movement builds up by itself.
 
 Without a key, or once the day's credits are used, agents read the odds on Outlier in the browser as before. The numbers are what the sportsbooks show, not picks.
+
+## CoDev's own prop model (free)
+
+The odds tools are the market side; this is the research side, so a prop can be checked with no Outlier visit. It needs nothing to set up: game logs come from ESPN's free public stats, and the market side uses whatever lines the odds tools saved.
+
+- `stats_player_log`: a player's game log, pulled automatically (NBA, WNBA, NCAAB, NFL, NCAAF, MLB, NHL): hit rate at the line over L5, L10, L20 and the whole log, average, median, the last 10 games, minutes trend, home/away and vs the opponent. Early in a season last season's games are added.
+- `model_prop_edge`: up to 8 legs at once. Each gets the game-log chance (a recency-weighted hit rate blended with a distribution fitted to the log), the market's no-vig chance at your line, a blend of the two (60% market to start), the edge and EV at your price or against a pick'em breakeven, a Kelly stake for priced bets, and a **market check**: the market agrees; money is moving against you; or a **possible trap**, when sharp money is on the other side or the log likes the leg far more than the books do (usually news the log can't see, like an injury or a role change).
+- `model_backtest`: every prop line CoDev saved is archived at its close when the game starts, settled from ESPN after the game, and the model is re-run on it with only the games before it. It reports bets, record and ROI at closing prices for a rule (minimum edge, L10 floor, side, stat), calibration, how the market alone, the game log alone and the blend compare, the best market weight (saved only when you ask and there are 100+ settled props), and your own picks' record and closing line value.
+
+**What free data can't match.** ESPN's stats JSON is unofficial and can change shape. The free Odds API plan gives snapshots every 30 minutes or more, not a live feed, so steam is seen after it happens rather than as it happens. US regions don't include Pinnacle; add the Europe region (more credits per call) to see which book moved first. There's no free source of public betting splits or ticket counts. The backtest starts empty and grows with every slate you track; trust it after a few hundred settled props. Tests: `node --test tests/prop-model.test.js`.
 
 ## Agents start blank
 
@@ -226,6 +243,75 @@ Agents can furnish and arrange a 3D scene with the models already in your projec
 The CoDev Bridge plugin now reports world positions; run `godot_install_bridge` again in a project that has the older one. Shelf levels, wall-mounted lights and Unreal or Maya aren't covered yet. Tests: `node --test tests/scene-dressing.test.js` (it builds its own `.glb` files and uses a stand-in editor).
 
 CoDev looks for Godot and Blender on the PATH, in their usual install folders, and for Godot also in Downloads and Desktop (`Godot_v4...exe`). Set `CODEV_GODOT_PATH` or `CODEV_BLENDER_PATH` in `.env` (or Windows' environment variables) to point at a specific one. Tasks that mention Blender, bpy or glTF also get a short bpy reference with the game engine guide. Tests: `node --test tests/gamedev.test.js` (it uses stand-in Godot and Blender, so neither has to be installed).
+
+## Game art pipeline (skins, textures, 3D, marketing)
+
+CoDev covers what an AI creative platform like Layer does for cosmetics and skins, with free, open-source tools that run on your own computer. Agents get the `art_*` tools in the Windows app and with `npm start`/`start-codev.bat`, and Claude Code or Cursor can drive the same tools through `codev-mcp.js`. Ask in plain words ("pitch 4 directions for a mech knight skin", "weather these plates from new to battle-damaged", "rig this armour on our base character") and the agent picks the tools. `art_status` says what is installed and what each missing piece unlocks.
+
+**What it runs on.** Everything is optional. Without any of it, concepts still come from the free Pollinations service, and PBR maps, weathering, reframing, upscaling and sound effects run on Python.
+
+| Tool | Free from | Unlocks |
+| --- | --- | --- |
+| Python 3 + `pip install numpy pillow rembg` | python.org | PBR maps, weathering, cut-outs, contact sheets, sound effects |
+| ComfyUI | github.com/comfyanonymous/ComfyUI or the ComfyUI Desktop app | every checkpoint you install (FLUX, SDXL, your own), LoRAs, inpainting, try-on, sketch-to-image, outpainting. Add ComfyUI_IPAdapter_plus for style references and outfit pictures, and a scribble/lineart ControlNet for sketches |
+| kohya sd-scripts / ostris ai-toolkit | GitHub | training style, character and edit LoRAs on your GPU |
+| Blender 4 | blender.org | remesh, UVs, PBR baking, rigging, retargeting |
+| Real-ESRGAN ncnn, Piper, FFmpeg, Coqui TTS | GitHub / ffmpeg.org / pip | 4x upscaling, offline voice lines, voice filters, consented voice cloning |
+
+Point CoDev at them in `.env` (see `.env.example`): `CODEV_COMFYUI_URL`, `CODEV_COMFYUI_DIR`, `CODEV_KOHYA_DIR`, `CODEV_AITOOLKIT_DIR`, `CODEV_REALESRGAN_PATH`, `CODEV_PIPER_PATH`, `CODEV_PIPER_VOICES`, `CODEV_FFMPEG_PATH`, `CODEV_TTS_PATH`, `CODEV_PYTHON`.
+
+**Layer 1: your studio's look.**
+- `art_lora_train` trains a style or character LoRA from your own art (kohya on SDXL/SD 1.5, ai-toolkit on FLUX). It can also train an edit LoRA from before/after pairs (FLUX Kontext or Qwen-Image-Edit), which learns a post-processing pass like your colour grade, edge highlights or weathering.
+- "prepare" lays out the dataset and picks the settings from the picture count and your GPU memory. "start" trains in the background. When it's done, the LoRA is copied into ComfyUI and attached to the style.
+- `art_captions` reviews the captions: missing ones, missing trigger words, style words that would leak, duplicates, pictures too small. "auto" captions with BLIP.
+- `art_style` clones a style on the spot from a few reference pictures. It saves the references and palette under a name that every generation can use.
+
+**Layer 2: concepts.**
+- `art_generate` pitches several directions across several models in one call, with your style, LoRA and references applied, and shows a contact sheet.
+- `art_edit` inpaints part of a picture (swap a pauldron, recolour a visor) or reworks the whole picture.
+- `art_try_on` fits an outfit or armour onto a character's pose inside their silhouette.
+- **🖍️ Sketch to image** in the menu is a drawing pad that redraws your sketch in the studio style each time you pause (ComfyUI; a turbo or schnell model keeps it near real time).
+
+**Layer 3: 3D and surfaces.**
+- `art_materials` makes up to 40 tileable material concepts at once, each with a full PBR set.
+- `art_pbr_maps` turns any texture into albedo, normal, roughness, metallic, AO, height, curvature and a Godot ORM map.
+- `art_weathering` ages a texture set from factory-fresh through light, worn and battle-damaged to ruined: chipped edges, scratches, rust in cavities, scorch, grime and dust.
+- `art_mesh` works in Blender:
+  - "cleanup" repairs raw AI meshes and decimates them to your triangle budget.
+  - "uv" unwraps and packs.
+  - "bake" bakes PBR maps, from a high-poly when you have one.
+  - "rig" copies a base character's skin weights onto a cosmetic mesh.
+  - "retarget" moves animations from another skeleton (Mixamo, Rigify and UE names are matched).
+
+  Each one exports a `.glb` for Godot and reports triangle, material and bone counts against the budgets.
+
+**Into Godot, in one command.**
+- `art_godot_skin` installs a finished skin in the Godot 4 project as an equippable item:
+  - It copies the `.glb`, its textures and an icon into `assets/skins/<character>/<id>/`.
+  - It writes one ORMMaterial3D per weathering stage.
+  - It adds the skin to `data/skin_manifest.json` (id, character, slot, tier and rarity, model, materials, icon, stats, triangle and bone counts).
+  - It keeps a `SkinRegistry` autoload: `SkinRegistry.equip($Relay, "relay_chest_aegis_epic", "battle")` puts the skin on the child node named after its slot (a BoneAttachment3D works). A rigged skin binds to the character's skeleton instead.
+- `art_skin_pipeline` runs the whole chain from one brief ("three tier-3 epic variants of Relay's A.E.G.I.S. armour"): concepts, a PBR material per variant, the mesh cleaned to budget and UV-unwrapped, the material put on it (`art_mesh` op "texture"), weathering stages, rigging onto the base character, and the Godot install.
+- Folders, slots and tiers are in the `godot` section of `codev-studio.json`.
+
+**On canon.** The art tools read the universe bible: the Obsidian vault in `lore/` and Story Studio's `game_data/story_bible.json` (set other places in the `lore` section of `codev-studio.json`). When a brief names a character, item, place or faction, or an alias from a note's `aliases:`, `art_generate` and `art_skin_pipeline` add how it looks (its Appearance or Description) to the prompt and say so in the reply, so a skin for Relay starts from Relay's canon look. Pass `lore: false` to skip it. `art_lore` lets an agent, Claude Code or Cursor read an entry first.
+
+**Layer 4: marketing.**
+- `art_playable_ad` builds an offline, single-file MRAID playable (reveal, equip, runner or spin template) ending on a store card.
+- `art_reframe` expands key art to 9:16, 1:1, 4:5, 16:9, 1.91:1 and more without stretching it.
+- `art_cutout` removes backgrounds in batches, and `art_upscale` upscales 2x or 4x.
+- `art_audio` says barks with Piper, applies robot/mech/radio/helmet/hologram voice filters and makes sound effects.
+- `art_voice_clone` only clones a voice whose owner agreed. You're asked every time, and consent is logged. XTTS-v2's licence is non-commercial.
+
+**Layer 5: the bridge and the studio's memory.**
+- `codev-studio.json` in the project holds the art direction, saved styles, triangle budgets per category (Godot 4 mobile to start), texture size, bone and material limits, the naming pattern, output folders and free-text notes. Every art tool follows it, and `art_rules` reads and changes it.
+- `codev-mcp.js` serves all the art tools and the Godot/Blender tools to Claude Code, Cursor or Claude Desktop, with those rules as its instructions:
+
+```
+claude mcp add codev -- node C:\path\to\CoDev_cloud\codev-mcp.js --workspace C:\path\to\game
+```
+
+Tests: `node --test tests/creative.test.js` (stand-in ComfyUI, Blender and trainer; the Python tests run when numpy and Pillow are installed).
 
 ## Agent sandboxes and change review
 

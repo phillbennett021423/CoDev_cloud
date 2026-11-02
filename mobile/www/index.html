@@ -715,6 +715,9 @@
                 <div class="menu-item active" id="menuAgentFlow" onclick="switchView('chat'); logConsoleActivity('Switched to Agent Flow mode.');">
                     <span class="menu-icon">💻</span> Agent Flow
                 </div>
+                <div class="menu-item" onclick="openSketchPad()" title="Draw a rough sketch and CoDev redraws it in your studio's style (ComfyUI on the computer running CoDev)">
+                    <span class="menu-icon">🖍️</span> Sketch to image
+                </div>
                 <div class="menu-item" onclick="switchView('codev')">
                     <span class="menu-icon">⚡</span> CoDev Hub
                 </div>
@@ -1273,12 +1276,15 @@
     <script src="agent-ui/page-extract.js"></script>
     <script src="agent-ui/phone-browser.js"></script>
     <script src="agent-ui/story-studio.js"></script>
+    <script src="agent-ui/lore-bridges.js"></script>
     <script src="agent-ui/insurance-desk.js"></script>
     <script src="agent-ui/odds-api.js"></script>
+    <script src="agent-ui/prop-model.js"></script>
     <script src="agent-ui/code-intel.js"></script>
     <script src="agent-ui/file-builder.js"></script>
     <script src="agent-ui/task-runner.js"></script>
     <script src="agent-ui/cloud-account.js"></script>
+    <script src="agent-ui/sketch-pad.js"></script>
     <script src="companion/companion.js"></script>
     <script src="companion/companion-bridge.js"></script>
     <script>
@@ -2087,6 +2093,30 @@
             setTimeout(() => URL.revokeObjectURL(link.href), 1000);
         }
 
+        // Several text files, or a whole folder (an Obsidian vault) where the browser can
+        // pick one: [{ path, text }] with paths inside the picked folder. Android's picker
+        // takes several files instead.
+        function pickTextFilesFromUser({ directory = false, accept = "" } = {}) {
+            return new Promise(resolve => {
+                const input = document.createElement("input");
+                input.type = "file";
+                input.multiple = true;
+                if (accept) input.accept = accept;
+                if (directory && "webkitdirectory" in input && !getNativeSpeechPlugin("Filesystem")) input.webkitdirectory = true;
+                input.onchange = async () => {
+                    const out = [];
+                    for (const file of [...input.files].slice(0, 3000)) {
+                        if (isSecretName(file.name) || file.size > 2 * 1024 * 1024) continue;
+                        if (accept && !/\.(md|markdown|txt|json)$/i.test(file.name)) continue;
+                        const rel = (file.webkitRelativePath || file.name).split("/");
+                        out.push({ path: (rel.length > 1 ? rel.slice(1) : rel).join("/"), text: await file.text() });
+                    }
+                    resolve(out);
+                };
+                input.click();
+            });
+        }
+
         function pickTextFileFromUser(accept = ".json,application/json") {
             return new Promise(resolve => {
                 const input = document.createElement("input");
@@ -2212,8 +2242,11 @@
                     frame.onload = () => { frame.contentWindow.focus(); frame.contentWindow.print(); setTimeout(() => frame.remove(), 60000); };
                     document.body.appendChild(frame);
                 },
-                pickFile: () => pickTextFileFromUser(),
+                pickFile: accept => pickTextFileFromUser(accept),
+                pickFiles: pickTextFilesFromUser,
+                saveZip: (name, files) => saveBytesForUser(name, CodevFiles.zip(Object.entries(files)), "application/zip"),
                 writeFile: (path, content) => writeWorkspaceFile(path, content),
+                writeFiles: files => writeWorkspaceFiles(files, { asked: true }),
                 canWriteFolder: () => !!connectedDirectoryHandle,
                 voices: studioVoices,
                 speak: speakAsCharacter,
@@ -3653,6 +3686,15 @@
             return reply.result;
         }
 
+        // ✏️ Sketch pad (agent-ui/sketch-pad.js): calls art_edit on the computer running CoDev.
+        function openSketchPad() {
+            if (!hasAgentBrowser() || !window.CodevSketchPad) {
+                alert("Sketch to image runs on ComfyUI through CoDev on your computer: open CoDev with start-codev.bat (or npm start) or the Windows app.");
+                return;
+            }
+            CodevSketchPad.open({ callTool: (name, args) => browserRpc("tools/call", { name, arguments: args, _meta: { "codev/agentId": "sketch-pad", "codev/agentName": "Sketch pad" } }), log: logConsoleActivity });
+        }
+
         async function fetchBrowserMcpTools() {
             if (!hasAgentBrowser()) return [];
             if (Date.now() - browserMcpCache.at < 60000) return browserMcpCache.tools;
@@ -3661,7 +3703,7 @@
                 const result = await browserRpc("tools/list", {});
                 // server.js's /agent-tools also has the sandbox's tools (offered in sandbox mode);
                 // these are the browser's, the Outlier pipeline's and the Godot/Blender ones, called the same way.
-                tools = (result.tools || []).filter(t => /^(browser|outlier|godot|blender|gamedev|scene)_/.test(t.name)).map(t => ({ ...t, transport: "browser" }));
+                tools = (result.tools || []).filter(t => /^(browser|outlier|godot|blender|gamedev|art|scene)_/.test(t.name)).map(t => ({ ...t, transport: "browser" }));
             } catch (err) { /* an older server.js without /agent-tools */ }
             browserMcpCache = { at: Date.now(), tools };
             return tools;
@@ -4285,6 +4327,11 @@
                 result = await mcpHubRequest({ op: "callTool", server: tool.server, name: tool.name, arguments: args });
             }
             let text = mcpContentToText(result.content);
+            // Pictures a CoDev tool returns (art_* contact sheets) show under the reply.
+            if (tool.transport === "browser" && typeof keepToolImages === "function") {
+                const kept = await keepToolImages(result.content, shownName, ctx);
+                if (kept) text = text.replace(/\[image content, image\/\w+\]/g, "[picture shown to the user under your reply]");
+            }
             // browser_extract sends every row here and only a preview as text: the rows
             // become a dataset for create_spreadsheet / create_csv.
             const dataset = result.structuredContent && result.structuredContent.dataset;
@@ -4339,6 +4386,16 @@
             log: logConsoleActivity,
             onChart: filter => openOddsViewer(filter)
         });
+        // CoDev's own prop model (agent-ui/prop-model.js): game logs from ESPN's free stats,
+        // the model's chance against the saved market, steam and a trap check, and a
+        // backtest over every past slate the odds tracker saved.
+        const propModel = CodevPropModel.createPropModel({
+            storage: localStorage,
+            http: CodevPropModel.detectStatsHttp(window),
+            tracker: oddsTracker,
+            odds: CodevOddsApi,
+            log: logConsoleActivity
+        });
         // The project map behind code_map, find_symbol, file_outline, read_lines,
         // architecture_review and godot_check (agent-ui/code-intel.js), built on this device.
         const codeIndexer = CodevCodeIntel.createIndexer({ isIndexable: path => isProjectFileName(path) });
@@ -4358,6 +4415,10 @@
             // Re-snapshots the lines agents looked at, a few times a day, within the credit limits.
             setTimeout(() => oddsTracker.autoTrack().catch(() => {}), 60000);
             setInterval(() => oddsTracker.autoTrack().catch(() => {}), 15 * 60000);
+            // Saved props go into the backtest archive at their close (free), and finished
+            // games are settled from ESPN about once an hour, a few players at a time.
+            setInterval(() => { try { propModel.archiveSlate(); } catch (err) { logConsoleActivity(`[Model] ${err.message}`); } }, 15 * 60000);
+            setInterval(() => propModel.settle({ maxPlayers: 8 }).catch(err => logConsoleActivity(`[Model] ${err.message}`)), 60 * 60000);
         });
 
         // MADE FILES AND PARALLEL WORK (agent-ui/file-builder.js, agent-ui/task-runner.js).
@@ -4647,7 +4708,7 @@
             tools.push(...await buildMediaTools(ctx));
             // The story bible's tools, only for a task about a game's story (they cost tokens on every call).
             if (storyStudio && CodevStoryStudio.isStudioTask(storyStudio, ctx?.task)) {
-                tools.push(...CodevStoryStudio.buildStudioTools(storyStudio, { writeFile: (path, content) => writeWorkspaceFile(path, content), confirm: async text => confirm(text) }));
+                tools.push(...CodevStoryStudio.buildStudioTools(storyStudio, { writeFile: (path, content) => writeWorkspaceFile(path, content), writeFiles: files => writeWorkspaceFiles(files), readFolder: readWorkspaceFolder, confirm: async text => confirm(text) }));
             }
             // The insurance book's tools: only when the user allowed agents in, and only for insurance requests.
             if (insuranceDesk && CodevInsuranceDesk.isDeskTask(insuranceDesk, ctx?.task)) {
@@ -4660,6 +4721,8 @@
                 for (const tool of await googleApps.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             } catch (err) { logConsoleActivity(`[Google] ${err.message}`); }
             for (const tool of oddsTracker.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
+            // The prop model's tools only for props and betting requests (they cost tokens on every call).
+            if (!ctx || ctx.kind === "props" || PROPS_TASK.test(ctx.task || "")) for (const tool of propModel.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             // The project map and checks, only for code tasks (they cost tokens on every call).
             if (ctx?.kind === "code") tools.push(...CodevCodeIntel.buildTools({ getIndex: projectCodeIndex }));
             // Real files (Excel, PowerPoint, Word, CSV, web apps). On Groq's small free tier
@@ -4759,6 +4822,36 @@
             return tools;
         }
 
+        // Many files at once (an Obsidian vault, a StoryCraftr book folder) with one question.
+        async function writeWorkspaceFiles(files, { asked = false } = {}) {
+            const list = Object.entries(files).map(([path, content]) => [normalizeWorkspacePath(path), content]).filter(([name, content]) => name && typeof content === "string");
+            if (!list.length) return "Nothing to write.";
+            if (!asked && !toolsAutoRun && !await askPermission(`An agent wants to write ${list.length} files in your project folder (${list.slice(0, 4).map(([n]) => n).join(", ")}${list.length > 4 ? "…" : ""}).\n\nAllow it?`)) return "The user declined these writes.";
+            for (const [name, content] of list) loadedProjectFiles[name] = content;
+            if (!connectedDirectoryHandle) return `Updated ${list.length} files in CoDev's workspace. No folder is connected, so they weren't saved to disk.`;
+            const first = await workspaceFileHandle(list[0][0], true);
+            if (first.requestPermission && (await first.requestPermission({ mode: "readwrite" })) !== "granted") return "The browser didn't allow writing to the connected folder.";
+            for (const [name, content] of list) {
+                const writable = await (await workspaceFileHandle(name, true)).createWritable();
+                await writable.write(content);
+                await writable.close();
+            }
+            renderProjectFiles();
+            logConsoleActivity(`[Tool] Saved ${list.length} files to ${connectedDirectoryHandle.name}.`);
+            return `Saved ${list.length} files to the connected folder (${list.slice(0, 3).map(([n]) => n).join(", ")}${list.length > 3 ? "…" : ""}).`;
+        }
+
+        // A folder's text files ([{ path, text }]), or one file, from the connected project
+        // folder; a big file (an Azgaar map) is read from disk when it wasn't loaded.
+        async function readWorkspaceFolder(rawPath) {
+            const name = normalizeWorkspacePath(rawPath);
+            if (!name) return [];
+            const inside = Object.keys(loadedProjectFiles).filter(k => k === name || k.startsWith(name + "/"));
+            if (inside.length) return inside.map(k => ({ path: k === name ? k : k.slice(name.length + 1), text: loadedProjectFiles[k] }));
+            if (!connectedDirectoryHandle) return [];
+            try { return [{ path: name, text: await (await (await workspaceFileHandle(name, false)).getFile()).text() }]; } catch (err) { return []; }
+        }
+
         async function writeWorkspaceFile(rawName, content) {
             if (typeof content !== "string") return "write_workspace_file needs content as a string.";
             const name = normalizeWorkspacePath(rawName);
@@ -4816,6 +4909,8 @@
             if (googleStep) return googleStep;
             const oddsStep = oddsTracker.describe(name, args);
             if (oddsStep) return oddsStep;
+            const modelStep = propModel.describe(name, args);
+            if (modelStep) return modelStep;
             const codeStep = CodevCodeIntel.describe(name, args);
             if (codeStep) return codeStep;
             const fileStep = CodevFiles.describe(name, args) || CodevTasks.describe(name, args);
@@ -7373,7 +7468,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 10. BE BRIEF: Say what the user needs and stop. Lead with the answer in plain words. No preamble, no restating the question, no repeating what you already said, no closing summary or offers of more help. A simple question gets one to three sentences, and most answers fit in about 150 words. Go longer only when the task needs it: code, a report or deep research, step-by-step instructions, or when the user asks for detail; even then, cut anything that doesn't help. Use lists or code blocks only when they help.
 
-11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); making and editing pictures (generate_image); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
+11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); making and editing pictures (generate_image); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
 
 12. ENGINE-SPECIFIC RULES:${engineRules ? `\n${engineRules}` : " none for this task."}`;
             
@@ -7535,7 +7630,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
         const CODEV_IDENTITY = "[CoDev] You are CoDev, a capable general assistant and agent: you write and fix code, answer any question, research on the web and read pages, analyze sports props on Outlier, read screenshots, images and documents, drive a browser, remember what the user asks you to keep, and help with writing, planning and anything else the user needs. "
             + "Before acting, work out what kind of request this is and use only the tools it needs. Touch the user's project files only when the task is about them or the user asks.";
         const REQUEST_KIND_NOTES = {
-            props: "[Request type] Sports props and betting research, not a coding task. Use the Odds API tools (when offered) to find what to look up, the Outlier tools, read_screenshots for slip screenshots, and web_search. Don't list, search or read the project files unless the user asks about a file.",
+            props: "[Request type] Sports props and betting research, not a coding task. Use the Odds API tools (when offered) to find what to look up and odds_steam for steam and sharp moves, model_prop_edge for CoDev's own model and market check on the legs (game logs from ESPN, the market's no-vig price, EV, trap check), stats_player_log for a player's game log, model_backtest for how the model did on past slates, the Outlier tools, read_screenshots for slip screenshots, and web_search. Don't list, search or read the project files unless the user asks about a file.",
             images: "[Request type] A request about screenshots or images. Read a folder of them with read_screenshots, or use the attached images. If they turn out to be prop slips, research the legs like any prop list. Don't browse the project's code for this.",
             general: "[Request type] A general question or task, not about the project files. Answer it directly, using web_search for facts you aren't sure of. List, search or read the project files only if the user asks about them."
         };

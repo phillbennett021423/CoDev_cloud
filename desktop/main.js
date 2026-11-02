@@ -11,6 +11,7 @@ const { createSandboxWorker } = require('./sandbox/remote');
 const { createBrowserService } = require('./browser');
 const { createOutlierBridge } = require('./outlier-bridge');
 const { createGameDevService } = require('./gamedev');
+const { createCreativeService } = require('./creative');
 const { createGoogleConnect } = require('./google-connect');
 const { pathToFileURL } = require('url');
 
@@ -26,6 +27,8 @@ protocol.registerSchemesAsPrivileged([
 // routes, and YouTube's video titles.
 const ODDS_API = /^https:\/\/api\.the-odds-api\.com\/v4\/sports(\/|\?)/;
 const ODDS_HEADERS = ['x-requests-remaining', 'x-requests-used', 'x-requests-last'];
+// ESPN's free stats JSON for the prop model's game logs.
+const ESPN_API = /^https:\/\/site\.(web\.)?api\.espn\.com\/apis\//;
 const TAVILY_SEARCH_URL = 'https://api.tavily.com/search';
 const TAVILY_FIELDS = ['query', 'search_depth', 'max_results', 'include_answer', 'topic', 'time_range'];
 const ALLOWED_HTTP = /^https:\/\/(html\.duckduckgo\.com\/html\/\?|nominatim\.openstreetmap\.org\/search\?|router\.project-osrm\.org\/route\/v1\/|www\.youtube\.com\/oembed\?)/;
@@ -175,6 +178,13 @@ app.whenReady().then(() => {
         return { status: response.status, data: await response.text(), headers };
     });
 
+    // ESPN's public stats API (game logs for the prop model): only its API hosts.
+    ipcMain.handle('codev:http-espn', async (_event, { url }) => {
+        if (typeof url !== 'string' || !ESPN_API.test(url)) throw new Error('This address is not allowed.');
+        const response = await net.fetch(url);
+        return { status: response.status, data: await response.text(), headers: {} };
+    });
+
     // Tavily search with the key from the page's Settings: only its search endpoint and
     // the search fields, as server.js sends it for the local server page.
     ipcMain.handle('codev:http-tavily', async (_event, { key, body }) => {
@@ -255,8 +265,12 @@ app.whenReady().then(() => {
     const outlier = createOutlierBridge({ browser: browserTools, getProjectDir, log: line => console.log(line) });
     // Godot (editor bridge, headless checks) and Blender: their tools ride along too.
     const gamedev = createGameDevService({ getProjectDir, log: line => console.log(`[gamedev] ${line}`) });
+    // The art pipeline (ComfyUI, LoRA training, PBR maps, Blender, playable ads, audio) too.
+    const creative = createCreativeService({ getProjectDir, log: line => console.log(`[creative] ${line}`) });
+    app.on('before-quit', () => creative.close());
     const browserAndOutlier = message => (outlier ? outlier.handleMcp(message, browserTools.handle) : browserTools.handle(message));
-    ipcMain.handle('codev:browser-mcp', (_event, message) => gamedev.handleMcp(message, browserAndOutlier));
+    const withGameDev = message => gamedev.handleMcp(message, browserAndOutlier);
+    ipcMain.handle('codev:browser-mcp', (_event, message) => creative.handleMcp(message, withGameDev));
     ipcMain.handle('codev:outlier-request', (_event, req) => (outlier ? outlier.request(req || {}) : { status: 404, body: { error: 'The Outlier pipeline isn\'t included in this build.' } }));
     // Live view: frames and inspector events go to the window that asked for them.
     const liveWatches = new Map(); // webContents id -> unsubscribe
