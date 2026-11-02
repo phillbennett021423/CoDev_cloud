@@ -3703,7 +3703,7 @@
                 const result = await browserRpc("tools/list", {});
                 // server.js's /agent-tools also has the sandbox's tools (offered in sandbox mode);
                 // these are the browser's, the Outlier pipeline's and the Godot/Blender ones, called the same way.
-                tools = (result.tools || []).filter(t => /^(browser|outlier|godot|blender|gamedev|art)_/.test(t.name)).map(t => ({ ...t, transport: "browser" }));
+                tools = (result.tools || []).filter(t => /^(browser|outlier|godot|blender|gamedev|art|scene)_/.test(t.name)).map(t => ({ ...t, transport: "browser" }));
             } catch (err) { /* an older server.js without /agent-tools */ }
             browserMcpCache = { at: Date.now(), tools };
             return tools;

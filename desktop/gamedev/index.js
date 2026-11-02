@@ -21,6 +21,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
+const { createSceneDressing } = require('./scene-dressing');
 
 const PLUGIN_DIR = path.join(__dirname, 'godot-plugin', 'addons', 'codev_bridge');
 const BRIDGE_FILE = '.codev_bridge.json';
@@ -330,6 +331,9 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
         return text(lines.join('\n'), result.code !== 0 || result.timedOut);
     }
 
+    // Scene dressing: the asset library, placement rules and learning from the user's edits.
+    const dressing = createSceneDressing({ getRoot: () => godotRoot() || getProjectDir(), bridge, log });
+
     const tools = [
         {
             name: 'gamedev_status',
@@ -373,7 +377,8 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
                 timeout_seconds: { type: 'number', description: 'Optional: stop Blender after this long (default 300, up to 1800).' }
             }, required: ['script'] },
             _meta: { 'codev/alwaysAsk': true }
-        }
+        },
+        ...dressing.tools
     ];
 
     async function callTool(name, args = {}) {
@@ -391,6 +396,7 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
             if (name === 'godot_editor') return await editor(args);
             if (name === 'godot_install_bridge') return await installBridge();
             if (name === 'blender_run') return await blenderRun(args);
+            if (dressing.names.includes(name)) return await dressing.callTool(name, args);
             return text(`Unknown tool: ${name}`, true);
         } catch (err) {
             return text(err.message || String(err), true);
