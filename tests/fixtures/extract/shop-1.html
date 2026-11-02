@@ -1,0 +1,13 @@
+<!doctype html><html><head><title>Laptops - Page 1</title>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home"}]}</script>
+</head><body>
+<nav><ul><li><a href="/">Home</a></li><li><a href="/a">Deals today</a></li><li><a href="/b">Gift cards here</a></li></ul></nav>
+<main><h1>Laptops</h1>
+<div class="grid" id="results"></div>
+<div class="pager"><span aria-current="page">1</span> <a class="pg" href="shop-2.html">2</a> <a class="next-btn" href="shop-2.html" aria-label="Next page">›</a></div>
+</main>
+<script>
+// Rendered by script, as JS apps do.
+const items = [["Aero 14 Laptop","$899.00","4.5 out of 5 stars","1,204","aero"],["Blade Pro 16","$1,499.99","4.8 out of 5 stars","88","blade"],["Cobalt Air 13","$649.50","4.1 out of 5 stars","3,051","cobalt"],["Delta Book 15","$1,099.00","3.9 out of 5 stars","17","delta"]];
+document.getElementById('results').innerHTML = items.map(([n,p,r,c,s]) => `<div class="product-card sc-x83kd9"><a class="product-link" href="/p/${s}"><img src="https://img.example.com/${s}.jpg" alt="${n}"><h3 class="product-title">${n}</h3></a><div class="price-box"><span class="price">${p}</span></div><div class="rating" aria-label="${r}">★★★★</div><span class="review-count">${c} reviews</span></div>`).join('');
+</script></body></html>
