@@ -11,6 +11,7 @@ const { createSandboxWorker } = require('./sandbox/remote');
 const { createBrowserService } = require('./browser');
 const { createOutlierBridge } = require('./outlier-bridge');
 const { createGameDevService } = require('./gamedev');
+const { createCreativeService } = require('./creative');
 const { createGoogleConnect } = require('./google-connect');
 const { pathToFileURL } = require('url');
 
@@ -255,8 +256,12 @@ app.whenReady().then(() => {
     const outlier = createOutlierBridge({ browser: browserTools, getProjectDir, log: line => console.log(line) });
     // Godot (editor bridge, headless checks) and Blender: their tools ride along too.
     const gamedev = createGameDevService({ getProjectDir, log: line => console.log(`[gamedev] ${line}`) });
+    // The art pipeline (ComfyUI, LoRA training, PBR maps, Blender, playable ads, audio) too.
+    const creative = createCreativeService({ getProjectDir, log: line => console.log(`[creative] ${line}`) });
+    app.on('before-quit', () => creative.close());
     const browserAndOutlier = message => (outlier ? outlier.handleMcp(message, browserTools.handle) : browserTools.handle(message));
-    ipcMain.handle('codev:browser-mcp', (_event, message) => gamedev.handleMcp(message, browserAndOutlier));
+    const withGameDev = message => gamedev.handleMcp(message, browserAndOutlier);
+    ipcMain.handle('codev:browser-mcp', (_event, message) => creative.handleMcp(message, withGameDev));
     ipcMain.handle('codev:outlier-request', (_event, req) => (outlier ? outlier.request(req || {}) : { status: 404, body: { error: 'The Outlier pipeline isn\'t included in this build.' } }));
     // Live view: frames and inspector events go to the window that asked for them.
     const liveWatches = new Map(); // webContents id -> unsubscribe

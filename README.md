@@ -216,6 +216,64 @@ In the Windows app and with `npm start`, agents also get tools that work with Go
 
 CoDev looks for Godot and Blender on the PATH, in their usual install folders, and for Godot also in Downloads and Desktop (`Godot_v4...exe`). Set `CODEV_GODOT_PATH` or `CODEV_BLENDER_PATH` in `.env` (or Windows' environment variables) to point at a specific one. Tasks that mention Blender, bpy or glTF also get a short bpy reference with the game engine guide. Tests: `node --test tests/gamedev.test.js` (it uses stand-in Godot and Blender, so neither has to be installed).
 
+## Game art pipeline (skins, textures, 3D, marketing)
+
+CoDev covers what an AI creative platform like Layer does for cosmetics and skins, with free, open-source tools that run on your own computer. Agents get the `art_*` tools in the Windows app and with `npm start`/`start-codev.bat`, and Claude Code or Cursor can drive the same tools through `codev-mcp.js`. Ask in plain words ("pitch 4 directions for a mech knight skin", "weather these plates from new to battle-damaged", "rig this armour on our base character") and the agent picks the tools. `art_status` says what is installed and what each missing piece unlocks.
+
+**What it runs on.** Everything is optional. Without any of it, concepts still come from the free Pollinations service, and PBR maps, weathering, reframing, upscaling and sound effects run on Python.
+
+| Tool | Free from | Unlocks |
+| --- | --- | --- |
+| Python 3 + `pip install numpy pillow rembg` | python.org | PBR maps, weathering, cut-outs, contact sheets, sound effects |
+| ComfyUI | github.com/comfyanonymous/ComfyUI or the ComfyUI Desktop app | every checkpoint you install (FLUX, SDXL, your own), LoRAs, inpainting, try-on, sketch-to-image, outpainting. Add ComfyUI_IPAdapter_plus for style references and outfit pictures, and a scribble/lineart ControlNet for sketches |
+| kohya sd-scripts / ostris ai-toolkit | GitHub | training style, character and edit LoRAs on your GPU |
+| Blender 4 | blender.org | remesh, UVs, PBR baking, rigging, retargeting |
+| Real-ESRGAN ncnn, Piper, FFmpeg, Coqui TTS | GitHub / ffmpeg.org / pip | 4x upscaling, offline voice lines, voice filters, consented voice cloning |
+
+Point CoDev at them in `.env` (see `.env.example`): `CODEV_COMFYUI_URL`, `CODEV_COMFYUI_DIR`, `CODEV_KOHYA_DIR`, `CODEV_AITOOLKIT_DIR`, `CODEV_REALESRGAN_PATH`, `CODEV_PIPER_PATH`, `CODEV_PIPER_VOICES`, `CODEV_FFMPEG_PATH`, `CODEV_TTS_PATH`, `CODEV_PYTHON`.
+
+**Layer 1: your studio's look.**
+- `art_lora_train` trains a style or character LoRA from your own art (kohya on SDXL/SD 1.5, ai-toolkit on FLUX). It can also train an edit LoRA from before/after pairs (FLUX Kontext or Qwen-Image-Edit), which learns a post-processing pass like your colour grade, edge highlights or weathering.
+- "prepare" lays out the dataset and picks the settings from the picture count and your GPU memory. "start" trains in the background. When it's done, the LoRA is copied into ComfyUI and attached to the style.
+- `art_captions` reviews the captions: missing ones, missing trigger words, style words that would leak, duplicates, pictures too small. "auto" captions with BLIP.
+- `art_style` clones a style on the spot from a few reference pictures. It saves the references and palette under a name that every generation can use.
+
+**Layer 2: concepts.**
+- `art_generate` pitches several directions across several models in one call, with your style, LoRA and references applied, and shows a contact sheet.
+- `art_edit` inpaints part of a picture (swap a pauldron, recolour a visor) or reworks the whole picture.
+- `art_try_on` fits an outfit or armour onto a character's pose inside their silhouette.
+- **🖍️ Sketch to image** in the menu is a drawing pad that redraws your sketch in the studio style each time you pause (ComfyUI; a turbo or schnell model keeps it near real time).
+
+**Layer 3: 3D and surfaces.**
+- `art_materials` makes up to 40 tileable material concepts at once, each with a full PBR set.
+- `art_pbr_maps` turns any texture into albedo, normal, roughness, metallic, AO, height, curvature and a Godot ORM map.
+- `art_weathering` ages a texture set from factory-fresh through light, worn and battle-damaged to ruined: chipped edges, scratches, rust in cavities, scorch, grime and dust.
+- `art_mesh` works in Blender:
+  - "cleanup" repairs raw AI meshes and decimates them to your triangle budget.
+  - "uv" unwraps and packs.
+  - "bake" bakes PBR maps, from a high-poly when you have one.
+  - "rig" copies a base character's skin weights onto a cosmetic mesh.
+  - "retarget" moves animations from another skeleton (Mixamo, Rigify and UE names are matched).
+
+  Each one exports a `.glb` for Godot and reports triangle, material and bone counts against the budgets.
+
+**Layer 4: marketing.**
+- `art_playable_ad` builds an offline, single-file MRAID playable (reveal, equip, runner or spin template) ending on a store card.
+- `art_reframe` expands key art to 9:16, 1:1, 4:5, 16:9, 1.91:1 and more without stretching it.
+- `art_cutout` removes backgrounds in batches, and `art_upscale` upscales 2x or 4x.
+- `art_audio` says barks with Piper, applies robot/mech/radio/helmet/hologram voice filters and makes sound effects.
+- `art_voice_clone` only clones a voice whose owner agreed. You're asked every time, and consent is logged. XTTS-v2's licence is non-commercial.
+
+**Layer 5: the bridge and the studio's memory.**
+- `codev-studio.json` in the project holds the art direction, saved styles, triangle budgets per category (Godot 4 mobile to start), texture size, bone and material limits, the naming pattern, output folders and free-text notes. Every art tool follows it, and `art_rules` reads and changes it.
+- `codev-mcp.js` serves all the art tools and the Godot/Blender tools to Claude Code, Cursor or Claude Desktop, with those rules as its instructions:
+
+```
+claude mcp add codev -- node C:\path\to\CoDev_cloud\codev-mcp.js --workspace C:\path\to\game
+```
+
+Tests: `node --test tests/creative.test.js` (stand-in ComfyUI, Blender and trainer; the Python tests run when numpy and Pillow are installed).
+
 ## Agent sandboxes and change review
 
 On a computer (the Windows app, or `server.js`), agents can work in a sandbox instead of on the project folder itself. The code is in `desktop/sandbox/`.

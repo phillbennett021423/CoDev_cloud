@@ -715,6 +715,9 @@
                 <div class="menu-item active" id="menuAgentFlow" onclick="switchView('chat'); logConsoleActivity('Switched to Agent Flow mode.');">
                     <span class="menu-icon">💻</span> Agent Flow
                 </div>
+                <div class="menu-item" onclick="openSketchPad()" title="Draw a rough sketch and CoDev redraws it in your studio's style (ComfyUI on the computer running CoDev)">
+                    <span class="menu-icon">🖍️</span> Sketch to image
+                </div>
                 <div class="menu-item" onclick="switchView('codev')">
                     <span class="menu-icon">⚡</span> CoDev Hub
                 </div>
@@ -1279,6 +1282,7 @@
     <script src="agent-ui/file-builder.js"></script>
     <script src="agent-ui/task-runner.js"></script>
     <script src="agent-ui/cloud-account.js"></script>
+    <script src="agent-ui/sketch-pad.js"></script>
     <script src="companion/companion.js"></script>
     <script src="companion/companion-bridge.js"></script>
     <script>
@@ -3653,6 +3657,15 @@
             return reply.result;
         }
 
+        // ✏️ Sketch pad (agent-ui/sketch-pad.js): calls art_edit on the computer running CoDev.
+        function openSketchPad() {
+            if (!hasAgentBrowser() || !window.CodevSketchPad) {
+                alert("Sketch to image runs on ComfyUI through CoDev on your computer: open CoDev with start-codev.bat (or npm start) or the Windows app.");
+                return;
+            }
+            CodevSketchPad.open({ callTool: (name, args) => browserRpc("tools/call", { name, arguments: args, _meta: { "codev/agentId": "sketch-pad", "codev/agentName": "Sketch pad" } }), log: logConsoleActivity });
+        }
+
         async function fetchBrowserMcpTools() {
             if (!hasAgentBrowser()) return [];
             if (Date.now() - browserMcpCache.at < 60000) return browserMcpCache.tools;
@@ -3661,7 +3674,7 @@
                 const result = await browserRpc("tools/list", {});
                 // server.js's /agent-tools also has the sandbox's tools (offered in sandbox mode);
                 // these are the browser's, the Outlier pipeline's and the Godot/Blender ones, called the same way.
-                tools = (result.tools || []).filter(t => /^(browser|outlier|godot|blender|gamedev)_/.test(t.name)).map(t => ({ ...t, transport: "browser" }));
+                tools = (result.tools || []).filter(t => /^(browser|outlier|godot|blender|gamedev|art)_/.test(t.name)).map(t => ({ ...t, transport: "browser" }));
             } catch (err) { /* an older server.js without /agent-tools */ }
             browserMcpCache = { at: Date.now(), tools };
             return tools;
@@ -4285,6 +4298,11 @@
                 result = await mcpHubRequest({ op: "callTool", server: tool.server, name: tool.name, arguments: args });
             }
             let text = mcpContentToText(result.content);
+            // Pictures a CoDev tool returns (art_* contact sheets) show under the reply.
+            if (tool.transport === "browser" && typeof keepToolImages === "function") {
+                const kept = await keepToolImages(result.content, shownName, ctx);
+                if (kept) text = text.replace(/\[image content, image\/\w+\]/g, "[picture shown to the user under your reply]");
+            }
             // browser_extract sends every row here and only a preview as text: the rows
             // become a dataset for create_spreadsheet / create_csv.
             const dataset = result.structuredContent && result.structuredContent.dataset;
@@ -7373,7 +7391,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 10. BE BRIEF: Say what the user needs and stop. Lead with the answer in plain words. No preamble, no restating the question, no repeating what you already said, no closing summary or offers of more help. A simple question gets one to three sentences, and most answers fit in about 150 words. Go longer only when the task needs it: code, a report or deep research, step-by-step instructions, or when the user asks for detail; even then, cut anything that doesn't help. Use lists or code blocks only when they help.
 
-11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); making and editing pictures (generate_image); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
+11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); making and editing pictures (generate_image); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
 
 12. ENGINE-SPECIFIC RULES:${engineRules ? `\n${engineRules}` : " none for this task."}`;
             
