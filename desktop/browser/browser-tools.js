@@ -16,6 +16,14 @@ const fs = require('fs');
 const path = require('path');
 const { BrowserUnavailableError } = require('./browser-manager');
 const { VaultError } = require('./credential-vault');
+// The structured scraper is shared with the phone's browser; the Windows app has it in
+// its copy of the page (www/), the repo in mobile/www.
+const PageExtract = (() => {
+    for (const rel of ['../www/agent-ui/page-extract.js', '../../mobile/www/agent-ui/page-extract.js']) {
+        try { return require(rel); } catch { /* try the next */ }
+    }
+    return null;
+})();
 
 const ACTION_TIMEOUT_MS = 10000;
 const NAVIGATION_TIMEOUT_MS = 30000;
@@ -197,6 +205,26 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
         ], isError: false };
     }
 
+    // Rows and columns from the page (and the pages after it), via page-extract.js.
+    async function extract(args, ctx) {
+        if (!PageExtract) throw new ToolError('browser_extract is not installed in this copy of CoDev.');
+        const page = await manager.workPage(ctx.agentId);
+        const adapter = {
+            evaluate: (source, arg) => page.evaluate(`(${source})(${JSON.stringify(arg)})`),
+            navigate: async url => {
+                const target = checkUrl(url);
+                await page.goto(target.href, { waitUntil: 'load', timeout: NAVIGATION_TIMEOUT_MS });
+                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+            },
+            click: selector => page.locator(selector).first().click({ timeout: ACTION_TIMEOUT_MS }),
+            settle: () => page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {}),
+            sleep: ms => new Promise(resolve => setTimeout(resolve, ms))
+        };
+        const result = await PageExtract.runExtraction(adapter, args);
+        log(`[Browser] ${ctx.agentName} extracted ${result.rows.length} row(s) from ${result.url}.`);
+        return PageExtract.toolResult(result, { name: args.name });
+    }
+
     // A dead link, redirect or parked page: the browser stays open with that page shown,
     // paused for the user in the live view, and the agent is told to wait.
     function pausedFor(ctx, page, problem) {
@@ -340,6 +368,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
               selector: { ...selectorProp, description: 'Part of the page to read; omit for the whole page.' },
               mode: { type: 'string', enum: ['text', 'aria', 'html'], description: 'text (default), aria for the accessibility tree, or html.' },
               max_chars: { type: 'integer', description: `Most characters to return (default ${DEFAULT_TEXT_CHARS}, max ${MAX_TEXT_CHARS}).` } } } },
+        ...(PageExtract ? [{ ...PageExtract.TOOL, run: extract, annotations: { readOnlyHint: true, openWorldHint: true } }] : []),
         { name: 'browser_wait_for', run: waitFor, annotations: { readOnlyHint: true },
           description: 'Wait until an element or some text is visible, or (with neither) until the page stops loading data.',
           inputSchema: { type: 'object', properties: { selector: selectorProp, text: { type: 'string', description: 'Text to wait for.' },
