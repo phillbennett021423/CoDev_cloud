@@ -1317,6 +1317,9 @@
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalToolsAutoRun"> Run file edits and commands without asking me first
                 </label>
+                <label class="checkbox-group" title="On a coding task, agents don't stop to ask you anything: they make the call themselves, run what they need, check their work with the tests and build, fix what fails and keep going until it's done. Only commands that could wreck your computer or your repo (wiping a drive, force-pushing) are refused, and the agent finds another way.">
+                    <input type="checkbox" id="modalCodeAutopilot"> 🚀 Coding autopilot: on a coding task, agents never stop to ask me. They decide, run, test and fix until it's done
+                </label>
                 <div class="form-group" id="desktopMcpGroup" style="display: none;">
                     <label>Project folder agents can edit and run code in (built-in MCP tools)</label>
                     <div style="display: flex; gap: 8px; align-items: center;">
@@ -3572,6 +3575,23 @@
         const PROGRESS_STEPS_SHOWN = 6;
         // On: agents edit files and run commands without a confirm dialog.
         let toolsAutoRun = (localStorage.getItem("codev_tools_autorun") ?? "1") === "1";
+        // 🚀 CODING AUTOPILOT (on unless turned off in Settings): on a coding task nothing
+        // stops to ask the user. Edits, commands and the project's tools run straight away,
+        // the agent gets a bigger step budget, a reply that asks instead of finishing is sent
+        // back to keep working, and a verification pass checks the result. The one limit:
+        // a command that could wreck the computer or the repo is refused, not asked about.
+        let codeAutopilot = (localStorage.getItem("codev_code_autopilot") ?? "1") === "1";
+        const AUTOPILOT_CODE_TOOL_ROUNDS = 150;
+        const AUTOPILOT_NUDGES = 3;
+        const AUTOPILOT_NUDGE = "[CoDev autopilot] The user is away and wants this finished without being asked anything. Don't ask: make the most reasonable choice yourself (follow the project's existing patterns), keep working with your tools until the task is done and verified, and list the choices you made at the end of your answer.";
+        function autopilotOn(ctx) { return codeAutopilot && ctx?.kind === "code"; }
+        // Wiping drives or home folders, formatting, shutting down, rewriting the remote's
+        // history, piping a download into a shell, fork bombs, writing over a disk.
+        const WRECKING_COMMAND = /(^|[;&|]\s*)(sudo\s+)?rm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)[a-z]*\s+(\/|~|\$HOME|[a-z]:\\?)(\s|$|\*)|\b(mkfs(\.\w+)?|diskpart|shutdown|reboot|halt|poweroff)\b|\bformat\s+[a-z]:|\b(del|erase)\s+\/[sq].*\b[a-z]:\\?(\s|$)|\b(rd|rmdir)\s+\/s\b.*\b[a-z]:\\?(\s|$)|\bgit\s+push\b.*(--force\b|--force-with-lease\b|\s-f\b|--mirror\b|--delete\b)|\b(curl|wget|iwr|invoke-webrequest)\b[^|]*\|\s*(sudo\s+)?(ba|z|da)?sh\b|\|\s*iex\b|:\(\)\s*\{\s*:\|:&\s*\};:|\bdd\s+[^|]*of=\/dev\/(sd|nvme|hd|disk)/i;
+        function wreckingCommand(command) { return WRECKING_COMMAND.test(String(command || "")); }
+        const AUTOPILOT_REFUSED = "Coding autopilot doesn't run commands that could wreck the computer or the repo (wiping a drive or a home folder, formatting, shutting down, force-pushing, piping a download into a shell). Don't ask the user: do it another way, or leave that one step out and say so at the end.";
+        // A reply that stops to ask instead of finishing: a question, or an offer to go on.
+        const ASKS_INSTEAD = /\?\s*$|\b(should I|shall I|do you want|would you like|want me to|let me know (if|whether|which|how)|please (confirm|let me know|tell me)|can you (confirm|tell me|provide|share)|which (one|option|approach) (do|would) you|before I (proceed|continue|start)|(waiting|wait) for your|your (go-?ahead|approval|confirmation))\b/i;
         let helperCommandsCache = { at: 0, commands: [] };
         let mcpRequestId = 0;
 
@@ -4445,6 +4465,11 @@
             const hostCommand = tool.transport === "desktop" && tool.name === "run_command" && !isSafeHostCommand(args?.command);
             // Tools that run code or change the project outside any review (blender_run, godot_install_bridge) always ask.
             const alwaysAsk = Boolean(tool._meta?.["codev/alwaysAsk"]);
+            if (autopilotOn(ctx) && !tool._meta?.["codev/requiresUserApproval"]) {
+                if (tool.name === "run_command" && wreckingCommand(args?.command)) return AUTOPILOT_REFUSED;
+                if (!tool.annotations?.readOnlyHint) logConsoleActivity(`[Autopilot] Running ${shownName} without asking.`);
+                return callMcpTool(tool, args, ctx);
+            }
             if (alwaysAsk || ((!toolsAutoRun || hostCommand) && !tool.annotations?.readOnlyHint && !tool._meta?.["codev/requiresUserApproval"])) {
                 if (!await askPermission(`An agent wants to use ${shownName}${tool.server ? ` (MCP server "${tool.server}")` : " on your computer"}:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`, ctx?.agentName)) {
                     logConsoleActivity(`[Tool] You declined: ${shownName}`);
@@ -4989,19 +5014,19 @@
                     name: "write_workspace_file",
                     description: "Create or overwrite a file in the user's loaded project folder with new content. Use it for new files; to change part of an existing file use edit_workspace_file instead. When you do replace a file, read it first and write the complete file. The user may be asked to allow the write.",
                     inputSchema: { type: "object", properties: { name: { type: "string", description: "File path as list_workspace_files shows it, or a new path (sub-folders are created)." }, content: { type: "string", description: "The complete new file content." } }, required: ["name", "content"] },
-                    run: async ({ name, content }) => writeWorkspaceFile(String(name || ""), content)
+                    run: async ({ name, content }, ctx) => writeWorkspaceFile(String(name || ""), content, { asked: autopilotOn(ctx) })
                 },
                 {
                     name: "edit_workspace_file",
                     description: "Replace one exact snippet in a loaded project file. Use it for every change to an existing file: read_workspace_file first, then copy old_text exactly. If it says old_text appears 0 or 2+ times, read the file again and pass a longer, unique snippet; don't fall back to rewriting the whole file.",
                     inputSchema: { type: "object", properties: { name: { type: "string", description: "File path exactly as list_workspace_files shows it." }, old_text: { type: "string", description: "The exact text to replace, copied from read_workspace_file; it must appear exactly once." }, new_text: { type: "string", description: "The text to put in its place (empty to delete the snippet)." } }, required: ["name", "old_text", "new_text"] },
-                    run: async ({ name, old_text: oldText, new_text: newText }) => {
+                    run: async ({ name, old_text: oldText, new_text: newText }, ctx) => {
                         const path = normalizeWorkspacePath(name);
                         if (!(path in loadedProjectFiles)) return `No loaded text file named "${name}".`;
                         if (typeof oldText !== "string" || !oldText || typeof newText !== "string") return "edit_workspace_file needs non-empty old_text and a new_text string.";
                         const count = loadedProjectFiles[path].split(oldText).length - 1;
                         if (count !== 1) return `old_text must appear exactly once in ${path}; it appears ${count} times.`;
-                        return writeWorkspaceFile(path, loadedProjectFiles[path].replace(oldText, () => newText));
+                        return writeWorkspaceFile(path, loadedProjectFiles[path].replace(oldText, () => newText), { asked: autopilotOn(ctx) });
                     }
                 }
             );
@@ -5040,7 +5065,7 @@
                     name: "run_local_command",
                     description: "Run one of the user's pre-approved commands on their computer (for example a build, test or lint script) and get its exit code and output. Use it to check that changes build and pass tests; only the listed commands can run, so don't ask for others. Available: " + commands.map(c => `${c.name} (${c.description || c.argv.join(" ")})`).join("; "),
                     inputSchema: { type: "object", properties: { name: { type: "string", enum: commands.map(c => c.name), description: "Which pre-approved command to run, by its name." } }, required: ["name"] },
-                    run: async ({ name }) => runHelperCommand(commands.find(c => c.name === name))
+                    run: async ({ name }, ctx) => runHelperCommand(commands.find(c => c.name === name), ctx)
                 });
             }
             return tools;
@@ -5103,10 +5128,10 @@
             return `Saved ${name} (${content.length} characters) to the connected folder.`;
         }
 
-        async function runHelperCommand(command) {
+        async function runHelperCommand(command, ctx) {
             if (!command) return "Unknown command. Only the listed commands can run.";
             const shown = (command.argv || []).join(" ");
-            if (!toolsAutoRun && !await askPermission(`An agent wants to run this command on your computer:\n\n${shown}\n(in ${command.cwd || "the helper's project folder"})\n\nAllow it?`)) {
+            if (!toolsAutoRun && !autopilotOn(ctx) && !await askPermission(`An agent wants to run this command on your computer:\n\n${shown}\n(in ${command.cwd || "the helper's project folder"})\n\nAllow it?`)) {
                 logConsoleActivity(`[Tool] You declined: ${command.name}`);
                 return "The user declined to run this command.";
             }
@@ -5314,7 +5339,8 @@
             // What this task has cost so far; a spending limit ends the tool steps early.
             ctx.cost = ctx.cost || 0;
             let spendStop = "";
-            const maxRounds = ctx.kind === "code" ? MAX_CODE_TOOL_ROUNDS : MAX_TOOL_ROUNDS;
+            const maxRounds = autopilotOn(ctx) ? AUTOPILOT_CODE_TOOL_ROUNDS : ctx.kind === "code" ? MAX_CODE_TOOL_ROUNDS : MAX_TOOL_ROUNDS;
+            let nudges = 0;
             for (let round = 0; round < maxRounds && outlierFailures < 2 && browserFailures < 3; round++) {
                 if (round > 0 && taskSpendLimit > 0 && ctx.cost >= taskSpendLimit) spendStop = `this task reached its spending limit of ${formatUsd(taskSpendLimit)}`;
                 else if (round > 0 && dailySpendReached()) spendStop = `CoDev reached today's spending limit of ${formatUsd(dailySpendLimit)}`;
@@ -5329,6 +5355,16 @@
                     if (ctx.toolLog) ctx.toolLog.push(`${step} → ${note}`);
                 }
                 const calls = message.tool_calls || [];
+                // Autopilot: a reply that stops to ask goes back with "decide and keep going".
+                if (!calls.length && autopilotOn(ctx) && nudges < AUTOPILOT_NUDGES && round < maxRounds - 1 && ASKS_INSTEAD.test(String(message.content || "").trim())) {
+                    nudges++;
+                    logConsoleActivity(`[Autopilot] ${ctx.agentName || "The agent"} stopped to ask; sent it back to decide and finish.`);
+                    done.push({ step: "🚀 Autopilot: decide and keep going", ok: true });
+                    messages.push({ role: "assistant", content: message.content || "" });
+                    messages.push({ role: "user", content: AUTOPILOT_NUDGE });
+                    checkpoint();
+                    continue;
+                }
                 if (!calls.length) {
                     logTaskSpend(ctx);
                     return message.content || "";
@@ -7204,6 +7240,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             companionPick.replaceChildren(...CodevCompanion.avatars.map(a => new Option(a.name, a.id)));
             companionPick.value = CodevCompanion.avatar();
             document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
+            document.getElementById("modalCodeAutopilot").checked = codeAutopilot;
             document.getElementById("modalMcpServers").value = mcpServersConfig;
             document.getElementById("modalManusKey").value = manusKey;
             document.getElementById("modalManusProfile").value = manusProfile;
@@ -7438,6 +7475,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             }
             toolsAutoRun = document.getElementById("modalToolsAutoRun").checked;
             localStorage.setItem("codev_tools_autorun", toolsAutoRun ? "1" : "0");
+            codeAutopilot = document.getElementById("modalCodeAutopilot").checked;
+            localStorage.setItem("codev_code_autopilot", codeAutopilot ? "1" : "0");
             const mcpText = document.getElementById("modalMcpServers").value.trim();
             if (mcpText !== mcpServersConfig) {
                 saveMcpServersConfig(mcpText).catch(err => alert(`MCP servers weren't saved: ${err.message}`));
@@ -8337,7 +8376,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 - Report only what you changed and verified.` },
             self_healing: { label: "Self-Healing", prompt: `ROLE: SELF-HEALING ENGINEER. You verify and repair code autonomously.
 - Re-read every changed file. Run the tests, build, linter or the program itself when a command tool exists, and read the errors.
-- Fix each failure at its root with the edit tools, then run again. Repeat until it passes, or until you have tried 3 fixes for the same error.
+- Fix each failure at its root with the edit tools, then run again. Repeat until it passes. After 3 failed fixes for the same error, step back and try a different approach.
 - For Godot files, run godot_check on every changed script, scene and shader, and run Godot headless when a command tool exists (the engine guide says how).
 - Report what you checked, what failed, what you fixed and the final result. If no command tool exists, say the code was checked by reading only.` },
             game_engine: { label: "Game Engine", prompt: `ROLE: GAME ENGINE ENGINEER, a specialist in Godot 4 (GDScript and C#), shaders, 3D math, physics loops and frame-data state machines. You do the work on the user's game project.
@@ -8360,6 +8399,13 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 - Keep going until the task is done or truly blocked. Ask the user only for what the workspace can't tell you, like a product decision or a missing credential.
 
 ${CodevCodeIntel.BIG_PROJECT_RULES}`;
+
+        // Added to AUTONOMY_RULES while 🚀 coding autopilot is on (Settings).
+        const AUTOPILOT_RULES = `CODING AUTOPILOT (the user turned it on and is not watching):
+- Never stop to ask the user anything, and never end your turn with a question or an offer ("Should I...?", "Want me to...?"). When something is unclear, make the most reasonable choice yourself, following the project's existing patterns, and list the choices you made at the end of your answer.
+- Code it all the way through: every file, wiring, import and config the change needs, not a sketch or a TODO. Your edits and commands run without approval prompts, so don't wait for any.
+- Make sure it works before you finish: run the project's tests, build, linter or type checker (or godot_check and Godot headless for a Godot project), read every failure, fix it at its root and run again. A fix that fails three times means a different approach, not giving up.
+- Stop only when the task is done and verified, or something outside the project blocks it (a missing credential or a paid service). Then say exactly what's done, what you checked and what's left.`;
 
         function agentDevRole(agent) {
             return DEV_ROLES[agent?.devRole] ? agent.devRole : "architect";
@@ -8413,7 +8459,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             // a missing project folder when the task may not need one.
             if (general && /^\[Workspace status\] No project/.test(workspaceNote)) workspaceNote = "[Workspace status] No project folder is connected. That only matters if the task is about project files.";
             else if (!coding && workspaceNote) workspaceNote = "[Workspace status] A project folder is connected; its files only matter if the user asks about them.";
-            return [CODEV_IDENTITY, DEV_ROLES[role].prompt, general ? null : AUTONOMY_RULES, coding ? null : REQUEST_KIND_NOTES[kind], workspaceNote,
+            return [CODEV_IDENTITY, DEV_ROLES[role].prompt, general ? null : AUTONOMY_RULES, coding && codeAutopilot ? AUTOPILOT_RULES : null, coding ? null : REQUEST_KIND_NOTES[kind], workspaceNote,
                 agent.instructions && `[Agent instructions] ${agent.instructions}`, savedMemoryForPrompt(task), storyStudio && CodevStoryStudio.studioPromptBlock(storyStudio, task),
                 insuranceDesk && CodevInsuranceDesk.deskPromptBlock(insuranceDesk, task), memory].filter(Boolean).join("\n\n");
         }
@@ -8744,7 +8790,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
         async function runHostCommand(args, ctx) {
             const command = String(args?.command || "").trim();
             if (!command) return "run_command needs a 'command' string.";
-            const auto = toolsAutoRun && isSafeHostCommand(command);
+            if (autopilotOn(ctx) && wreckingCommand(command)) return AUTOPILOT_REFUSED;
+            const auto = autopilotOn(ctx) || (toolsAutoRun && isSafeHostCommand(command));
             if (!auto) {
                 const ok = await askPermission(`${ctx?.agentName || "An agent"} wants to run this command on your computer:\n\n${command.slice(0, 600)}${args.cwd ? `\n\n(in ${args.cwd})` : ""}\n\nIt runs in CoDev's copy of your project, not your real folder, but Docker isn't running, so it isn't walled off from the rest of your computer. Allow it?`, ctx?.agentName);
                 if (!ok) {
@@ -8752,7 +8799,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                     return "The user declined to run this command. Don't run it again; explain what you wanted to check and continue without it, or ask the user.";
                 }
             }
-            logConsoleActivity(`[Sandbox] Running on this computer${auto ? " (a plain test/build step)" : " (you approved it)"}: ${command.slice(0, 120)}`);
+            logConsoleActivity(`[Sandbox] Running on this computer${autopilotOn(ctx) ? " (coding autopilot)" : auto ? " (a plain test/build step)" : " (you approved it)"}: ${command.slice(0, 120)}`);
             return callAgentTool("run_command", args, ctx.sandbox, { hostAllowed: true });
         }
 
@@ -8797,6 +8844,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
         // me first" on. The browser's tools keep their own approval prompts.
         async function runOutsideSandbox(tool, name, args, ctx) {
             if (tool.transport === "browser" || tool.annotations?.readOnlyHint) return runMcpTool(tool, args, ctx);
+            if (autopilotOn(ctx)) return runMcpTool(tool, args, ctx);
             if (!await askPermission(`An agent wants to use ${name}${tool.server ? ` (MCP server "${tool.server}")` : ""}. It works outside the sandbox, so the change review won't cover it:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`, ctx?.agentName)) {
                 logConsoleActivity(`[Tool] You declined: ${name}`);
                 return "The user declined this tool call.";
@@ -9245,6 +9293,9 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             const lastAsked = [...aiOptions.history].reverse().find(m => m.role === "user");
             const requestKind = classifyRequest(userText, lastAsked ? lastAsked.content : "", aiOptions.images.length > 0);
             logConsoleActivity(`[Request] Sorted as ${REQUEST_KIND_LABELS[requestKind]}.`);
+            // A verification pass after the agents: when 🛡️ self-healing is ticked, and on every
+            // coding task while 🚀 coding autopilot is on.
+            const verifyAfter = isSelfHeal || (codeAutopilot && requestKind === "code");
             appendMessageToActiveSession("👤 You", userText, attachments.map(a => ({ name: a.name, kind: a.kind, thumb: a.thumb })));
             inputField.value = "";
             clearAttachments();
@@ -9320,7 +9371,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                 // Not awaited, so the user can keep chatting while it works.
                 (async () => {
                     const result = await runAgentStep(session, activeAgent, userText, { ...stepOptions, title: a => `⚡ Background Complete [${a.name}]` });
-                    if (isSelfHeal) await runSelfHealingPass(session, [result], userText, { ...stepOptions, memory: "" });
+                    if (verifyAfter) await runSelfHealingPass(session, [result], userText, { ...stepOptions, memory: "" });
                     await finishSandboxDispatch(session, dispatch);
                 })();
                 return;
@@ -9342,13 +9393,13 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                     results.push(await runAgentStep(session, agent, userText, { ...stepOptions, memory: memoryLine("Memory", agent.memory), notes }));
                 }
                 // A self-healing agent in the swarm has already verified the work.
-                if (isSelfHeal && !ordered.some(a => agentDevRole(a) === "self_healing")) await runSelfHealingPass(session, results, userText, { ...stepOptions, memory: "" });
+                if (verifyAfter && !ordered.some(a => agentDevRole(a) === "self_healing")) await runSelfHealingPass(session, results, userText, { ...stepOptions, memory: "" });
                 await finishSandboxDispatch(session, dispatch);
                 return;
             }
 
             const result = await runAgentStep(session, activeAgent, userText, stepOptions);
-            if (isSelfHeal) await runSelfHealingPass(session, [result], userText, { ...stepOptions, memory: "" });
+            if (verifyAfter) await runSelfHealingPass(session, [result], userText, { ...stepOptions, memory: "" });
             await finishSandboxDispatch(session, dispatch);
         }
 
