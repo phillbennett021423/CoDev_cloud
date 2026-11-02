@@ -20,8 +20,12 @@
 //   { op: "list", query?, type?, folder?, max? }      -> { folder, files: [...] }
 //   { op: "read", file }                              -> { file, text? | children? | kind }
 //   { op: "save", name, content, folder? }            -> { file }
-// Saving needs "allowWrite", and the page asks the user before every save. CoDev
-// never changes, moves or deletes files that are already in MEGA.
+// and, for a notes vault kept in MEGA (notes-tables.js), with paths from its folder:
+//   { op: "tree", folder } -> { files: [{ path, size, modified }] }
+//   { op: "fetch", folder, path } -> { text }     { op: "put", folder, path, content } -> { ok, replaced }
+// Saving needs "allowWrite", and the page asks the user before every save. The MEGA
+// tools never change, move or delete files already in MEGA; a note or table edited
+// in the vault is saved as a new file and its old version goes to the Rubbish Bin.
 //
 // The same file runs in the page and in Node (desktop/mega-connect.js and tests).
 (function (root, factory) {
@@ -244,6 +248,94 @@
             return { file: made && made.nodeId ? describeNode(st, made) : { name, path: `${pathOf(st, target)}/${name}`.replace(/^\/\//, "/"), link: `https://mega.nz/fm/${target.nodeId}` } };
         }
 
+        // ---- A folder used as a notes vault (notes-tables.js): every file under it by
+        // its path from that folder, one file's text, and writing one file (new, or a
+        // new version whose old copy goes to the Rubbish Bin, where MEGA keeps it).
+        function vaultRoot(st, folder) {
+            const base = resolve(st, folder, true);
+            if (!base) return { error: `No MEGA folder "${folder}". Make it in MEGA (or let CoDev save the first note there), or pick another folder in Settings > Notes & tables.` };
+            if (!base.directory) return { error: `"${folder}" is a file, not a folder.` };
+            return { base };
+        }
+
+        function fileUnder(base, rel) {
+            const parts = String(rel || "").replace(/\\/g, "/").split("/").filter(Boolean);
+            let node = base;
+            for (const part of parts) {
+                node = (node.children || []).find(c => String(c.name || "").toLowerCase() === part.toLowerCase());
+                if (!node) return null;
+            }
+            return node === base ? null : node;
+        }
+
+        async function tree({ folder }) {
+            const st = await open();
+            const { base, error } = vaultRoot(st, folder);
+            if (error) return { error, missing: true };
+            const files = [];
+            (function walk(node, prefix) {
+                for (const child of node.children || []) {
+                    if (!child.name || child.name.startsWith(".")) continue; // .obsidian, .trash
+                    const rel = prefix ? `${prefix}/${child.name}` : child.name;
+                    if (child.directory) walk(child, rel);
+                    else if (files.length < 5000) files.push({ path: rel, size: Number(child.size) || 0, modified: child.timestamp ? new Date(child.timestamp * 1000).toISOString() : null });
+                }
+            })(base, "");
+            return { files };
+        }
+
+        async function fetchText({ folder, path: rel }) {
+            const st = await open();
+            const { base, error } = vaultRoot(st, folder);
+            if (error) return { error };
+            const node = fileUnder(base, rel);
+            if (!node || node.directory) return { error: `No file ${rel} in ${folder}.`, missing: true };
+            if (Number(node.size) > MAX_READ_BYTES) return { error: `${rel} is over 5 MB, too big to read here.` };
+            let data;
+            try { data = await node.downloadBuffer({}); } catch (err) { throw new Error(explain(err)); }
+            return { text: new TextDecoder("utf-8").decode(data), modified: node.timestamp ? new Date(node.timestamp * 1000).toISOString() : null };
+        }
+
+        async function putText({ folder, path: rel, content }) {
+            const saved = session();
+            if (!saved || !saved.allowWrite) return { error: "Saving to MEGA is off. Turn it on in Settings > MEGA cloud so notes and tables in MEGA can be saved." };
+            if (typeof content !== "string") return { error: "content must be text." };
+            const bytes = new TextEncoder().encode(content);
+            if (bytes.length > MAX_SAVE_BYTES) return { error: "That's more than 5 MB of text." };
+            const parts = String(rel || "").replace(/\\/g, "/").split("/").filter(Boolean);
+            if (!parts.length || parts.some(p => p === ".." || p.startsWith("."))) return { error: "Give a path inside the folder, like Projects/Ideas.md." };
+            const st = await open();
+            let { base, error } = vaultRoot(st, folder);
+            if (error) {
+                // The vault folder itself is made on the first save.
+                try { base = await makeFolders(st.root, String(folder || "").replace(/\\/g, "/").split("/").filter(Boolean).filter((p, i) => i || !/^cloud drive$/i.test(p))); } catch (err) { throw new Error(explain(err)); }
+            }
+            const name = parts.pop();
+            let parent;
+            try { parent = await makeFolders(base, parts); } catch (err) { throw new Error(explain(err)); }
+            const old = (parent.children || []).find(c => !c.directory && String(c.name || "").toLowerCase() === name.toLowerCase());
+            try {
+                await new Promise((resolve, reject) => {
+                    const upload = parent.upload({ name: old ? old.name : name, size: bytes.length }, bytes, (err, file) => (err ? reject(err) : resolve(file)));
+                    if (upload && upload.on) upload.on("error", reject);
+                });
+                // The old version goes to the Rubbish Bin (not deleted for good), so it can be restored.
+                if (old) await old.delete(false);
+            } catch (err) { throw new Error(explain(err)); }
+            loadedAt = 0;
+            return { ok: true, replaced: Boolean(old) };
+        }
+
+        async function makeFolders(from, names) {
+            let node = from;
+            for (const part of names) {
+                let next = (node.children || []).find(c => c.directory && String(c.name || "").toLowerCase() === part.toLowerCase());
+                if (!next) next = await node.mkdir(part);
+                node = next;
+            }
+            return node;
+        }
+
         async function signIn({ email, password, code, allowWrite }) {
             email = String(email || "").trim();
             if (!email || !password) return { error: "Type your MEGA email and password." };
@@ -298,6 +390,9 @@
                     case "list": return await list(req);
                     case "read": return await read(req);
                     case "save": return await saveFile(req);
+                    case "tree": return await tree(req);
+                    case "fetch": return await fetchText(req);
+                    case "put": return await putText(req);
                     default: return { error: "Unknown MEGA request." };
                 }
             } catch (err) {

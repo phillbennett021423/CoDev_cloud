@@ -14,6 +14,7 @@ const { createGameDevService } = require('./gamedev');
 const { createCreativeService } = require('./creative');
 const { createGoogleConnect } = require('./google-connect');
 const { createMegaConnect } = require('./mega-connect');
+const { createAzgaarMaps } = require('./azgaar-map');
 const { pathToFileURL } = require('url');
 
 const WWW = path.join(__dirname, 'www');
@@ -229,6 +230,9 @@ app.whenReady().then(() => {
         unprotect: text => (text.startsWith('enc:') ? safeStorage.decryptString(Buffer.from(text.slice(4), 'base64')) : text)
     });
     ipcMain.handle('codev:mega', (_event, req) => mega.handle(req));
+    // New fantasy maps from Azgaar's Fantasy Map Generator, made in a headless Chromium.
+    const azgaar = createAzgaarMaps({ log: line => console.log(line) });
+    ipcMain.handle('codev:azgaar', (_event, req) => azgaar.handle(req));
     app.on('will-quit', () => mega.close());
     ipcMain.handle('codev:mcp-folder', () => getProjectDir());
     // Chromium writes the page's storage to disk only every few seconds, so a crash

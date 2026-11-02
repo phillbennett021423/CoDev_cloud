@@ -22,6 +22,7 @@ const { handleImageFolder } = require('./desktop/image-folder');
 const { handleWebFetch } = require('./web-fetch');
 const { createGoogleConnect } = require('./desktop/google-connect');
 const { createMegaConnect } = require('./desktop/mega-connect');
+const { createAzgaarMaps } = require('./desktop/azgaar-map');
 
 const config = loadConfig();
 const fatal = config.problems.filter(problem => problem.level === 'error');
@@ -49,6 +50,8 @@ const mega = createMegaConnect({
     sessionFile: path.join(config.workspace.dataDir, 'mega-session.json'),
     log: line => console.log(`[mega] ${line}`)
 });
+// New fantasy maps from Azgaar's Fantasy Map Generator, made in a headless Chromium.
+const azgaar = createAzgaarMaps({ log: line => console.log(line) });
 
 const PORT = config.port;
 const ROOT = path.join(__dirname, 'mobile', 'www');
@@ -234,6 +237,11 @@ const server = http.createServer(async (req, res) => {
     if (req.url === '/google') {
         if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
         return readJsonBody(req, res, async message => sendJson(res, 200, await google.handle(message)));
+    }
+    // Azgaar map making for the agents' map_generate tool: CoDev's own page only.
+    if (req.url === '/azgaar') {
+        if (!isOwnPageRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
+        return readJsonBody(req, res, async message => sendJson(res, 200, await azgaar.handle(message)));
     }
     // MEGA cloud for the agents' tools and Settings > MEGA cloud: CoDev's own page only.
     if (req.url === '/mega') {

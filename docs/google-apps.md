@@ -5,6 +5,8 @@ and read your Gmail. They can also send email, but only if you turn that on, and
 CoDev asks you before every email.
 
 Cloud files moved from Google Drive to MEGA: see [mega-cloud.md](mega-cloud.md).
+Google Docs and Sheets are replaced by an Obsidian vault and CSV/JSON tables: see
+[notes-and-tables.md](notes-and-tables.md).
 
 ## What works with no setup
 

@@ -1220,6 +1220,9 @@
             <!-- Filled in by agent-ui/mega-cloud.js. -->
             <details class="settings-extra" id="megaSettings"></details>
 
+            <!-- Filled in by agent-ui/notes-tables.js. -->
+            <details class="settings-extra" id="notesSettings"></details>
+
             <!-- Filled in by agent-ui/odds-api.js. -->
             <details class="settings-extra" id="oddsSettings"></details>
 
@@ -1277,6 +1280,8 @@
     <script src="media-tools.js"></script>
     <script src="agent-ui/google-apps.js"></script>
     <script src="agent-ui/mega-cloud.js"></script>
+    <script src="agent-ui/notes-tables.js"></script>
+    <script src="agent-ui/azgaar-maps.js"></script>
     <script src="agent-ui/page-extract.js"></script>
     <script src="agent-ui/phone-browser.js"></script>
     <script src="agent-ui/story-studio.js"></script>
@@ -4390,6 +4395,50 @@
             if (el) CodevMegaCloud.mountSettings(el, { transport: megaTransport, cloud: megaCloud, storage: localStorage });
         });
 
+        // NOTES & TABLES: an Obsidian vault (Markdown notes) and CSV/JSON tables in place
+        // of Google Docs and Sheets (agent-ui/notes-tables.js). The vault is a folder in
+        // MEGA or in the connected project folder. Every change asks first.
+        const notesHasProject = typeof window.showDirectoryPicker === "function" || Boolean(window.codevDesktop);
+        const notesSettings = () => { try { return CodevNotesTables.settingsFrom(localStorage, notesHasProject); } catch (err) { return { location: "mega", folder: "/Obsidian", allowEdit: false }; } };
+        const notesTables = CodevNotesTables.createNotesTables({
+            getStore: async () => {
+                const set = notesSettings();
+                if (set.location === "project") {
+                    if (!connectedDirectoryHandle && !Object.keys(loadedProjectFiles).length) return { error: "The notes vault is set to a folder in the project folder, but no project folder is connected. Connect one with 📁, or pick MEGA in Settings > Notes & tables." };
+                    return CodevNotesTables.projectStore({
+                        files: async () => loadedProjectFiles,
+                        read: async path => (path in loadedProjectFiles ? loadedProjectFiles[path] : ((await readWorkspaceFolder(path))[0] || {}).text ?? null),
+                        write: async (path, text) => { const said = await writeWorkspaceFile(path, text, { asked: true }); return /^Saved|^Updated/.test(said) ? null : { error: said }; }
+                    }, set.folder);
+                }
+                const st = await megaCloud.status();
+                if (!st.signedIn) return { error: "The notes vault is in MEGA, but CoDev isn't signed in to MEGA. Sign in under Settings > MEGA cloud, or pick another place in Settings > Notes & tables." };
+                return CodevNotesTables.megaStore(megaTransport, set.folder);
+            },
+            canEdit: () => notesSettings().allowEdit,
+            confirmWrite: message => askPermission(message),
+            runTableQuery: (entry, args) => runTableQuery(entry, args)
+        });
+        // AZGAAR MAPS: read a fantasy map's JSON export and make new maps with Azgaar's
+        // Fantasy Map Generator (agent-ui/azgaar-maps.js; desktop/azgaar-map.js makes them).
+        const azgaarGenerate = window.codevDesktop?.azgaar ? req => window.codevDesktop.azgaar({ op: "generate", ...req })
+            : (location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname) ? async req => {
+                const r = await fetch("/azgaar", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ op: "generate", ...req }) });
+                return r.status === 404 ? { error: "This copy of CoDev's server is too old to make maps. Update CoDev and restart it." } : r.json();
+            } : null);
+        const azgaarMaps = CodevAzgaarMaps.createAzgaarTools({
+            readFile: async path => ((await readWorkspaceFolder(path)).find(f => f.path === path || f.path.endsWith(".json")) || {}).text ?? null,
+            listJson: async () => Object.keys(loadedProjectFiles).filter(p => /\.json$/i.test(p)),
+            generate: azgaarGenerate,
+            saveFile: (path, text) => writeWorkspaceFile(path, text, { asked: true }),
+            confirm: message => askPermission(message)
+        });
+
+        document.addEventListener("DOMContentLoaded", () => {
+            const el = document.getElementById("notesSettings");
+            if (el) CodevNotesTables.mountSettings(el, { storage: localStorage, tools: notesTables, hasProject: notesHasProject });
+        });
+
         // THE ODDS API: every sportsbook's lines and props, saved as snapshots for line
         // movement, and the list of props worth looking up on Outlier (agent-ui/odds-api.js).
         // The user's free key is kept in this page; without it agents read odds on Outlier.
@@ -4737,6 +4786,13 @@
             try {
                 for (const tool of await megaCloud.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             } catch (err) { logConsoleActivity(`[MEGA] ${err.message}`); }
+            // Map tools only for a request about maps or worlds (they cost tokens on every call).
+            if (CodevAzgaarMaps.isMapTask(ctx?.task) || (storyStudio && CodevStoryStudio.isStudioTask(storyStudio, ctx?.task))) {
+                for (const tool of azgaarMaps.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
+            }
+            try {
+                for (const tool of await notesTables.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
+            } catch (err) { logConsoleActivity(`[Notes] ${err.message}`); }
             for (const tool of oddsTracker.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             // The prop model's tools only for props and betting requests (they cost tokens on every call).
             if (!ctx || ctx.kind === "props" || PROPS_TASK.test(ctx.task || "")) for (const tool of propModel.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
@@ -4869,11 +4925,12 @@
             try { return [{ path: name, text: await (await (await workspaceFileHandle(name, false)).getFile()).text() }]; } catch (err) { return []; }
         }
 
-        async function writeWorkspaceFile(rawName, content) {
+        // asked: the caller already showed the user this change and they approved it.
+        async function writeWorkspaceFile(rawName, content, { asked = false } = {}) {
             if (typeof content !== "string") return "write_workspace_file needs content as a string.";
             const name = normalizeWorkspacePath(rawName);
             if (!name) return "Use a file path inside the project folder, like scripts/player.gd.";
-            if (!toolsAutoRun && !await askPermission(`An agent wants to write ${name} (${content.length} characters) in your project folder.\n\nAllow it?`)) {
+            if (!asked && !toolsAutoRun && !await askPermission(`An agent wants to write ${name} (${content.length} characters) in your project folder.\n\nAllow it?`)) {
                 logConsoleActivity(`[Tool] You declined writing ${name}`);
                 return "The user declined this write.";
             }
@@ -4926,6 +4983,10 @@
             if (googleStep) return googleStep;
             const megaStep = megaCloud.describe(name, args);
             if (megaStep) return megaStep;
+            const mapStep = azgaarMaps.describe(name, args);
+            if (mapStep) return mapStep;
+            const notesStep = notesTables.describe(name, args);
+            if (notesStep) return notesStep;
             const oddsStep = oddsTracker.describe(name, args);
             if (oddsStep) return oddsStep;
             const modelStep = propModel.describe(name, args);
@@ -7487,7 +7548,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 10. BE BRIEF: Say what the user needs and stop. Lead with the answer in plain words. No preamble, no restating the question, no repeating what you already said, no closing summary or offers of more help. A simple question gets one to three sentences, and most answers fit in about 150 words. Go longer only when the task needs it: code, a report or deep research, step-by-step instructions, or when the user asks for detail; even then, cut anything that doesn't help. Use lists or code blocks only when they help.
 
-11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); making and editing pictures (generate_image); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
+11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); making and editing pictures (generate_image); the user's Obsidian notes and CSV/JSON data tables, in place of Google Docs and Sheets (notes_search, notes_read, notes_write, table_read, table_write); files in the user's MEGA cloud drive, in place of Google Drive (mega_search, mega_read_file, mega_save_file); fantasy maps from Azgaar's Fantasy Map Generator (map_read, map_generate); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
 
 12. ENGINE-SPECIFIC RULES:${engineRules ? `\n${engineRules}` : " none for this task."}`;
             
