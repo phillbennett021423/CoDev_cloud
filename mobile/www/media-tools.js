@@ -1004,6 +1004,23 @@ async function generateImageForTask(args, ctx) {
     return `Made the picture "${name}" with ${IMAGE_SERVICE_NAMES[service]}; it is shown to the user with your reply. Don't paste links or data for it. In your reply, say briefly what you made${service === "free" ? " (with the free image service)" : ""}.`;
 }
 
+// Pictures in a tool's result (the art tools' contact sheets) go under the reply like
+// generate_image's, stored full size. They don't count toward the daily picture limit:
+// they're made on the user's own computer. Returns how many were kept.
+async function keepToolImages(content, toolName, ctx) {
+    const images = (content || []).filter(c => c && c.type === "image" && c.data).slice(0, 4);
+    if (!images.length || !ctx) return 0;
+    ctx.generatedImages = ctx.generatedImages || [];
+    for (const image of images) {
+        const url = `data:${image.mimeType || "image/png"};base64,${image.data}`;
+        const id = `img_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        const thumb = await shrinkDataUrl(url, 360, 0.78);
+        await mediaStore("images", "readwrite", store => store.put({ id, url, prompt: toolName, model: toolName, at: Date.now() }));
+        ctx.generatedImages.push({ name: `${String(toolName).replace(/[^\w-]+/g, "-")}.${/png/.test(image.mimeType || "") ? "png" : "jpg"}`, kind: "image", thumb, generatedId: id, fullUrl: url });
+    }
+    return images.length;
+}
+
 async function loadGeneratedImage(id) {
     const saved = await mediaStore("images", "readonly", store => store.get(id));
     return saved && saved.url ? saved : null;
