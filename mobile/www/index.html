@@ -868,6 +868,11 @@
                             <button id="screenshotFolderBtn" class="tool-btn" onclick="pickScreenshotFolder()" title="Pick a folder of screenshots (like Dabble slips) for the agents to read">📸</button>
                             <button id="deepResearchBtn" class="tool-btn" onclick="toggleDeepResearch()" title="Deep research: read many sources and write a cited report (for your next message)" aria-pressed="false">🔬</button>
                             <button id="webSearchBtn" class="tool-btn" onclick="toggleWebSearch()" title="Search the web for every message: off (technical questions are searched automatically)" aria-pressed="false">🔎</button>
+                            <select id="responseLengthSelect" class="tool-btn" onchange="setResponseLength(this.value)" title="Reply length" aria-label="Reply length">
+                                <option value="short">Short</option>
+                                <option value="medium">Medium</option>
+                                <option value="long">Long</option>
+                            </select>
                             <button class="send-btn" onclick="sendChatMessage()">Send Task</button>
                         </div>
                     </div>
@@ -5367,6 +5372,23 @@
         let attachmentSeq = 0;
         let webSearchEnabled = false;
 
+        // Reply length picked next to the chat input: a system prompt hint plus a
+        // max_tokens cap sent to every provider. gpt-oss spends part of the cap on
+        // reasoning, so even Short leaves room for that.
+        const RESPONSE_LENGTHS = {
+            short: { maxTokens: 2048, hint: "RESPONSE LENGTH: Short. Answer in a few sentences or a brief list. Show only the code that changes, and skip background and recaps." },
+            medium: { maxTokens: 6144, hint: "RESPONSE LENGTH: Medium. Give a focused answer with the key details and complete code where it is needed, without long digressions." },
+            long: { maxTokens: 16384, hint: "RESPONSE LENGTH: Long. Give a thorough, detailed answer: explain the reasoning, cover edge cases, and include complete code and examples." }
+        };
+        let responseLength = RESPONSE_LENGTHS[localStorage.getItem("codev_response_length")] ? localStorage.getItem("codev_response_length") : "medium";
+
+        function setResponseLength(value) {
+            responseLength = RESPONSE_LENGTHS[value] ? value : "medium";
+            localStorage.setItem("codev_response_length", responseLength);
+            document.getElementById("responseLengthSelect").value = responseLength;
+        }
+        document.addEventListener("DOMContentLoaded", () => setResponseLength(responseLength));
+
         function toggleWebSearch() {
             webSearchEnabled = !webSearchEnabled;
             const btn = document.getElementById("webSearchBtn");
@@ -7853,6 +7875,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         }
 
         async function providerChatMessage(body, extras) {
+            // The reply length picked by the chat input caps every provider (a caller's own cap wins).
+            body = { max_tokens: RESPONSE_LENGTHS[responseLength].maxTokens, ...body };
             if (currentBackend === "anthropic") return anthropicChatMessage(body, extras);
             const openRouter = currentBackend === "openrouter";
             const provider = openRouter
@@ -7980,7 +8004,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             // Prompt caching: a tool loop resends the same tools, instructions and earlier
             // steps every round. Cached, that prefix costs a tenth of the input price, and the
             // cache point moves forward on its own as the conversation grows.
-            const request = { model: ANTHROPIC_MODEL, max_tokens: 16000, cache_control: { type: "ephemeral" }, messages };
+            const request = { model: ANTHROPIC_MODEL, max_tokens: body.max_tokens || 16000, cache_control: { type: "ephemeral" }, messages };
             if (system.length) request.system = system.join("\n\n");
             if (body.tools?.length) {
                 request.tools = body.tools.map(t => t.function.name === "web_search" && claudeSearchesForAgents()
@@ -8171,7 +8195,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 }
             }
 
-            const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}`;
+            const responseStyle = `RESPONSE STYLE: Write like an automation runner. Lead with the result, then break the work into short numbered execution steps, mark each step with its outcome (Done, Skipped or Blocked), and put code in fenced blocks tagged with the language and file name. Skip greetings, filler, apologies and restating the request. Scale the number of steps and the detail to the response length below.`;
+            const fullSystemPrompt = `${technicalGuardrails}\n\n${systemPrompt}\n\n${responseStyle}\n${RESPONSE_LENGTHS[responseLength].hint}`;
             let images = options.images || [];
             // Attached images and tools together: Claude takes both at once; the other
             // providers' tool models can't see images, so the vision model reads them first
