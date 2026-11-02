@@ -1,18 +1,21 @@
 // ComfyUI, the free open-source image engine, running on the user's own computer
-// (default http://127.0.0.1:8188, or CODEV_COMFYUI_URL). CoDev builds its graphs in
+// (default http://127.0.0.1:8188, or CODEV_COMFYUI_URL), or on a rented GPU such as a
+// RunPod pod (https://<pod-id>-8188.proxy.runpod.net). A remote one behind a login takes
+// CODEV_COMFYUI_TOKEN, sent as a Bearer token. CoDev builds its graphs in
 // ComfyUI's API format, queues them with POST /prompt, waits on /history/<id> and
 // fetches the pictures with /view. Whatever checkpoints, LoRAs, ControlNets,
 // upscalers and IP-Adapter nodes are installed there are what CoDev can use: GET
 // /object_info lists them, and any required input a graph leaves out is filled
 // with the default ComfyUI reports, so the graphs survive node updates.
 //
-//   createComfy({ url, fetchImpl }) -> { info(), models(), has(cls), upload(buf, name),
+//   createComfy({ url, token, fetchImpl }) -> { info(), models(), has(cls), upload(buf, name),
 //     run(graph, { timeoutMs }) -> [Buffer], reachable() }
 //   graphs.* build the graphs (pure functions, tested without ComfyUI).
 const DEFAULT_URL = 'http://127.0.0.1:8188';
 
-function createComfy({ url = process.env.CODEV_COMFYUI_URL || DEFAULT_URL, fetchImpl = globalThis.fetch } = {}) {
-    const base = String(url).replace(/\/+$/, '');
+function createComfy({ url = process.env.CODEV_COMFYUI_URL || DEFAULT_URL, token = process.env.CODEV_COMFYUI_TOKEN || '', fetchImpl = globalThis.fetch } = {}) {
+    const base = String(url || DEFAULT_URL).trim().replace(/\/+$/, '');
+    const auth = token ? { Authorization: `Bearer ${token}` } : {};
     let infoCache = null;
     let infoAt = 0;
 
@@ -20,7 +23,7 @@ function createComfy({ url = process.env.CODEV_COMFYUI_URL || DEFAULT_URL, fetch
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
-            const response = await fetchImpl(base + pathname, { ...init, signal: controller.signal });
+            const response = await fetchImpl(base + pathname, { ...init, headers: { ...auth, ...(init.headers || {}) }, signal: controller.signal });
             if (!response.ok) {
                 const body = await response.text().catch(() => '');
                 throw new Error(`ComfyUI answered HTTP ${response.status} for ${pathname}${body ? `: ${body.slice(0, 600)}` : ''}`);
