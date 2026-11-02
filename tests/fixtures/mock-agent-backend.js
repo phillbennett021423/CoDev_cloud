@@ -56,7 +56,8 @@ function syntaxCheck(rel, text) {
 
 // agentTools: more /agent-tools tools, name -> (box, args, agentId) => text (e.g. an Outlier stand-in).
 // google: optional handler for POST /google (a desktop/google-connect.js handle()).
-function createMockBackend({ workspace, docker = false, hubTools = [], agentTools = {}, google = null } = {}) {
+// mega: optional handler for POST /mega (a desktop/mega-connect.js handle()).
+function createMockBackend({ workspace, docker = false, hubTools = [], agentTools = {}, google = null, mega = null } = {}) {
     const sandboxes = new Map(); // id -> { id, agents:Set, files: Map(rel -> text|null), base: Map }
     const changesets = new Map();
     const log = [];
@@ -230,6 +231,7 @@ function createMockBackend({ workspace, docker = false, hubTools = [], agentTool
             if (url.pathname === '/agent-tools') return send(200, handleMcp(body));
             if (url.pathname === '/mcp-hub') return send(200, handleHub(body));
             if (url.pathname === '/google' && google) return Promise.resolve(google(body)).then(reply => send(200, reply), err => send(500, { error: err.message }));
+            if (url.pathname === '/mega' && mega) return Promise.resolve(mega(body)).then(reply => send(200, reply), err => send(500, { error: err.message }));
             if (url.pathname.startsWith('/agent/')) {
                 try {
                     const [status, payload] = handleRequest(req.method, url.pathname, Object.fromEntries(url.searchParams), body);

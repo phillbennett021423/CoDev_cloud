@@ -928,7 +928,7 @@
                         <div style="display: flex; flex-direction: column; gap: 6px; font-size: 0.85rem;">
                             <span>📧 Gmail Daemon: <strong style="color: var(--success);">Synchronized</strong></span>
                             <span>📅 Calendar Scheduler: <strong style="color: var(--success);">Active</strong></span>
-                            <span>📁 Drive Sync: <strong style="color: var(--success);">Connected</strong></span>
+                            <span>☁️ MEGA Sync: <strong style="color: var(--success);">Connected</strong></span>
                         </div>
                     </div>
                     <div class="codev-hub-card">
@@ -1217,6 +1217,9 @@
             <!-- Filled in by agent-ui/google-apps.js. -->
             <details class="settings-extra" id="googleSettings"></details>
 
+            <!-- Filled in by agent-ui/mega-cloud.js. -->
+            <details class="settings-extra" id="megaSettings"></details>
+
             <!-- Filled in by agent-ui/odds-api.js. -->
             <details class="settings-extra" id="oddsSettings"></details>
 
@@ -1273,6 +1276,7 @@
     <script src="agent-ui/outlier-view.js"></script>
     <script src="media-tools.js"></script>
     <script src="agent-ui/google-apps.js"></script>
+    <script src="agent-ui/mega-cloud.js"></script>
     <script src="agent-ui/page-extract.js"></script>
     <script src="agent-ui/phone-browser.js"></script>
     <script src="agent-ui/story-studio.js"></script>
@@ -4359,9 +4363,10 @@
             return commands;
         }
 
-        // GOOGLE APPS: YouTube, Maps, Gmail and Drive for agents (agent-ui/google-apps.js).
+        // GOOGLE APPS: YouTube, Maps and Gmail for agents (agent-ui/google-apps.js).
         // Without a Google key, YouTube and Maps fall back to the free web search,
-        // YouTube's oEmbed and OpenStreetMap. Email and Drive saves always ask first.
+        // YouTube's oEmbed and OpenStreetMap. Sending email always asks first.
+        // (Cloud files moved from Google Drive to MEGA: see MEGA CLOUD below.)
         const googleTransport = CodevGoogleApps.detectTransport(window);
         const googleApps = CodevGoogleApps.createGoogleApps({
             transport: googleTransport,
@@ -4374,6 +4379,15 @@
             const el = document.getElementById("googleSettings");
             // The server page opens Google's sign-in in a new tab; the Windows app opens the normal browser itself.
             if (el) CodevGoogleApps.mountSettings(el, { transport: googleTransport, apps: googleApps, storage: localStorage, openWindow: window.codevDesktop ? null : () => window.open("about:blank", "_blank") });
+        });
+
+        // MEGA CLOUD: search, read and save files in the user's MEGA cloud drive
+        // (agent-ui/mega-cloud.js), with the free megajs SDK. Saves always ask first.
+        const megaTransport = CodevMegaCloud.detectTransport(window);
+        const megaCloud = CodevMegaCloud.createMegaCloud({ transport: megaTransport, confirmWrite: message => askPermission(message) });
+        document.addEventListener("DOMContentLoaded", () => {
+            const el = document.getElementById("megaSettings");
+            if (el) CodevMegaCloud.mountSettings(el, { transport: megaTransport, cloud: megaCloud, storage: localStorage });
         });
 
         // THE ODDS API: every sportsbook's lines and props, saved as snapshots for line
@@ -4695,7 +4709,7 @@
                 description: "Look at a folder of screenshots or other images and get what they show, read by a vision model: every leg on a betting or DFS slip (Dabble, PrizePicks, Underdog, sportsbooks) as Player | Stat | Line | Side | Sport | Game, or the text and content of any other image. "
                     + "Reads every screenshot in the folder the user picked with 📸 or named before, newest first, or the folder given as folder (a full path works). Use it whenever the user mentions screenshots, pictures or a folder of images; the user never needs to upload them.",
                 inputSchema: { type: "object", properties: {
-                    folder: { type: "string", description: "Optional: the full path of a folder on the user's computer when they give one (like \"G:\\My Drive\\continuumUniverse\\New folder\"; CoDev remembers it for next time), a sub-folder of the 📸 folder, or a folder inside the project. Leave it out for the folder the user picked or named before." },
+                    folder: { type: "string", description: "Optional: the full path of a folder on the user's computer when they give one (like \"C:\\Users\\me\\MEGA\\Screenshots\" for a MEGAsync folder, or \"G:\\My Drive\\continuumUniverse\\New folder\"; CoDev remembers it for next time), a sub-folder of the 📸 folder, or a folder inside the project. Leave it out for the folder the user picked or named before." },
                     question: { type: "string", description: "What to look for, in the user's words." },
                     limit: { type: "integer", description: `Read only the newest N images. Leave it out to read them all (up to ${MAX_SCREENSHOTS}); screenshots read before are remembered, so only new ones go to the vision model.` }
                 } },
@@ -4720,6 +4734,9 @@
             try {
                 for (const tool of await googleApps.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             } catch (err) { logConsoleActivity(`[Google] ${err.message}`); }
+            try {
+                for (const tool of await megaCloud.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
+            } catch (err) { logConsoleActivity(`[MEGA] ${err.message}`); }
             for (const tool of oddsTracker.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             // The prop model's tools only for props and betting requests (they cost tokens on every call).
             if (!ctx || ctx.kind === "props" || PROPS_TASK.test(ctx.task || "")) for (const tool of propModel.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
@@ -4907,6 +4924,8 @@
             const name = split > 0 ? fullName.slice(split + 2) : fullName;
             const googleStep = googleApps.describe(name, args);
             if (googleStep) return googleStep;
+            const megaStep = megaCloud.describe(name, args);
+            if (megaStep) return megaStep;
             const oddsStep = oddsTracker.describe(name, args);
             if (oddsStep) return oddsStep;
             const modelStep = propModel.describe(name, args);
@@ -5491,7 +5510,7 @@
             const fromFiles = (files, base) => files
                 .filter(f => !base || f.path === base || f.path.startsWith(base + "/"))
                 .map(f => ({ path: f.path, modified: f.file.lastModified || 0, key: `${f.path}|${f.file.size}|${f.file.lastModified}`,
-                    // A fresh File each try: an online-only cloud file (Google Drive, OneDrive) downloads as it's read.
+                    // A fresh File each try: an online-only cloud file (Google Drive, OneDrive, MEGA) downloads as it's read.
                     load: async () => fileToJpeg(f.handle ? await f.handle.getFile() : f.file) }));
             const sources = [];
             // The 📸 folder: by its name, a sub-folder of it, or when no folder is named.
@@ -5657,7 +5676,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (!found) {
                 return folder
                     ? `No images found in "${folder}". Tell the user to click 📸 next to the chat box and pick that folder (on a phone, pick the screenshots), then ask again.`
-                    : "No screenshots folder is picked. Ask the user for the folder's full path (like G:\\My Drive\\Screenshots) and call read_screenshots again with it as folder, or tell them to click 📸 next to the chat box and pick it (on a phone, pick the screenshots).";
+                    : "No screenshots folder is picked. Ask the user for the folder's full path (like C:\\Users\\me\\MEGA\\Screenshots for a MEGAsync folder) and call read_screenshots again with it as folder, or tell them to click 📸 next to the chat box and pick it (on a phone, pick the screenshots).";
             }
             const count = Math.max(1, Math.min(MAX_SCREENSHOTS, Number(limit) || MAX_SCREENSHOTS));
             const chosen = found.slice(0, count);

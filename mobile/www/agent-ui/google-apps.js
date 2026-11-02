@@ -1,6 +1,7 @@
-// CoDev's Google tools: YouTube, Google Maps, Gmail and Google Drive, for agents,
-// plus the Settings panel that connects them. Read-only by default: sending email
-// and saving to Drive need the user to turn them on, and CoDev asks every time.
+// CoDev's Google tools: YouTube, Google Maps and Gmail, for agents, plus the
+// Settings panel that connects them. Read-only by default: sending email needs the
+// user to turn it on, and CoDev asks every time. (Cloud files moved from Google
+// Drive to MEGA: see mega-cloud.js.)
 //
 // Where the Google account lives:
 //  - Windows app: the main process (desktop/google-connect.js) over
@@ -14,7 +15,7 @@
 //    on its own.
 // Every transport takes the same requests: status, signin, signout, link, import
 // (phone only) and request ({ method, url, headers, body, auth: "user" | "key", apiKey }).
-// YouTube and Maps can use an API key alone; Gmail and Drive need the sign-in.
+// YouTube and Maps can use an API key alone; Gmail needs the sign-in.
 //
 // The same file runs in the page and in Node (tests), like agent-client.js.
 (function (root, factory) {
@@ -25,8 +26,6 @@
 
     const YT = "https://www.googleapis.com/youtube/v3";
     const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
-    const DRIVE = "https://www.googleapis.com/drive/v3";
-    const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3/files";
     const PLACES = "https://places.googleapis.com/v1/places:searchText";
     const ROUTES = "https://routes.googleapis.com/directions/v2:computeRoutes";
     const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -39,14 +38,12 @@
     const SCOPE = {
         youtube: "https://www.googleapis.com/auth/youtube.readonly",
         gmailRead: "https://www.googleapis.com/auth/gmail.readonly",
-        gmailSend: "https://www.googleapis.com/auth/gmail.send",
-        driveRead: "https://www.googleapis.com/auth/drive.readonly",
-        driveFile: "https://www.googleapis.com/auth/drive.file"
+        gmailSend: "https://www.googleapis.com/auth/gmail.send"
     };
     const STORE = { apiKey: "codev_google_api_key", clientId: "codev_google_client_id", clientSecret: "codev_google_client_secret", allowWrite: "codev_google_allow_write", phoneAccount: "codev_google_phone_account" };
     const READ_CHUNK = 12000;
     const GOOGLE_TOOL_NAMES = ["google_apps_status", "youtube_search", "youtube_video", "maps_search_places", "maps_directions",
-        "gmail_search", "gmail_read", "gmail_send", "drive_search", "drive_read_file", "drive_save_file"];
+        "gmail_search", "gmail_read", "gmail_send"];
 
     function isGoogleApiUrl(address) {
         let url;
@@ -171,7 +168,7 @@
             const verifier = randomText(48);
             const state = randomText(24);
             const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
-            const scopes = ["openid", "email", SCOPE.youtube, SCOPE.gmailRead, SCOPE.driveRead, ...(allowWrite ? [SCOPE.gmailSend, SCOPE.driveFile] : [])];
+            const scopes = ["openid", "email", SCOPE.youtube, SCOPE.gmailRead, ...(allowWrite ? [SCOPE.gmailSend] : [])];
             const { port } = await loopback.loopbackStart();
             pending = { port: Number(port), state, verifier, clientId, clientSecret, scopes, timer: setTimeout(stopPending, SIGNIN_TIMEOUT_MS) };
             const url = `${AUTH_URL}?${new URLSearchParams({
@@ -327,20 +324,10 @@
         return h ? h.value : "";
     }
 
-    const DRIVE_TYPES = {
-        doc: "application/vnd.google-apps.document", sheet: "application/vnd.google-apps.spreadsheet",
-        slides: "application/vnd.google-apps.presentation", folder: "application/vnd.google-apps.folder", pdf: "application/pdf"
-    };
-    const DRIVE_EXPORTS = {
-        "application/vnd.google-apps.document": "text/plain", "application/vnd.google-apps.spreadsheet": "text/csv",
-        "application/vnd.google-apps.presentation": "text/plain"
-    };
-    const driveQuote = s => `'${String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
-
     // ---- The tools -----------------------------------------------------------
 
     // transport: from detectTransport. getApiKey: the key typed in Settings (or "").
-    // confirmWrite(message) -> boolean: asked before every email and Drive save.
+    // confirmWrite(message) -> boolean: asked before every email.
     // webSearch(query) -> { results: [{ title, href, body }] } and fetchText(url) -> { status, html }:
     // the page's own web search and page reader, for the free no-key fallbacks
     // (YouTube through web search and YouTube's oEmbed; Maps through OpenStreetMap).
@@ -609,64 +596,11 @@
             return `Sent to ${recipients} (message id ${sent.id}).`;
         }
 
-        // ---- Drive
-        async function driveSearch({ query, type, folder_id: folderId, max }) {
-            const terms = ["trashed = false"];
-            const text = String(query || "").trim();
-            if (text) terms.push(`(name contains ${driveQuote(text)} or fullText contains ${driveQuote(text)})`);
-            if (type === "image" || type === "video") terms.push(`mimeType contains '${type}/'`);
-            else if (DRIVE_TYPES[type]) terms.push(`mimeType = '${DRIVE_TYPES[type]}'`);
-            if (folderId) terms.push(`${driveQuote(folderId)} in parents`);
-            const params = new URLSearchParams({
-                q: terms.join(" and "), pageSize: String(clampInt(max, 1, 50, 15)), supportsAllDrives: "true", includeItemsFromAllDrives: "true",
-                fields: "files(id,name,mimeType,modifiedTime,size,webViewLink)"
-            });
-            // Drive can't sort a full-text search.
-            if (!text) params.set("orderBy", "modifiedTime desc");
-            const found = await api({ url: `${DRIVE}/files?${params}` });
-            const files = found.files || [];
-            if (!files.length) return "No Drive files match.";
-            return files.map(f => `[${f.id}] ${f.name}\n${f.mimeType.replace("application/vnd.google-apps.", "Google ")} · modified ${String(f.modifiedTime || "").slice(0, 10)}${f.size ? ` · ${Math.round(f.size / 1024)} KB` : ""}\n${f.webViewLink || ""}`).join("\n\n")
-                + "\n\n(Read one with drive_read_file and its id; list a folder with drive_search folder_id.)";
-        }
-
-        async function driveReadFile({ id, start }) {
-            id = String(id || "").trim();
-            if (!id) return "drive_read_file needs the file's id from drive_search.";
-            const enc = encodeURIComponent(id);
-            const meta = await api({ url: `${DRIVE}/files/${enc}?fields=id,name,mimeType,size,webViewLink,modifiedTime&supportsAllDrives=true` });
-            const intro = `${meta.name} (${meta.mimeType}) · modified ${String(meta.modifiedTime || "").slice(0, 10)}\n${meta.webViewLink || ""}\n\n`;
-            if (meta.mimeType === DRIVE_TYPES.folder) return intro + await driveSearch({ folder_id: id, max: 50 });
-            let text;
-            if (DRIVE_EXPORTS[meta.mimeType]) text = await api({ url: `${DRIVE}/files/${enc}/export?mimeType=${encodeURIComponent(DRIVE_EXPORTS[meta.mimeType])}` });
-            else if (/^text\/|json|xml|csv|javascript|markdown|x-sh|x-python|yaml/.test(meta.mimeType)) text = await api({ url: `${DRIVE}/files/${enc}?alt=media&supportsAllDrives=true` });
-            else if (/^image\//.test(meta.mimeType)) return intro + "This is an image. To look at Drive images, use read_screenshots with the Google Drive folder's path on the user's computer (Google Drive for desktop shows it as a drive, like G:\\My Drive\\Screenshots).";
-            else return intro + `CoDev can't read ${meta.mimeType} files from Drive as text. Give the user the link above.`;
-            if (typeof text !== "string") text = JSON.stringify(text, null, 2);
-            return intro + slice(text, start, "drive_read_file");
-        }
-
-        async function driveSaveFile({ name, content, as_google_doc: asDoc, folder_id: folderId }) {
-            name = String(name || "").trim();
-            if (!name) return "drive_save_file needs a file name.";
-            if (typeof content !== "string") return "drive_save_file needs content as text.";
-            const preview = `Save a new file to your Google Drive?\n\nName: ${name}${asDoc ? " (as a Google Doc)" : ""}${folderId ? `\nFolder id: ${folderId}` : ""}\n\n${content.slice(0, 1200)}${content.length > 1200 ? "\n…" : ""}`;
-            if (!(await confirmWrite(preview))) return "The user declined saving this file to Drive.";
-            const metadata = { name };
-            if (asDoc) metadata.mimeType = DRIVE_TYPES.doc;
-            if (folderId) metadata.parents = [String(folderId)];
-            const boundary = `codev${Math.random().toString(36).slice(2)}`;
-            const mediaType = /\.json$/i.test(name) ? "application/json" : /\.csv$/i.test(name) ? "text/csv" : /\.html?$/i.test(name) ? "text/html" : /\.md$/i.test(name) ? "text/markdown" : "text/plain";
-            const multipart = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: ${mediaType}; charset=UTF-8\r\n\r\n${content}\r\n--${boundary}--`;
-            const saved = await api({ method: "POST", url: `${DRIVE_UPLOAD}?uploadType=multipart&fields=id,name,webViewLink&supportsAllDrives=true`, headers: { "Content-Type": `multipart/related; boundary=${boundary}` }, body: multipart });
-            return `Saved "${saved.name}" to Google Drive: ${saved.webViewLink || saved.id}`;
-        }
-
         async function statusReport() {
             const st = await status(true);
             const lines = [];
             if (st.error) lines.push(`Google connection: ${st.error}`);
-            lines.push(st.signedIn ? `Signed in to Google${st.email ? ` as ${st.email}` : ""}.` : "Not signed in to Google (Gmail and Drive are off).");
+            lines.push(st.signedIn ? `Signed in to Google${st.email ? ` as ${st.email}` : ""}.` : "Not signed in to Google (Gmail is off).");
             lines.push(hasKey(st) ? "A Google API key is set (YouTube and Maps)." : "No Google API key, so YouTube and Maps use the free basic versions.");
             const on = [];
             if (hasKey(st) || hasScope(st, SCOPE.youtube)) on.push("YouTube");
@@ -674,15 +608,15 @@
             if (hasKey(st)) on.push("Google Maps");
             else if (fetchText) on.push("Maps (free OpenStreetMap, no key)");
             if (hasScope(st, SCOPE.gmailRead)) on.push(`Gmail (read${hasScope(st, SCOPE.gmailSend) ? " and send, asking first" : " only"})`);
-            if (hasScope(st, SCOPE.driveRead)) on.push(`Drive (read${hasScope(st, SCOPE.driveFile) ? " and save new files, asking first" : " only"})`);
             lines.push(on.length ? `Working now: ${on.join(", ")}.` : "No Google apps are connected yet.");
+            lines.push("Cloud files are in MEGA, not Google Drive: use the mega_* tools (mega_status says if MEGA is connected).");
             if (!hasKey(st) || !st.signedIn) lines.push(`To connect more, the user opens Settings > Google apps. One-time Google Cloud setup: ${GUIDE_URL}`);
             return lines.join("\n");
         }
 
         const TOOLS = {
             google_apps_status: {
-                description: "Check which Google apps (YouTube, Google Maps, Gmail, Google Drive) CoDev can use right now, and how the user connects the rest. Call it when the user asks about their Google apps and the tool they need isn't listed.",
+                description: "Check which Google apps (YouTube, Google Maps, Gmail) CoDev can use right now, and how the user connects the rest. Call it when the user asks about their Google apps and the tool they need isn't listed.",
                 inputSchema: { type: "object", properties: {} }, run: statusReport
             },
             youtube_search: {
@@ -742,31 +676,6 @@
                     cc: { type: "string" },
                     reply_to_id: { type: "string", description: "Optional: the id of the email this replies to (from gmail_search), to keep the thread." }
                 }, required: ["to", "body"] }, run: gmailSend
-            },
-            drive_search: {
-                description: "Search the user's Google Drive by name and content, or list a folder, newest first. Returns ids, names, types and links. Read-only.",
-                inputSchema: { type: "object", properties: {
-                    query: { type: "string", description: "Words in the file's name or text. Leave empty to list recent files or a folder." },
-                    type: { type: "string", enum: ["doc", "sheet", "slides", "pdf", "image", "video", "folder"] },
-                    folder_id: { type: "string", description: "Optional: list inside this folder (id from drive_search)." },
-                    max: { type: "integer", description: "How many files (1-50, default 15)." }
-                } }, run: driveSearch
-            },
-            drive_read_file: {
-                description: "Read a Google Drive file as text by its id: Google Docs and Slides as text, Sheets as CSV, and text, CSV or JSON files. A folder id lists the folder. Read-only.",
-                inputSchema: { type: "object", properties: {
-                    id: { type: "string", description: "The file's id from drive_search." },
-                    start: { type: "integer", description: "Optional: the character to start from, for the next part of a long file." }
-                }, required: ["id"] }, run: driveReadFile
-            },
-            drive_save_file: {
-                description: "Save a new text file (or Google Doc) to the user's Google Drive. CoDev shows the user the file and saves only if they approve. It never changes or deletes existing files.",
-                inputSchema: { type: "object", properties: {
-                    name: { type: "string", description: "File name, like \"NBA props 10-28.md\"." },
-                    content: { type: "string", description: "The full text." },
-                    as_google_doc: { type: "boolean", description: "Save it as a Google Doc instead of a plain file." },
-                    folder_id: { type: "string", description: "Optional: the folder's id from drive_search." }
-                }, required: ["name", "content"] }, run: driveSaveFile
             }
         };
 
@@ -778,8 +687,6 @@
             if (hasKey(st) || fetchText) names.push("maps_search_places", "maps_directions");
             if (hasScope(st, SCOPE.gmailRead)) names.push("gmail_search", "gmail_read");
             if (hasScope(st, SCOPE.gmailSend)) names.push("gmail_send");
-            if (hasScope(st, SCOPE.driveRead)) names.push("drive_search", "drive_read_file");
-            if (hasScope(st, SCOPE.driveFile)) names.push("drive_save_file");
             return names.map(name => ({ name, description: TOOLS[name].description, inputSchema: TOOLS[name].inputSchema, run: (args, ctx) => TOOLS[name].run(args || {}, ctx) }));
         }
 
@@ -794,9 +701,6 @@
                 case "gmail_search": return `📧 Searching Gmail${args.query ? `: ${args.query}` : ""}`;
                 case "gmail_read": return "📧 Reading an email";
                 case "gmail_send": return `📨 Sending an email to ${args.to} (asks you first)`;
-                case "drive_search": return `📂 Searching Drive${args.query ? `: ${args.query}` : ""}`;
-                case "drive_read_file": return "📄 Reading a Drive file";
-                case "drive_save_file": return `💾 Saving ${args.name} to Drive (asks you first)`;
                 default: return null;
             }
         }
@@ -813,7 +717,7 @@
         const phoneSignIn = phone && transport.canSignIn;
         const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[c]);
         el.innerHTML = `
-            <summary>🔗 Google apps (YouTube, Maps, Gmail, Drive)</summary>
+            <summary>🔗 Google apps (YouTube, Maps, Gmail)</summary>
             <div data-g="status" style="font-size: 0.85rem; white-space: pre-line;"></div>
             <div style="font-size: 0.8rem; color: var(--text-muted);">Needs a one-time setup in Google Cloud (about 10 minutes). <a href="${GUIDE_URL}" target="_blank" rel="noopener noreferrer" style="color: var(--accent);">Open the setup guide</a></div>
             <div class="form-group">
@@ -822,12 +726,12 @@
             </div>
             ${phoneSignIn ? `
             <div class="form-group">
-                <label>OAuth client ID, for Gmail and Drive ("Desktop app" type)</label>
+                <label>OAuth client ID, for Gmail ("Desktop app" type)</label>
                 <input type="text" data-g="clientId" placeholder="1234-abc.apps.googleusercontent.com" autocomplete="off" style="font-family: monospace;">
                 <label>OAuth client secret</label>
                 <input type="text" data-g="clientSecret" placeholder="GOCSPX-..." autocomplete="off" style="font-family: monospace;">
             </div>
-            <label class="checkbox-group"><input type="checkbox" data-g="allowWrite"> Let agents send email and save new files to Drive (CoDev asks me every time). Sign in again after changing this.</label>
+            <label class="checkbox-group"><input type="checkbox" data-g="allowWrite"> Let agents send email (CoDev asks me every time). Sign in again after changing this.</label>
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                 <button class="btn-secondary" type="button" data-g="signin">🔐 Sign in with Google</button>
                 <button class="btn-secondary" type="button" data-g="signout">Sign out</button>
@@ -839,7 +743,7 @@
                 <button class="btn-secondary" type="button" data-g="import">🔗 Link this phone</button>
             </details>` : phone ? `
             <div class="form-group">
-                <label>Gmail and Drive: sign in on your computer, press "Copy phone link code" there, and paste it here.</label>
+                <label>Gmail: sign in on your computer, press "Copy phone link code" there, and paste it here.</label>
                 <textarea data-g="code" spellcheck="false" placeholder="Phone link code" style="font-family: monospace; min-height: 60px;"></textarea>
                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                     <button class="btn-secondary" type="button" data-g="import">🔗 Link this phone</button>
@@ -847,12 +751,12 @@
                 </div>
             </div>` : `
             <div class="form-group">
-                <label>OAuth client ID, for Gmail and Drive ("Desktop app" type)</label>
+                <label>OAuth client ID, for Gmail ("Desktop app" type)</label>
                 <input type="text" data-g="clientId" placeholder="1234-abc.apps.googleusercontent.com" autocomplete="off" style="font-family: monospace;">
                 <label>OAuth client secret</label>
                 <input type="text" data-g="clientSecret" placeholder="GOCSPX-..." autocomplete="off" style="font-family: monospace;">
             </div>
-            <label class="checkbox-group"><input type="checkbox" data-g="allowWrite"> Let agents send email and save new files to Drive (CoDev asks me every time). Sign in again after changing this.</label>
+            <label class="checkbox-group"><input type="checkbox" data-g="allowWrite"> Let agents send email (CoDev asks me every time). Sign in again after changing this.</label>
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                 <button class="btn-secondary" type="button" data-g="signin">🔐 Sign in with Google</button>
                 <button class="btn-secondary" type="button" data-g="signout">Sign out</button>
@@ -882,12 +786,12 @@
             const report = await apps.status(true);
             const lines = [];
             if (report.error) lines.push(`⚠️ ${report.error}`);
-            else lines.push(report.signedIn ? `✅ Signed in${report.email ? ` as ${report.email}` : ""}${phone && !report.onPhone ? " (linked from your computer)" : ""}` : report.signingIn ? "⏳ Waiting for you to finish signing in to Google in your browser…" : "Gmail and Drive: not signed in");
+            else lines.push(report.signedIn ? `✅ Signed in${report.email ? ` as ${report.email}` : ""}${phone && !report.onPhone ? " (linked from your computer)" : ""}` : report.signingIn ? "⏳ Waiting for you to finish signing in to Google in your browser…" : "Gmail: not signed in");
             if (report.signInError && !report.signedIn) lines.push(`⚠️ ${report.signInError}`);
             lines.push((storage.getItem(STORE.apiKey) || report.apiKey) ? "✅ API key set: YouTube and Maps are on" : "YouTube and Maps: add an API key");
             if (report.signedIn) {
                 const s = report.scopes || [];
-                lines.push(`Agents can: ${[s.includes(SCOPE.gmailRead) && "read Gmail", s.includes(SCOPE.gmailSend) && "send email (asks first)", s.includes(SCOPE.driveRead) && "read Drive", s.includes(SCOPE.driveFile) && "save to Drive (asks first)"].filter(Boolean).join(", ") || "nothing yet"}`);
+                lines.push(`Agents can: ${[s.includes(SCOPE.gmailRead) && "read Gmail", s.includes(SCOPE.gmailSend) && "send email (asks first)"].filter(Boolean).join(", ") || "nothing yet"}`);
             }
             $("status").textContent = lines.join("\n");
             return report;
