@@ -125,11 +125,22 @@ Agents can compare every sportsbook's lines and player props, follow how they mo
 - `odds_lookup_list`: the players, props and lines worth checking on Outlier for a game: props whose line or odds moved, props where the books disagree, and props the juice leans on, each with the reason and every book's price. It ends with the legs ready for `outlier_research_list`, so an agent asked for a ticket goes straight to those players on Outlier.
 - `odds_player_props` and `odds_game_lines`: one game's props, or a sport's moneylines, spreads and totals, side by side at every book, with the best price for each side and the fair chance with the book's margin taken out.
 - `odds_line_movement`: how a line moved, snapshot by snapshot, book by book.
+- `odds_steam`: steam and sharp moves in the saved lines: several books moving the same way between two snapshots (steam when it's within 90 minutes), whether a sharp book like Pinnacle moved first, and sharp moves the other books haven't followed yet (a stale price to grab).
 - `odds_show_chart`, or **📉 View tracked lines** in Settings: a chart of a line at each book over time and a table comparing the books.
 
 **Credits.** The free plan has 500 credits a month. Listing games is free; a sport's game lines cost about 3 credits; a game's props cost 1 credit per stat (3 for the default stats). CoDev keeps them safe on its own: it saves every answer and reuses it (lines for 30 minutes, props for an hour), spreads the month's credits over its days, always keeps 25 back, and stops before going over. Settings shows how many are left. Each extra group of sportsbooks you tick (DFS apps, Pinnacle in Europe...) multiplies a call's cost. With **Re-check** on, CoDev takes a new snapshot of the lines agents looked at every few hours while it's open, using at most half of the day's credits, so movement builds up by itself.
 
 Without a key, or once the day's credits are used, agents read the odds on Outlier in the browser as before. The numbers are what the sportsbooks show, not picks.
+
+## CoDev's own prop model (free)
+
+The odds tools are the market side; this is the research side, so a prop can be checked with no Outlier visit. It needs nothing to set up: game logs come from ESPN's free public stats, and the market side uses whatever lines the odds tools saved.
+
+- `stats_player_log`: a player's game log, pulled automatically (NBA, WNBA, NCAAB, NFL, NCAAF, MLB, NHL): hit rate at the line over L5, L10, L20 and the whole log, average, median, the last 10 games, minutes trend, home/away and vs the opponent. Early in a season last season's games are added.
+- `model_prop_edge`: up to 8 legs at once. Each gets the game-log chance (a recency-weighted hit rate blended with a distribution fitted to the log), the market's no-vig chance at your line, a blend of the two (60% market to start), the edge and EV at your price or against a pick'em breakeven, a Kelly stake for priced bets, and a **market check**: the market agrees; money is moving against you; or a **possible trap**, when sharp money is on the other side or the log likes the leg far more than the books do (usually news the log can't see, like an injury or a role change).
+- `model_backtest`: every prop line CoDev saved is archived at its close when the game starts, settled from ESPN after the game, and the model is re-run on it with only the games before it. It reports bets, record and ROI at closing prices for a rule (minimum edge, L10 floor, side, stat), calibration, how the market alone, the game log alone and the blend compare, the best market weight (saved only when you ask and there are 100+ settled props), and your own picks' record and closing line value.
+
+**What free data can't match.** ESPN's stats JSON is unofficial and can change shape. The free Odds API plan gives snapshots every 30 minutes or more, not a live feed, so steam is seen after it happens rather than as it happens. US regions don't include Pinnacle; add the Europe region (more credits per call) to see which book moved first. There's no free source of public betting splits or ticket counts. The backtest starts empty and grows with every slate you track; trust it after a few hundred settled props. Tests: `node --test tests/prop-model.test.js`.
 
 ## Agents start blank
 
