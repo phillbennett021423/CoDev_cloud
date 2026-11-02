@@ -40,7 +40,7 @@ const DEFAULT_RULES = {
         concepts: 'art/concepts', textures: 'art/textures', models: 'art/models', styles: 'art/styles',
         training: 'art/training', marketing: 'marketing', audio: 'audio'
     },
-    // The universe bible the art tools read (desktop/creative/lore.js): an Obsidian vault
+    // The universe bible the art tools read (desktop/creative/lore.js): a Chronicler vault
     // folder and/or Story Studio's story_bible.json. A brief that names a character adds
     // their look from it to the prompt.
     lore: { sources: ['lore', 'game_data/story_bible.json'], use_in_prompts: true },

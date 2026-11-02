@@ -105,7 +105,7 @@
 
     // Requests that are about a game's story or design get the studio tools and index.
     // (Not "scene" or "script" alone: in Godot those are code.)
-    const STUDIO_TASK = /\b(stor(y|ies)|storyline|lore|characters?|backstor(y|ies)|plot|dialog(ue)?s?|villains?|heroe?s?|factions?|quests?|npcs?|cutscenes?|story bible|story studio|timeline|world-?building|obsidian|azgaar|storycraftr|lore vault)\b/i;
+    const STUDIO_TASK = /\b(stor(y|ies)|storyline|lore|characters?|backstor(y|ies)|plot|dialog(ue)?s?|villains?|heroe?s?|factions?|quests?|npcs?|cutscenes?|story bible|story studio|timeline|world-?building|chronicler|azgaar|storycraftr|lore vault)\b/i;
 
     function now() { return new Date().toISOString(); }
     function newId(prefix) { return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`; }
@@ -352,7 +352,7 @@
             return error ? { error } : { project: made.project };
         }
 
-        // Many entries from another tool (an Obsidian vault, an Azgaar map, StoryCraftr) into
+        // Many entries from another tool (a Chronicler vault, an Azgaar map, StoryCraftr) into
         // one project: new names are added, known names get the fields given (the rest stay),
         // tags and relationships are added to what's there, and locked entries aren't touched.
         // Links name other entries, so they're saved after every entry exists. One save at the end.
@@ -903,12 +903,12 @@ ${entry.tags && entry.tags.length ? `<h2>Tags</h2><p>${esc(entry.tags.join(", ")
             {
                 name: "studio_import",
                 description: "Bring lore from the free tools the user writes in into a game project's story bible, from files in the user's connected project folder: "
-                    + "source \"obsidian\" reads an Obsidian (or any Markdown) vault folder, one note per character, faction, place or event, relationships as [[links]]; "
+                    + "source \"chronicler\" reads a Chronicler worldbuilding vault (or any folder of Markdown pages): one page per character, faction, place or event, its infobox properties as fields, relationships as [[links]]; "
                     + "\"azgaar\" reads an Azgaar's Fantasy Map Generator full JSON export (states become factions with territory, borders and diplomacy; provinces and cities become places with map positions; cultures, religions and routes become lore); "
                     + "\"storycraftr\" reads what StoryCraftr wrote in a book folder's worldbuilding/ and outline/. New names are added and known ones get the imported fields; locked entries stay. CoDev asks the user first. Use it when the user asks to bring their notes, map or StoryCraftr book into a project; to add one entry by hand use studio_save instead.",
                 inputSchema: { type: "object", properties: {
                     project: { type: "string", description: "The project's name. Leave it out for the one open in Story Studio." },
-                    source: { type: "string", enum: ["obsidian", "azgaar", "storycraftr"], description: "Which tool the files come from." },
+                    source: { type: "string", enum: ["chronicler", "azgaar", "storycraftr"], description: "Which tool the files come from." },
                     path: { type: "string", description: "The vault or book folder, or the map .json file, inside the project folder (e.g. lore, maps/continuum.json)." },
                     max_cities: { type: "number", description: "Azgaar only: most cities to bring in (default 60; every capital comes in)." }
                 }, required: ["source", "path"] },
@@ -938,14 +938,14 @@ ${entry.tags && entry.tags.length ? `<h2>Tags</h2><p>${esc(entry.tags.join(", ")
                     + "Use it when the user wants the characters or dialogue in their game. It needs a connected project folder; don't use it just to show the user the bible (use studio_read).",
                 inputSchema: { type: "object", properties: {
                     project: { type: "string", description: "The project's name. Leave it out for the one open in Story Studio." },
-                    format: { type: "string", enum: ["all", "json", "gdscript", "dialogue", "scenes", "markdown", "obsidian", "storycraftr"], description: "Default all. obsidian writes an Obsidian vault (one note per entry, default folder lore); storycraftr writes a StoryCraftr book folder's worldbuilding and outline files (default folder storycraftr)." },
+                    format: { type: "string", enum: ["all", "json", "gdscript", "dialogue", "scenes", "markdown", "chronicler", "storycraftr"], description: "Default all. chronicler writes a Chronicler vault (one page per entry with an infobox, default folder lore); storycraftr writes a StoryCraftr book folder's worldbuilding and outline files (default folder storycraftr)." },
                     folder: { type: "string", description: "Folder inside the project. Default game_data." }
                 } },
                 run: async args => {
                     const p = pick(args.project);
                     if (!p) return noProject();
                     const B = loreBridges(deps);
-                    const lore = { obsidian: ["toObsidianVault", "lore"], storycraftr: ["toStoryCraftr", "storycraftr"] }[args.format];
+                    const lore = { chronicler: ["toChroniclerVault", "lore"], storycraftr: ["toStoryCraftr", "storycraftr"] }[args.format];
                     if (lore && !B) return "The world tools aren't loaded here.";
                     const files = lore ? B[lore[0]](p, args.folder == null ? lore[1] : args.folder) : exportFiles(p, args.format || "all", args.folder == null ? "game_data" : args.folder);
                     if (lore && deps.writeFiles) return `Exported "${p.name}":\n${await deps.writeFiles(files)}`;
@@ -2067,8 +2067,8 @@ ${entry.tags && entry.tags.length ? `<h2>Tags</h2><p>${esc(entry.tags.join(", ")
                 checker);
         }
 
-        // 🧭 The free tools writers already use, joined to this bible: an Obsidian vault
-        // (one note per entry, relationships as [[links]]), an Azgaar's Fantasy Map
+        // 🧭 The free tools writers already use, joined to this bible: a Chronicler vault
+        // (one page per entry, short fields in its infobox, relationships as [[links]]), an Azgaar's Fantasy Map
         // Generator map (states, borders, cities, cultures) and a StoryCraftr book folder.
         function worldView(p) {
             const B = loreBridges(deps);
@@ -2103,20 +2103,20 @@ ${entry.tags && entry.tags.length ? `<h2>Tags</h2><p>${esc(entry.tags.join(", ")
                 say(msg, `Saved ${names.length} files.`);
             }
 
-            // Obsidian
+            // Chronicler
             const vaultFolder = el("input", { type: "text", value: "lore", "aria-label": "Vault folder in your project" });
-            const obsidian = el("div", { class: "gs-tool" },
-                el("h4", { text: "🟣 Obsidian vault (your universe bible)" }),
-                el("div", { class: "gs-note" }, "One Markdown note per character, faction, place and event, with relationships as [[links]] so Obsidian's graph shows the web. Edit it in ", link("https://obsidian.md", "Obsidian"), " (free) or any notes app, then import it back. Notes you write yourself come in too: the folder (Characters, Factions, Places…), a kind: property or a #tag says what each one is, and ## headings become fields. Saved into lore/ in your project, the desktop art tools read it too, so skins match each character's look."),
+            const chronicler = el("div", { class: "gs-tool" },
+                el("h4", { text: "📜 Chronicler vault (your universe bible)" }),
+                el("div", { class: "gs-note" }, "One page per character, faction, place and event, with its short facts in the page's infobox and relationships as [[links]]. Open the folder as a vault in ", link("https://chronicler.pro", "Chronicler"), " (a free, offline worldbuilding wiki), edit it there, then import it back. Pages you write yourself come in too: the folder (Characters, Factions, Places…), the subtitle or a tag says what each one is, infobox properties and ## headings become fields. Saved into lore/ in your project, the desktop art tools read it too, so skins match each character's look."),
                 canFolder ? el("div", { class: "gs-row" }, el("label", {}, "Folder in your project", vaultFolder)) : null,
                 el("div", { class: "gs-row" },
-                    el("button", { class: "gs-btn primary", type: "button", text: canFolder ? "📁 Save vault into my project" : "⬇ Download vault (.zip)", onclick: () => saveFiles(B.toObsidianVault(p, canFolder ? vaultFolder.value : ""), canFolder ? vaultFolder.value : null, `${slug(p.name)}_obsidian_vault.zip`) }),
-                    canFolder ? el("button", { class: "gs-btn", type: "button", text: "⬇ Download (.zip)", onclick: () => saveFiles(B.toObsidianVault(p, ""), null, `${slug(p.name)}_obsidian_vault.zip`) }) : null,
-                    el("button", { class: "gs-btn", type: "button", text: "⬆ Import a vault", title: "Pick your vault folder (or its .md files)", onclick: async () => {
+                    el("button", { class: "gs-btn primary", type: "button", text: canFolder ? "📁 Save vault into my project" : "⬇ Download vault (.zip)", onclick: () => saveFiles(B.toChroniclerVault(p, canFolder ? vaultFolder.value : ""), canFolder ? vaultFolder.value : null, `${slug(p.name)}_chronicler_vault.zip`) }),
+                    canFolder ? el("button", { class: "gs-btn", type: "button", text: "⬇ Download (.zip)", onclick: () => saveFiles(B.toChroniclerVault(p, ""), null, `${slug(p.name)}_chronicler_vault.zip`) }) : null,
+                    el("button", { class: "gs-btn", type: "button", text: "⬆ Import a vault", title: "Pick your Chronicler vault folder (or its .md files)", onclick: async () => {
                         const files = deps.pickFiles ? await deps.pickFiles({ directory: true, accept: ".md,text/markdown" }) : null;
                         if (!files || !files.length) return;
                         const vault = B.parseVault(files);
-                        await bringIn("vault", vault.entries, vault.skipped ? ` (${vault.skipped} files that aren't notes were skipped)` : "");
+                        await bringIn("vault", vault.entries, vault.skipped ? ` (${vault.skipped} files that aren't pages were skipped)` : "");
                     } })));
 
             // Azgaar
@@ -2148,8 +2148,8 @@ ${entry.tags && entry.tags.length ? `<h2>Tags</h2><p>${esc(entry.tags.join(", ")
                     } })));
 
             return el("div", { class: "gs-form" },
-                el("div", { class: "gs-note", text: `Join ${p.name}'s story bible to free tools you already use. Everything stays on your device. Agents can do it too: "import my Obsidian vault from lore", "import the Azgaar map maps/continuum.json".` }),
-                msg, obsidian, azgaar, storycraftr,
+                el("div", { class: "gs-note", text: `Join ${p.name}'s story bible to free tools you already use. Everything stays on your device. Agents can do it too: "import my Chronicler vault from lore", "import the Azgaar map maps/continuum.json".` }),
+                msg, chronicler, azgaar, storycraftr,
                 canFolder ? null : el("div", { class: "gs-note", text: "Connect your game's folder (📁 Project Files) to save straight into it instead of downloading." }));
         }
 

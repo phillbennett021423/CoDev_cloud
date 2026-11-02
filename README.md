@@ -87,10 +87,10 @@ The **🎭 Story Studio** tab (on the phone, the **Story** tab) is for writing a
 - **📦 Export to your game:** writes `story_bible.json`, `game_data.gd` (GDScript constants such as `CHARACTERS`, `DIALOGUE` and `SCENES`, plus `dialogue_lines()` and `scene_beats()`), one JSON file per dialogue in `dialogue/`, one cutscene JSON per scene in `scenes/`, and `story_bible.md`. Every line has an `id` and the `next` line's id, so the game can play it as a cutscene or walk it as a dialogue tree. With a project folder connected, they save straight into it (`game_data/` by default). Otherwise they download, or on Android they go to the share sheet (Drive, Files, email).
 
 - **🧭 World tools:** join the bible to free tools you may already write in. Everything stays on your device.
-  - **Obsidian:** save the bible as an Obsidian vault (one note per character, faction, place and event, with relationships as `[[links]]`, so Obsidian's graph shows the web), edit it in [Obsidian](https://obsidian.md) or any notes app, and import it back. Notes you write yourself come in too: the folder (Characters, Factions, Places…), a `kind:` property or a `#tag` says what each note is, `## headings` become fields, and links under `## Relationships` (like `- Enemy: [[Null]]`) join the web. Saved into `lore/`, the desktop art tools read it as well.
+  - **Chronicler:** save the bible as a [Chronicler](https://chronicler.pro) vault (Chronicler is a free, offline worldbuilding wiki). Each character, faction, place and event gets a page: its short facts sit in the page's infobox, longer ones are sections, and relationships are `[[links]]`. Open the folder as a vault in Chronicler, edit it there, and import it back. Pages you write yourself come in too: the folder (Characters, Factions, Places…), the page's `subtitle` or a tag says what each page is, infobox properties and `## headings` become fields, and links under `## Relationships` (like `- Enemy: [[Null]]`) join the web. Chronicler's `{{insert: …}}` blocks and `||spoilers||` are read as plain text. Saved into `lore/`, the desktop art tools read it as well.
   - **Azgaar's Fantasy Map Generator:** make a map at [azgaar.github.io/Fantasy-Map-Generator](https://azgaar.github.io/Fantasy-Map-Generator/), then Menu › Export › Export to JSON › Full, and import that file. Each state becomes a faction (territory, provinces, borders, wars, and its ally, enemy, rival and vassal ties), provinces and cities become places with their map positions, cultures and religions become lore, and the roads and sea routes between cities become a routes entry. Every capital comes in, plus the largest cities up to the number you pick (60 by default).
   - **StoryCraftr:** writes the bible into a [StoryCraftr](https://github.com/raestrada/storycraftr) book folder (`worldbuilding/geography.md`, `history.md`, `culture.md`, `magic_system.md`, `technology.md`, `outline/character_summary.md`, `plot_points.md`). StoryCraftr reads every Markdown file in the folder, so its outline, worldbuilding and chat commands stay on canon, with your own OpenRouter key or a local Ollama model. What it writes imports back as lore.
-  - Importing adds new names and gives existing entries the imported fields; everything else on them stays, and locked entries aren't touched. Agents can do all of it with `studio_import` ("import my Obsidian vault from lore", "import the Azgaar map maps/continuum.json") and `studio_export` format `obsidian` or `storycraftr`.
+  - Importing adds new names and gives existing entries the imported fields; everything else on them stays, and locked entries aren't touched. Agents can do all of it with `studio_import` ("import my Chronicler vault from lore", "import the Azgaar map maps/continuum.json") and `studio_export` format `chronicler` or `storycraftr`.
   - **Agents and Azgaar maps.** In any chat about maps or worlds, agents also get `map_read` and `map_generate`. `map_read` answers from a map's full JSON export in the project folder: an overview, one state (capital, people, borders, allies, enemies, wars, provinces), city, province, culture or religion, the largest cities by state, markers, and the distance and towns between two cities over the map's roads and sea routes ("how far is Tessel from Hollow Gate by road?"). `map_generate` makes a new map with Azgaar's Fantasy Map Generator from a seed (a number or a word; the same seed always makes the same map), runs the generator in a hidden Chromium on your computer, saves the export to `maps/` and describes it, after asking you. It works in the Windows app and with `start-codev.bat`/`npm start` (it needs internet; `CODEV_AZGAAR_URL` points it at your own copy of the generator). On the phone, make the map on the website and put the export in the project folder.
 
 Every one of these is optional; use only what helps:
@@ -207,20 +207,22 @@ never your password, asks before every save, and never changes or deletes existi
 files. With MEGAsync installed, its synced folder (`C:\Users\<you>\MEGA`) also works
 as a screenshots folder. Details in [docs/mega-cloud.md](docs/mega-cloud.md).
 
-## Notes and tables: Obsidian, CSV and JSON (replace Google Docs and Sheets)
+## CoDev Notes: notes and tables (replace Google Docs and Sheets)
 
-Agents read and write an [Obsidian](https://obsidian.md) vault, a folder of Markdown
-notes, in place of Google Docs, and CSV, TSV or JSON tables in the same folder in
-place of Google Sheets. `notes_search` finds notes by text or `#tag`, `notes_read`
+Write notes and data tables in CoDev itself, in the **📝 Notes** tab, in place of
+Google Docs and Sheets. Notes are Markdown, with `[[links]]` to other notes (click one
+to open it, or to make it if it isn't there yet), `#tags` and a "Linked from" list;
+tables are CSV, TSV or JSON files shown as a grid. Agents use the same notes. `notes_search` finds notes by text or `#tag`, `notes_read`
 reads one with its `[[links]]` and backlinks, and `notes_write` creates a note, adds
 to it (at the end or under a heading), changes one piece of text or rewrites it.
 `table_read` does exact math over every row (filters, sums, averages, group totals),
 and `table_write` creates a table, adds, changes or deletes rows, or adds a column,
-keeping CSV as CSV and JSON as JSON. `notes_status` says where the vault is. Keep the
-vault in a MEGA folder (it works on the phone too, and MEGAsync puts it on your
-computer for Obsidian) or in the connected project folder, and pick it in **Settings >
-Notes & tables**. Editing is off until you turn it on there, and CoDev asks before
-every change. Details in [docs/notes-and-tables.md](docs/notes-and-tables.md).
+keeping CSV as CSV and JSON as JSON. `notes_status` says where the notes are. They
+stay in CoDev on your device with nothing to set up; to have the same notes on your
+computer and phone, keep them in a MEGA folder instead (or in the connected project
+folder), in **Settings > Notes & tables**. Agent editing is off until you turn it on
+there, and CoDev asks before every change an agent makes. Story lore (characters,
+factions, places) goes in a Chronicler vault instead: see Story Studio's 🧭 World tools. Details in [docs/notes-and-tables.md](docs/notes-and-tables.md).
 
 ## Memory, web reading and self-checks
 
@@ -244,6 +246,7 @@ Every code or file task is treated as a task on your project. You don't type fil
 - **Workspace auto-injection.** Each agent request carries the project's file tree, the file open in the editor, the files agents just changed and the files that best match the task. The amount is capped per provider (about 14k characters on Groq, whose free tier has small per-minute token limits, 30k on OpenRouter, 80k on Anthropic); agents read anything else with their tools.
 - **Autonomous execution.** Agents search the project, edit files and, where a command tool exists, run the code, tests or build themselves. Tools are always on.
 - **Locked developer roles.** Each agent has a role (Agent Configuration → Developer Role): **Architect** plans and implements, **Swarm** builds on the team's changes, **Self-Healing** re-reads changed files, runs what can be run and fixes failures. A role's prompt always applies; an agent's own instructions only add to it. In Group Swarm the agents run Architect → Swarm → Self-Healing, each seeing what the others changed. With 🛡️ Self-Healing on, a solo or background task that changed files gets a verify-and-fix pass afterwards.
+- **🚀 Coding autopilot** (Settings, on by default). On a coding task the agents code it all the way through without stopping you: no approval cards for commands, file writes or tools, and an agent that ends its turn with a question ("Should I…?", "Want me to…?") is told to make the reasonable choice itself and keep going (up to 3 times per agent). It gets up to 150 tool rounds instead of 40, is told to run the project's tests, build or linter and fix every failure before it finishes (trying a different approach after 3 failed fixes), and every coding task gets a verify-and-fix pass afterwards even with 🛡️ Self-Healing off. Commands that could wreck the machine or the repo are refused outright instead of asked about: wiping `/` or the home folder, `mkfs`/`format`/`diskpart`, shutting down, force-pushing or deleting a remote branch, and piping a download into a shell. Browser sign-ins and anything that spends money or sends something outside CoDev (MEGA writes, email, Q task credits) still ask. Turn it off to get the approval cards back.
 
 **Files with keys stay hidden.** Agents can't list, search, read or write hidden files and folders (`.env`, `.git`, anything whose name starts with a dot), env files like `production.env`, key and certificate files (`.pem`, `.key`, `.pfx`, `.p12`, `.keystore`, `.jks`) or `secrets.*` and `credentials.*`, whichever folder tools they use: the sandbox, the Windows app's, the Python helper's or the page's own. Commands an agent runs directly on your computer (outside the sandbox) aren't filtered, so leave those off if that matters to you.
 
@@ -342,7 +345,7 @@ Point CoDev at them in `.env` (see `.env.example`): `CODEV_COMFYUI_URL`, `CODEV_
 - `art_skin_pipeline` runs the whole chain from one brief ("three tier-3 epic variants of Relay's A.E.G.I.S. armour"): concepts, a PBR material per variant, the mesh cleaned to budget and UV-unwrapped, the material put on it (`art_mesh` op "texture"), weathering stages, rigging onto the base character, and the Godot install.
 - Folders, slots and tiers are in the `godot` section of `codev-studio.json`.
 
-**On canon.** The art tools read the universe bible: the Obsidian vault in `lore/` and Story Studio's `game_data/story_bible.json` (set other places in the `lore` section of `codev-studio.json`). When a brief names a character, item, place or faction, or an alias from a note's `aliases:`, `art_generate` and `art_skin_pipeline` add how it looks (its Appearance or Description) to the prompt and say so in the reply, so a skin for Relay starts from Relay's canon look. Pass `lore: false` to skip it. `art_lore` lets an agent, Claude Code or Cursor read an entry first.
+**On canon.** The art tools read the universe bible: the Chronicler vault in `lore/` and Story Studio's `game_data/story_bible.json` (set other places in the `lore` section of `codev-studio.json`). When a brief names a character, item, place or faction, or an alias from a note's `aliases:`, `art_generate` and `art_skin_pipeline` add how it looks (its Appearance or Description) to the prompt and say so in the reply, so a skin for Relay starts from Relay's canon look. Pass `lore: false` to skip it. `art_lore` lets an agent, Claude Code or Cursor read an entry first.
 
 **Layer 4: marketing.**
 - `art_playable_ad` builds an offline, single-file MRAID playable (reveal, equip, runner or spin template) ending on a store card.

@@ -1,16 +1,17 @@
-// CoDev's notes and data tables: an Obsidian vault (Markdown notes) in place of
-// Google Docs, and CSV, TSV and JSON files in place of Google Sheets, for agents,
-// plus the Settings panel that picks where they live.
-//
-// The vault is a folder of plain files, the same folder Obsidian opens, so the user
-// edits the notes in Obsidian (free, obsidian.md) and the tables in any spreadsheet
-// app or text editor. It lives in one of two places:
-//  - "mega": a folder in the user's MEGA cloud drive (mega-cloud.js), which works on
-//    the computer and on the phone. With MEGAsync, the same folder is on the computer
-//    for Obsidian to open.
+// CoDev Notes: the user's notes (Markdown, with [[links]] and #tags) in place of Google
+// Docs, and data tables (CSV, TSV and JSON files) in place of Google Sheets, kept and
+// edited in CoDev itself, plus the 📝 Notes view and the Settings panel that picks
+// where they live:
+//  - "codev": in CoDev on this device (IndexedDB). Nothing to set up.
+//  - "mega": a folder in the user's MEGA cloud drive (mega-cloud.js), so the same notes
+//    are in CoDev on the computer and the phone. With MEGAsync the folder is also on the
+//    computer as plain files.
 //  - "project": a folder inside the project folder connected in CoDev (computer only).
-// Agents search, read, create and edit notes (notes_*) and read, query, create and edit
-// tables (table_*). Every change asks the user first, and only when "allow edits" is on.
+// The user writes in the 📝 Notes view. Agents search, read, create and edit notes
+// (notes_*) and read, query, create and edit tables (table_*); every change an agent
+// makes asks the user first, and only when "allow edits" is on.
+// Worldbuilding lore (characters, factions, places) lives in a Chronicler vault instead:
+// see lore-bridges.js and Story Studio.
 //
 // The same file runs in the page and in Node (tests).
 (function (root, factory) {
@@ -21,7 +22,8 @@
 
     const GUIDE_URL = "https://github.com/phillbennett021423/codev_cloud/blob/main/docs/notes-and-tables.md";
     const STORE = { location: "codev_vault_location", folder: "codev_vault_folder", allowEdit: "codev_vault_allow_edit" };
-    const DEFAULT_FOLDER = { mega: "/Obsidian", project: "notes" };
+    const DEFAULT_FOLDER = { codev: "", mega: "/CoDev Notes", project: "notes" };
+    const LOCATIONS = ["codev", "mega", "project"];
     const NOTES_TOOL_NAMES = ["notes_status", "notes_search", "notes_read", "notes_write", "table_read", "table_write"];
     const READ_CHUNK = 12000;
     const MAX_SCAN = 400;          // notes read for a text search, newest first
@@ -38,7 +40,7 @@
         return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
     }
 
-    // A path inside the vault: forward slashes, no "..", no hidden parts.
+    // A path inside the notes folder: forward slashes, no "..", no hidden parts.
     function cleanPath(raw) {
         const parts = String(raw || "").trim().replace(/\\/g, "/").split("/").filter(p => p && p !== ".");
         if (!parts.length || parts.some(p => p === ".." || p.startsWith("."))) return null;
@@ -52,7 +54,7 @@
         return m ? { yaml: m[1], body: text.slice(m[0].length) } : { yaml: "", body: String(text || "") };
     }
 
-    // Enough YAML for Obsidian properties: "key: value", "key: [a, b]" and "- item" lists.
+    // Enough YAML for note properties: "key: value", "key: [a, b]" and "- item" lists.
     function readProperties(yaml) {
         const props = {};
         let listKey = null;
@@ -227,12 +229,62 @@
         });
     }
 
-    // ---- Where the vault lives -----------------------------------------------
+    // ---- Where the notes live -----------------------------------------------
 
-    // A vault in MEGA, through a mega-cloud.js transport.
-    function megaStore(transport, folder) {
+    // CoDev's own notes on this device. kv = { list() -> [{ path, modified, size }],
+    // get(path) -> text|null, set(path, text), remove(path) }: indexedDbKv in the page,
+    // memoryKv in tests.
+    function deviceStore(kv) {
+        return {
+            kind: "codev", label: "CoDev notes on this device",
+            async tree() { return (await kv.list()).filter(f => cleanPath(f.path)); },
+            async fetch(path) { const text = await kv.get(path); return text === undefined ? null : text; },
+            async put(path, content) { await kv.set(path, content); },
+            async remove(path) { await kv.remove(path); }
+        };
+    }
+
+    function memoryKv() {
+        const data = new Map();
+        return {
+            data,
+            async list() { return [...data].map(([path, v]) => ({ path, modified: v.modified, size: v.text.length })); },
+            async get(path) { return data.has(path) ? data.get(path).text : null; },
+            async set(path, text) { data.set(path, { text: String(text), modified: new Date().toISOString() }); },
+            async remove(path) { data.delete(path); }
+        };
+    }
+
+    // IndexedDB in the page: one record per file, { path, text, modified }.
+    function indexedDbKv(name = "codev-notes") {
+        let opening = null;
+        const db = () => opening || (opening = new Promise((resolve, reject) => {
+            const req = indexedDB.open(name, 1);
+            req.onupgradeneeded = () => req.result.createObjectStore("files", { keyPath: "path" });
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error || new Error("This browser can't keep notes (IndexedDB is off)."));
+        }));
+        const run = async (mode, fn) => {
+            const tx = (await db()).transaction("files", mode);
+            const req = fn(tx.objectStore("files"));
+            return new Promise((resolve, reject) => {
+                tx.oncomplete = () => resolve(req && req.result);
+                tx.onerror = () => reject(tx.error);
+            });
+        };
+        return {
+            async list() { return ((await run("readonly", st => st.getAll())) || []).map(r => ({ path: r.path, modified: r.modified, size: String(r.text || "").length })); },
+            async get(path) { const r = await run("readonly", st => st.get(path)); return r ? r.text : null; },
+            async set(path, text) { await run("readwrite", st => st.put({ path, text: String(text), modified: new Date().toISOString() })); },
+            async remove(path) { await run("readwrite", st => st.delete(path)); }
+        };
+    }
+
+    // Notes in MEGA, through a mega-cloud.js transport. byUser: saves the user makes in
+    // the 📝 Notes view, which don't need the "let agents save" switch.
+    function megaStore(transport, folder, { byUser = false } = {}) {
         const call = async req => {
-            const reply = await transport.handle({ ...req, folder });
+            const reply = await transport.handle({ ...req, folder, ...(byUser && req.op === "put" ? { byUser: true } : {}) });
             if (reply.error) { const err = new Error(reply.error); err.missing = reply.missing; throw err; }
             return reply;
         };
@@ -244,7 +296,7 @@
         };
     }
 
-    // A vault inside the connected project folder: project = { files() -> { path: text }, read(path) -> text|null, write(path, text) }.
+    // Notes inside the connected project folder: project = { files() -> { path: text }, read(path) -> text|null, write(path, text) }.
     function projectStore(project, folder) {
         const prefix = cleanPath(folder) ? `${cleanPath(folder)}/` : "";
         return {
@@ -272,7 +324,7 @@
 
         async function store() {
             const s = await getStore();
-            if (!s || s.error) throw new Error((s && s.error) || "No notes vault is set up. The user picks one in Settings > Notes & tables.");
+            if (!s || s.error) throw new Error((s && s.error) || "CoDev Notes isn't set up. The user picks where notes live in Settings > Notes & tables.");
             return s;
         }
 
@@ -285,7 +337,7 @@
         }
 
         // A note or table by path ("Projects/Ideas.md", "Projects/Ideas") or, for notes,
-        // by its name alone, the way Obsidian's [[links]] find notes.
+        // by its name alone, the way [[links]] find notes.
         function find(files, ref, kind) {
             const want = cleanPath(ref);
             if (!want) return null;
@@ -515,7 +567,7 @@
             try { s = await store(); } catch (err) { return `${err.message} Guide: ${GUIDE_URL}`; }
             const files = await s.tree();
             const notes = files.filter(f => isNote(f.path)).length, tables = files.filter(f => isTable(f.path)).length;
-            return `The notes vault is the ${s.label}: ${notes} notes and ${tables} tables (CSV, TSV, JSON). Editing is ${canEdit() ? "on (CoDev asks before every change)" : "off; the user can turn it on in Settings > Notes & tables"}. The user opens the same folder in Obsidian to read and edit the notes.`;
+            return `CoDev Notes is in the ${s.label}: ${notes} notes and ${tables} tables (CSV, TSV, JSON). Agent editing is ${canEdit() ? "on (CoDev asks before every change)" : "off; the user can turn it on in Settings > Notes & tables"}. The user reads and edits them in CoDev's 📝 Notes tab.`;
         }
 
         const filterSchema = { type: "array", description: "Optional: rows must match all of these.", items: { type: "object", properties: {
@@ -523,30 +575,30 @@
 
         const TOOLS = {
             notes_status: {
-                description: "Check where the user's notes vault is (an Obsidian vault of Markdown notes, plus CSV/JSON data tables; this replaces Google Docs and Sheets), how many notes and tables it has, and whether editing is on. Call it when the user asks about their notes setup or a notes tool they need isn't listed. Not needed when the notes tool you want is already in your tool list: just use it.",
+                description: "Check where the user's CoDev Notes live (Markdown notes plus CSV/JSON data tables, kept in CoDev; they replace Google Docs and Sheets), how many notes and tables there are, and whether agent editing is on. Call it when the user asks about their notes setup or a notes tool they need isn't listed. Not needed when the notes tool you want is already in your tool list: just use it.",
                 inputSchema: { type: "object", properties: {} }, run: statusReport
             },
             notes_search: {
-                description: "Search the user's Obsidian notes (Markdown) by words in the name or text, or by #tag, or list the newest notes. kind \"tables\" lists the CSV, TSV and JSON data tables instead. Read-only. Use it when the user mentions their notes, a tag or a table without giving its exact path, then notes_read or table_read.",
+                description: "Search the user's CoDev Notes (Markdown) by words in the name or text, or by #tag, or list the newest notes. kind \"tables\" lists the CSV, TSV and JSON data tables instead. Read-only. Use it when the user mentions their notes, a tag or a table without giving its exact path, then notes_read or table_read.",
                 inputSchema: { type: "object", properties: {
                     query: { type: "string", description: "Words that must all be in the note (name or text). Leave empty to list notes." },
                     tag: { type: "string", description: "Optional: only notes with this tag (with or without #)." },
-                    folder: { type: "string", description: "Optional: a folder inside the vault, like Projects." },
+                    folder: { type: "string", description: "Optional: a folder inside the notes, like Projects." },
                     kind: { type: "string", enum: ["notes", "tables"], description: "Default notes." },
                     max: { type: "integer", description: "How many results (1-50, default 15)." }
                 } }, run: notesSearch
             },
             notes_read: {
-                description: "Read one Obsidian note by its path (Projects/Ideas.md) or name (Ideas), with its tags, the notes it [[links]] to and the notes that link to it. Read-only. Use it when the user asks about a note; for a CSV or JSON table use table_read instead.",
+                description: "Read one of the user's notes by its path (Projects/Ideas.md) or name (Ideas), with its tags, the notes it [[links]] to and the notes that link to it. Read-only. Use it when the user asks about a note; for a CSV or JSON table use table_read instead.",
                 inputSchema: { type: "object", properties: {
                     note: { type: "string", description: "The note's path or name." },
                     start: { type: "integer", description: "Optional: the character to start from, for the next part of a long note." }
                 }, required: ["note"] }, run: notesRead
             },
             notes_write: {
-                description: "Create or edit an Obsidian note (Markdown, with [[links]], #tags and --- properties --- if useful). mode create makes a new note; append adds text at the end or under_heading; edit swaps one exact piece of text (find -> replace_with); replace rewrites the whole note. CoDev shows the user the change and saves only if they approve. Use it when the user asks to make or change a note; read the note with notes_read before editing it. For a data table use table_write instead.",
+                description: "Create or edit one of the user's notes (Markdown, with [[links]], #tags and --- properties --- if useful). mode create makes a new note; append adds text at the end or under_heading; edit swaps one exact piece of text (find -> replace_with); replace rewrites the whole note. CoDev shows the user the change and saves only if they approve. Use it when the user asks to make or change a note; read the note with notes_read before editing it. For a data table use table_write instead.",
                 inputSchema: { type: "object", properties: {
-                    note: { type: "string", description: "The note's path inside the vault, like Projects/Ideas.md (.md is added if missing)." },
+                    note: { type: "string", description: "The note's path inside the notes, like Projects/Ideas.md (.md is added if missing)." },
                     mode: { type: "string", enum: ["create", "append", "edit", "replace"], description: "Default create." },
                     content: { type: "string", description: "create/replace: the full Markdown. append: the text to add." },
                     under_heading: { type: "string", description: "append only: add at the end of this heading's section." },
@@ -555,7 +607,7 @@
                 }, required: ["note"] }, run: notesWrite
             },
             table_read: {
-                description: "Read or query a CSV, TSV or JSON data table from the notes vault (these replace Google Sheets): action rows lists rows (filters, sort, columns, offset, limit); stats gives count, sum, average, median, min and max; group totals a column per value of another; search finds rows with text; columns describes every column. The math runs over every row. Use it for any number from a table; don't add up rows by eye. For a spreadsheet attached in the chat use query_table instead.",
+                description: "Read or query a CSV, TSV or JSON data table from the user's CoDev Notes (these replace Google Sheets): action rows lists rows (filters, sort, columns, offset, limit); stats gives count, sum, average, median, min and max; group totals a column per value of another; search finds rows with text; columns describes every column. The math runs over every row. Use it for any number from a table; don't add up rows by eye. For a spreadsheet attached in the chat use query_table instead.",
                 inputSchema: { type: "object", properties: {
                     table: { type: "string", description: "The table's path, like Data/players.csv." },
                     action: { type: "string", enum: ["rows", "stats", "group", "search", "columns"], description: "Default rows." },
@@ -568,7 +620,7 @@
                 }, required: ["table"] }, run: tableRead
             },
             table_write: {
-                description: "Create or edit a CSV, TSV or JSON data table in the notes vault. mode create or replace writes columns and rows; append_rows adds rows; update_rows sets values on the rows matching where; delete_rows removes them; add_column adds a column. Rows are lists in column order or objects by column name. The file keeps its format. CoDev shows the user the change and saves only if they approve. Use it when the user asks to make or change a table in their vault; read it with table_read first. To give them an Excel file instead use create_spreadsheet.",
+                description: "Create or edit a CSV, TSV or JSON data table in the user's CoDev Notes. mode create or replace writes columns and rows; append_rows adds rows; update_rows sets values on the rows matching where; delete_rows removes them; add_column adds a column. Rows are lists in column order or objects by column name. The file keeps its format. CoDev shows the user the change and saves only if they approve. Use it when the user asks to make or change a table in their notes; read it with table_read first. To give them an Excel file instead use create_spreadsheet.",
                 inputSchema: { type: "object", properties: {
                     table: { type: "string", description: "The table's path, like Data/players.csv (.csv is added if there's no .csv, .tsv or .json)." },
                     mode: { type: "string", enum: ["create", "replace", "append_rows", "update_rows", "delete_rows", "add_column"], description: "Default create." },
@@ -595,7 +647,7 @@
         function describe(name, args) {
             args = args || {};
             switch (name) {
-                case "notes_status": return "📝 Checking the notes vault";
+                case "notes_status": return "📝 Checking CoDev Notes";
                 case "notes_search": return `📝 Searching ${args.kind === "tables" ? "tables" : "notes"}${args.query ? `: ${args.query}` : args.tag ? `: #${String(args.tag).replace(/^#/, "")}` : ""}`;
                 case "notes_read": return `📝 Reading the note ${args.note || ""}`.trim();
                 case "notes_write": return `✏️ ${{ create: "Creating", append: "Adding to", edit: "Editing", replace: "Rewriting" }[args.mode] || "Creating"} the note ${args.note || ""} (asks you first)`;
@@ -610,34 +662,46 @@
 
     // ---- Settings panel ------------------------------------------------------
 
+    const LOCATION_TEXT = {
+        codev: "In CoDev on this device (nothing to set up)",
+        mega: "In a MEGA folder, so CoDev on my computer and phone share them",
+        project: "In a folder inside the connected project folder"
+    };
+
     // Fills Settings > Notes & tables. hasProject: whether a project folder can be used here.
     function mountSettings(el, { storage, tools, hasProject, onChange = () => {} }) {
         el.innerHTML = `
-            <summary>📝 Notes &amp; tables (Obsidian, CSV, JSON)</summary>
-            <div style="font-size: 0.8rem; color: var(--text-muted);">Agents read and edit an Obsidian vault of Markdown notes and CSV/JSON tables, in place of Google Docs and Sheets. Open the same folder in Obsidian (free at obsidian.md). <a href="${GUIDE_URL}" target="_blank" rel="noopener noreferrer" style="color: var(--accent);">How it works</a></div>
+            <summary>📝 Notes &amp; tables (CoDev Notes, CSV, JSON)</summary>
+            <div style="font-size: 0.8rem; color: var(--text-muted);">Write notes and data tables in CoDev's 📝 Notes tab, in place of Google Docs and Sheets, and let agents search, read and edit them. Characters, factions and places for a story go in a Chronicler vault instead (🎭 Story Studio › 🧭 World tools). <a href="${GUIDE_URL}" target="_blank" rel="noopener noreferrer" style="color: var(--accent);">How it works</a></div>
             <div class="form-group">
-                <label>Where the vault is</label>
+                <label>Where CoDev keeps them</label>
                 <select data-n="location">
-                    <option value="mega">A folder in my MEGA cloud drive (works on the phone too)</option>
-                    ${hasProject ? `<option value="project">A folder inside the connected project folder</option>` : ""}
+                    ${LOCATIONS.filter(l => l !== "project" || hasProject).map(l => `<option value="${l}">${LOCATION_TEXT[l]}</option>`).join("")}
                 </select>
-                <label>Folder</label>
-                <input type="text" data-n="folder" autocomplete="off" style="font-family: monospace;">
+                <div data-n="folderRow">
+                    <label>Folder</label>
+                    <input type="text" data-n="folder" autocomplete="off" style="font-family: monospace;">
+                </div>
             </div>
             <label class="checkbox-group"><input type="checkbox" data-n="allowEdit"> Let agents create and edit notes and tables (CoDev asks me every time)</label>
             <div data-n="status" style="font-size: 0.85rem; white-space: pre-line;"></div>`;
         const $ = name => el.querySelector(`[data-n="${name}"]`);
-        const location = () => (storage.getItem(STORE.location) === "project" && hasProject ? "project" : "mega");
-        $("location").value = location();
-        $("folder").value = storage.getItem(STORE.folder) || DEFAULT_FOLDER[location()];
-        $("folder").placeholder = DEFAULT_FOLDER[location()];
-        $("allowEdit").checked = storage.getItem(STORE.allowEdit) === "1";
+        const show = () => {
+            const loc = $("location").value;
+            $("folderRow").style.display = loc === "codev" ? "none" : "";
+            $("folder").placeholder = DEFAULT_FOLDER[loc];
+        };
+        const set = settingsFrom(storage, hasProject);
+        $("location").value = set.location;
+        $("folder").value = set.location === "codev" ? "" : set.folder;
+        $("allowEdit").checked = set.allowEdit;
+        show();
         const changed = () => { tools.forget(); onChange(); refresh(); };
         $("location").addEventListener("change", () => {
             storage.setItem(STORE.location, $("location").value);
             $("folder").value = DEFAULT_FOLDER[$("location").value];
-            $("folder").placeholder = DEFAULT_FOLDER[$("location").value];
             storage.setItem(STORE.folder, $("folder").value);
+            show();
             changed();
         });
         $("folder").addEventListener("change", () => { storage.setItem(STORE.folder, $("folder").value.trim()); changed(); });
@@ -650,15 +714,262 @@
         return { refresh };
     }
 
-    // The vault settings from the page's storage.
+    // Where the notes live, from the page's storage. A saved project folder that can't be
+    // used here (the phone) falls back to CoDev's own notes.
     function settingsFrom(storage, hasProject) {
-        const location = storage.getItem(STORE.location) === "project" && hasProject ? "project" : "mega";
-        return { location, folder: storage.getItem(STORE.folder) || DEFAULT_FOLDER[location], allowEdit: storage.getItem(STORE.allowEdit) === "1" };
+        const saved = storage.getItem(STORE.location);
+        const location = LOCATIONS.includes(saved) && (saved !== "project" || hasProject) ? saved : "codev";
+        return { location, folder: location === "codev" ? "" : (storage.getItem(STORE.folder) || DEFAULT_FOLDER[location]), allowEdit: storage.getItem(STORE.allowEdit) === "1" };
+    }
+
+    // ---- The 📝 Notes view ---------------------------------------------------
+
+    const escapeHtml = t => String(t == null ? "" : t).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    // Markdown to HTML for reading a note: headings, lists, bold, italic, code, links,
+    // and [[links]] that open the note they name. Everything is escaped first.
+    function renderNote(text) {
+        const { body } = splitFrontMatter(text);
+        const inline = t => escapeHtml(t)
+            .replace(/`([^`]+)`/g, "<code>$1</code>")
+            .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+            .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
+            .replace(/!?\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g, (_, target, shown) => `<a href="#" class="cn-link" data-note="${target.trim()}">${shown || target.trim()}</a>`)
+            .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+            .replace(/(^|\s)#([\p{L}\p{N}_\/-]+)/gu, '$1<span class="cn-tag">#$2</span>');
+        const out = [];
+        let list = null, code = null;
+        const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+        for (const line of body.split(/\r?\n/)) {
+            if (code !== null) {
+                if (/^```/.test(line)) { out.push(`<pre><code>${escapeHtml(code)}</code></pre>`); code = null; } else code += `${line}\n`;
+                continue;
+            }
+            if (/^```/.test(line)) { closeList(); code = ""; continue; }
+            const h = /^(#{1,6})\s+(.*)$/.exec(line);
+            if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); continue; }
+            const li = /^\s*(?:[-*]|(\d+)\.)\s+(.*)$/.exec(line);
+            if (li) {
+                const kind = li[1] ? "ol" : "ul";
+                if (list !== kind) { closeList(); out.push(`<${kind}>`); list = kind; }
+                out.push(`<li>${inline(li[2].replace(/^\[([ xX])\]\s*/, (_, x) => x.trim() ? "☑ " : "☐ "))}</li>`);
+                continue;
+            }
+            closeList();
+            if (/^---+\s*$/.test(line)) out.push("<hr>");
+            else if (line.startsWith(">")) out.push(`<blockquote>${inline(line.replace(/^>\s?/, ""))}</blockquote>`);
+            else if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+        }
+        if (code !== null) out.push(`<pre><code>${escapeHtml(code)}</code></pre>`);
+        closeList();
+        return out.join("\n");
+    }
+
+    function renderTable(text, path) {
+        const t = parseTable(path, text);
+        if (t.error) return `<p>⚠️ ${escapeHtml(t.error)}</p>`;
+        const rows = t.rows.slice(0, 500);
+        return `<div class="cn-table-wrap"><table class="cn-table"><thead><tr>${t.columns.map(c => `<th>${escapeHtml(c)}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>${t.rows.length > rows.length ? `<p>${t.rows.length - rows.length} more rows.</p>` : ""}`;
+    }
+
+    // el: the view's container. getStore() -> a store or { error }, like the tools'.
+    // confirm(text) -> bool, asked before leaving unsaved changes or deleting a note.
+    function mountNotesView(el, { getStore, onSaved = () => {}, confirm = async () => true }) {
+        const ui = { files: [], open: null, text: "", saved: "", mode: "read", query: "", store: null };
+        el.innerHTML = `
+            <div class="cn-head">
+                <h3>📝 Notes</h3>
+                <span class="cn-where" data-c="where"></span>
+                <span class="cn-spacer"></span>
+                <button type="button" class="btn-secondary" data-c="newNote">＋ Note</button>
+                <button type="button" class="btn-secondary" data-c="newTable">＋ Table</button>
+                <button type="button" class="btn-ghost" data-c="refresh" title="Reload the list">⟳</button>
+            </div>
+            <div class="cn-new" data-c="newRow" hidden>
+                <input type="text" data-c="newName" autocomplete="off" placeholder="Name, like Projects/Ideas">
+                <button type="button" class="btn-primary" data-c="create">Create</button>
+                <button type="button" class="btn-ghost" data-c="cancelNew">Cancel</button>
+            </div>
+            <div class="cn-body">
+                <div class="cn-side">
+                    <input type="search" data-c="search" placeholder="Search notes, or #tag" autocomplete="off">
+                    <div class="cn-list" data-c="list"></div>
+                </div>
+                <div class="cn-main" data-c="main"><div class="cn-empty">Pick a note, or make one with ＋ Note.</div></div>
+            </div>
+            <div class="cn-msg" data-c="msg"></div>`;
+        const $ = n => el.querySelector(`[data-c="${n}"]`);
+        const say = (text, bad) => { $("msg").textContent = text || ""; $("msg").classList.toggle("bad", !!bad); };
+        let newKind = "note";
+
+        async function store() {
+            const s = await getStore();
+            if (!s || s.error) throw new Error((s && s.error) || "CoDev Notes isn't set up. Pick where notes live in ⚙️ Settings > Notes & tables.");
+            return s;
+        }
+
+        async function load() {
+            say("");
+            try {
+                ui.store = await store();
+                $("where").textContent = ui.store.label;
+                ui.files = (await ui.store.tree()).filter(f => isNote(f.path) || isTable(f.path))
+                    .sort((a, b) => String(b.modified || "").localeCompare(String(a.modified || "")) || a.path.localeCompare(b.path));
+            } catch (err) { ui.files = []; ui.store = null; $("where").textContent = ""; say(err.message, true); }
+            await drawList();
+        }
+
+        async function drawList() {
+            const q = ui.query.trim().toLowerCase();
+            let shown = ui.files;
+            if (q.startsWith("#") && ui.store) {
+                const tag = q.slice(1);
+                const hits = [];
+                for (const f of ui.files.filter(x => isNote(x.path)).slice(0, MAX_SCAN)) {
+                    const text = await ui.store.fetch(f.path);
+                    if (text && parseNote(text).tags.some(t => t === tag || t.startsWith(`${tag}/`))) hits.push(f);
+                }
+                shown = hits;
+            } else if (q) {
+                const words = q.split(/\s+/).filter(Boolean);
+                shown = ui.files.filter(f => words.every(w => f.path.toLowerCase().includes(w)));
+            }
+            $("list").innerHTML = shown.length ? shown.map(f => `<button type="button" class="cn-item${ui.open === f.path ? " active" : ""}" data-path="${escapeHtml(f.path)}">${isTable(f.path) ? "📊" : "📝"} ${escapeHtml(f.path.replace(/\.md$/i, ""))}</button>`).join("")
+                : `<div class="cn-empty">${ui.files.length ? "Nothing matches." : "No notes yet."}</div>`;
+        }
+
+        function drawMain() {
+            if (!ui.open) { $("main").innerHTML = `<div class="cn-empty">Pick a note, or make one with ＋ Note.</div>`; return; }
+            const table = isTable(ui.open);
+            const dirty = ui.text !== ui.saved;
+            $("main").innerHTML = `
+                <div class="cn-bar">
+                    <strong class="cn-title">${escapeHtml(ui.open)}</strong>
+                    <span class="cn-spacer"></span>
+                    <button type="button" class="btn-ghost" data-c="mode">${ui.mode === "edit" ? "👁 Read" : "✏️ Edit"}</button>
+                    <button type="button" class="btn-primary" data-c="save" ${dirty ? "" : "disabled"}>💾 Save</button>
+                    ${ui.store && ui.store.remove ? `<button type="button" class="btn-ghost" data-c="delete" title="Delete">🗑</button>` : ""}
+                </div>
+                ${ui.mode === "edit"
+                    ? `<textarea class="cn-editor" data-c="editor" spellcheck="${table ? "false" : "true"}"></textarea>`
+                    : `<div class="cn-read">${table ? renderTable(ui.text, ui.open) : renderNote(ui.text)}</div><div class="cn-backlinks" data-c="backlinks"></div>`}`;
+            if (ui.mode === "edit") {
+                const box = $("editor");
+                box.value = ui.text;
+                box.addEventListener("input", () => { ui.text = box.value; $("save").disabled = ui.text === ui.saved; });
+                box.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(); } });
+                box.focus();
+            } else if (!table) backlinks();
+        }
+
+        async function backlinks() {
+            const name = baseName(ui.open).toLowerCase();
+            const found = [];
+            for (const f of ui.files.filter(x => isNote(x.path) && x.path !== ui.open).slice(0, MAX_SCAN)) {
+                const text = await ui.store.fetch(f.path);
+                if (text && parseNote(text).links.some(l => baseName(l).toLowerCase() === name || l.toLowerCase() === ui.open.replace(/\.md$/i, "").toLowerCase())) found.push(f.path);
+            }
+            const box = $("backlinks");
+            if (box && found.length) box.innerHTML = `<div class="cn-sub">Linked from</div>${found.map(p => `<a href="#" class="cn-link" data-note="${escapeHtml(p)}">${escapeHtml(p.replace(/\.md$/i, ""))}</a>`).join(" · ")}`;
+        }
+
+        async function leaveOk() {
+            return !ui.open || ui.text === ui.saved || await confirm(`${ui.open} has changes that aren't saved. Leave without saving?`);
+        }
+
+        async function open(path, mode = "read") {
+            if (!(await leaveOk())) return;
+            try {
+                const text = await ui.store.fetch(path);
+                if (text === null || text === undefined) throw new Error(`${path} isn't there any more.`);
+                Object.assign(ui, { open: path, text, saved: text, mode });
+                drawMain();
+                drawList();
+                say("");
+            } catch (err) { say(err.message, true); }
+        }
+
+        // A [[link]] opens the note it names, or offers to make it.
+        async function follow(ref) {
+            const want = String(ref).toLowerCase().replace(/\.md$/i, "");
+            const hit = ui.files.find(f => isNote(f.path) && (f.path.toLowerCase().replace(/\.md$/i, "") === want || baseName(f.path).toLowerCase() === baseName(want)));
+            if (hit) return open(hit.path);
+            if (await confirm(`There's no note "${ref}" yet. Make it?`)) return create(`${ref}`, "note");
+        }
+
+        async function save() {
+            if (!ui.open || !ui.store) return;
+            try {
+                await ui.store.put(ui.open, ui.text);
+                ui.saved = ui.text;
+                say(`Saved ${ui.open}.`);
+                onSaved(ui.open);
+                const at = ui.files.find(f => f.path === ui.open);
+                if (at) at.modified = new Date().toISOString(); else ui.files.unshift({ path: ui.open, modified: new Date().toISOString() });
+                drawMain();
+                drawList();
+            } catch (err) { say(`Not saved: ${err.message}`, true); }
+        }
+
+        async function create(name, kind) {
+            let path = cleanPath(name);
+            if (!path) return say("Give it a name, like Projects/Ideas (no dots at the start).", true);
+            if (kind === "table" && !isTable(path)) path += ".csv";
+            if (kind === "note" && !isNote(path)) path += ".md";
+            if (ui.files.some(f => f.path.toLowerCase() === path.toLowerCase())) return open(ui.files.find(f => f.path.toLowerCase() === path.toLowerCase()).path, "edit");
+            if (!(await leaveOk())) return;
+            const text = kind === "table" ? "name,notes\n" : `# ${baseName(path)}\n\n`;
+            try {
+                await ui.store.put(path, text);
+                ui.files.unshift({ path, modified: new Date().toISOString() });
+                Object.assign(ui, { open: path, text, saved: text, mode: "edit" });
+                $("newRow").hidden = true;
+                drawMain();
+                drawList();
+                say(`Made ${path}.`);
+            } catch (err) { say(`Not made: ${err.message}`, true); }
+        }
+
+        async function remove() {
+            if (!ui.open || !ui.store.remove || !(await confirm(`Delete ${ui.open}? This can't be undone.`))) return;
+            try {
+                await ui.store.remove(ui.open);
+                ui.files = ui.files.filter(f => f.path !== ui.open);
+                say(`Deleted ${ui.open}.`);
+                Object.assign(ui, { open: null, text: "", saved: "" });
+                drawMain();
+                drawList();
+            } catch (err) { say(err.message, true); }
+        }
+
+        el.addEventListener("click", e => {
+            const item = e.target.closest(".cn-item");
+            if (item) return open(item.dataset.path);
+            const link = e.target.closest(".cn-link");
+            if (link) { e.preventDefault(); return follow(link.dataset.note); }
+            const c = e.target.closest("[data-c]") && e.target.closest("[data-c]").dataset.c;
+            if (c === "refresh") return load();
+            if (c === "newNote" || c === "newTable") {
+                newKind = c === "newTable" ? "table" : "note";
+                $("newRow").hidden = false;
+                $("newName").placeholder = newKind === "table" ? "Name, like Data/players" : "Name, like Projects/Ideas";
+                return $("newName").focus();
+            }
+            if (c === "cancelNew") { $("newRow").hidden = true; return; }
+            if (c === "create") return create($("newName").value, newKind).then(() => { $("newName").value = ""; });
+            if (c === "mode") { ui.mode = ui.mode === "edit" ? "read" : "edit"; return drawMain(); }
+            if (c === "save") return save();
+            if (c === "delete") return remove();
+        });
+        $("newName").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $("create").click(); } });
+        $("search").addEventListener("input", () => { ui.query = $("search").value; drawList(); });
+
+        return { refresh: load, open, hasUnsaved: () => !!ui.open && ui.text !== ui.saved };
     }
 
     return {
-        STORE, GUIDE_URL, DEFAULT_FOLDER, NOTES_TOOL_NAMES,
-        parseNote, parseTable, serializeTable, cleanPath,
-        megaStore, projectStore, createNotesTables, mountSettings, settingsFrom
+        STORE, GUIDE_URL, DEFAULT_FOLDER, LOCATIONS, NOTES_TOOL_NAMES,
+        parseNote, parseTable, serializeTable, cleanPath, renderNote,
+        deviceStore, memoryKv, indexedDbKv, megaStore, projectStore, createNotesTables, mountSettings, mountNotesView, settingsFrom
     };
 });

@@ -637,6 +637,7 @@ test('while an agent works and waits for an OK, the user can still switch chats,
     // An older chat with plenty to scroll through.
     const oldChat = await page.evaluate(() => {
         toolsAutoRun = false;
+        codeAutopilot = false; // with autopilot on, a coding agent never waits for an OK
         const session = newChatSession('chat_old', 'Last week', false, 'Older chat.');
         for (let i = 0; i < 60; i++) session.messages.push({ sender: i % 2 ? '🤖 Architect' : '👤 You', text: `Old message ${i}\n`.repeat(3) });
         chatSessions.push(session);

@@ -3,8 +3,8 @@
 CoDev's agents can search and read the files in your MEGA cloud drive, and save
 new files to it if you turn that on. CoDev asks you before every save, and the MEGA
 tools never change, move or delete files that are already there. The one exception
-is a notes vault kept in MEGA ([notes-and-tables.md](notes-and-tables.md)): an
-edited note or table is saved as a new version after you approve it, and the old
+is CoDev Notes kept in a MEGA folder ([notes-and-tables.md](notes-and-tables.md)): an
+edited note or table is saved as a new version (after you approve an agent's edit), and the old
 version goes to MEGA's Rubbish Bin.
 
 This replaced CoDev's Google Drive tools. YouTube, Maps and Gmail still use Google

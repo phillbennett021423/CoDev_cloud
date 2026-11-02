@@ -1,5 +1,5 @@
 // Lore bridges (mobile/www/agent-ui/lore-bridges.js): Story Studio's bible to and from an
-// Obsidian vault, an Azgaar's Fantasy Map Generator JSON export and a StoryCraftr book
+// Chronicler vault, an Azgaar's Fantasy Map Generator JSON export and a StoryCraftr book
 // folder; the store's mergeEntries; the agents' studio_import; and the desktop art tools
 // reading the vault so a brief that names a character gets their canon look.
 const test = require('node:test');
@@ -37,15 +37,16 @@ function continuum() {
 
 const asFiles = map => Object.entries(map).map(([p, text]) => ({ path: p, text }));
 
-test('the bible goes out as an Obsidian vault and comes back the same', () => {
+test('the bible goes out as a Chronicler vault and comes back the same', () => {
     const store = continuum();
     const p = store.active();
-    const vault = B.toObsidianVault(p, 'lore');
+    const vault = B.toChroniclerVault(p, 'lore');
     const names = Object.keys(vault).sort();
     assert.deepEqual(names, ['lore/Characters/Null.md', 'lore/Characters/Relay.md', 'lore/Continuum Universe.md', 'lore/Factions/Null.md', 'lore/Scenes/First clash.md', 'lore/Story arcs/Relay rises.md', 'lore/Timeline/The Fracture.md']);
     const relay = vault['lore/Characters/Relay.md'];
-    assert.match(relay, /^---\ncodev_kind: "character"\ntags:\n {2}- "character"\n {2}- "hero"\n {2}- "AEGIS-pilot"\ncodev_tags:/);
-    assert.match(relay, /\n## Appearance\n\nCarbon-black armour/);
+    // Chronicler's own keys, then the short fields as its infobox, then CoDev's.
+    assert.match(relay, /^---\ntitle: "Relay"\nsubtitle: "Character"\ntags:\n {2}- "character"\n {2}- "hero"\n {2}- "A\.E\.G\.I\.S\. pilot"\nAppearance: "Carbon-black armour, cyan energy seams, crowned helmet"\nPowers and abilities: "Dash, afterimage"\ncodev_kind: "character"\n---\n/);
+    assert.match(vault['lore/Timeline/The Fracture.md'], /\ncodev_order: 1\n/);
     assert.match(vault['lore/Characters/Null.md'], /- Enemy: \[\[Relay\]\] \(since the Fracture\)/);
     assert.match(vault['lore/Continuum Universe.md'], /\[\[Characters\/Null\|Null\]\]/, 'two notes named Null link by path');
 
@@ -65,7 +66,7 @@ test('hand-written notes: folders, properties, tags, headings and links say what
         { path: 'People/Kestrel.md', text: '---\naliases: [Kes, "The Wren"]\nfaction: "[[Iron Choir]]"\nenemies:\n  - "[[Null]]"\nage: 31\n---\n# Kestrel\n\nA scout who hears the timelines hum.\n\n## Looks\n\nGrey cloak, brass goggles.\n\n## Voice\nDry and quiet.\n' },
         { path: 'Groups/Iron Choir.md', text: 'Singers who keep the walls standing.\n\n## Territory\nThe Spire.\n\n## Relationships\n- Rival of [[Null]]\n' },
         { path: 'misc/Null.md', text: '---\ntags: [character, villain]\n---\nThe void walker. See [[Kestrel]] and [[Nowhere]].' },
-        { path: '.obsidian/workspace.md', text: 'x' }, { path: 'Templates/Character.md', text: '## Looks' }, { path: 'pic.png', text: '' }
+        { path: '.chronicler/snippets/x.md', text: 'x' }, { path: 'Templates/Character.md', text: '## Looks' }, { path: 'pic.png', text: '' }
     ]);
     assert.equal(vault.skipped, 3);
     const by = Object.fromEntries(vault.entries.map(e => [e.name, e]));
@@ -88,6 +89,23 @@ test('hand-written notes: folders, properties, tags, headings and links say what
     assert.deepEqual(store.findEntry(store.active(), 'Null').links.map(l => l.name), ['Kestrel'], 'and the bible drops what it doesn\'t have');
     assert.deepEqual(B.loreMatches(vault.entries, 'a winter skin for kes').map(e => e.name), ['Kestrel'], 'aliases match');
     assert.deepEqual(B.loreMatches(vault.entries, 'nullify'), [], 'whole words only');
+});
+
+test('a page written in Chronicler: title, subtitle, infobox, tags, inserts and spoilers', () => {
+    const vault = B.parseVault([
+        { path: 'World/Rivertown.md', text: "---\ntitle: Rivertown\nsubtitle: City\ntags: [trade, river]\nimage: rivertown.jpg\npopulation: 12000\nleader: '[[Mara Vell|Lady Mara]]'\nlayout:\n  - type: separator\n---\nA market town on the Sel.\n\n{{insert: Trade Routes}}\n\n## Inhabitants\nBargemen and ||a hidden guild||.\n" },
+        { path: 'World/Mara Vell.md', text: '---\ntitle: Mara Vell\nsubtitle: Character\nRole in the story: Ruler of Rivertown\n---\nShe keeps the river tolls.' }
+    ]);
+    const by = Object.fromEntries(vault.entries.map(e => [e.name, e]));
+    assert.equal(by.Rivertown.kind, 'location', 'the subtitle says what it is');
+    assert.deepEqual(by.Rivertown.tags, ['trade', 'river']);
+    assert.equal(by.Rivertown.summary, 'A market town on the Sel.');
+    assert.equal(by.Rivertown.fields.population, '12000');
+    assert.equal(by.Rivertown.fields.inhabitants, 'Bargemen and a hidden guild.');
+    assert.ok(!('image' in by.Rivertown.fields) && !('layout' in by.Rivertown.fields), "Chronicler's own keys aren't lore");
+    assert.deepEqual(by.Rivertown.links, [{ to: 'Mara Vell', type: 'other', note: 'leader' }]);
+    assert.equal(by['Mara Vell'].kind, 'character');
+    assert.equal(by['Mara Vell'].fields.role, 'Ruler of Rivertown', 'infobox labels map back to fields');
 });
 
 test('an Azgaar map becomes factions with borders and diplomacy, places with positions, and lore', () => {
@@ -151,24 +169,24 @@ test('agents import a vault and an Azgaar map from the project folder with studi
     const tools = Studio.buildStudioTools(store, { bridges: B, confirm: async t => { asked.push(t); return true; },
         readFolder: async p => Object.entries(folder).filter(([k]) => k === p || k.startsWith(p + '/')).map(([k, text]) => ({ path: k === p ? k : k.slice(p.length + 1), text })) });
     const imp = tools.find(t => t.name === 'studio_import');
-    assert.match(await imp.run({ source: 'obsidian', path: 'lore' }), /1 added, 0 updated, 1 relationships/);
+    assert.match(await imp.run({ source: 'chronicler', path: 'lore' }), /1 added, 0 updated, 1 relationships/);
     assert.equal(store.findEntry(store.active(), 'Kestrel').links[0].name, 'Relay');
     assert.match(await imp.run({ source: 'azgaar', path: 'maps/continuum.json', max_cities: 1 }), /added/);
     assert.ok(store.findEntry(store.active(), 'Relay Spire'));
     assert.ok(store.findEntry(store.active(), 'Hollow Gate'), 'every capital comes in');
     assert.ok(!store.findEntry(store.active(), 'Tessel'), 'past max_cities');
-    assert.match(await imp.run({ source: 'obsidian', path: 'nowhere' }), /nothing at nowhere/);
+    assert.match(await imp.run({ source: 'chronicler', path: 'nowhere' }), /nothing at nowhere/);
     assert.equal(asked.length, 2);
     const written = {};
     const exp = Studio.buildStudioTools(store, { bridges: B, writeFiles: async files => { Object.assign(written, files); return `Saved ${Object.keys(files).length} files.` } }).find(t => t.name === 'studio_export');
-    assert.match(await exp.run({ format: 'obsidian' }), /Saved \d+ files/);
+    assert.match(await exp.run({ format: 'chronicler' }), /Saved \d+ files/);
     assert.ok(written['lore/Characters/Kestrel.md']);
 });
 
 test('the desktop art tools read the vault and add a named character\'s look to the prompt', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-lore-'));
     const store = continuum();
-    for (const [rel, text] of Object.entries(B.toObsidianVault(store.active(), 'lore'))) {
+    for (const [rel, text] of Object.entries(B.toChroniclerVault(store.active(), 'lore'))) {
         fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
         fs.writeFileSync(path.join(dir, rel), text);
     }
@@ -238,7 +256,7 @@ test('in the page: 🧭 World tools import a vault and an Azgaar map, and downlo
 
     await page.click('#view-studio button:has-text("Download vault (.zip)")');
     const saved = await page.evaluate(() => window.__saved);
-    assert.equal(saved[0][0], 'continuum_universe_obsidian_vault.zip');
+    assert.equal(saved[0][0], 'continuum_universe_chronicler_vault.zip');
     assert.ok(saved[0][1].includes('Characters/Relay.md') && saved[0][1].includes('Factions/Aegis Dominion.md'));
     assert.deepEqual(errors, []);
 });

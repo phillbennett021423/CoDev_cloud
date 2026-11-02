@@ -244,6 +244,32 @@
 
         /* Secondary Views */
         .alt-view-content { flex: 1; padding: 25px; overflow-y: auto; display: none; flex-direction: column; gap: 15px; }
+        /* 📝 Notes (agent-ui/notes-tables.js) */
+        #view-notes { gap: 10px; }
+        .cn-head, .cn-bar, .cn-new { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .cn-head h3 { margin: 0; }
+        .cn-where { font-size: 0.8rem; color: var(--text-muted); }
+        .cn-spacer { flex: 1; }
+        .cn-new input { flex: 1; min-width: 180px; }
+        .cn-body { display: flex; gap: 12px; flex: 1; min-height: 0; }
+        .cn-side { width: 260px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+        .cn-list { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
+        .cn-item { text-align: left; background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); border-radius: 6px; padding: 7px 10px; cursor: pointer; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .cn-item:hover, .cn-item.active { border-color: var(--accent); color: var(--accent); }
+        .cn-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; overflow-y: auto; }
+        .cn-title { overflow-wrap: anywhere; }
+        .cn-editor { flex: 1; min-height: 320px; width: 100%; resize: vertical; font-family: monospace; font-size: 0.9rem; background: var(--bg-dark); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; box-sizing: border-box; }
+        .cn-read { line-height: 1.55; overflow-wrap: anywhere; }
+        .cn-read pre { background: var(--bg-dark); padding: 10px; border-radius: 6px; overflow-x: auto; }
+        .cn-link { color: var(--accent); }
+        .cn-tag { color: var(--codev-purple); }
+        .cn-sub { font-size: 0.75rem; color: var(--text-muted); margin-top: 12px; }
+        .cn-backlinks { font-size: 0.85rem; }
+        .cn-table-wrap { overflow-x: auto; }
+        .cn-table { border-collapse: collapse; font-size: 0.85rem; }
+        .cn-table th, .cn-table td { border: 1px solid var(--border-color); padding: 4px 8px; text-align: left; }
+        .cn-empty, .cn-msg { font-size: 0.85rem; color: var(--text-muted); }
+        .cn-msg.bad { color: var(--danger, #f87171); }
         .file-tree { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; font-family: monospace; font-size: 0.85rem; display: flex; flex-direction: column; gap: 8px; }
         .file-item { padding: 8px 12px; cursor: pointer; border-radius: 6px; background: var(--bg-card); border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; transition: border-color 0.2s; }
         .file-item:hover { border-color: var(--accent); color: var(--accent); }
@@ -499,6 +525,8 @@
             .chat-input-area button.send-btn { flex: 1; min-height: 48px; padding: 12px; }
 
             .alt-view-content { padding: 14px; }
+            .cn-body { flex-direction: column; }
+            .cn-side { width: auto; max-height: 34vh; }
             .alt-view-content > div:first-child { flex-wrap: wrap; gap: 10px; }
             .project-grid { grid-template-columns: 1fr; grid-template-rows: auto 1fr; overflow: visible; }
             .file-tree { max-height: 30vh; overflow-y: auto; }
@@ -644,6 +672,7 @@
             <span id="tab-codev" onclick="switchView('codev')" style="color: var(--codev-blue); font-weight: bold;">⚡ CoDev Hub</span>
             <span id="tab-cloud" onclick="switchView('cloud')" style="color: var(--codev-purple); font-weight: bold;">☁️ CoDev Cloud</span>
             <span id="tab-outlier" onclick="switchView('outlier')" style="color: var(--success); font-weight: bold;">📈 Outlier</span>
+            <span id="tab-notes" onclick="switchView('notes')" style="color: var(--accent); font-weight: bold;">📝 Notes</span>
             <span id="tab-studio" onclick="switchView('studio')" style="color: var(--warning); font-weight: bold;">🎭 Story Studio</span>
             <span id="tab-insurance" onclick="switchView('insurance')" style="color: var(--codev-blue); font-weight: bold;">🩺 Insurance</span>
             <span id="tab-qtasks" onclick="switchView('qtasks')" style="color: var(--codev-purple); font-weight: bold;">🤖 Q Tasks</span>
@@ -987,6 +1016,9 @@
             <!-- Outlier slips (agents/outlier on CoDev's server; agent-ui/outlier-view.js draws it) -->
             <div id="view-outlier" class="alt-view-content"></div>
 
+            <!-- CoDev Notes: the user's notes and data tables (agent-ui/notes-tables.js) -->
+            <div id="view-notes" class="alt-view-content"></div>
+
             <!-- Story Studio: game projects, story bibles, character chats, scenes (agent-ui/story-studio.js) -->
             <div id="view-studio" class="alt-view-content"></div>
 
@@ -1097,6 +1129,7 @@
         <button class="mobile-tab active" data-view="chat" onclick="mobileTab('chat')"><span class="tab-icon"><span class="brand-mark"></span></span>Chat</button>
         <button class="mobile-tab" data-drawer="agents" onclick="mobileTab('agents')"><span class="tab-icon"><span class="brand-mark"></span></span>Agents</button>
         <button class="mobile-tab" data-view="project" onclick="mobileTab('project')"><span class="tab-icon">📁</span>Files</button>
+        <button class="mobile-tab" data-view="notes" onclick="mobileTab('notes')"><span class="tab-icon">📝</span>Notes</button>
         <button class="mobile-tab" data-view="studio" onclick="mobileTab('studio')"><span class="tab-icon">🎭</span>Story</button>
         <button class="mobile-tab" data-view="insurance" onclick="mobileTab('insurance')"><span class="tab-icon">🩺</span>Clients</button>
         <button class="mobile-tab" data-view="codev" onclick="mobileTab('codev')"><span class="tab-icon">⚡</span>Hub</button>
@@ -1283,6 +1316,9 @@
                 </div>
                 <label class="checkbox-group">
                     <input type="checkbox" id="modalToolsAutoRun"> Run file edits and commands without asking me first
+                </label>
+                <label class="checkbox-group" title="On a coding task, agents don't stop to ask you anything: they make the call themselves, run what they need, check their work with the tests and build, fix what fails and keep going until it's done. Only commands that could wreck your computer or your repo (wiping a drive, force-pushing) are refused, and the agent finds another way.">
+                    <input type="checkbox" id="modalCodeAutopilot"> 🚀 Coding autopilot: on a coding task, agents never stop to ask me. They decide, run, test and fix until it's done
                 </label>
                 <div class="form-group" id="desktopMcpGroup" style="display: none;">
                     <label>Project folder agents can edit and run code in (built-in MCP tools)</label>
@@ -2146,8 +2182,8 @@
             document.getElementById("statusText").innerText = activeProviderKey() ? `${BACKEND_NAMES[currentBackend]} Live` : "Awaiting API Key";
         }
 
-        const VIEW_NAMES = ["chat", "project", "codev", "cloud", "outlier", "studio", "insurance", "qtasks", "console"];
-        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", outlier: "Switched to Outlier slips.", studio: "Switched to Story Studio.", insurance: "Switched to the Insurance Desk.", qtasks: "Switched to Q Tasks.", console: "Switched to Console Logs." };
+        const VIEW_NAMES = ["chat", "project", "codev", "cloud", "outlier", "notes", "studio", "insurance", "qtasks", "console"];
+        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", outlier: "Switched to Outlier slips.", notes: "Switched to Notes.", studio: "Switched to Story Studio.", insurance: "Switched to the Insurance Desk.", qtasks: "Switched to Q Tasks.", console: "Switched to Console Logs." };
 
         // STORY STUDIO (agent-ui/story-studio.js): each game project's story bible, kept
         // on this device. Agents get the studio_* tools and the bible's index when a task
@@ -2193,7 +2229,7 @@
             setTimeout(() => URL.revokeObjectURL(link.href), 1000);
         }
 
-        // Several text files, or a whole folder (an Obsidian vault) where the browser can
+        // Several text files, or a whole folder (a Chronicler vault) where the browser can
         // pick one: [{ path, text }] with paths inside the picked folder. Android's picker
         // takes several files instead.
         function pickTextFilesFromUser({ directory = false, accept = "" } = {}) {
@@ -2317,6 +2353,18 @@
             } finally {
                 if (runId === speechRunId) isSpeaking = false;
             }
+        }
+
+        // 📝 Notes: CoDev's own notes and tables, where Settings > Notes & tables keeps them.
+        let notesView = null;
+        function showNotesView() {
+            if (notesView) return notesView.refresh();
+            notesView = CodevNotesTables.mountNotesView(document.getElementById("view-notes"), {
+                getStore: () => notesStore({ byUser: true }),
+                confirm: async text => confirm(text),
+                onSaved: () => notesTables.forget()
+            });
+            notesView.refresh();
         }
 
         function showStudioView() {
@@ -2455,6 +2503,7 @@
             if (viewName === "project" && (Object.keys(loadedProjectFiles).length > 0 || Object.keys(loadedModelAssets).length > 0)) renderProjectFiles();
             if (viewName === "project") resumeModelViewer();
             if (viewName === "outlier") showOutlierView();
+            if (viewName === "notes") showNotesView();
             if (viewName === "studio") showStudioView();
             if (viewName === "insurance") showInsuranceView();
             if (viewName === "qtasks") { renderQTasks(); refreshQKeyHint(); }
@@ -3526,6 +3575,23 @@
         const PROGRESS_STEPS_SHOWN = 6;
         // On: agents edit files and run commands without a confirm dialog.
         let toolsAutoRun = (localStorage.getItem("codev_tools_autorun") ?? "1") === "1";
+        // 🚀 CODING AUTOPILOT (on unless turned off in Settings): on a coding task nothing
+        // stops to ask the user. Edits, commands and the project's tools run straight away,
+        // the agent gets a bigger step budget, a reply that asks instead of finishing is sent
+        // back to keep working, and a verification pass checks the result. The one limit:
+        // a command that could wreck the computer or the repo is refused, not asked about.
+        let codeAutopilot = (localStorage.getItem("codev_code_autopilot") ?? "1") === "1";
+        const AUTOPILOT_CODE_TOOL_ROUNDS = 150;
+        const AUTOPILOT_NUDGES = 3;
+        const AUTOPILOT_NUDGE = "[CoDev autopilot] The user is away and wants this finished without being asked anything. Don't ask: make the most reasonable choice yourself (follow the project's existing patterns), keep working with your tools until the task is done and verified, and list the choices you made at the end of your answer.";
+        function autopilotOn(ctx) { return codeAutopilot && ctx?.kind === "code"; }
+        // Wiping drives or home folders, formatting, shutting down, rewriting the remote's
+        // history, piping a download into a shell, fork bombs, writing over a disk.
+        const WRECKING_COMMAND = /(^|[;&|]\s*)(sudo\s+)?rm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)[a-z]*\s+(\/|~|\$HOME|[a-z]:\\?)(\s|$|\*)|\b(mkfs(\.\w+)?|diskpart|shutdown|reboot|halt|poweroff)\b|\bformat\s+[a-z]:|\b(del|erase)\s+\/[sq].*\b[a-z]:\\?(\s|$)|\b(rd|rmdir)\s+\/s\b.*\b[a-z]:\\?(\s|$)|\bgit\s+push\b.*(--force\b|--force-with-lease\b|\s-f\b|--mirror\b|--delete\b)|\b(curl|wget|iwr|invoke-webrequest)\b[^|]*\|\s*(sudo\s+)?(ba|z|da)?sh\b|\|\s*iex\b|:\(\)\s*\{\s*:\|:&\s*\};:|\bdd\s+[^|]*of=\/dev\/(sd|nvme|hd|disk)/i;
+        function wreckingCommand(command) { return WRECKING_COMMAND.test(String(command || "")); }
+        const AUTOPILOT_REFUSED = "Coding autopilot doesn't run commands that could wreck the computer or the repo (wiping a drive or a home folder, formatting, shutting down, force-pushing, piping a download into a shell). Don't ask the user: do it another way, or leave that one step out and say so at the end.";
+        // A reply that stops to ask instead of finishing: a question, or an offer to go on.
+        const ASKS_INSTEAD = /\?\s*$|\b(should I|shall I|do you want|would you like|want me to|let me know (if|whether|which|how)|please (confirm|let me know|tell me)|can you (confirm|tell me|provide|share)|which (one|option|approach) (do|would) you|before I (proceed|continue|start)|(waiting|wait) for your|your (go-?ahead|approval|confirmation))\b/i;
         let helperCommandsCache = { at: 0, commands: [] };
         let mcpRequestId = 0;
 
@@ -4399,6 +4465,11 @@
             const hostCommand = tool.transport === "desktop" && tool.name === "run_command" && !isSafeHostCommand(args?.command);
             // Tools that run code or change the project outside any review (blender_run, godot_install_bridge) always ask.
             const alwaysAsk = Boolean(tool._meta?.["codev/alwaysAsk"]);
+            if (autopilotOn(ctx) && !tool._meta?.["codev/requiresUserApproval"]) {
+                if (tool.name === "run_command" && wreckingCommand(args?.command)) return AUTOPILOT_REFUSED;
+                if (!tool.annotations?.readOnlyHint) logConsoleActivity(`[Autopilot] Running ${shownName} without asking.`);
+                return callMcpTool(tool, args, ctx);
+            }
             if (alwaysAsk || ((!toolsAutoRun || hostCommand) && !tool.annotations?.readOnlyHint && !tool._meta?.["codev/requiresUserApproval"])) {
                 if (!await askPermission(`An agent wants to use ${shownName}${tool.server ? ` (MCP server "${tool.server}")` : " on your computer"}:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`, ctx?.agentName)) {
                     logConsoleActivity(`[Tool] You declined: ${shownName}`);
@@ -4488,26 +4559,34 @@
             if (el) CodevMegaCloud.mountSettings(el, { transport: megaTransport, cloud: megaCloud, storage: localStorage });
         });
 
-        // NOTES & TABLES: an Obsidian vault (Markdown notes) and CSV/JSON tables in place
-        // of Google Docs and Sheets (agent-ui/notes-tables.js). The vault is a folder in
-        // MEGA or in the connected project folder. Every change asks first.
+        // CODEV NOTES: the user's notes (Markdown) and CSV/JSON tables, in place of Google
+        // Docs and Sheets (agent-ui/notes-tables.js), written in the 📝 Notes tab. They're
+        // kept in CoDev on this device, in a MEGA folder (shared by the computer and the
+        // phone) or in the connected project folder. Every change an agent makes asks first.
         const notesHasProject = typeof window.showDirectoryPicker === "function" || Boolean(window.codevDesktop);
-        const notesSettings = () => { try { return CodevNotesTables.settingsFrom(localStorage, notesHasProject); } catch (err) { return { location: "mega", folder: "/Obsidian", allowEdit: false }; } };
-        const notesTables = CodevNotesTables.createNotesTables({
-            getStore: async () => {
-                const set = notesSettings();
-                if (set.location === "project") {
-                    if (!connectedDirectoryHandle && !Object.keys(loadedProjectFiles).length) return { error: "The notes vault is set to a folder in the project folder, but no project folder is connected. Connect one with 📁, or pick MEGA in Settings > Notes & tables." };
-                    return CodevNotesTables.projectStore({
-                        files: async () => loadedProjectFiles,
-                        read: async path => (path in loadedProjectFiles ? loadedProjectFiles[path] : ((await readWorkspaceFolder(path))[0] || {}).text ?? null),
-                        write: async (path, text) => { const said = await writeWorkspaceFile(path, text, { asked: true }); return /^Saved|^Updated/.test(said) ? null : { error: said }; }
-                    }, set.folder);
-                }
+        const notesSettings = () => { try { return CodevNotesTables.settingsFrom(localStorage, notesHasProject); } catch (err) { return { location: "codev", folder: "", allowEdit: false }; } };
+        let notesDeviceStore = null;
+        // byUser: the 📝 Notes tab's own saves, which don't need MEGA's "let agents save".
+        async function notesStore({ byUser = false } = {}) {
+            const set = notesSettings();
+            if (set.location === "project") {
+                if (!connectedDirectoryHandle && !Object.keys(loadedProjectFiles).length) return { error: "CoDev Notes is set to a folder in the project folder, but no project folder is connected. Connect one with 📁, or pick another place in Settings > Notes & tables." };
+                return CodevNotesTables.projectStore({
+                    files: async () => loadedProjectFiles,
+                    read: async path => (path in loadedProjectFiles ? loadedProjectFiles[path] : ((await readWorkspaceFolder(path))[0] || {}).text ?? null),
+                    write: async (path, text) => { const said = await writeWorkspaceFile(path, text, { asked: true }); return /^Saved|^Updated/.test(said) ? null : { error: said }; }
+                }, set.folder);
+            }
+            if (set.location === "mega") {
                 const st = await megaCloud.status();
-                if (!st.signedIn) return { error: "The notes vault is in MEGA, but CoDev isn't signed in to MEGA. Sign in under Settings > MEGA cloud, or pick another place in Settings > Notes & tables." };
-                return CodevNotesTables.megaStore(megaTransport, set.folder);
-            },
+                if (!st.signedIn) return { error: "CoDev Notes is set to a MEGA folder, but CoDev isn't signed in to MEGA. Sign in under Settings > MEGA cloud, or pick another place in Settings > Notes & tables." };
+                return CodevNotesTables.megaStore(megaTransport, set.folder, { byUser });
+            }
+            if (typeof indexedDB === "undefined") return { error: "This browser can't keep notes on the device. Pick a MEGA folder in Settings > Notes & tables." };
+            return notesDeviceStore || (notesDeviceStore = CodevNotesTables.deviceStore(CodevNotesTables.indexedDbKv()));
+        }
+        const notesTables = CodevNotesTables.createNotesTables({
+            getStore: () => notesStore(),
             canEdit: () => notesSettings().allowEdit,
             confirmWrite: message => askPermission(message),
             runTableQuery: (entry, args) => runTableQuery(entry, args)
@@ -4529,7 +4608,7 @@
 
         document.addEventListener("DOMContentLoaded", () => {
             const el = document.getElementById("notesSettings");
-            if (el) CodevNotesTables.mountSettings(el, { storage: localStorage, tools: notesTables, hasProject: notesHasProject });
+            if (el) CodevNotesTables.mountSettings(el, { storage: localStorage, tools: notesTables, hasProject: notesHasProject, onChange: () => { if (notesView) notesView.refresh(); } });
         });
 
         // THE ODDS API: every sportsbook's lines and props, saved as snapshots for line
@@ -4935,19 +5014,19 @@
                     name: "write_workspace_file",
                     description: "Create or overwrite a file in the user's loaded project folder with new content. Use it for new files; to change part of an existing file use edit_workspace_file instead. When you do replace a file, read it first and write the complete file. The user may be asked to allow the write.",
                     inputSchema: { type: "object", properties: { name: { type: "string", description: "File path as list_workspace_files shows it, or a new path (sub-folders are created)." }, content: { type: "string", description: "The complete new file content." } }, required: ["name", "content"] },
-                    run: async ({ name, content }) => writeWorkspaceFile(String(name || ""), content)
+                    run: async ({ name, content }, ctx) => writeWorkspaceFile(String(name || ""), content, { asked: autopilotOn(ctx) })
                 },
                 {
                     name: "edit_workspace_file",
                     description: "Replace one exact snippet in a loaded project file. Use it for every change to an existing file: read_workspace_file first, then copy old_text exactly. If it says old_text appears 0 or 2+ times, read the file again and pass a longer, unique snippet; don't fall back to rewriting the whole file.",
                     inputSchema: { type: "object", properties: { name: { type: "string", description: "File path exactly as list_workspace_files shows it." }, old_text: { type: "string", description: "The exact text to replace, copied from read_workspace_file; it must appear exactly once." }, new_text: { type: "string", description: "The text to put in its place (empty to delete the snippet)." } }, required: ["name", "old_text", "new_text"] },
-                    run: async ({ name, old_text: oldText, new_text: newText }) => {
+                    run: async ({ name, old_text: oldText, new_text: newText }, ctx) => {
                         const path = normalizeWorkspacePath(name);
                         if (!(path in loadedProjectFiles)) return `No loaded text file named "${name}".`;
                         if (typeof oldText !== "string" || !oldText || typeof newText !== "string") return "edit_workspace_file needs non-empty old_text and a new_text string.";
                         const count = loadedProjectFiles[path].split(oldText).length - 1;
                         if (count !== 1) return `old_text must appear exactly once in ${path}; it appears ${count} times.`;
-                        return writeWorkspaceFile(path, loadedProjectFiles[path].replace(oldText, () => newText));
+                        return writeWorkspaceFile(path, loadedProjectFiles[path].replace(oldText, () => newText), { asked: autopilotOn(ctx) });
                     }
                 }
             );
@@ -4986,13 +5065,13 @@
                     name: "run_local_command",
                     description: "Run one of the user's pre-approved commands on their computer (for example a build, test or lint script) and get its exit code and output. Use it to check that changes build and pass tests; only the listed commands can run, so don't ask for others. Available: " + commands.map(c => `${c.name} (${c.description || c.argv.join(" ")})`).join("; "),
                     inputSchema: { type: "object", properties: { name: { type: "string", enum: commands.map(c => c.name), description: "Which pre-approved command to run, by its name." } }, required: ["name"] },
-                    run: async ({ name }) => runHelperCommand(commands.find(c => c.name === name))
+                    run: async ({ name }, ctx) => runHelperCommand(commands.find(c => c.name === name), ctx)
                 });
             }
             return tools;
         }
 
-        // Many files at once (an Obsidian vault, a StoryCraftr book folder) with one question.
+        // Many files at once (a Chronicler vault, a StoryCraftr book folder) with one question.
         async function writeWorkspaceFiles(files, { asked = false } = {}) {
             const list = Object.entries(files).map(([path, content]) => [normalizeWorkspacePath(path), content]).filter(([name, content]) => name && typeof content === "string");
             if (!list.length) return "Nothing to write.";
@@ -5049,10 +5128,10 @@
             return `Saved ${name} (${content.length} characters) to the connected folder.`;
         }
 
-        async function runHelperCommand(command) {
+        async function runHelperCommand(command, ctx) {
             if (!command) return "Unknown command. Only the listed commands can run.";
             const shown = (command.argv || []).join(" ");
-            if (!toolsAutoRun && !await askPermission(`An agent wants to run this command on your computer:\n\n${shown}\n(in ${command.cwd || "the helper's project folder"})\n\nAllow it?`)) {
+            if (!toolsAutoRun && !autopilotOn(ctx) && !await askPermission(`An agent wants to run this command on your computer:\n\n${shown}\n(in ${command.cwd || "the helper's project folder"})\n\nAllow it?`)) {
                 logConsoleActivity(`[Tool] You declined: ${command.name}`);
                 return "The user declined to run this command.";
             }
@@ -5260,7 +5339,8 @@
             // What this task has cost so far; a spending limit ends the tool steps early.
             ctx.cost = ctx.cost || 0;
             let spendStop = "";
-            const maxRounds = ctx.kind === "code" ? MAX_CODE_TOOL_ROUNDS : MAX_TOOL_ROUNDS;
+            const maxRounds = autopilotOn(ctx) ? AUTOPILOT_CODE_TOOL_ROUNDS : ctx.kind === "code" ? MAX_CODE_TOOL_ROUNDS : MAX_TOOL_ROUNDS;
+            let nudges = 0;
             for (let round = 0; round < maxRounds && outlierFailures < 2 && browserFailures < 3; round++) {
                 if (round > 0 && taskSpendLimit > 0 && ctx.cost >= taskSpendLimit) spendStop = `this task reached its spending limit of ${formatUsd(taskSpendLimit)}`;
                 else if (round > 0 && dailySpendReached()) spendStop = `CoDev reached today's spending limit of ${formatUsd(dailySpendLimit)}`;
@@ -5275,6 +5355,16 @@
                     if (ctx.toolLog) ctx.toolLog.push(`${step} → ${note}`);
                 }
                 const calls = message.tool_calls || [];
+                // Autopilot: a reply that stops to ask goes back with "decide and keep going".
+                if (!calls.length && autopilotOn(ctx) && nudges < AUTOPILOT_NUDGES && round < maxRounds - 1 && ASKS_INSTEAD.test(String(message.content || "").trim())) {
+                    nudges++;
+                    logConsoleActivity(`[Autopilot] ${ctx.agentName || "The agent"} stopped to ask; sent it back to decide and finish.`);
+                    done.push({ step: "🚀 Autopilot: decide and keep going", ok: true });
+                    messages.push({ role: "assistant", content: message.content || "" });
+                    messages.push({ role: "user", content: AUTOPILOT_NUDGE });
+                    checkpoint();
+                    continue;
+                }
                 if (!calls.length) {
                     logTaskSpend(ctx);
                     return message.content || "";
@@ -7150,6 +7240,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             companionPick.replaceChildren(...CodevCompanion.avatars.map(a => new Option(a.name, a.id)));
             companionPick.value = CodevCompanion.avatar();
             document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
+            document.getElementById("modalCodeAutopilot").checked = codeAutopilot;
             document.getElementById("modalMcpServers").value = mcpServersConfig;
             document.getElementById("modalManusKey").value = manusKey;
             document.getElementById("modalManusProfile").value = manusProfile;
@@ -7384,6 +7475,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             }
             toolsAutoRun = document.getElementById("modalToolsAutoRun").checked;
             localStorage.setItem("codev_tools_autorun", toolsAutoRun ? "1" : "0");
+            codeAutopilot = document.getElementById("modalCodeAutopilot").checked;
+            localStorage.setItem("codev_code_autopilot", codeAutopilot ? "1" : "0");
             const mcpText = document.getElementById("modalMcpServers").value.trim();
             if (mcpText !== mcpServersConfig) {
                 saveMcpServersConfig(mcpText).catch(err => alert(`MCP servers weren't saved: ${err.message}`));
@@ -8181,7 +8274,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 10. BE BRIEF: Say what the user needs and stop. Lead with the answer in plain words. No preamble, no restating the question, no repeating what you already said, no closing summary or offers of more help. A simple question gets one to three sentences, and most answers fit in about 150 words. Go longer only when the task needs it: code, a report or deep research, step-by-step instructions, or when the user asks for detail; even then, cut anything that doesn't help. Use lists or code blocks only when they help.
 
-11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); editing videos and audio the user attaches (cutting, joining, pauses and filler words, highlights, vertical for TikTok, captions, noise removal, voice and music separation, background music, beat-cut montages, slow motion, transitions, text, logos, color looks, AI voiceovers, background removal, upscaling, GIFs) with the media_* tools when CoDev runs on their computer with Docker; making and editing pictures (generate_image); the user's Obsidian notes and CSV/JSON data tables, in place of Google Docs and Sheets (notes_search, notes_read, notes_write, table_read, table_write); files in the user's MEGA cloud drive, in place of Google Drive (mega_search, mega_read_file, mega_save_file); fantasy maps from Azgaar's Fantasy Map Generator (map_read, map_generate); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
+11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); editing videos and audio the user attaches (cutting, joining, pauses and filler words, highlights, vertical for TikTok, captions, noise removal, voice and music separation, background music, beat-cut montages, slow motion, transitions, text, logos, color looks, AI voiceovers, background removal, upscaling, GIFs) with the media_* tools when CoDev runs on their computer with Docker; making and editing pictures (generate_image); the user's CoDev Notes (notes and CSV/JSON data tables kept in CoDev's 📝 Notes tab), in place of Google Docs and Sheets (notes_search, notes_read, notes_write, table_read, table_write); files in the user's MEGA cloud drive, in place of Google Drive (mega_search, mega_read_file, mega_save_file); fantasy maps from Azgaar's Fantasy Map Generator (map_read, map_generate); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
 
 12. ENGINE-SPECIFIC RULES:${engineRules ? `\n${engineRules}` : " none for this task."}`;
             
@@ -8283,7 +8376,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 - Report only what you changed and verified.` },
             self_healing: { label: "Self-Healing", prompt: `ROLE: SELF-HEALING ENGINEER. You verify and repair code autonomously.
 - Re-read every changed file. Run the tests, build, linter or the program itself when a command tool exists, and read the errors.
-- Fix each failure at its root with the edit tools, then run again. Repeat until it passes, or until you have tried 3 fixes for the same error.
+- Fix each failure at its root with the edit tools, then run again. Repeat until it passes. After 3 failed fixes for the same error, step back and try a different approach.
 - For Godot files, run godot_check on every changed script, scene and shader, and run Godot headless when a command tool exists (the engine guide says how).
 - Report what you checked, what failed, what you fixed and the final result. If no command tool exists, say the code was checked by reading only.` },
             game_engine: { label: "Game Engine", prompt: `ROLE: GAME ENGINE ENGINEER, a specialist in Godot 4 (GDScript and C#), shaders, 3D math, physics loops and frame-data state machines. You do the work on the user's game project.
@@ -8306,6 +8399,13 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 - Keep going until the task is done or truly blocked. Ask the user only for what the workspace can't tell you, like a product decision or a missing credential.
 
 ${CodevCodeIntel.BIG_PROJECT_RULES}`;
+
+        // Added to AUTONOMY_RULES while 🚀 coding autopilot is on (Settings).
+        const AUTOPILOT_RULES = `CODING AUTOPILOT (the user turned it on and is not watching):
+- Never stop to ask the user anything, and never end your turn with a question or an offer ("Should I...?", "Want me to...?"). When something is unclear, make the most reasonable choice yourself, following the project's existing patterns, and list the choices you made at the end of your answer.
+- Code it all the way through: every file, wiring, import and config the change needs, not a sketch or a TODO. Your edits and commands run without approval prompts, so don't wait for any.
+- Make sure it works before you finish: run the project's tests, build, linter or type checker (or godot_check and Godot headless for a Godot project), read every failure, fix it at its root and run again. A fix that fails three times means a different approach, not giving up.
+- Stop only when the task is done and verified, or something outside the project blocks it (a missing credential or a paid service). Then say exactly what's done, what you checked and what's left.`;
 
         function agentDevRole(agent) {
             return DEV_ROLES[agent?.devRole] ? agent.devRole : "architect";
@@ -8359,7 +8459,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             // a missing project folder when the task may not need one.
             if (general && /^\[Workspace status\] No project/.test(workspaceNote)) workspaceNote = "[Workspace status] No project folder is connected. That only matters if the task is about project files.";
             else if (!coding && workspaceNote) workspaceNote = "[Workspace status] A project folder is connected; its files only matter if the user asks about them.";
-            return [CODEV_IDENTITY, DEV_ROLES[role].prompt, general ? null : AUTONOMY_RULES, coding ? null : REQUEST_KIND_NOTES[kind], workspaceNote,
+            return [CODEV_IDENTITY, DEV_ROLES[role].prompt, general ? null : AUTONOMY_RULES, coding && codeAutopilot ? AUTOPILOT_RULES : null, coding ? null : REQUEST_KIND_NOTES[kind], workspaceNote,
                 agent.instructions && `[Agent instructions] ${agent.instructions}`, savedMemoryForPrompt(task), storyStudio && CodevStoryStudio.studioPromptBlock(storyStudio, task),
                 insuranceDesk && CodevInsuranceDesk.deskPromptBlock(insuranceDesk, task), memory].filter(Boolean).join("\n\n");
         }
@@ -8690,7 +8790,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
         async function runHostCommand(args, ctx) {
             const command = String(args?.command || "").trim();
             if (!command) return "run_command needs a 'command' string.";
-            const auto = toolsAutoRun && isSafeHostCommand(command);
+            if (autopilotOn(ctx) && wreckingCommand(command)) return AUTOPILOT_REFUSED;
+            const auto = autopilotOn(ctx) || (toolsAutoRun && isSafeHostCommand(command));
             if (!auto) {
                 const ok = await askPermission(`${ctx?.agentName || "An agent"} wants to run this command on your computer:\n\n${command.slice(0, 600)}${args.cwd ? `\n\n(in ${args.cwd})` : ""}\n\nIt runs in CoDev's copy of your project, not your real folder, but Docker isn't running, so it isn't walled off from the rest of your computer. Allow it?`, ctx?.agentName);
                 if (!ok) {
@@ -8698,7 +8799,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                     return "The user declined to run this command. Don't run it again; explain what you wanted to check and continue without it, or ask the user.";
                 }
             }
-            logConsoleActivity(`[Sandbox] Running on this computer${auto ? " (a plain test/build step)" : " (you approved it)"}: ${command.slice(0, 120)}`);
+            logConsoleActivity(`[Sandbox] Running on this computer${autopilotOn(ctx) ? " (coding autopilot)" : auto ? " (a plain test/build step)" : " (you approved it)"}: ${command.slice(0, 120)}`);
             return callAgentTool("run_command", args, ctx.sandbox, { hostAllowed: true });
         }
 
@@ -8743,6 +8844,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
         // me first" on. The browser's tools keep their own approval prompts.
         async function runOutsideSandbox(tool, name, args, ctx) {
             if (tool.transport === "browser" || tool.annotations?.readOnlyHint) return runMcpTool(tool, args, ctx);
+            if (autopilotOn(ctx)) return runMcpTool(tool, args, ctx);
             if (!await askPermission(`An agent wants to use ${name}${tool.server ? ` (MCP server "${tool.server}")` : ""}. It works outside the sandbox, so the change review won't cover it:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`, ctx?.agentName)) {
                 logConsoleActivity(`[Tool] You declined: ${name}`);
                 return "The user declined this tool call.";
@@ -9191,6 +9293,9 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             const lastAsked = [...aiOptions.history].reverse().find(m => m.role === "user");
             const requestKind = classifyRequest(userText, lastAsked ? lastAsked.content : "", aiOptions.images.length > 0);
             logConsoleActivity(`[Request] Sorted as ${REQUEST_KIND_LABELS[requestKind]}.`);
+            // A verification pass after the agents: when 🛡️ self-healing is ticked, and on every
+            // coding task while 🚀 coding autopilot is on.
+            const verifyAfter = isSelfHeal || (codeAutopilot && requestKind === "code");
             appendMessageToActiveSession("👤 You", userText, attachments.map(a => ({ name: a.name, kind: a.kind, thumb: a.thumb })));
             inputField.value = "";
             clearAttachments();
@@ -9266,7 +9371,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                 // Not awaited, so the user can keep chatting while it works.
                 (async () => {
                     const result = await runAgentStep(session, activeAgent, userText, { ...stepOptions, title: a => `⚡ Background Complete [${a.name}]` });
-                    if (isSelfHeal) await runSelfHealingPass(session, [result], userText, { ...stepOptions, memory: "" });
+                    if (verifyAfter) await runSelfHealingPass(session, [result], userText, { ...stepOptions, memory: "" });
                     await finishSandboxDispatch(session, dispatch);
                 })();
                 return;
@@ -9288,13 +9393,13 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                     results.push(await runAgentStep(session, agent, userText, { ...stepOptions, memory: memoryLine("Memory", agent.memory), notes }));
                 }
                 // A self-healing agent in the swarm has already verified the work.
-                if (isSelfHeal && !ordered.some(a => agentDevRole(a) === "self_healing")) await runSelfHealingPass(session, results, userText, { ...stepOptions, memory: "" });
+                if (verifyAfter && !ordered.some(a => agentDevRole(a) === "self_healing")) await runSelfHealingPass(session, results, userText, { ...stepOptions, memory: "" });
                 await finishSandboxDispatch(session, dispatch);
                 return;
             }
 
             const result = await runAgentStep(session, activeAgent, userText, stepOptions);
-            if (isSelfHeal) await runSelfHealingPass(session, [result], userText, { ...stepOptions, memory: "" });
+            if (verifyAfter) await runSelfHealingPass(session, [result], userText, { ...stepOptions, memory: "" });
             await finishSandboxDispatch(session, dispatch);
         }
 
