@@ -6,7 +6,8 @@
 //                    the Windows app's built-in folder tools (desktop/mcp-tools.js)
 //  - moduleTools():  the page's tool modules that also load in Node (code map, files,
 //                    workers, page extraction, story studio, insurance desk, Google
-//                    apps, Odds API, the phone browser), with every tool switched on
+//                    apps, MEGA, notes and tables, Azgaar maps, Odds API, the phone
+//                    browser), with every tool switched on
 //  - pageTools(page): the tools written inline in index.html and media-tools.js, read
 //                    from the real page in Chromium with every optional tool switched on
 //
@@ -69,6 +70,9 @@ async function moduleTools() {
     const Google = require(path.join(UI, 'google-apps.js'));
     const Odds = require(path.join(UI, 'odds-api.js'));
     const Phone = require(path.join(UI, 'phone-browser.js'));
+    const Mega = require(path.join(UI, 'mega-cloud.js'));
+    const Notes = require(path.join(UI, 'notes-tables.js'));
+    const Maps = require(path.join(UI, 'azgaar-maps.js'));
 
     const desk = Desk.createDeskStore(memoryStorage(), { docs: Desk.memoryDocs() });
     desk.saveSettings({ agentAccess: true });
@@ -77,6 +81,10 @@ async function moduleTools() {
     const google = Google.createGoogleApps({ transport: { request: async () => ({}) } });
     const odds = Odds.createOddsTracker({ storage: memoryStorage(), http: { get: async () => ({}) } });
     const phone = Phone.createPhoneBrowser({ native: { addListener: () => ({ remove() {} }) }, timers: { setInterval: () => 0, clearInterval: () => {} } });
+
+    const mega = Mega.createMegaCloud({ transport: { handle: async () => ({}) } });
+    const notes = Notes.createNotesTables({ getStore: () => null });
+    const maps = Maps.createAzgaarTools({ readFile: async () => null, generate: async () => ({}), saveFile: async () => ({}) });
 
     const deps = { saveFile: async () => ({ id: 'x' }), datasets: Files.createDatasetStore(), compile: () => {}, writeProjectFile: async () => '' };
     return [
@@ -87,6 +95,9 @@ async function moduleTools() {
         ...strip('page', deskTools),
         ...strip('page', Object.entries(google.TOOLS).map(([name, t]) => ({ name, ...t }))),
         ...strip('page', Object.entries(odds.TOOLS).map(([name, t]) => ({ name, ...t }))),
+        ...strip('page', Object.entries(mega.TOOLS).map(([name, t]) => ({ name, ...t }))),
+        ...strip('page', Object.entries(notes.TOOLS).map(([name, t]) => ({ name, ...t }))),
+        ...strip('page', Object.entries(maps.TOOLS).map(([name, t]) => ({ name, ...t }))),
         ...strip('phone-browser', phone.tools)
     ];
 }

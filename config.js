@@ -91,7 +91,7 @@ function loadConfig({ argv = process.argv.slice(2), envFile } = {}) {
         },
         // Filled in by server.js / setup.js after probing (see scripts/checks.js).
         docker: { available: false, version: null, detail: 'not checked' },
-        // The user's own "Desktop app" OAuth client for Gmail and Drive (docs/google-apps.md).
+        // The user's own "Desktop app" OAuth client for Gmail (docs/google-apps.md).
         google: {
             apiKey: keys.googleApi.key,
             clientId: String(process.env.GOOGLE_CLIENT_ID || '').trim() || null,

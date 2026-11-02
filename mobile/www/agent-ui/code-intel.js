@@ -949,7 +949,7 @@
         return clip(`\n\n[Code map] ${out.join("\n")}`, maxChars);
     }
 
-    const GAME_TASK = /\b(godot|gdscript|gdshader|tscn|tres|shaders?|glsl|hlsl|CharacterBody[23]D|RigidBody[23]D|Area[23]D|move_and_slide|MoveAndSlide|_physics_process|PhysicsProcess|quaternions?|euler angles?|transform3d|basis|raycasts?|hit ?box(es)?|hurt ?box(es)?|frame[- ]data|state machines?|game ?engines?|game ?loop|fixed ?time ?step|collisions?|rigid ?body|kinematic|physics (loop|engine|step|tick)|inverse kinematics|netcode|rollback|unity|unreal|monogame|bevy|raylib|sdl2?|blender|bpy|gltf|glb)\b|\.(gd|gdshader|tscn|tres|glb|gltf|blend)\b/i;
+    const GAME_TASK = /\b(godot|gdscript|gdshader|tscn|tres|shaders?|glsl|hlsl|CharacterBody[23]D|RigidBody[23]D|Area[23]D|move_and_slide|MoveAndSlide|_physics_process|PhysicsProcess|quaternions?|euler angles?|transform3d|basis|raycasts?|hit ?box(es)?|hurt ?box(es)?|frame[- ]data|state machines?|game ?engines?|game ?loop|fixed ?time ?step|collisions?|rigid ?body|kinematic|physics (loop|engine|step|tick)|inverse kinematics|netcode|rollback|unity|unreal|monogame|bevy|raylib|sdl2?|blender|bpy|gltf|glb|scene ?dress(ing)?|set ?dress(ing)?|furnish(ing)?|level ?dressing|3d props?)\b|\.(gd|gdshader|tscn|tres|glb|gltf|blend)\b/i;
     const BLENDER_TASK = /\b(blender|bpy|gltf|glb|\.blend)\b/i;
 
     function isGameTask(text) { return GAME_TASK.test(String(text || "")); }
@@ -1005,6 +1005,12 @@ FRAME-DATA STATE MACHINES (fighters, action games)
 LIVE EDITOR AND BLENDER (Windows app or CoDev on the computer)
 - godot_editor controls the open Godot editor through the CoDev Bridge plugin: inspect the scene_tree, add_node, instantiate scenes and .glb models, set_property, play and stop, save_scene. If it says the plugin is missing, call godot_install_bridge (the user approves) and ask the user to reopen the project. Keep the game loop in GDScript/C#; use the bridge for one-off edits, never frame-by-frame control.
 - blender_run runs a bpy script in Blender in the background and saves to the project (output: "assets/models/x.glb" exports glTF for Godot). Then godot_editor "rescan" imports it and "instantiate" places it. Model in meters, +Z up in Blender (the glTF exporter converts to Godot's +Y up), apply transforms before export, name objects clearly (suffix -col makes Godot generate collision, -rigid a rigid body, -noimp skips the node).
+
+SCENE DRESSING (furnishing rooms and placing props from the user's own assets)
+- scene_assets says what every .glb/.gltf and texture in the project is, worked out from the files (kind, real size in meters, units, materials, colors, style). Use it instead of guessing from file names; search it for "80s desk lamp" or "dark wood table".
+- scene_dress places things by real-world rules (lamps and monitors on the desk top, chairs facing desks and around tables, nightstands by the bed's head, rugs under tables, pictures above the sofa), never overlapping, inside the room, matching the style asked for and what the user has liked. Turn the request into a preset (office, bedroom, living_room, dining_room, kitchen) and/or items like {"category": "desk_lamp", "on": "Desk"}; pass the room size when the user gives it. target "godot" places it in the open editor (then godot_editor save_scene); "blender" returns a bpy script for blender_run.
+- It learns by itself from what the user moved, deleted or swapped; scene_learn shows what it learned and takes feedback in words ({"style": "more wood", "verdict": "like"}) or corrections ({"asset": ..., "category": ...}). When the user says "I don't like X", record it with scene_learn rather than only changing the scene.
+- scene_edit clears a surface, removes something with what's on it, or moves it with what's on it. Use it rather than godot_editor remove_node for furniture.
 
 OTHER ENGINES: Unity physics in FixedUpdate with Rigidbody (not transform) moves; Unreal uses Tick(DeltaSeconds) and UPROPERTY for editor values. Same math and fixed-step rules.`;
 
@@ -1097,6 +1103,10 @@ OTHER ENGINES: Unity physics in FixedUpdate with Rigidbody (not transform) moves
         if (name === "godot_validate") return `🎮 Running Godot headless to check ${Array.isArray(args.files) && args.files.length ? args.files.join(", ") : "the scripts"}`;
         if (name === "godot_editor") return `🎮 Godot editor: ${args.action}${args.args && (args.args.path || args.args.node || args.args.name) ? ` ${args.args.path || args.args.node || args.args.name}` : ""}`;
         if (name === "godot_install_bridge") return "🎮 Installing the CoDev Bridge plugin (asks you first)";
+        if (name === "scene_assets") return args.action === "search" ? `🪑 Searching your 3D assets for ${args.query || args.category || (args.tags || []).join(", ")}` : "🪑 Scanning your 3D assets";
+        if (name === "scene_dress") return `🛋️ Dressing the scene${args.preset ? ` as a ${String(args.preset).replace(/_/g, " ")}` : ""}${args.target === "blender" ? " for Blender" : args.target === "plan" ? " (plan only)" : " in Godot"}`;
+        if (name === "scene_edit") return `🛋️ ${args.action === "move" ? "Moving" : args.action === "clear" ? "Clearing" : "Removing"} ${args.node}${args.action === "clear" ? "" : " with what's on it"}`;
+        if (name === "scene_learn") return "🧠 Learning from your scene edits";
         if (name === "blender_run") return `🧊 Running Blender${args.output ? ` to make ${args.output}` : ""} (asks you first)`;
         return "";
     }

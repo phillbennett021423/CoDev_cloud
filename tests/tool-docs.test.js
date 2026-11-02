@@ -53,7 +53,7 @@ test('the catalog finds every tool family', () => {
     const names = new Set(nodeTools.map(t => t.name));
     for (const name of ['read_file', 'run_command', 'submit_changes', 'browser_navigate', 'browser_extract', 'outlier_research_list',
         'godot_editor', 'blender_run', 'art_skin_pipeline', 'code_map', 'create_spreadsheet', 'delegate_tasks', 'wide_research',
-        'studio_save', 'insurance_clients', 'gmail_send', 'drive_save_file', 'odds_lookup_list']) {
+        'studio_save', 'insurance_clients', 'gmail_send', 'mega_save_file', 'notes_write', 'table_read', 'map_read', 'odds_lookup_list']) {
         assert.ok(names.has(name), `${name} is missing from the tool catalog`);
     }
     assert.ok(nodeTools.length >= 100, `only ${nodeTools.length} tools were found`);

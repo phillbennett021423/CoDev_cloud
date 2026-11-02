@@ -1,5 +1,5 @@
-// The user's Google account for CoDev's Google tools (YouTube, Maps, Gmail,
-// Drive; see mobile/www/agent-ui/google-apps.js). Used by server.js (POST
+// The user's Google account for CoDev's Google tools (YouTube, Maps, Gmail;
+// see mobile/www/agent-ui/google-apps.js). Cloud files are in MEGA (mega-connect.js). Used by server.js (POST
 // /google) and the Windows app (IPC codev:google), so the page never holds the
 // sign-in's refresh token unless the user copies it to a phone.
 //
@@ -27,11 +27,10 @@ const API_HOSTS = new Set([
     'www.googleapis.com', 'gmail.googleapis.com', 'youtube.googleapis.com',
     'places.googleapis.com', 'routes.googleapis.com', 'maps.googleapis.com'
 ]);
-// Read-only unless the user turns on sending and saving; then Gmail send and
-// Drive's per-file scope (only files CoDev creates) are added.
+// Read-only unless the user turns on sending; then Gmail send is added.
 const READ_SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/youtube.readonly',
-    'https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/drive.readonly'];
-const WRITE_SCOPES = ['https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/drive.file'];
+    'https://www.googleapis.com/auth/gmail.readonly'];
+const WRITE_SCOPES = ['https://www.googleapis.com/auth/gmail.send'];
 const PASS_HEADERS = new Set(['content-type', 'x-goog-fieldmask']);
 const SIGNIN_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
