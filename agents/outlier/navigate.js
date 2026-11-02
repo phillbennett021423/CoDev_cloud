@@ -1187,15 +1187,21 @@ function onlyGame(props, teams) {
 // Rate (L5/L10/L20/H2H/season, a From-To range), Odds ("At least -300" by
 // default, which hides heavy favorites), Opponent Matchup, Over/Under, Include
 // alternative lines, then Save filters and Show N results. CoDev turns alt lines
-// on, opens the odds range all the way, ticks the game, and shows the results. It
+// on, opens the odds range all the way, ticks the game and the players, sets the
+// Hit Rate window and its From %, picks Over or Under, and shows the results, so
+// the board holds only what was asked for instead of being scrolled end to end. It
 // never touches Only EV+, Save filters, Templates or anything on a slip.
 
 // Runs inside the page: marks one part of the filter panel with
 // data-codev-filter="1" and says what it found. what: 'open' (the button that
 // opens the panel), 'panel' (is it open), 'alt' (the alt-lines switch), 'odds'
 // (the Odds row), 'oddsFrom' (the low end of the odds range), 'game' (the game's
-// row, by its teams), 'show' (Show N results).
-function markFilter({ what, teams = [] }) {
+// row, by its teams), 'playerSearch' (the Players search box), 'player' (a
+// player's checkbox, by name), 'hitOpen' (the Hit Rate heading), 'hitTab' (its
+// L5/L10... tab, by window), 'hitFrom' (its From box or slider), 'side' (the Over
+// or Under choice), 'prop' (a prop type's checkbox, by its words), 'show' (Show N
+// results).
+function markFilter({ what, teams = [], name = '', window: win = 'l5', side = 'over', words = [] }) {
     document.querySelectorAll('[data-codev-filter]').forEach(el => el.removeAttribute('data-codev-filter'));
     const NEVER = /\b(save|template|only ev|my picks|add to|submit|place|enter|deposit|withdraw|delete|remove)\b/i;
     const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
@@ -1266,6 +1272,113 @@ function markFilter({ what, teams = [] }) {
         }
         return null;
     }
+    // The panel's own sections: the element holding the panel (an ancestor of the alt
+    // lines switch's label that also holds the Hit Rate heading), so a "Games" tab at
+    // the top of the board is never taken for the panel's Games heading.
+    const SECTION = /^(search props|only ev\+?|players?|games?|hit ?rates?|odds|opponent matchup|over\s*\/\s*under|overs?\s*\/\s*unders?|include alt(ernative|ernate)? lines|props?|markets?|prop types?|stat types?|stats?|categories)$/i;
+    const anchor = labelEl(/^include alt(ernative|ernate)? lines$/i) || labelEl(/^current filters$/i);
+    let root = document.body;
+    for (let up = anchor; up && up !== document.body; up = up.parentElement) {
+        if (/hit ?rates?/i.test(textOf(up)) && /\bodds\b/i.test(textOf(up))) { root = up; break; }
+    }
+    const headingIn = re => {
+        let best = null;
+        for (const el of root.querySelectorAll('*')) {
+            const t = textOf(el);
+            if (!t || t.length > 40 || !re.test(t) || !visible(el)) continue;
+            if (!best || best.contains(el)) best = el;
+        }
+        return best;
+    };
+    const following = (a, b) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+    // Everything between a section's heading and the next heading.
+    const sectionOf = re => {
+        const head = headingIn(re);
+        if (!head) return null;
+        let stop = null;
+        for (const el of root.querySelectorAll('*')) {
+            if (el === head || head.contains(el) || el.contains(head) || !following(head, el)) continue;
+            const t = textOf(el);
+            if (!t || t.length > 40 || !SECTION.test(t) || !visible(el)) continue;
+            if ([...el.children].some(c => SECTION.test(textOf(c)))) continue;
+            stop = el;
+            break;
+        }
+        const inside = el => el !== head && !el.contains(head) && following(head, el) && (!stop || following(el, stop)) && visible(el);
+        return { head, inside };
+    };
+    const norm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+    const BOX = 'input[type="checkbox"], [role="checkbox"], [role="option"], [aria-checked], [aria-selected]';
+    // A checkbox whose own row (up to 4 levels up, short text) passes test.
+    const boxWhere = (test, scope) => {
+        for (const box of root.querySelectorAll(BOX)) {
+            if (scope && !scope(box) && !scope(box.parentElement || box)) continue;
+            for (let up = box.parentElement || box, i = 0; up && i < 4; up = up.parentElement, i++) {
+                const t = norm(textOf(up));
+                if (t.length > 80) break;
+                if (test(t)) return mark(visible(box) ? box : up, { on: isOn(box), text: textOf(up) });
+            }
+        }
+        return null;
+    };
+    const TEXT_INPUT = 'input:not([type]), input[type="text"], input[type="search"], input[type="number"], input[inputmode]';
+    if (what === 'playerSearch') {
+        const sec = sectionOf(/^players?$/i);
+        const box = sec && [...root.querySelectorAll(TEXT_INPUT)].find(sec.inside);
+        return box ? mark(box, { value: box.value }) : null;
+    }
+    if (what === 'player') {
+        // "LeBron James", "L. James" and "Lebron James Jr." are the same player.
+        const parts = norm(name).replace(/ (jr|sr|ii|iii|iv)$/, '').split(' ');
+        if (!parts[0]) return null;
+        const last = parts.slice(1).join(' ') || parts[0];
+        const has = (t, w) => new RegExp(`(^| )${w}( |$)`).test(t);
+        const sec = sectionOf(/^players?$/i);
+        return boxWhere(t => has(t, last) && (parts.length === 1 || has(t, parts[0]) || has(t, parts[0][0])), sec ? sec.inside : null);
+    }
+    if (what === 'hitOpen') {
+        const head = headingIn(/^hit ?rates?$/i);
+        return head ? mark(head, textOf(head)) : null;
+    }
+    if (what === 'hitTab') {
+        const sec = sectionOf(/^hit ?rates?$/i);
+        if (!sec) return null;
+        const n = String(win).toLowerCase().replace(/[^a-z0-9]/g, '');
+        const re = /^l\d+$/.test(n) ? new RegExp(`^(${n}|last ${n.slice(1)}( games)?)$`, 'i')
+            : n === 'h2h' ? /^(h2h|head ?2 ?head|head to head)$/i
+            : /last|prev/.test(n) ? /^(last season|prev(ious)? season|20\d\d)$/i : /^(this season|current season|season|szn)$/i;
+        const tab = [...root.querySelectorAll('*')].find(el => sec.inside(el) && re.test(textOf(el)) && ![...el.children].some(c => re.test(textOf(c))));
+        if (!tab) return null;
+        const on = tab.getAttribute('aria-selected') === 'true' || isOn(tab) || /^(active|on|checked)$/i.test(tab.getAttribute('data-state') || '');
+        return mark(tab, { on, label: textOf(tab) });
+    }
+    if (what === 'hitFrom') {
+        const sec = sectionOf(/^hit ?rates?$/i);
+        if (!sec) return null;
+        const box = [...root.querySelectorAll(TEXT_INPUT)].find(sec.inside);
+        if (box) return mark(box, { kind: 'input', value: box.value });
+        const slider = [...root.querySelectorAll('[role="slider"], input[type="range"]')].find(sec.inside);
+        if (!slider) return null;
+        return mark(slider, { kind: slider.matches('input') ? 'range' : 'slider', min: slider.getAttribute('aria-valuemin') || slider.min || null,
+            max: slider.getAttribute('aria-valuemax') || slider.max || null, now: slider.getAttribute('aria-valuenow') || slider.value || null });
+    }
+    if (what === 'side') {
+        const sec = sectionOf(/^(over\s*\/\s*under|overs?\s*\/\s*unders?)$/i);
+        if (!sec) return null;
+        const re = side === 'under' ? /^unders?$/i : /^overs?$/i;
+        const opt = [...root.querySelectorAll('*')].find(el => sec.inside(el) && re.test(textOf(el)) && ![...el.children].some(c => re.test(textOf(c))));
+        if (!opt) return null;
+        const box = opt.closest(BOX) || (opt.parentElement && opt.parentElement.querySelector(BOX)) || opt;
+        const on = isOn(box) || box.getAttribute('aria-selected') === 'true' || /^(active|on|checked)$/i.test(box.getAttribute('data-state') || '');
+        return mark(visible(box) ? box : opt, { on });
+    }
+    if (what === 'prop') {
+        const want = words.map(norm).filter(Boolean);
+        if (!want.length) return null;
+        const sec = sectionOf(/^(props?|markets?|prop types?|stat types?|stats?|categories)$/i);
+        if (!sec) return null;
+        return boxWhere(t => want.includes(t), sec.inside);
+    }
     if (what === 'show') {
         for (const el of document.querySelectorAll('button, [role="button"], a')) {
             if (visible(el) && /^(show|see|view|apply)\b.*\b(results?|props?)$|^apply( filters)?$|^done$/i.test(textOf(el)) && !NEVER.test(textOf(el))) return mark(el, textOf(el));
@@ -1275,12 +1388,14 @@ function markFilter({ what, teams = [] }) {
     return null;
 }
 
-// Opens Outlier's filter panel and sets it for researching a list: alternative
-// lines on (the user's line is often an alt line), the odds range opened to its
-// lowest end (the default "At least -300" hides heavy favorites), the game ticked
-// when one was asked for, then Show results. Returns what it set, as steps; a
-// board without the panel returns [] and the board is read as it is.
-async function setFilters(page, { altLines = true, widenOdds = true, teams = null, sport = null } = {}, { settleMs = 800 } = {}) {
+// Opens Outlier's filter panel and sets it: alternative lines on (the user's line
+// is often an alt line), the odds range opened to its lowest end (the default "At
+// least -300" hides heavy favorites), the game ticked when one was asked for, the
+// players ticked (players: names), the prop types ticked (props: a stat's words),
+// the Hit Rate window and its From % (hitRate: { window: 'l5', from: 60 }), Over or
+// Under (side), then Show results. Returns what it set, as steps; a board without
+// the panel returns [] and the board is read as it is.
+async function setFilters(page, { altLines = true, widenOdds = true, teams = null, sport = null, players = null, props = null, hitRate = null, side = null } = {}, { settleMs = 800 } = {}) {
     const did = [];
     if (teams) teams = teams.map(t => [t, ...teamTokens(t, String(sport || '').toLowerCase())]);
     const find = (what, extra = {}) => page.evaluate(markFilter, { what, ...extra }).catch(() => null);
@@ -1339,6 +1454,81 @@ async function setFilters(page, { altLines = true, widenOdds = true, teams = nul
             game = await find('game', { teams });
         }
         if (game && !game.on) { await click(); did.push(`game ${game.text.slice(0, 60)}`); } else if (game) did.push(`game ${game.text.slice(0, 60)}`);
+    }
+    const marked = () => page.locator('[data-codev-filter="1"]').first();
+    // Types into the marked box the way a person does (select all, type), so the
+    // page's own handlers see it.
+    const typeInto = async value => {
+        await marked().click({ timeout: 3000 }).catch(() => {});
+        await marked().fill(String(value), { timeout: 3000 }).catch(async () => {
+            await page.keyboard.press('Control+A').catch(() => {});
+            await page.keyboard.type(String(value)).catch(() => {});
+        });
+        await page.waitForTimeout(Math.min(settleMs, 600));
+    };
+    if (Array.isArray(players) && players.length) {
+        const ticked = [], missing = [];
+        for (const name of [...new Set(players.filter(Boolean))].slice(0, 20)) {
+            let box = await find('player', { name });
+            let searched = false;
+            if (!box && await find('playerSearch')) {
+                await typeInto(name);
+                searched = true;
+                box = await find('player', { name });
+            }
+            if (box && !box.on) await click();
+            (box ? ticked : missing).push(name);
+            if (searched && await find('playerSearch')) await typeInto('');
+        }
+        if (ticked.length) did.push(`players ${ticked.join(', ')}`);
+        if (missing.length) did.push(`players not in the filter: ${missing.join(', ')}`);
+    }
+    if (Array.isArray(props) && props.length) {
+        const prop = await find('prop', { words: props });
+        if (prop && !prop.on) await click();
+        if (prop) did.push(`prop ${prop.text.slice(0, 40)}`);
+    }
+    if (hitRate && Number.isFinite(Number(hitRate.from))) {
+        const win = String(hitRate.window || 'l5').toLowerCase();
+        let tab = await find('hitTab', { window: win });
+        if (!tab && await find('hitOpen')) { await click(); tab = await find('hitTab', { window: win }); }
+        if (tab && !tab.on) await click();
+        const from = Math.max(0, Math.min(100, Number(hitRate.from)));
+        let box = await find('hitFrom');
+        if (!box && !tab && await find('hitOpen')) { await click(); box = await find('hitFrom'); }
+        let now = null;
+        if (box && box.kind === 'input') {
+            await typeInto(from);
+            await page.keyboard.press('Tab').catch(() => {});
+            const after = await find('hitFrom');
+            now = after && Number(String(after.value).replace(/[^\d.]/g, ''));
+        } else if (box && box.kind === 'range') {
+            await marked().evaluate((el, v) => {
+                Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, String(v));
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            }, from).catch(() => {});
+            const after = await find('hitFrom');
+            now = after && Number(after.now);
+        } else if (box) {
+            // A slider of its own: Home, then the arrow key until it reaches the %.
+            await marked().focus().catch(() => {});
+            await page.keyboard.press('Home').catch(() => {});
+            let after = await find('hitFrom');
+            for (let i = 0; i < 101 && after && Number(after.now) < from; i++) {
+                await page.keyboard.press('ArrowRight').catch(() => {});
+                after = await find('hitFrom');
+                if (after) await marked().focus().catch(() => {});
+            }
+            now = after && Number(after.now);
+        }
+        const label = tab ? tab.label : win.toUpperCase();
+        did.push(Number.isFinite(now) && now >= from - 0.5 ? `hit rate ${label} from ${now}%` : `hit rate ${label}${box ? ` (the From box didn't take ${from}%)` : ' (no From box found)'}`);
+    }
+    if (side === 'over' || side === 'under') {
+        const opt = await find('side', { side });
+        if (opt && !opt.on) await click();
+        if (opt) did.push(side === 'over' ? 'Overs' : 'Unders');
     }
     if (await find('show')) await click();
     else await page.keyboard.press('Escape').catch(() => {});

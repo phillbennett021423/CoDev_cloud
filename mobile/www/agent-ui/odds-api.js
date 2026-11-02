@@ -36,7 +36,7 @@
     const REGIONS = { us: "US sportsbooks", us2: "More US sportsbooks", us_dfs: "DFS apps (PrizePicks, Underdog...)", eu: "Europe (Pinnacle and other sharp books)", uk: "UK", au: "Australia" };
     const MAX_STORE_CHARS = 2500000;
     const KEEP_AFTER_START_MS = 36 * 3600 * 1000;
-    const ODDS_TOOL_NAMES = ["odds_status", "odds_lookup_list", "odds_player_props", "odds_game_lines", "odds_line_movement", "odds_show_chart"];
+    const ODDS_TOOL_NAMES = ["odds_status", "odds_lookup_list", "odds_player_props", "odds_game_lines", "odds_line_movement", "odds_steam", "odds_show_chart"];
 
     const SPORTS = {
         nba: "basketball_nba", wnba: "basketball_wnba", ncaab: "basketball_ncaab", cbb: "basketball_ncaab",
@@ -152,6 +152,96 @@
         return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
     }
 
+    // ---- Steam: books moving the same way at the same time ------------------
+    //
+    // A row's books each keep their history (one entry per snapshot where the price or line
+    // changed). Between two snapshot times, a book "moved toward" a side when its line moved
+    // at least half a point that way (a higher total or prop line is toward the Over) or, at
+    // the same line, its no-vig chance for that side rose 2+ points. A coordinated move is
+    // 2+ books (and at least half of the books quoted at both times) moving the same way
+    // with none moving the other way; it counts as steam when it happened within 90 minutes.
+    // Sharp-led: a sharp book (Pinnacle, Circa...) moved that way before most of the others.
+    // Stale: a sharp book moved and soft books haven't followed yet, so their price is old.
+    // With the free plan's snapshots 30+ minutes apart, this sees moves after the fact.
+    const STEAM_WINDOW_MS = 90 * 60000;
+    function findSteam(r) {
+        const [a, b] = r.sides || [];
+        if (!a || !Array.isArray(r.books)) return { moves: [], stale: [], side: null };
+        const isOU = a === "Over";
+        const at = (hist, t) => { let v = null; for (const h of hist || []) { if (h[0] <= t) v = h; else break; } return v; };
+        const state = (bk, t) => {
+            const qa = at(bk.history[a], t), qb = b ? at(bk.history[b], t) : null;
+            if (!qa) return null;
+            const pa = americanToProb(qa[2]), pb = qb ? americanToProb(qb[2]) : NaN;
+            const fair = Number.isFinite(pa) && Number.isFinite(pb) ? pa / (pa + pb) : Number.isFinite(pa) ? pa : null;
+            return { point: qa[1], fair };
+        };
+        // +1 toward side a, -1 toward side b, 0 no real move.
+        const direction = (s0, s1) => {
+            if (!s0 || !s1) return 0;
+            if (Number.isFinite(s0.point) && Number.isFinite(s1.point) && Math.abs(s1.point - s0.point) >= 0.5) {
+                const up = s1.point > s0.point;
+                // A higher total/prop line means the books expect more: toward the Over. For a
+                // spread, a higher number for side a (e.g. -3 -> -1.5) means side a got weaker.
+                return isOU ? (up ? 1 : -1) : (up ? -1 : 1);
+            }
+            if (s0.fair != null && s1.fair != null && Math.abs(s1.fair - s0.fair) >= 0.02) return s1.fair > s0.fair ? 1 : -1;
+            return 0;
+        };
+        const times = [...new Set(r.books.flatMap(bk => Object.values(bk.history || {}).flatMap(h => h.map(x => x[0]))))].sort((x, y) => x - y);
+        const firstMove = new Map();   // book -> { t, dir } of its first real move
+        const moves = [];
+        for (let i = 1; i < times.length; i++) {
+            const t0 = times[i - 1], t1 = times[i];
+            const toward = { 1: [], "-1": [] };
+            let quoted = 0;
+            for (const bk of r.books) {
+                const s0 = state(bk, t0), s1 = state(bk, t1);
+                if (!s0 || !s1) continue;
+                quoted++;
+                const d = direction(s0, s1);
+                if (!d) continue;
+                toward[d].push(bk);
+                if (!firstMove.has(bk.book)) firstMove.set(bk.book, { t: t1, dir: d });
+            }
+            for (const d of [1, -1]) {
+                const movers = toward[d], against = toward[-d];
+                if (movers.length < 2 || against.length || movers.length * 2 < quoted) continue;
+                moves.push({ from: t0, to: t1, side: d === 1 ? a : b, books: movers.map(bk => bk.title), sharp: movers.filter(bk => SHARP_BOOKS.includes(bk.book)).map(bk => bk.title),
+                    of: quoted, steam: t1 - t0 <= STEAM_WINDOW_MS });
+            }
+        }
+        for (const m of moves) {
+            const d = m.side === a ? 1 : -1;
+            const firsts = r.books.map(bk => ({ bk, f: firstMove.get(bk.book) })).filter(x => x.f && x.f.dir === d);
+            const sharpT = Math.min(...firsts.filter(x => SHARP_BOOKS.includes(x.bk.book)).map(x => x.f.t));
+            const softT = firsts.filter(x => !SHARP_BOOKS.includes(x.bk.book)).map(x => x.f.t).sort((x, y) => x - y);
+            m.sharpLed = Number.isFinite(sharpT) && softT.length > 0 && sharpT < softT[Math.floor((softT.length - 1) / 2)];
+        }
+        // Sharp books moved, soft books are still where they were.
+        const stale = [];
+        const last = times[times.length - 1];
+        for (const sh of r.books.filter(bk => SHARP_BOOKS.includes(bk.book))) {
+            const f = firstMove.get(sh.book);
+            if (!f) continue;
+            const behind = r.books.filter(bk => !SHARP_BOOKS.includes(bk.book) && state(bk, f.t) && !(firstMove.get(bk.book) && firstMove.get(bk.book).dir === f.dir)
+                && direction(state(bk, f.t - 1) || state(bk, f.t), state(bk, last)) !== f.dir);
+            if (behind.length) stale.push({ sharp: sh.title, t: f.t, side: f.dir === 1 ? a : b, behind: behind.map(bk => bk.title) });
+        }
+        const lastMove = moves[moves.length - 1];
+        return { moves, stale, side: lastMove ? lastMove.side : stale.length ? stale[0].side : null };
+    }
+
+    function describeSteam(st, now) {
+        const out = [];
+        for (const m of st.moves.slice(-3)) {
+            out.push(`${m.steam ? "Steam" : "Books moved together"} toward the ${m.side}: ${m.books.join(", ")} (${m.books.length} of ${m.of}) between ${timeLabel(m.from, now)} and ${timeLabel(m.to, now)}`
+                + (m.sharpLed ? `, led by ${m.sharp.join(", ") || "a sharp book"}` : ""));
+        }
+        for (const s of st.stale) out.push(`${s.sharp} moved toward the ${s.side} at ${timeLabel(s.t, now)}; ${s.behind.join(", ")} haven't followed yet (their price may be stale)`);
+        return out;
+    }
+
     // ---- HTTP: one answer shape on every device ------------------------------
 
     // Returns get(url) -> { status, body, headers } (headers lower-cased).
@@ -210,7 +300,7 @@
     function createOddsTracker({ storage, http, now = () => Date.now(), onChart = null, log = () => {} }) {
         const read = (key, fallback) => { try { const v = JSON.parse(storage.getItem(key) || "null"); return v == null ? fallback : v; } catch (err) { return fallback; } };
         const write = (key, value) => { try { storage.setItem(key, JSON.stringify(value)); } catch (err) { log(`[Odds] Couldn't save: ${err.message}`); } };
-        const apiKey = () => { try { return String(storage.getItem(STORE.apiKey) || "").trim(); } catch (err) { return ""; } };
+        const apiKey = () => { try { return String(storage.getItem(STORE.apiKey) || "").trim() || (globalThis.codevSharedKey?.("odds") ?? ""); } catch (err) { return ""; } };
         const settings = () => ({ ...DEFAULTS, ...read(STORE.settings, {}) });
         const saveSettings = patch => { const next = { ...settings(), ...patch }; write(STORE.settings, next); return next; };
 
@@ -511,6 +601,7 @@
                 lines.push(`  Since ${timeLabel(r.opened, now())}: ${parts.join(", ") || "no change"}`);
             }
             if (r.lineSpread) lines.push(`  Books disagree by ${r.lineSpread} on the line`);
+            for (const line of describeSteam(findSteam(r), now())) lines.push(`  ${line}`);
             if (r.bestA) lines.push(`  Best ${a}: ${r.bestA.point != null ? `${r.bestA.point} ` : ""}${fmtPrice(r.bestA.price)} at ${r.bestA.book}${r.bestB ? `; best ${b}: ${r.bestB.point != null ? `${r.bestB.point} ` : ""}${fmtPrice(r.bestB.price)} at ${r.bestB.book}` : ""}`);
             if (withBooks) lines.push(`  Books: ${r.books.map(bk => bookLine(r, bk)).join(" | ")}`);
             return lines.join("\n");
@@ -541,6 +632,17 @@
                 score += Math.abs(r.fairA - 0.5) * 20;
                 side = side || (r.fairA > 0.5 ? a : b);
                 why.push(`juice leans ${r.fairA > 0.5 ? a : b} (fair ${pct(Math.max(r.fairA, 1 - r.fairA))})`);
+            }
+            const st = findSteam(r);
+            const lastSteam = st.moves[st.moves.length - 1];
+            if (lastSteam) {
+                score += (lastSteam.steam ? 6 : 3) + (lastSteam.sharpLed ? 3 : 0);
+                side = lastSteam.side;
+                why.unshift(`${lastSteam.steam ? "steam" : "books moved together"} toward the ${lastSteam.side} (${lastSteam.books.length} of ${lastSteam.of} books${lastSteam.sharpLed ? ", sharp-led" : ""})`);
+            } else if (st.stale.length) {
+                score += 4;
+                side = side || st.stale[0].side;
+                why.unshift(`${st.stale[0].sharp} moved toward the ${st.stale[0].side}; ${st.stale[0].behind.join(", ")} haven't followed`);
             }
             if (!side && r.fairA != null) side = r.fairA >= 0.5 ? a : b;
             return { score, side, why };
@@ -698,39 +800,60 @@
             return `Opened the line chart and book table for ${list[0].player || list[0].game}, ${list[0].stat} (${list.length} match${list.length === 1 ? "" : "es"}). The user can see it in CoDev now.`;
         }
 
+        // Free: steam and sharp moves in what's saved, biggest first.
+        async function steamList({ sport, game, player, stat }) {
+            const sk = sport ? sportKey(sport) : "";
+            const mk = stat ? [marketFor(stat, sk)].filter(Boolean) : null;
+            let list = rows({ sport: sk || undefined, markets: mk && mk.length ? mk : undefined, player: player || undefined, team: !player && game ? game : undefined });
+            if (!list.length) return "Nothing saved for that yet. Fetch lines first with odds_player_props, odds_game_lines or odds_lookup_list; moves show from the second snapshot on.";
+            const found = list.map(r => ({ r, st: findSteam(r) })).filter(x => x.st.moves.length || x.st.stale.length);
+            const snaps = Math.max(...list.map(r => r.snapshots));
+            if (!found.length) return `No steam or sharp moves in ${list.length} saved line${list.length === 1 ? "" : "s"} (${snaps} snapshot${snaps === 1 ? "" : "s"} at most). Steam needs at least two snapshots of several books.`;
+            const weight = x => x.st.moves.reduce((n, m) => n + m.books.length + (m.steam ? 2 : 0) + (m.sharpLed ? 2 : 0), 0) + x.st.stale.length * 2;
+            found.sort((x, y) => weight(y) - weight(x) || y.r.updated - x.r.updated);
+            const sharpNote = list.some(r => r.books.some(bk => SHARP_BOOKS.includes(bk.book))) ? "" : "\n(No sharp book in these lines: add the Europe region in Settings > Odds API for Pinnacle, at extra credits, to see who moves first.)";
+            return found.slice(0, 20).map(x => `${describeRow(x.r, { withBooks: false }).split("\n")[0]}\n  ${describeSteam(x.st, now()).join("\n  ")}`).join("\n\n")
+                + `\n\nFrom CoDev's own snapshots (every ${settings().propsMinutes}-${settings().linesMinutes * settings().autoHours * 2} minutes on the free plan), not a live feed: a move is seen at the next snapshot, after the fact.` + sharpNote;
+        }
+
         const sportParam = { type: "string", description: "The league: NBA, NFL, MLB, NHL, WNBA, NCAAB, NCAAF (or an Odds API key like basketball_nba)." };
         const gameParam = { type: "string", description: "Optional: the game, by a team (\"Lakers\", \"Celtics vs Knicks\") or start time in the user's local time (\"8pm\")." };
         const statsParam = { type: "string", description: "Optional: the stats, comma-separated, in Outlier's words (\"Points, Rebounds, PRA\", \"Passing Yards\", \"Strikeouts\"). Each stat costs a credit per game, so ask only for what you need; leave it out for the sport's 3 main ones." };
         const TOOLS = {
             odds_status: {
-                description: "Whether The Odds API is set up, how many of the user's free monthly credits are left (and today's share), and what's saved. Call it when a line tool says it couldn't fetch, or when the user asks about the odds key or credits.",
+                description: "Whether The Odds API is set up, how many of the user's free monthly credits are left (and today's share), and what's saved. Call it when a line tool says it couldn't fetch, or when the user asks about the odds key or credits. Not needed before every odds call: the other odds tools report their own credit use.",
                 inputSchema: { type: "object", properties: {} }, run: status
             },
             odds_lookup_list: {
                 description: "The players, props and lines to look up on Outlier, from every sportsbook's current prices (The Odds API): props whose line or odds moved, props where the books disagree, and props the juice leans on, each with the side the market leans, the reason, and every book's line and price. Ends with the list as legs ready for outlier_research_list. "
-                    + "Call it first when the user wants props found, a ticket built or lines tracked, then research those legs on Outlier. With a game it fetches that game's props (a few credits, saved and reused for an hour); without one it ranks only props already saved and says which games' lines are moving.",
+                    + "Call it first when the user wants props found, a ticket built or lines tracked, then research those legs on Outlier. With a game it fetches that game's props (a few credits, saved and reused for an hour); without one it ranks only props already saved and says which games' lines are moving. For a hit-rate request (\"60%+ in the last 5\") use outlier_find_hit_rates instead, and when the user already gave a list of legs, research those with outlier_research_list rather than this.",
                 inputSchema: { type: "object", properties: { sport: sportParam, game: gameParam, stats: statsParam,
                     top: { type: "integer", description: "Optional: how many props to list (default 12, up to 30)." } }, required: ["sport"] }, run: lookupList
             },
             odds_player_props: {
-                description: "One game's player props at every sportsbook (The Odds API): each player's line and Over/Under price per book, the best price for each side, the fair chance with the margin removed, and how the line moved since CoDev first saw it. Costs 1 credit per stat per game; saved and reused for an hour.",
+                description: "One game's player props at every sportsbook (The Odds API): each player's line and Over/Under price per book, the best price for each side, the fair chance with the margin removed, and how the line moved since CoDev first saw it. Costs 1 credit per stat per game; saved and reused for an hour. Use it to compare prices at every book for one game's props, such as the user's own legs; don't call it for several games at once when one is asked about.",
                 inputSchema: { type: "object", properties: { sport: sportParam, game: gameParam, stats: statsParam,
                     player: { type: "string", description: "Optional: only this player." },
                     refresh: { type: "boolean", description: "Optional: fetch again even if saved in the last hour (still not within 10 minutes). Only when the user asks for the latest." } }, required: ["sport"] }, run: playerProps
             },
             odds_game_lines: {
-                description: "Moneyline, spread and total for a sport's games at every sportsbook (The Odds API), with the best price, the fair chance and how each line moved since CoDev first saw it. One call covers the whole slate (about 3 credits); saved and reused for 30 minutes.",
+                description: "Moneyline, spread and total for a sport's games at every sportsbook (The Odds API), with the best price, the fair chance and how each line moved since CoDev first saw it. One call covers the whole slate (about 3 credits); saved and reused for 30 minutes. Use it for game lines (who's favored, spreads, totals); for player props use odds_player_props instead.",
                 inputSchema: { type: "object", properties: { sport: sportParam, game: gameParam,
                     markets: { type: "string", description: "Optional: moneyline, spread, total (comma-separated). Default all three." },
                     refresh: { type: "boolean", description: "Optional: fetch again even if saved recently. Only when the user asks for the latest." } }, required: ["sport"] }, run: gameLines
             },
             odds_line_movement: {
-                description: "How saved lines moved over time, book by book (every snapshot CoDev took: time, line, price). Free: it reads only what odds_player_props, odds_game_lines and odds_lookup_list saved.",
+                description: "How saved lines moved over time, book by book (every snapshot CoDev took: time, line, price). Free: it reads only what odds_player_props, odds_game_lines and odds_lookup_list saved. Use it when the user asks how a line moved; it has nothing for a game no other odds tool fetched yet, so fetch that game first instead of calling it again.",
                 inputSchema: { type: "object", properties: { sport: sportParam, game: gameParam,
                     player: { type: "string", description: "Optional: a player." }, stat: { type: "string", description: "Optional: the stat or market (\"Points\", \"Spread\")." } } }, run: lineMovement
             },
+            odds_steam: {
+                description: "Steam and sharp moves in the saved lines: several sportsbooks moving the same way between two snapshots (steam when within 90 minutes), whether a sharp book (Pinnacle, Circa...) moved first, and sharp moves the other books haven't followed yet (stale prices). Free: reads only what's saved. Use it to time an entry or to check whether the market is moving with or against a pick. It only sees lines saved before, so for today's prices use odds_player_props or odds_game_lines instead.",
+                inputSchema: { type: "object", properties: { sport: sportParam, game: gameParam,
+                    player: { type: "string", description: "Optional: a player." }, stat: { type: "string", description: "Optional: the stat or market." } } }, run: steamList
+            },
             odds_show_chart: {
-                description: "Show the user a chart of a saved line's movement at each sportsbook, with a table comparing the books, in CoDev's window. Use it when the user wants to see a line's movement or the books side by side.",
+                description: "Show the user a chart of a saved line's movement at each sportsbook, with a table comparing the books, in CoDev's window. Use it when the user wants to see a line's movement or the books side by side; for the numbers alone use odds_line_movement instead.",
                 inputSchema: { type: "object", properties: { sport: sportParam, player: { type: "string", description: "A player, for a prop." },
                     team: { type: "string", description: "A team, for a game line." }, stat: { type: "string", description: "The stat or market." } } }, run: showChart
             }
@@ -752,6 +875,7 @@
                 case "odds_player_props": return `🎯 Comparing props across sportsbooks${where ? ` (${where})` : ""}`;
                 case "odds_game_lines": return `🎯 Comparing game lines${where ? ` (${where})` : ""}`;
                 case "odds_line_movement": return `📉 Checking line movement${args.player ? `: ${args.player}` : where ? ` (${where})` : ""}`;
+                case "odds_steam": return `🚂 Checking for steam${args.player ? `: ${args.player}` : where ? ` (${where})` : ""}`;
                 case "odds_show_chart": return `📉 Showing the line chart${args.player ? ` for ${args.player}` : ""}`;
                 default: return null;
             }
@@ -781,7 +905,7 @@
         }
 
         return { buildTools, describe, status, usage, settings, saveSettings, rows, canSpend, autoTrack, TOOLS,
-            lookupList, playerProps, gameLines, lineMovement, books: () => load().books, hasKey: () => Boolean(apiKey()) };
+            lookupList, playerProps, gameLines, lineMovement, steamList, findSteam, books: () => load().books, hasKey: () => Boolean(apiKey()) };
     }
 
     // ---- Settings panel and the line viewer --------------------------------------
@@ -931,7 +1055,7 @@
 
     return {
         API, KEY_URL, STORE, DEFAULTS, REGIONS, ODDS_TOOL_NAMES, MARKET_LABELS,
-        sportKey, marketFor, marketLabel, americanToProb, createHttp, detectHttp,
+        sportKey, marketFor, marketLabel, americanToProb, createHttp, detectHttp, findSteam, SHARP_BOOKS,
         createOddsTracker, mountSettings, mountViewer, chartSvg
     };
 });

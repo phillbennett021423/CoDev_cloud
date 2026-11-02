@@ -7,11 +7,15 @@ const path = require('path');
 const { createMcpTools } = require('./mcp-tools');
 const { handleImageFolder } = require('./image-folder');
 const { createNodeMcpHub } = require('./mcp-hub');
-const { createSandbox } = require('./sandbox');
+const { createSandboxWorker } = require('./sandbox/remote');
 const { createMedia } = require('./media');
 const { createBrowserService } = require('./browser');
 const { createOutlierBridge } = require('./outlier-bridge');
+const { createGameDevService } = require('./gamedev');
+const { createCreativeService } = require('./creative');
 const { createGoogleConnect } = require('./google-connect');
+const { createMegaConnect } = require('./mega-connect');
+const { createAzgaarMaps } = require('./azgaar-map');
 const { pathToFileURL } = require('url');
 
 const WWW = path.join(__dirname, 'www');
@@ -26,6 +30,10 @@ protocol.registerSchemesAsPrivileged([
 // routes, and YouTube's video titles.
 const ODDS_API = /^https:\/\/api\.the-odds-api\.com\/v4\/sports(\/|\?)/;
 const ODDS_HEADERS = ['x-requests-remaining', 'x-requests-used', 'x-requests-last'];
+// ESPN's free stats JSON for the prop model's game logs.
+const ESPN_API = /^https:\/\/site\.(web\.)?api\.espn\.com\/apis\//;
+const TAVILY_SEARCH_URL = 'https://api.tavily.com/search';
+const TAVILY_FIELDS = ['query', 'search_depth', 'max_results', 'include_answer', 'topic', 'time_range'];
 const ALLOWED_HTTP = /^https:\/\/(html\.duckduckgo\.com\/html\/\?|nominatim\.openstreetmap\.org\/search\?|router\.project-osrm\.org\/route\/v1\/|www\.youtube\.com\/oembed\?)/;
 
 // A crash log in the app's user data folder (CoDev-crash.log), so an error in the
@@ -67,6 +75,10 @@ function lastRunCrashed() {
     return true;
 }
 app.on('will-quit', () => { try { fs.rmSync(heartbeatFile(), { force: true }); } catch { /* gone */ } });
+
+// Set once the sandbox starts: how many agent file changes are still waiting for
+// the user's review. Closing the window asks first, since quitting throws them away.
+let countUnreviewedChanges = null;
 
 function createWindow() {
     const win = new BrowserWindow({
@@ -114,6 +126,34 @@ function createWindow() {
     win.webContents.on('console-message', ({ level, message, sourceId, lineNumber }) => {
         if (level === 'error' && pageErrors++ < 50) crashLog('page-error', `${message} (${sourceId}:${lineNumber})`);
     });
+    // Agents' edits sit in a sandbox copy until the user approves them in the review,
+    // and quitting deletes that copy. So closing with changes still unapproved asks
+    // first and offers the review, instead of silently losing the agents' work.
+    let closeChecked = false;
+    win.on('close', event => {
+        if (closeChecked || !countUnreviewedChanges) return;
+        event.preventDefault();
+        const giveUp = new Promise(resolve => setTimeout(() => resolve(0), 5000));
+        Promise.race([countUnreviewedChanges().catch(() => 0), giveUp]).then(async count => {
+            if (win.isDestroyed()) return;
+            if (count > 0) {
+                const { response } = await dialog.showMessageBox(win, {
+                    type: 'warning',
+                    message: `${count} file change${count === 1 ? '' : 's'} from your agents ${count === 1 ? 'has' : 'have'} not been saved to your project yet.`,
+                    detail: 'Agents write their code in a sandbox copy. It only reaches your project folder after you press Approve in the review. If you quit now, these changes are lost.',
+                    buttons: ['Review and save them', 'Quit and discard them'],
+                    defaultId: 0,
+                    cancelId: 0
+                });
+                if (response === 0) {
+                    if (!win.isDestroyed()) win.webContents.executeJavaScript('typeof openPendingChanges === "function" && openPendingChanges()').catch(() => {});
+                    return;
+                }
+            }
+            closeChecked = true;
+            if (!win.isDestroyed()) win.close();
+        });
+    });
     win.loadURL('app://codev/index.html');
     return win;
 }
@@ -141,6 +181,28 @@ app.whenReady().then(() => {
         return { status: response.status, data: await response.text(), headers };
     });
 
+    // ESPN's public stats API (game logs for the prop model): only its API hosts.
+    ipcMain.handle('codev:http-espn', async (_event, { url }) => {
+        if (typeof url !== 'string' || !ESPN_API.test(url)) throw new Error('This address is not allowed.');
+        const response = await net.fetch(url);
+        return { status: response.status, data: await response.text(), headers: {} };
+    });
+
+    // Tavily search with the key from the page's Settings: only its search endpoint and
+    // the search fields, as server.js sends it for the local server page.
+    ipcMain.handle('codev:http-tavily', async (_event, { key, body }) => {
+        if (typeof key !== 'string' || !/^[\w-]{8,200}$/.test(key.trim())) throw new Error('No Tavily API key.');
+        const request = {};
+        for (const name of TAVILY_FIELDS) if (body && body[name] !== undefined) request[name] = body[name];
+        request.query = String(request.query || '').slice(0, 400);
+        const response = await net.fetch(TAVILY_SEARCH_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key.trim()}` },
+            body: JSON.stringify(request)
+        });
+        return { status: response.status, data: await response.text(), headers: {} };
+    });
+
     // Built-in MCP tools: agents work in the project folder chosen in Settings.
     const settingsFile = path.join(app.getPath('userData'), 'codev-desktop.json');
     let desktopSettings = {};
@@ -149,7 +211,7 @@ app.whenReady().then(() => {
     const handleMcp = createMcpTools(getProjectDir);
     ipcMain.handle('codev:mcp', (_event, message) => handleMcp(message));
 
-    // The Google account for the YouTube, Maps, Gmail and Drive tools, encrypted
+    // The Google account for the YouTube, Maps and Gmail tools, encrypted
     // with safeStorage when Windows offers it. Sign-in opens in the normal browser.
     const canEncrypt = () => { try { return safeStorage.isEncryptionAvailable(); } catch { return false; } };
     const google = createGoogleConnect({
@@ -161,6 +223,18 @@ app.whenReady().then(() => {
     });
     ipcMain.handle('codev:google', (_event, req) => google.handle(req));
     app.on('will-quit', () => google.close());
+    // The MEGA session for the MEGA cloud tools (they replaced Google Drive), encrypted
+    // the same way. The password is used once to sign in and never saved.
+    const mega = createMegaConnect({
+        sessionFile: path.join(app.getPath('userData'), 'mega-session.json'),
+        protect: text => (canEncrypt() ? `enc:${safeStorage.encryptString(text).toString('base64')}` : text),
+        unprotect: text => (text.startsWith('enc:') ? safeStorage.decryptString(Buffer.from(text.slice(4), 'base64')) : text)
+    });
+    ipcMain.handle('codev:mega', (_event, req) => mega.handle(req));
+    // New fantasy maps from Azgaar's Fantasy Map Generator, made in a headless Chromium.
+    const azgaar = createAzgaarMaps({ log: line => console.log(line) });
+    ipcMain.handle('codev:azgaar', (_event, req) => azgaar.handle(req));
+    app.on('will-quit', () => mega.close());
     ipcMain.handle('codev:mcp-folder', () => getProjectDir());
     // Chromium writes the page's storage to disk only every few seconds, so a crash
     // could lose the last chat messages and run checkpoint. The page asks for a write
@@ -182,7 +256,8 @@ app.whenReady().then(() => {
     // Sandboxed agents: tools that work in a staging copy of the project, commands in
     // per-agent Docker containers, and the review gate (the only path that writes
     // agents' changes to the project folder, after the user approves the diff).
-    const sandbox = createSandbox({ getProjectDir, log: line => console.log(line) });
+    // It runs on a thread of its own, so copying and diffing a project never freezes the window.
+    const sandbox = createSandboxWorker({ getProjectDir, log: line => console.log(line) });
     ipcMain.handle('codev:sandbox-mcp', (_event, message) => sandbox.handleMcp(message));
     ipcMain.handle('codev:agent-request', async (_event, req) => {
         const { method, path: urlPath, body } = req || {};
@@ -191,6 +266,11 @@ app.whenReady().then(() => {
         return reply || { status: 404, body: { error: 'Not found' } };
     });
     app.on('before-quit', () => { sandbox.closeSync(); });
+    countUnreviewedChanges = async () => {
+        const reply = await sandbox.handleRequest('GET', '/agent/sandboxes', {}, {});
+        const boxes = reply && reply.status === 200 && Array.isArray(reply.body) ? reply.body : [];
+        return boxes.reduce((sum, box) => sum + (Number(box.pendingChanges) || 0), 0);
+    };
 
     // Video and audio editing (FFmpeg, Whisper, Demucs, DeepFilterNet in Docker): the
     // agents' media_* tools, the page's uploads, and the files it shows under replies.
@@ -219,7 +299,14 @@ app.whenReady().then(() => {
     // The Outlier pipeline: its agent tools ride along with the browser's, and the
     // 📈 Outlier tab's requests come over their own channel.
     const outlier = createOutlierBridge({ browser: browserTools, getProjectDir, log: line => console.log(line) });
-    ipcMain.handle('codev:browser-mcp', (_event, message) => (outlier ? outlier.handleMcp(message, browserTools.handle) : browserTools.handle(message)));
+    // Godot (editor bridge, headless checks) and Blender: their tools ride along too.
+    const gamedev = createGameDevService({ getProjectDir, log: line => console.log(`[gamedev] ${line}`) });
+    // The art pipeline (ComfyUI, LoRA training, PBR maps, Blender, playable ads, audio) too.
+    const creative = createCreativeService({ getProjectDir, log: line => console.log(`[creative] ${line}`) });
+    app.on('before-quit', () => creative.close());
+    const browserAndOutlier = message => (outlier ? outlier.handleMcp(message, browserTools.handle) : browserTools.handle(message));
+    const withGameDev = message => gamedev.handleMcp(message, browserAndOutlier);
+    ipcMain.handle('codev:browser-mcp', (_event, message) => creative.handleMcp(message, withGameDev));
     ipcMain.handle('codev:outlier-request', (_event, req) => (outlier ? outlier.request(req || {}) : { status: 404, body: { error: 'The Outlier pipeline isn\'t included in this build.' } }));
     // Live view: frames and inspector events go to the window that asked for them.
     const liveWatches = new Map(); // webContents id -> unsubscribe
@@ -265,10 +352,11 @@ app.whenReady().then(() => {
     });
 
     // Electron on Windows leaves text boxes dead after alert()/confirm() until the
-    // window loses and regains focus, so the page asks for exactly that.
+    // window loses and regains focus, so the page asks for exactly that. Only while
+    // CoDev is the window in front: it never pulls itself over what the user is doing.
     ipcMain.on('codev:refocus', event => {
         const win = BrowserWindow.fromWebContents(event.sender);
-        if (!win) return;
+        if (!win || !win.isFocused()) return;
         win.blur();
         win.focus();
         event.sender.focus();

@@ -1,6 +1,6 @@
-// Live search and deep research: Google Search through a Gemini key, Claude's own
-// web search, dated news headlines for fresh questions, and the deep research
-// pipeline. Every outside service is stubbed in the page, so no key is needed.
+// Live search and deep research: Tavily with its key, Google Search through a Gemini
+// key, Claude's own web search, dated news headlines for fresh questions, and the deep
+// research pipeline. Every outside service is stubbed in the page, so no key is needed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -132,6 +132,68 @@ test('with Anthropic, web_search is Claude\'s own search, cited inline and liste
     assert.equal(sent.second.name, 'web_search');
     assert.equal(sent.second.type, undefined);
     assert.equal(sent.active, false);
+    assert.deepEqual(errors, []);
+});
+
+test('with a Tavily key, Tavily searches first, then Claude\'s web search, then DuckDuckGo', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { page, errors } = await openPlainPage(t, []);
+    const asked = [];
+    let tavilyStatus = 200;
+    await page.route('**/web/fetch', route => {
+        const message = JSON.parse(route.request().postData());
+        asked.push(message);
+        if (message.kind === 'tavily') {
+            const body = tavilyStatus === 200 ? JSON.stringify({ answer: 'Booker is questionable.', results: [
+                { title: 'Suns injury report', url: 'https://espn.example/suns', content: 'Devin Booker (ankle) is questionable.', published_date: 'Tue, 28 Oct 2026 18:00:00 GMT' }
+            ] }) : JSON.stringify({ detail: { error: 'Unauthorized: missing or invalid API key.' } });
+            return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ status: tavilyStatus, html: body }) });
+        }
+        route.fulfill({ contentType: 'application/json', body: JSON.stringify({ status: 200, html: DDG_HTML }) });
+    });
+    let claudeCalls = 0;
+    await page.route('https://api.anthropic.com/**', route => {
+        claudeCalls++;
+        const body = JSON.parse(route.request().postData());
+        assert.equal(body.tools[0].type, 'web_search_20250305');
+        assert.equal(route.request().headers()['x-api-key'], 'sk-ant-test');
+        if (claudeCalls > 1) return route.fulfill({ status: 529, contentType: 'application/json', body: JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }) });
+        route.fulfill({ contentType: 'application/json', body: JSON.stringify({ stop_reason: 'end_turn', content: [
+            { type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: { query: 'suns injuries' } },
+            { type: 'web_search_tool_result', tool_use_id: 'srv_1', content: [{ type: 'web_search_result', url: 'https://nba.example/suns', title: 'Suns news', page_age: 'October 28, 2026' }] },
+            { type: 'text', text: '- Booker is day to day.', citations: [{ type: 'web_search_result_location', url: 'https://nba.example/suns', title: 'Suns news', cited_text: 'Booker day to day' }] }
+        ] }) });
+    });
+    await page.evaluate(() => { tavilyKey = 'tvly-test-key'; anthropicKey = 'sk-ant-test'; });
+
+    const tavily = await page.evaluate(() => localWebSearch('suns injuries', { recency: 'day' }));
+    assert.equal(tavily.source, 'Tavily');
+    assert.equal(tavily.summary, 'Booker is questionable.');
+    assert.deepEqual(tavily.results[0], { title: 'Suns injury report', href: 'https://espn.example/suns', body: '[2026-10-28 18:00 UTC] Devin Booker (ankle) is questionable.' });
+    const sent = asked.find(m => m.kind === 'tavily');
+    assert.equal(sent.key, 'tvly-test-key');
+    assert.equal(sent.body.topic, 'news');
+    assert.equal(sent.body.time_range, 'day');
+    assert.equal(claudeCalls, 0);
+
+    // Tavily refuses the key: Claude's web search answers.
+    tavilyStatus = 401;
+    const claude = await page.evaluate(() => localWebSearch('suns roster'));
+    assert.equal(claude.source, 'Claude web search (Anthropic)');
+    assert.equal(claude.summary, '- Booker is day to day.');
+    assert.deepEqual(claude.results[0], { title: 'Suns news', href: 'https://nba.example/suns', body: '[October 28, 2026] Booker day to day' });
+
+    // Both fail: DuckDuckGo, free.
+    const free = await page.evaluate(() => localWebSearch('suns arena'));
+    assert.equal(claudeCalls, 2);
+    assert.match(free.source, /DuckDuckGo/);
+
+    // With a Tavily key, a Claude agent's web_search is CoDev's (Tavily first), not Claude's own.
+    const tools = await page.evaluate(() => toAnthropicRequest({ messages: [{ role: 'user', content: 'Hi' }], tools: [
+        { type: 'function', function: { name: 'web_search', description: 'x', parameters: { type: 'object', properties: {} } } }
+    ] }).tools);
+    assert.equal(tools[0].name, 'web_search');
+    assert.equal(tools[0].type, undefined);
     assert.deepEqual(errors, []);
 });
 

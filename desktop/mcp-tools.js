@@ -2,7 +2,11 @@
 // edit files and run commands in a project folder without the Python helper.
 // The page talks to this over IPC with the same JSON-RPC messages it sends to
 // an MCP server (initialize, tools/list, tools/call).
+// The tools run in the app's main process, which also carries the window's clicks and
+// keys, so the slow parts (walking and searching the folder, reading and writing
+// files) are asynchronous: a big project can't freeze CoDev while an agent works.
 const fs = require('fs');
+const fsp = fs.promises;
 const path = require('path');
 const { exec } = require('child_process');
 
@@ -47,58 +51,63 @@ function createMcpTools(getProjectDir) {
         return full;
     }
 
+    const statOrNull = file => fsp.stat(file).catch(() => null);
+
     // Project-relative paths of the files under rel, at most `limit` of them.
-    function walkFiles(rel, limit) {
+    async function walkFiles(rel, limit) {
         const start = projectPath(rel);
-        if (!fs.existsSync(start) || !fs.statSync(start).isDirectory()) throw new ToolError(`'${rel}' is not a folder`);
+        const stat = await statOrNull(start);
+        if (!stat || !stat.isDirectory()) throw new ToolError(`'${rel}' is not a folder`);
         const root = getProjectDir();
         const found = [];
-        const walk = dir => {
-            for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const walk = async dir => {
+            for (const entry of (await fsp.readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
                 if (found.length >= limit) return;
                 if (isSecretName(entry.name)) continue;
                 const full = path.join(dir, entry.name);
-                if (entry.isDirectory()) { if (!SKIPPED_DIRS.has(entry.name)) walk(full); }
+                if (entry.isDirectory()) { if (!SKIPPED_DIRS.has(entry.name)) await walk(full); }
                 else found.push(path.relative(root, full).split(path.sep).join('/'));
             }
         };
-        walk(start);
+        await walk(start);
         return found;
     }
 
-    function listFiles({ path: rel } = {}) {
-        const found = walkFiles(rel, MAX_LISTED_FILES);
+    async function listFiles({ path: rel } = {}) {
+        const found = await walkFiles(rel, MAX_LISTED_FILES);
         if (!found.length) return 'The folder is empty.';
         return found.join('\n') + (found.length >= MAX_LISTED_FILES ? `\n[stopped at ${MAX_LISTED_FILES} files]` : '');
     }
 
-    function readFile({ path: rel } = {}) {
+    async function readFile({ path: rel } = {}) {
         const full = projectPath(rel);
-        if (!fs.existsSync(full) || !fs.statSync(full).isFile()) throw new ToolError(`No file at '${rel}'. Call list_files to see what exists.`);
-        const text = fs.readFileSync(full, 'utf8');
+        const stat = await statOrNull(full);
+        if (!stat || !stat.isFile()) throw new ToolError(`No file at '${rel}'. Call list_files to see what exists.`);
+        const text = await fsp.readFile(full, 'utf8');
         return text.length > MAX_READ_CHARS ? text.slice(0, MAX_READ_CHARS) + `\n[truncated at ${MAX_READ_CHARS} characters]` : text;
     }
 
     // An image (a screenshot, say) as MCP image content, for the page's screenshot reader.
-    function readImage({ path: rel } = {}) {
+    async function readImage({ path: rel } = {}) {
         const full = projectPath(rel);
-        if (!fs.existsSync(full) || !fs.statSync(full).isFile()) throw new ToolError(`No file at '${rel}'. Call list_files to see what exists.`);
+        const stat = await statOrNull(full);
+        if (!stat || !stat.isFile()) throw new ToolError(`No file at '${rel}'. Call list_files to see what exists.`);
         const mimeType = IMAGE_TYPES[path.extname(full).toLowerCase()];
         if (!mimeType) throw new ToolError(`'${rel}' isn't a PNG, JPG, WebP, GIF or BMP image`);
-        const stat = fs.statSync(full);
         if (stat.size > MAX_IMAGE_BYTES) throw new ToolError(`'${rel}' is over ${MAX_IMAGE_BYTES / 1024 / 1024} MB`);
-        return { content: [{ type: 'image', data: fs.readFileSync(full).toString('base64'), mimeType }], _meta: { 'codev/modified': stat.mtimeMs } };
+        return { content: [{ type: 'image', data: (await fsp.readFile(full)).toString('base64'), mimeType }], _meta: { 'codev/modified': stat.mtimeMs } };
     }
 
-    function searchFiles({ query, path: rel } = {}) {
+    async function searchFiles({ query, path: rel } = {}) {
         if (typeof query !== 'string' || !query.trim()) throw new ToolError("search_files needs a 'query' string");
         const needle = query.toLowerCase();
         const root = getProjectDir();
         const hits = [];
-        for (const file of walkFiles(rel, MAX_SEARCHED_FILES)) {
+        for (const file of await walkFiles(rel, MAX_SEARCHED_FILES)) {
             const full = path.join(root, file);
-            if (fs.statSync(full).size > MAX_SEARCHED_FILE_BYTES) continue;
-            const text = fs.readFileSync(full, 'utf8');
+            const stat = await statOrNull(full);
+            if (!stat || stat.size > MAX_SEARCHED_FILE_BYTES) continue;
+            const text = await fsp.readFile(full, 'utf8');
             if (text.includes('\u0000')) continue; // binary
             const lines = text.split('\n');
             for (let i = 0; i < lines.length; i++) {
@@ -110,24 +119,24 @@ function createMcpTools(getProjectDir) {
         return hits.length ? hits.join('\n') : `No matches for "${query}".`;
     }
 
-    function writeFile({ path: rel, content } = {}) {
+    async function writeFile({ path: rel, content } = {}) {
         if (typeof content !== 'string') throw new ToolError("write_file needs 'content' as a string");
         const full = projectPath(rel);
-        fs.mkdirSync(path.dirname(full), { recursive: true });
-        fs.writeFileSync(full, content, 'utf8');
+        await fsp.mkdir(path.dirname(full), { recursive: true });
+        await fsp.writeFile(full, content, 'utf8');
         return `Wrote ${content.length} characters to ${rel}.`;
     }
 
-    function editFile({ path: rel, old_text: oldText, new_text: newText } = {}) {
+    async function editFile({ path: rel, old_text: oldText, new_text: newText } = {}) {
         if (typeof oldText !== 'string' || !oldText || typeof newText !== 'string') {
             throw new ToolError("edit_file needs non-empty 'old_text' and a 'new_text' string");
         }
         const full = projectPath(rel);
-        if (!fs.existsSync(full)) throw new ToolError(`No file at '${rel}'`);
-        const text = fs.readFileSync(full, 'utf8');
+        if (!(await statOrNull(full))) throw new ToolError(`No file at '${rel}'`);
+        const text = await fsp.readFile(full, 'utf8');
         const count = text.split(oldText).length - 1;
         if (count !== 1) throw new ToolError(`old_text must appear exactly once in the file; it appears ${count} times`);
-        fs.writeFileSync(full, text.replace(oldText, () => newText), 'utf8');
+        await fsp.writeFile(full, text.replace(oldText, () => newText), 'utf8');
         return `Edited ${rel}.`;
     }
 
@@ -147,26 +156,28 @@ function createMcpTools(getProjectDir) {
     const pathProp = { type: 'string', description: 'Path relative to the project folder, with / separators.' };
     const TOOLS = [
         { name: 'list_files', run: listFiles, annotations: { readOnlyHint: true },
-          description: "List files in the user's project folder on their computer (recursively, skipping .git and node_modules).",
+          description: "List the files in the user's project folder on their computer, one path per line, recursively (hidden files, .git and node_modules are skipped; stops at 500). Use it first to see what exists before you read or edit. To find where something is used, use search_files instead.",
           inputSchema: { type: 'object', properties: { path: { ...pathProp, description: 'Sub-folder to list; omit for the whole project.' } } } },
         { name: 'read_file', run: readFile, annotations: { readOnlyHint: true },
-          description: "Read a text file from the user's project folder.",
+          description: "Read a whole text file from the user's project folder (long files stop at 100,000 characters). Use it before every edit_file so old_text matches exactly. Don't use it to look for a name across the project: use search_files. Hidden and env files can't be read.",
           inputSchema: { type: 'object', properties: { path: pathProp }, required: ['path'] } },
         { name: 'read_image', run: readImage, annotations: { readOnlyHint: true },
-          description: "Read an image file (PNG, JPG, WebP, GIF, BMP) from the user's project folder as image content.",
+          description: "Read an image file (PNG, JPG, WebP, GIF or BMP, up to 20 MB) from the user's project folder as image content. Use it only when you need the pixels of one picture; to have screenshots read and described, use read_screenshots instead.",
           inputSchema: { type: 'object', properties: { path: pathProp }, required: ['path'] } },
         { name: 'search_files', run: searchFiles, annotations: { readOnlyHint: true },
-          description: "Search the text of every file in the user's project folder (case-insensitive) and get matching lines as path:line: text. Use it to find where something is defined or used.",
+          description: "Search the text of every file in the user's project folder (case-insensitive, plain text, not a regex) and get matching lines as path:line: text (up to 200). Use it to find where something is defined or used. Use list_files instead when you only need file names.",
           inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'Text to look for.' },
               path: { ...pathProp, description: 'Sub-folder to search; omit for the whole project.' } }, required: ['query'] } },
         { name: 'write_file', run: writeFile, annotations: { readOnlyHint: false, destructiveHint: true },
-          description: "Create or overwrite a file in the user's project folder with the given content. Folders are created as needed.",
+          description: "Create a file, or replace a whole file, in the user's project folder with the given content; folders are created as needed. This writes straight to their disk. Use it for new files; for a change to part of an existing file use edit_file instead, so you don't drop code you didn't read.",
           inputSchema: { type: 'object', properties: { path: pathProp, content: { type: 'string', description: 'The complete new file content.' } }, required: ['path', 'content'] } },
         { name: 'edit_file', run: editFile, annotations: { readOnlyHint: false, destructiveHint: true },
-          description: 'Replace one exact snippet of a file in the project folder. old_text must appear exactly once; read the file first.',
-          inputSchema: { type: 'object', properties: { path: pathProp, old_text: { type: 'string' }, new_text: { type: 'string' } }, required: ['path', 'old_text', 'new_text'] } },
+          description: "Replace one exact snippet of a file in the user's project folder (written straight to disk). Use it for every change to an existing file: read_file first, then copy old_text exactly, with its spaces and line breaks. If it says old_text appears 0 or 2+ times, read the file again and pass a longer, unique snippet; don't fall back to rewriting the whole file.",
+          inputSchema: { type: 'object', properties: { path: pathProp,
+              old_text: { type: 'string', description: 'The exact text to replace, copied from read_file; it must appear exactly once in the file.' },
+              new_text: { type: 'string', description: 'The text to put in its place (empty to delete the snippet).' } }, required: ['path', 'old_text', 'new_text'] } },
         { name: 'run_command', run: runCommand, annotations: { readOnlyHint: false, destructiveHint: true },
-          description: "Run a shell command (Windows cmd) in the user's project folder and get exit code, stdout and stderr. Use it to run code, tests, builds and scripts.",
+          description: "Run a shell command (Windows cmd) in the user's project folder and get the exit code, stdout and stderr (the last 8,000 characters of each). Use it to run code, tests, builds and scripts. It runs on the user's real computer: don't use it to read or edit files (use read_file and edit_file) or for anything that deletes or installs without the user asking. A non-zero exit code means the command failed: read stderr and fix the cause.",
           inputSchema: { type: 'object', properties: {
               command: { type: 'string', description: 'The command line to run.' },
               cwd: { ...pathProp, description: 'Sub-folder to run in; omit for the project folder.' },

@@ -3,7 +3,9 @@
 // the Windows app answers over IPC and server.js on POST /screenshots. Read-only,
 // image files only, and never hidden folders or files that can hold keys. A Google
 // Drive or OneDrive online-only file downloads as it's read.
-const fs = require('fs');
+// Asynchronous throughout: in the Windows app this runs in the main process, and an
+// online-only file can take seconds to download, which must not freeze the window.
+const fsp = require('fs').promises;
 const path = require('path');
 
 const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp' };
@@ -25,40 +27,44 @@ function checkedPath(raw, what) {
     return full;
 }
 
+const statOrNull = file => fsp.stat(file).catch(() => null);
+
 // The images in a folder and the folders inside it (two levels), newest first.
-function listImages(folder) {
+async function listImages(folder) {
     const root = checkedPath(folder, 'folder');
-    if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new ImageFolderError(`No folder at ${root}.`);
+    const rootStat = await statOrNull(root);
+    if (!rootStat || !rootStat.isDirectory()) throw new ImageFolderError(`No folder at ${root}.`);
     const found = [];
-    const walk = (dir, depth) => {
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const walk = async (dir, depth) => {
+        for (const entry of await fsp.readdir(dir, { withFileTypes: true })) {
             if (found.length >= MAX_LISTED || SECRET_NAME.test(entry.name)) continue;
             const full = path.join(dir, entry.name);
-            if (entry.isDirectory()) { if (depth < MAX_DEPTH) walk(full, depth + 1); continue; }
+            if (entry.isDirectory()) { if (depth < MAX_DEPTH) await walk(full, depth + 1); continue; }
             if (!IMAGE_TYPES[path.extname(entry.name).toLowerCase()]) continue;
-            let stat;
-            try { stat = fs.statSync(full); } catch { continue; }
+            const stat = await statOrNull(full);
+            if (!stat) continue;
             found.push({ path: full, name: path.relative(root, full).split(path.sep).join('/'), size: stat.size, modified: stat.mtimeMs });
         }
     };
-    walk(root, 0);
+    await walk(root, 0);
     return { folder: root, images: found.sort((a, b) => b.modified - a.modified || b.name.localeCompare(a.name)) };
 }
 
-function readImage(file) {
+async function readImage(file) {
     const full = checkedPath(file, 'image');
     const mimeType = IMAGE_TYPES[path.extname(full).toLowerCase()];
     if (!mimeType) throw new ImageFolderError(`${full} isn't a PNG, JPG, WebP, GIF or BMP image.`);
-    if (!fs.existsSync(full) || !fs.statSync(full).isFile()) throw new ImageFolderError(`No image at ${full}.`);
-    if (fs.statSync(full).size > MAX_IMAGE_BYTES) throw new ImageFolderError(`${full} is over ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`);
-    return { mimeType, data: fs.readFileSync(full).toString('base64') };
+    const stat = await statOrNull(full);
+    if (!stat || !stat.isFile()) throw new ImageFolderError(`No image at ${full}.`);
+    if (stat.size > MAX_IMAGE_BYTES) throw new ImageFolderError(`${full} is over ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`);
+    return { mimeType, data: (await fsp.readFile(full)).toString('base64') };
 }
 
 // One request from the page: { op: "list", folder } or { op: "read", path }.
 async function handleImageFolder(req = {}) {
     try {
-        if (req.op === 'list') return { ok: true, ...listImages(req.folder) };
-        if (req.op === 'read') return { ok: true, ...readImage(req.path) };
+        if (req.op === 'list') return { ok: true, ...await listImages(req.folder) };
+        if (req.op === 'read') return { ok: true, ...await readImage(req.path) };
         return { ok: false, error: `Unknown op ${req.op}` };
     } catch (err) {
         return { ok: false, error: err instanceof ImageFolderError ? err.message : `${err.code || err.name}: ${err.message}` };

@@ -18,7 +18,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const { spawn, execFile } = require('child_process');
-const { launchBrowser, openPage, sendPrompt, waitForReview, waitForChat } = require('./helpers/page-driver');
+const { launchBrowser, openPage, sendPrompt, waitForReview, waitForChat, answerApprovals } = require('./helpers/page-driver');
 
 const ROOT = path.join(__dirname, '..');
 const SERVER_TIMEOUT_MS = 60000;
@@ -255,6 +255,8 @@ test('a coding prompt through the page is staged, reviewed and saved', async t =
         'Built the greeter page in site/.'
     ];
     const { page, errors } = await openPage(launched.browser, ctx.server.url, { steps });
+    // Without Docker, "ls site" runs on this computer only with the user's OK: declined here.
+    await answerApprovals(page, () => false);
     await sendPrompt(page, 'Build a small greeter page in site/ that says hello to the name typed in');
     const rows = await waitForReview(page, 120000);
     const offered = (await page.evaluate(() => window.__modelCalls))[0].tools;
@@ -273,6 +275,29 @@ test('a coding prompt through the page is staged, reviewed and saved', async t =
     assert.equal(fs.existsSync(path.join(ctx.workspace, 'site', 'typo.js')), false);
     assert.deepEqual(errors, []);
     ctx.greeterSaved = true;
+});
+
+test('with automatic saving on, agents\' code reaches the project without the review screen', async t => {
+    if (ctx.skip) return t.skip(ctx.skip);
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const steps = [
+        [
+            { name: 'write_file', arguments: { path: 'auto/greet.js', content: GREETER_JS } },
+            { name: 'write_file', arguments: { path: 'auto/typo.js', content: 'const = 1;\n' } }
+        ],
+        [{ name: 'submit_changes', arguments: { summary: 'Greeter script' } }],
+        'Wrote auto/greet.js.'
+    ];
+    const { page, errors } = await openPage(launched.browser, ctx.server.url, { steps, autoSave: true });
+    await answerApprovals(page, () => false);
+    await sendPrompt(page, 'Write a greeter script in auto/');
+    await waitForChat(page, /Saved 1 file to your project: auto\/greet\.js/, 120000);
+    assert.equal(await page.evaluate(() => Boolean(document.querySelector('#diffReviewOverlay [data-action="approve"]'))), false, 'no review screen');
+    assert.equal(fs.readFileSync(path.join(ctx.workspace, 'auto', 'greet.js'), 'utf8'), GREETER_JS);
+    assert.equal(fs.existsSync(path.join(ctx.workspace, 'auto', 'typo.js')), false, 'a file that fails its check still waits for review');
+    assert.deepEqual(errors, []);
 });
 
 test('a headless browser verification task checks the saved page', async t => {
@@ -343,6 +368,7 @@ test("the agent's card shows its browser live, and the user can drive it from th
         steps: [[{ name: 'browser_navigate', arguments: { url } }], 'Opened the page.']
     });
     page.on('dialog', dialog => dialog.accept());
+    await answerApprovals(page);
     const agentId = await page.evaluate(() => String(selectedAgentId));
     t.after(() => ctx.tool('browser_close', {}, agentId).catch(() => {}));
     await sendPrompt(page, 'Open the test page in your browser');

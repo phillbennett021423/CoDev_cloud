@@ -7,15 +7,23 @@ contextBridge.exposeInMainWorld('codevDesktop', {
     http: {
         get: ({ url, headers }) => ipcRenderer.invoke('codev:http-get', { url, headers }),
         // The Odds API for line tracking, with its credit headers (x-requests-remaining...).
-        odds: ({ url }) => ipcRenderer.invoke('codev:http-odds', { url })
+        odds: ({ url }) => ipcRenderer.invoke('codev:http-odds', { url }),
+        // ESPN's free stats JSON for the prop model's game logs.
+        espn: ({ url }) => ipcRenderer.invoke('codev:http-espn', { url }),
+        // Tavily web search with the key from Settings: ({ key, body }) -> { status, data }.
+        tavily: ({ key, body }) => ipcRenderer.invoke('codev:http-tavily', { key, body })
     },
     azureTts: ({ region, key, ssml }) => ipcRenderer.invoke('codev:azure-tts', { region, key, ssml }),
     // Writes the page's saved chats and run checkpoints to disk now, so a crash right after loses nothing.
     flushStorage: () => ipcRenderer.send('codev:flush-storage'),
     // Gives keyboard focus back to the page after a native alert or confirm.
     refocus: () => ipcRenderer.send('codev:refocus'),
-    // The Google account for the YouTube, Maps, Gmail and Drive tools: { op, ... } (see google-connect.js).
+    // The Google account for the YouTube, Maps and Gmail tools: { op, ... } (see google-connect.js).
     google: req => ipcRenderer.invoke('codev:google', req),
+    // The MEGA session for the MEGA cloud tools: { op, ... } (see mega-connect.js).
+    mega: req => ipcRenderer.invoke('codev:mega', req),
+    // Azgaar's Fantasy Map Generator for the map_generate tool: { op: "generate", seed, ... } (see azgaar-map.js).
+    azgaar: req => ipcRenderer.invoke('codev:azgaar', req),
     // Built-in MCP tools for the chosen project folder.
     mcp: message => ipcRenderer.invoke('codev:mcp', message),
     mcpFolder: () => ipcRenderer.invoke('codev:mcp-folder'),

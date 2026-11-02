@@ -1,9 +1,12 @@
-# Google apps in CoDev (YouTube, Maps, Gmail, Drive)
+# Google apps in CoDev (YouTube, Maps, Gmail)
 
 CoDev's agents can search YouTube, find places and directions on Google Maps,
-read your Gmail and read your Google Drive. They can also send email and save
-new files to Drive, but only if you turn that on, and CoDev asks you before
-every email and every save.
+and read your Gmail. They can also send email, but only if you turn that on, and
+CoDev asks you before every email.
+
+Cloud files moved from Google Drive to MEGA: see [mega-cloud.md](mega-cloud.md).
+Google Docs and Sheets are replaced by an Obsidian vault and CSV/JSON tables: see
+[notes-and-tables.md](notes-and-tables.md).
 
 ## What works with no setup
 
@@ -13,7 +16,7 @@ every email and every save.
   key. Driving, walking and biking work. You don't get ratings, open-now, live
   traffic or transit.
 
-Gmail and Drive always need the sign-in below.
+Gmail always needs the sign-in below.
 
 ## One-time Google Cloud setup (about 10 minutes)
 
@@ -28,7 +31,6 @@ don't want that, and CoDev keeps using OpenStreetMap.
 2. **Turn on the APIs.** Open each link and press Enable:
    - YouTube Data API v3: <https://console.cloud.google.com/apis/library/youtube.googleapis.com>
    - Gmail API: <https://console.cloud.google.com/apis/library/gmail.googleapis.com>
-   - Google Drive API: <https://console.cloud.google.com/apis/library/drive.googleapis.com>
    - Maps (optional, needs billing): Places API (New)
      <https://console.cloud.google.com/apis/library/places.googleapis.com> and Routes API
      <https://console.cloud.google.com/apis/library/routes.googleapis.com>
@@ -36,7 +38,7 @@ don't want that, and CoDev keeps using OpenStreetMap.
    <https://console.cloud.google.com/apis/credentials>, press **Create credentials >
    API key**, and copy the key (it starts with `AIza`). Then edit the key, choose
    **Restrict key**, and tick YouTube Data API v3, Places API (New) and Routes API.
-4. **Set up the sign-in screen (Gmail and Drive).** Open
+4. **Set up the sign-in screen (Gmail).** Open
    <https://console.cloud.google.com/auth/overview> and press Get started. Use
    `CoDev` as the app name and your own email for the contact addresses. Choose
    **External** as the audience.
@@ -50,10 +52,9 @@ don't want that, and CoDev keeps using OpenStreetMap.
    press **Create client**, choose **Desktop app** as the type, name it `CoDev`, and
    copy the **Client ID** and **Client secret**.
 6. **Connect CoDev.** In CoDev, open **Settings > Google apps** and paste the API
-   key, client ID and client secret. Tick "Let agents send email and save new files
-   to Drive" if you want that. Then press **Sign in with Google**, pick your
-   account, and allow access. The panel then shows "Signed in as ..." and agents
-   get the Gmail and Drive tools.
+   key, client ID and client secret. Tick "Let agents send email" if you want
+   that. Then press **Sign in with Google**, pick your account, and allow access.
+   The panel then shows "Signed in as ..." and agents get the Gmail tools.
 
    If you start CoDev with `start-codev.bat` or `npm start`, you can put the same
    values in `.env` instead (`GOOGLE_API_KEY`, `GOOGLE_CLIENT_ID`,
@@ -61,7 +62,15 @@ don't want that, and CoDev keeps using OpenStreetMap.
 
 ## On your phone
 
-The Android app can't run Google's sign-in itself. Instead:
+The Android app signs in on the phone itself, with the same OAuth client:
+
+1. In **Settings > Google apps** in the phone app, paste the API key, the OAuth
+   client ID and the client secret (the "Desktop app" client from above).
+2. Press **Sign in with Google**. Google's sign-in opens in your phone's browser.
+   Choose your account and allow access. The page then says "Done. Go back to
+   CoDev." Switch back to the app: it shows "Signed in as ...".
+
+Or link the phone to the sign-in on your computer:
 
 1. Sign in on your computer as above.
 2. In **Settings > Google apps** on the computer, press **Copy phone link code**.
@@ -79,11 +88,11 @@ afterwards.
 | YouTube | `youtube_search`, `youtube_video` (details and top comments) | Read only |
 | Maps | `maps_search_places`, `maps_directions` | Read only |
 | Gmail | `gmail_search`, `gmail_read`, `gmail_send` | Reading, plus sending if you turn it on. CoDev asks before each email. |
-| Drive | `drive_search`, `drive_read_file`, `drive_save_file` | Reading, plus new files if you turn it on. CoDev asks before each save, and never changes or deletes existing files. |
 
-For images in Drive, such as your screenshots, use the 📸 button or ask CoDev to
-read the folder by its path. Google Drive for desktop shows that path as a drive
-letter, like `G:\My Drive\Screenshots`.
+The Google Drive tools (`drive_search`, `drive_read_file`, `drive_save_file`) were
+replaced by the MEGA tools (`mega_search`, `mega_read_file`, `mega_save_file`); see
+[mega-cloud.md](mega-cloud.md). CoDev no longer asks Google for Drive access. If you
+signed in before this change, sign in again so the old Drive permission goes away.
 
 ## Where the sign-in is kept
 
@@ -102,5 +111,5 @@ your Google account. You can also remove it at <https://myaccount.google.com/per
   every week, press Publish app (step 4).
 - **YouTube "quota exceeded":** the free YouTube quota allows about 100 searches a
   day, and it resets at midnight Pacific time.
-- **Gmail and Drive tools don't appear after you tick sending/saving:** sign in
-  again so Google can ask for the new permissions.
+- **The Gmail send tool doesn't appear after you tick sending:** sign in again so
+  Google can ask for the new permission.

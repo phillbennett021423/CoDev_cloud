@@ -4,7 +4,10 @@
 // http(s) addresses are fetched, never this computer or the local network.
 const DDG_HTML_URL = 'https://html.duckduckgo.com/html/';
 const TIMEOUT_MS = 10000;
+const TAVILY_SEARCH_URL = 'https://api.tavily.com/search';
 const ODDS_API = /^https:\/\/api\.the-odds-api\.com\/v4\/sports(\/|\?)/;
+// ESPN's free public stats JSON, for the prop model's game logs (agent-ui/prop-model.js).
+const ESPN_API = /^https:\/\/site\.(web\.)?api\.espn\.com\/apis\//;
 const MAX_BYTES = 3 * 1024 * 1024;
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
 
@@ -46,7 +49,25 @@ async function fetchText(address, redirects = 4) {
     return { status: response.status, url: url.href, contentType: type, text: Buffer.concat(chunks).toString('utf8') };
 }
 
-// { kind: "search", query, df? } or { kind: "page", url } -> { status, url, contentType, html } or { error }.
+// Posts one Tavily search. The key and body come from the page; only the search fields go on.
+async function postTavily(key, body) {
+    key = String(key || '').trim();
+    if (!/^[\w-]{8,200}$/.test(key)) throw new Error('No Tavily API key.');
+    const fields = ['query', 'search_depth', 'max_results', 'include_answer', 'topic', 'time_range'];
+    const request = {};
+    for (const name of fields) if (body && body[name] !== undefined) request[name] = body[name];
+    request.query = String(request.query || '').slice(0, 400);
+    if (!request.query) throw new Error('No search query.');
+    const response = await fetch(TAVILY_SEARCH_URL, {
+        method: 'POST',
+        signal: AbortSignal.timeout(20000),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify(request)
+    });
+    return { status: response.status, text: await response.text() };
+}
+
+// { kind: "search", query, df? }, { kind: "tavily", key, body } or { kind: "page", url } -> { status, url, contentType, html } or { error }.
 async function handleWebFetch(message) {
     try {
         if (message?.kind === 'search') {
@@ -57,6 +78,11 @@ async function handleWebFetch(message) {
             const page = await fetchText(`${DDG_HTML_URL}?q=${encodeURIComponent(query)}&kl=us-en${df}`);
             return { status: page.status, url: page.url, contentType: page.contentType, html: page.text };
         }
+        // Tavily search with the key from the page's Settings; only its search endpoint.
+        if (message?.kind === 'tavily') {
+            const response = await postTavily(message.key, message.body);
+            return { status: response.status, url: TAVILY_SEARCH_URL, contentType: 'application/json', html: response.text };
+        }
         // The Odds API for the page's line tracking, with its credit headers.
         if (message?.kind === 'odds') {
             const url = String(message.url || '');
@@ -65,6 +91,13 @@ async function handleWebFetch(message) {
             const headers = {};
             for (const name of ['x-requests-remaining', 'x-requests-used', 'x-requests-last']) if (response.headers.get(name) != null) headers[name] = response.headers.get(name);
             return { status: response.status, url, contentType: response.headers.get('content-type') || '', html: await response.text(), headers };
+        }
+        // ESPN's stats JSON for the prop model: only its public API hosts.
+        if (message?.kind === 'espn') {
+            const url = String(message.url || '');
+            if (!ESPN_API.test(url)) return { error: 'Only ESPN\'s stats API is fetched this way.' };
+            const response = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS), headers: { 'User-Agent': USER_AGENT } });
+            return { status: response.status, url, contentType: response.headers.get('content-type') || '', html: await response.text() };
         }
         if (message?.kind === 'page') {
             const page = await fetchText(String(message.url || ''));

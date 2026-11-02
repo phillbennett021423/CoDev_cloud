@@ -1,4 +1,4 @@
-// CoDev's Google tools: the account module (desktop/google-connect.js: sign-in,
+// CoDev's Google tools (YouTube, Maps, Gmail; Drive moved to MEGA): the account module (desktop/google-connect.js: sign-in,
 // tokens, which addresses it will call), the page's tools (agent-ui/google-apps.js:
 // what each returns, what is offered when, the free fallbacks, the phone link), and
 // one run in the real page where an agent reads Gmail and the user approves or
@@ -11,7 +11,7 @@ const path = require('path');
 const { createGoogleConnect, isGoogleApiUrl, READ_SCOPES, WRITE_SCOPES } = require('../desktop/google-connect');
 const Google = require('../mobile/www/agent-ui/google-apps.js');
 const { createMockBackend } = require('./fixtures/mock-agent-backend');
-const { launchBrowser, openPage, sendPrompt, waitForChat } = require('./helpers/page-driver');
+const { launchBrowser, openPage, sendPrompt, waitForChat, answerApprovals } = require('./helpers/page-driver');
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 const b64url = text => Buffer.from(text).toString('base64url');
@@ -156,11 +156,12 @@ test('tools are offered only when they can work', async t => {
     fs.writeFileSync(tokenFile, JSON.stringify({ clientId: 'c', refreshToken: 'r', scopes: [...READ_SCOPES, WRITE_SCOPES[0]] }));
     const signedIn = createGoogleConnect({ tokenFile, fetchImpl: fakeGoogle().fetchImpl });
     names = (await appsOver(signedIn).buildTools()).map(tool => tool.name);
-    assert.deepEqual(names, ['google_apps_status', 'youtube_search', 'youtube_video', 'gmail_search', 'gmail_read', 'gmail_send', 'drive_search', 'drive_read_file']);
+    assert.deepEqual(names, ['google_apps_status', 'youtube_search', 'youtube_video', 'gmail_search', 'gmail_read', 'gmail_send']);
+    assert.ok(!READ_SCOPES.some(scope => /drive/.test(scope)) && !WRITE_SCOPES.some(scope => /drive/.test(scope)), 'Google Drive moved to MEGA');
     assert.match(await appsOver(signedIn).TOOLS.google_apps_status.run(), /Gmail \(read and send, asking first\)/);
 });
 
-test('YouTube, Maps, Gmail and Drive results read well, and writes wait for the user', async t => {
+test('YouTube, Maps and Gmail results read well, and sends wait for the user', async t => {
     const tokenFile = tempTokenFile(t);
     fs.writeFileSync(tokenFile, JSON.stringify({ clientId: 'c', refreshToken: 'r', scopes: [...READ_SCOPES, ...WRITE_SCOPES], email: 'pb@example.com' }));
     const sent = [];
@@ -175,11 +176,7 @@ test('YouTube, Maps, Gmail and Drive results read well, and writes wait for the 
         'GET https://gmail.googleapis.com/gmail/v1/users/me/messages/m1': url => url.searchParams.get('format') === 'full'
             ? json({ id: 'm1', snippet: 's', payload: { headers: [{ name: 'From', value: 'Dabble <hi@dabble.com>' }, { name: 'Subject', value: 'Your slip' }], mimeType: 'multipart/mixed', parts: [{ mimeType: 'text/html', body: { data: b64url(html) } }, { filename: 'slip.png', mimeType: 'image/png', body: { size: 4096 } }] } })
             : json({ id: 'm1', threadId: 't1', labelIds: ['UNREAD'], snippet: 'Your slip won', payload: { headers: [{ name: 'From', value: 'Dabble' }, { name: 'Subject', value: 'Your slip' }, { name: 'Date', value: 'Mon' }, { name: 'Message-ID', value: '<abc@dabble>' }] } }),
-        'POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send': (url, init) => { sent.push(JSON.parse(init.body)); return json({ id: 'sent-1' }); },
-        'GET https://www.googleapis.com/drive/v3/files': url => json({ files: [{ id: 'f1', name: 'Notes', mimeType: 'application/vnd.google-apps.document', modifiedTime: '2026-10-01T00:00:00Z', webViewLink: 'https://docs.google.com/d/f1', q: url.searchParams.get('q') }] }),
-        'GET https://www.googleapis.com/drive/v3/files/f1': () => json({ id: 'f1', name: 'Notes', mimeType: 'application/vnd.google-apps.document', modifiedTime: '2026-10-01T00:00:00Z' }),
-        'GET https://www.googleapis.com/drive/v3/files/f1/export': () => new Response('Doc text here', { headers: { 'content-type': 'text/plain' } }),
-        'POST https://www.googleapis.com/upload/drive/v3/files': (url, init) => { sent.push(init.body); return json({ id: 'new', name: 'out.md', webViewLink: 'https://drive.google.com/new' }); }
+        'POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send': (url, init) => { sent.push(JSON.parse(init.body)); return json({ id: 'sent-1' }); }
     });
     const connect = createGoogleConnect({ tokenFile, fetchImpl: google.fetchImpl, env: { apiKey: 'AIza-env' } });
     let approve = true;
@@ -218,13 +215,7 @@ test('YouTube, Maps, Gmail and Drive results read well, and writes wait for the 
     const raw = Buffer.from(sent[0].raw, 'base64url').toString('utf8');
     assert.match(raw, /In-Reply-To: <abc@dabble>/);
     assert.match(raw, /Thanks — got it/);
-
-    assert.match(await TOOLS.drive_search.run({ query: "Bennett's notes" }), /\[f1\] Notes\nGoogle document/);
-    assert.ok(google.calls.some(c => c.url.includes('drive/v3/files?') && new URL(c.url).searchParams.get('q').includes("name contains 'Bennett\\'s notes'")));
-    assert.match(await TOOLS.drive_read_file.run({ id: 'f1' }), /Doc text here/);
-    assert.match(await TOOLS.drive_save_file.run({ name: 'out.md', content: '# Picks' }), /Saved "out\.md" to Google Drive/);
-    assert.match(sent[1], /Content-Type: text\/markdown; charset=UTF-8\r\n\r\n# Picks/);
-    assert.match(asked[2], /Save a new file to your Google Drive\?/);
+    assert.ok(!Object.keys(TOOLS).some(name => name.startsWith('drive_')), 'Drive tools moved to MEGA (mega_*)');
 });
 
 test('without a key, YouTube and Maps use the free web search and OpenStreetMap', async t => {
@@ -270,6 +261,50 @@ test('the phone links the computer\'s sign-in and calls Google itself', async ()
     assert.equal(store.size, 0);
 });
 
+// The Android app: Google's sign-in opens in the phone's browser and comes back to the
+// app's one-time listener on 127.0.0.1 (stood in for here), with no computer needed.
+test('the Android app signs in to Google on the phone itself', async () => {
+    const store = new Map();
+    const storage = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) };
+    const google = fakeGoogle();
+    let onRedirect = null;
+    const opened = [];
+    const loopback = {
+        addListener: async (name, f) => { assert.equal(name, 'loopback'); onRedirect = f; return { remove() {} }; },
+        loopbackStart: async () => ({ port: 41234 }),
+        loopbackStop: async () => {},
+        openExternal: async ({ url }) => { opened.push(url); }
+    };
+    const phone = Google.phoneTransport({ http: null, storage, fetchImpl: google.fetchImpl, loopback });
+    assert.equal(phone.canSignIn, true);
+    assert.match((await phone.handle({ op: 'signin' })).error, /client ID/);
+    const reply = await phone.handle({ op: 'signin', clientId: 'my-client', clientSecret: 'shh', allowWrite: false });
+    assert.equal(reply.opened, true);
+    const auth = new URL(opened[0]);
+    assert.equal(auth.origin + auth.pathname, 'https://accounts.google.com/o/oauth2/v2/auth');
+    assert.equal(auth.searchParams.get('redirect_uri'), 'http://127.0.0.1:41234');
+    assert.equal(auth.searchParams.get('code_challenge_method'), 'S256');
+    assert.doesNotMatch(auth.searchParams.get('scope'), /gmail\.send/);
+    assert.equal((await phone.handle({ op: 'status' })).signingIn, true);
+
+    // A redirect with the wrong state (another tab, an old link) is ignored.
+    await onRedirect({ port: 41234, query: 'code=good-code&state=wrong' });
+    assert.equal((await phone.handle({ op: 'status' })).signedIn, false);
+    await onRedirect({ port: 41234, query: `code=good-code&state=${auth.searchParams.get('state')}` });
+    const status = await phone.handle({ op: 'status' });
+    assert.equal(status.signedIn, true);
+    assert.equal(status.onPhone, true);
+    assert.equal(status.email, 'pb@example.com');
+    assert.equal(status.signingIn, false);
+    const exchange = google.calls.find(c => c.url === 'https://oauth2.googleapis.com/token');
+    assert.equal(new URLSearchParams(exchange.body).get('redirect_uri'), 'http://127.0.0.1:41234');
+
+    // Signing out of a sign-in made on the phone also removes CoDev's access.
+    await phone.handle({ op: 'signout' });
+    assert.ok(google.calls.some(c => c.url.startsWith('https://oauth2.googleapis.com/revoke')));
+    assert.equal((await phone.handle({ op: 'status' })).signedIn, false);
+});
+
 test('email helpers: headers, bodies and links', () => {
     assert.equal(Google.encodeHeader('Plain subject'), 'Plain subject');
     const encoded = Google.encodeHeader('Picks ✅');
@@ -308,15 +343,12 @@ test('in CoDev, an agent reads Gmail and the user approves one send and declines
         'Done: read your Dabble email and sent one note.'
     ] });
     await page.uncheck('#isSandboxCheckbox');
-    const dialogs = [];
-    page.on('dialog', dialog => {
-        dialogs.push(dialog.message());
-        if (dialogs.length === 1) dialog.accept(); else dialog.dismiss();
-    });
+    const dialogs = await answerApprovals(page, () => dialogs.length === 1);
     await sendPrompt(page, 'Check my Gmail for Dabble and email my friend that the slip hit.');
     await waitForChat(page, /Done: read your Dabble email/);
     const calls = await page.evaluate(() => window.__modelCalls);
-    assert.ok(calls[0].tools.includes('gmail_search') && calls[0].tools.includes('gmail_send') && calls[0].tools.includes('drive_save_file'));
+    assert.ok(calls[0].tools.includes('gmail_search') && calls[0].tools.includes('gmail_send'));
+    assert.ok(!calls[0].tools.some(name => name.startsWith('drive_')));
     assert.match(calls[1].messages.at(-1).content, /Your Dabble slip won \$40/);
     assert.equal(dialogs.length, 2);
     assert.match(dialogs[0], /Send this email from your Gmail\?\n\nTo: friend@example\.com\nSubject: Won/);

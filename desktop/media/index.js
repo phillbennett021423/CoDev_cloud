@@ -387,10 +387,10 @@ function createMedia({ dataDir, log = () => {}, dockerPath, resolveUser, authori
     const fileProp = { type: 'string', description: 'A file in the media folder, like "uploads/clip.mp4" (from media_files or the attachment note).' };
     const TOOLS = [
         { name: 'media_files', run: toolFiles, annotations: { readOnlyHint: true },
-          description: 'List the videos, audio and pictures in CoDev\'s media folder: what the user attached in the chat (uploads/) and what you made (outputs/).',
+          description: 'List the videos, audio and pictures in CoDev\'s media folder: what the user attached in the chat (uploads/) and what you made (outputs/). Use it when you need a file\'s exact name for the other media tools; for files elsewhere on the computer use media_find_on_computer instead.',
           inputSchema: { type: 'object', properties: {} } },
         { name: 'media_info', run: toolInfo, annotations: { readOnlyHint: true },
-          description: 'Length, size, frame rate and sound of a video or audio file in the media folder (ffprobe).',
+          description: 'Length, size, frame rate and sound of a video or audio file in the media folder (ffprobe). Use it before an edit that depends on the length or shape of the clip; don\'t call it for pictures.',
           inputSchema: { type: 'object', properties: { file: fileProp }, required: ['file'] } },
         { name: 'media_edit', run: toolEdit, annotations: { readOnlyHint: false, destructiveHint: false },
           description: 'Edit a video or audio file the user attached, with free tools on their computer (FFmpeg, Whisper, Demucs, DeepFilterNet). '
@@ -410,34 +410,34 @@ function createMedia({ dataDir, log = () => {}, dockerPath, resolveUser, authori
             + 'Times are seconds or "m:ss". Example, "remove the background noise, keep the people talking and add music quietly underneath": '
             + '[{"op": "clean_speech"}, {"op": "add_music", "file": "uploads/song.mp3", "volume": 0.12}]. '
             + 'Music, logos and voiceovers must be files in the media folder: attached by the user, or found on their computer with media_find_on_computer and copied in with media_import. If none fits, ask the user rather than inventing one. '
-            + 'Long clips take minutes (Whisper and Demucs run about as long as the clip).',
+            + 'Long clips take minutes (Whisper and Demucs run about as long as the clip). Use it whenever the user asks to change a video or audio file; to only read what is said use media_transcribe instead.',
           inputSchema: { type: 'object', properties: {
               input: fileProp,
-              steps: { type: 'array', description: 'The edit, in order. Each step is an object with "op" and its options.', items: { type: 'object', properties: { op: { type: 'string' } }, required: ['op'] } },
+              steps: { type: 'array', description: 'The edit, in order. Each step is an object with "op" and its options.', items: { type: 'object', properties: { op: { type: 'string', description: 'The step, like "trim" or "add_music" (listed above).' } }, required: ['op'] } },
               output_name: { type: 'string', description: 'Optional: a short name for the new file, without extension (like "beach-reel").' }
           }, required: ['input', 'steps'] } },
         { name: 'media_transcribe', run: toolTranscribe, annotations: { readOnlyHint: false, destructiveHint: false },
-          description: 'Write down everything said in a video or audio file, with times, using Whisper on the user\'s computer. Saves a .txt and an .srt (subtitle) file. Use it for transcripts, subtitles files, and to read a clip before choosing what to cut.',
+          description: 'Write down everything said in a video or audio file, with times, using Whisper on the user\'s computer. Saves a .txt and an .srt (subtitle) file. Use it for transcripts, subtitles files, and to read a clip before choosing what to cut. Don\'t use it to find one phrase: media_find does that faster.',
           inputSchema: { type: 'object', properties: { file: fileProp, language: { type: 'string', description: 'Optional: a language code like "en" or "es"; detected when left out.' } }, required: ['file'] } },
         { name: 'media_find', run: toolFind, annotations: { readOnlyHint: true },
-          description: 'Find when something is said in a video or audio file (Whisper): returns the start and end seconds of each passage, ready for media_edit\'s trim, keep or cut.',
-          inputSchema: { type: 'object', properties: { file: fileProp, query: { type: 'string', description: 'Words or a phrase, like "welcome to the channel".' }, language: { type: 'string' } }, required: ['file', 'query'] } },
+          description: 'Find when something is said in a video or audio file (Whisper): returns the start and end seconds of each passage, ready for media_edit\'s trim, keep or cut. Use it when the user names something said that they want kept or cut; for the whole text use media_transcribe instead.',
+          inputSchema: { type: 'object', properties: { file: fileProp, query: { type: 'string', description: 'Words or a phrase, like "welcome to the channel".' }, language: { type: 'string', description: 'Optional: a language code like "en"; detected when left out.' } }, required: ['file', 'query'] } },
         { name: 'media_separate', run: toolSeparate, annotations: { readOnlyHint: false, destructiveHint: false },
-          description: 'Split a song or a clip\'s sound into separate audio files with Demucs: stems "vocals" gives the voice and everything else (music and sounds); stems "all" gives voice, drums, bass and other. For a karaoke track, an a cappella, or to reuse the music.',
-          inputSchema: { type: 'object', properties: { file: fileProp, stems: { type: 'string', enum: ['vocals', 'all'] } }, required: ['file'] } }
+          description: 'Split a song or a clip\'s sound into separate audio files with Demucs: stems "vocals" gives the voice and everything else (music and sounds); stems "all" gives voice, drums, bass and other. Use it for a karaoke track, an a cappella, or to reuse the music as a file; to only remove noise or voices inside an edit use media_edit instead.',
+          inputSchema: { type: 'object', properties: { file: fileProp, stems: { type: 'string', enum: ['vocals', 'all'], description: 'vocals (voice and the rest) or all (four stems). Default vocals.' } }, required: ['file'] } }
     ];
 
     // On a server there is no "user's computer" to search, so these two are left out.
     const LOCAL_TOOLS = [
         { name: 'media_find_on_computer', run: toolLocalFind, annotations: { readOnlyHint: true },
           description: 'Find music (or videos) already on the user\'s computer, by name: searches their Music, Videos, Downloads and Desktop folders, or a folder they name. '
-            + 'Use it when the user asks for "my music", a song by name, or background music without attaching one; then copy the pick in with media_import. Use only music the user owns or chose.',
+            + 'Use it when the user asks for "my music", a song by name, or background music without attaching one; then copy the pick in with media_import. Use only music the user owns or chose; don\'t use it for files already in the media folder (media_files lists those).',
           inputSchema: { type: 'object', properties: {
               query: { type: 'string', description: 'Optional: words from the file or folder name, like "lofi" or an artist.' },
               folder: { type: 'string', description: 'Optional: a full folder path the user gave.' },
               kind: { type: 'string', enum: ['audio', 'video', 'any'], description: 'Default audio.' } } } },
         { name: 'media_import', run: toolImport, annotations: { readOnlyHint: false, destructiveHint: false },
-          description: 'Copy a video, song or picture from anywhere on the user\'s computer (a full path from media_find_on_computer or the user) into the media folder, so media_edit can use it. The original isn\'t touched.',
+          description: 'Copy a video, song or picture from anywhere on the user\'s computer (a full path from media_find_on_computer or the user) into the media folder, so media_edit can use it. The original isn\'t touched. Use it after media_find_on_computer picks a file; not needed for what the user attached in the chat, which is already there.',
           inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'The file\'s full path.' } }, required: ['path'] } }
     ];
     const allTools = () => (resolveUser ? TOOLS : TOOLS.concat(LOCAL_TOOLS));
@@ -542,7 +542,7 @@ function createMedia({ dataDir, log = () => {}, dockerPath, resolveUser, authori
     function close() { /* jobs are `docker run --rm`: nothing stays running between them */ }
 
     cleanup().catch(() => {});
-    return { listTools, callTool, handleRequest, status, prepare, saveUpload, openFile, deleteFile, listFiles: ctx => listFiles(folderFor(ctx)), close, root, TOOLS };
+    return { listTools, callTool, handleRequest, status, prepare, saveUpload, openFile, deleteFile, listFiles: ctx => listFiles(folderFor(ctx)), close, root, TOOLS, LOCAL_TOOLS };
 }
 
 function parseResult(reply) {
