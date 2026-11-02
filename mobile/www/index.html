@@ -1276,6 +1276,7 @@
     <script src="agent-ui/page-extract.js"></script>
     <script src="agent-ui/phone-browser.js"></script>
     <script src="agent-ui/story-studio.js"></script>
+    <script src="agent-ui/lore-bridges.js"></script>
     <script src="agent-ui/insurance-desk.js"></script>
     <script src="agent-ui/odds-api.js"></script>
     <script src="agent-ui/code-intel.js"></script>
@@ -2091,6 +2092,30 @@
             setTimeout(() => URL.revokeObjectURL(link.href), 1000);
         }
 
+        // Several text files, or a whole folder (an Obsidian vault) where the browser can
+        // pick one: [{ path, text }] with paths inside the picked folder. Android's picker
+        // takes several files instead.
+        function pickTextFilesFromUser({ directory = false, accept = "" } = {}) {
+            return new Promise(resolve => {
+                const input = document.createElement("input");
+                input.type = "file";
+                input.multiple = true;
+                if (accept) input.accept = accept;
+                if (directory && "webkitdirectory" in input && !getNativeSpeechPlugin("Filesystem")) input.webkitdirectory = true;
+                input.onchange = async () => {
+                    const out = [];
+                    for (const file of [...input.files].slice(0, 3000)) {
+                        if (isSecretName(file.name) || file.size > 2 * 1024 * 1024) continue;
+                        if (accept && !/\.(md|markdown|txt|json)$/i.test(file.name)) continue;
+                        const rel = (file.webkitRelativePath || file.name).split("/");
+                        out.push({ path: (rel.length > 1 ? rel.slice(1) : rel).join("/"), text: await file.text() });
+                    }
+                    resolve(out);
+                };
+                input.click();
+            });
+        }
+
         function pickTextFileFromUser(accept = ".json,application/json") {
             return new Promise(resolve => {
                 const input = document.createElement("input");
@@ -2216,8 +2241,11 @@
                     frame.onload = () => { frame.contentWindow.focus(); frame.contentWindow.print(); setTimeout(() => frame.remove(), 60000); };
                     document.body.appendChild(frame);
                 },
-                pickFile: () => pickTextFileFromUser(),
+                pickFile: accept => pickTextFileFromUser(accept),
+                pickFiles: pickTextFilesFromUser,
+                saveZip: (name, files) => saveBytesForUser(name, CodevFiles.zip(Object.entries(files)), "application/zip"),
                 writeFile: (path, content) => writeWorkspaceFile(path, content),
+                writeFiles: files => writeWorkspaceFiles(files, { asked: true }),
                 canWriteFolder: () => !!connectedDirectoryHandle,
                 voices: studioVoices,
                 speak: speakAsCharacter,
@@ -4665,7 +4693,7 @@
             tools.push(...await buildMediaTools(ctx));
             // The story bible's tools, only for a task about a game's story (they cost tokens on every call).
             if (storyStudio && CodevStoryStudio.isStudioTask(storyStudio, ctx?.task)) {
-                tools.push(...CodevStoryStudio.buildStudioTools(storyStudio, { writeFile: (path, content) => writeWorkspaceFile(path, content), confirm: async text => confirm(text) }));
+                tools.push(...CodevStoryStudio.buildStudioTools(storyStudio, { writeFile: (path, content) => writeWorkspaceFile(path, content), writeFiles: files => writeWorkspaceFiles(files), readFolder: readWorkspaceFolder, confirm: async text => confirm(text) }));
             }
             // The insurance book's tools: only when the user allowed agents in, and only for insurance requests.
             if (insuranceDesk && CodevInsuranceDesk.isDeskTask(insuranceDesk, ctx?.task)) {
@@ -4775,6 +4803,36 @@
                 });
             }
             return tools;
+        }
+
+        // Many files at once (an Obsidian vault, a StoryCraftr book folder) with one question.
+        async function writeWorkspaceFiles(files, { asked = false } = {}) {
+            const list = Object.entries(files).map(([path, content]) => [normalizeWorkspacePath(path), content]).filter(([name, content]) => name && typeof content === "string");
+            if (!list.length) return "Nothing to write.";
+            if (!asked && !toolsAutoRun && !await askPermission(`An agent wants to write ${list.length} files in your project folder (${list.slice(0, 4).map(([n]) => n).join(", ")}${list.length > 4 ? "…" : ""}).\n\nAllow it?`)) return "The user declined these writes.";
+            for (const [name, content] of list) loadedProjectFiles[name] = content;
+            if (!connectedDirectoryHandle) return `Updated ${list.length} files in CoDev's workspace. No folder is connected, so they weren't saved to disk.`;
+            const first = await workspaceFileHandle(list[0][0], true);
+            if (first.requestPermission && (await first.requestPermission({ mode: "readwrite" })) !== "granted") return "The browser didn't allow writing to the connected folder.";
+            for (const [name, content] of list) {
+                const writable = await (await workspaceFileHandle(name, true)).createWritable();
+                await writable.write(content);
+                await writable.close();
+            }
+            renderProjectFiles();
+            logConsoleActivity(`[Tool] Saved ${list.length} files to ${connectedDirectoryHandle.name}.`);
+            return `Saved ${list.length} files to the connected folder (${list.slice(0, 3).map(([n]) => n).join(", ")}${list.length > 3 ? "…" : ""}).`;
+        }
+
+        // A folder's text files ([{ path, text }]), or one file, from the connected project
+        // folder; a big file (an Azgaar map) is read from disk when it wasn't loaded.
+        async function readWorkspaceFolder(rawPath) {
+            const name = normalizeWorkspacePath(rawPath);
+            if (!name) return [];
+            const inside = Object.keys(loadedProjectFiles).filter(k => k === name || k.startsWith(name + "/"));
+            if (inside.length) return inside.map(k => ({ path: k === name ? k : k.slice(name.length + 1), text: loadedProjectFiles[k] }));
+            if (!connectedDirectoryHandle) return [];
+            try { return [{ path: name, text: await (await (await workspaceFileHandle(name, false)).getFile()).text() }]; } catch (err) { return []; }
         }
 
         async function writeWorkspaceFile(rawName, content) {

@@ -1,0 +1,43 @@
+{
+  "info": { "version": "1.99", "description": "Azgaar's Fantasy Map Generator output", "exportedAt": "2026-11-01T10:00:00.000Z", "mapName": "Continuum", "width": 1920, "height": 1080, "seed": "424242", "mapId": 1 },
+  "settings": { "populationRate": 1000, "urbanization": 1, "mapName": "Continuum", "options": { "year": 1142, "era": "Fractured Era", "eraShort": "FE" } },
+  "mapCoordinates": { "latT": 50, "latN": 60, "latS": 10, "lonT": 90, "lonW": -45, "lonE": 45 },
+  "pack": {
+    "cultures": [
+      { "name": "Wildlands", "i": 0, "base": 1, "origins": [null], "shield": "round" },
+      { "name": "Aegian", "i": 1, "base": 2, "type": "Highland", "expansionism": 1.4, "center": 120, "color": "#2b8cbe", "code": "Ae", "origins": [0] },
+      { "name": "Voidborn", "i": 2, "base": 3, "type": "Nomadic", "expansionism": 2.1, "center": 410, "color": "#444", "code": "Vo", "origins": [0] }
+    ],
+    "burgs": [
+      {},
+      { "i": 1, "name": "Relay Spire", "cell": 120, "x": 500.4, "y": 300.6, "state": 1, "culture": 1, "population": 42.5, "capital": 1, "port": 3, "citadel": 1, "walls": 1, "plaza": 1, "temple": 0, "shanty": 0, "type": "Naval", "feature": 1 },
+      { "i": 2, "name": "Hollow Gate", "cell": 410, "x": 1400, "y": 700, "state": 2, "culture": 2, "population": 18.2, "capital": 1, "port": 0, "citadel": 0, "walls": 1, "plaza": 0, "temple": 1, "shanty": 1, "type": "Generic" },
+      { "i": 3, "name": "Tessel", "cell": 250, "x": 900, "y": 500, "state": 1, "culture": 1, "population": 6.1, "capital": 0, "port": 0, "type": "River" },
+      { "i": 4, "name": "Old Ruin", "cell": 999, "x": 10, "y": 10, "state": 0, "culture": 0, "population": 0.4, "capital": 0, "removed": true }
+    ],
+    "states": [
+      { "i": 0, "name": "Neutrals", "urban": 0, "rural": 0, "burgs": 0, "area": 0, "cells": 0, "neighbors": [1, 2], "diplomacy": [], "provinces": [] },
+      { "i": 1, "name": "Aegis Dominion", "fullName": "Holy Aegis Dominion", "form": "Theocracy", "formName": "Dominion", "type": "Naval", "color": "#66c2a5", "capital": 1, "culture": 1, "expansionism": 1.2, "area": 3200.4, "neighbors": [2], "diplomacy": ["x", "x", "Enemy"], "provinces": [1], "pole": [700.2, 400.9],
+        "campaigns": [{ "name": "War of the Fracture", "start": 1130, "end": 1138 }] },
+      { "i": 2, "name": "Null Expanse", "fullName": "The Null Expanse", "form": "Monarchy", "formName": "Expanse", "type": "Nomadic", "color": "#000", "capital": 2, "culture": 2, "area": 4100, "neighbors": [1], "diplomacy": ["x", "Enemy", "x"], "provinces": [2], "campaigns": [] }
+    ],
+    "provinces": [
+      0,
+      { "i": 1, "state": 1, "center": 120, "burg": 1, "name": "Spirewatch", "formName": "March", "fullName": "Spirewatch March", "color": "#abc" },
+      { "i": 2, "state": 2, "center": 410, "burg": 2, "name": "Null Expanse", "formName": "Wastes", "fullName": "Null Wastes", "color": "#111" }
+    ],
+    "religions": [
+      { "name": "No religion", "i": 0 },
+      { "i": 1, "name": "Church of the Signal", "type": "Organized", "form": "Monotheism", "deity": "The First Signal", "culture": 1, "center": 120, "origins": [0] }
+    ],
+    "routes": [
+      { "i": 0, "group": "roads", "feature": 1, "points": [[500, 300, 120], [700, 400, 200], [900, 500, 250]] },
+      { "i": 1, "group": "searoutes", "feature": 0, "name": "Void Lane", "points": [[500, 300, 120], [1400, 700, 410]] },
+      { "i": 2, "group": "trails", "points": [[1, 1, 5], [2, 2, 6]] }
+    ]
+  },
+  "notes": [
+    { "id": "burg1", "name": "Relay Spire", "legend": "<p>Where Relay first <b>crossed</b> the timelines.</p>" },
+    { "id": "state2", "name": "Null Expanse", "legend": "Ruled from the void by Null." }
+  ]
+}
