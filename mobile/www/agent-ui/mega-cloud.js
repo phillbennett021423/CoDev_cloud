@@ -20,12 +20,13 @@
 //   { op: "list", query?, type?, folder?, max? }      -> { folder, files: [...] }
 //   { op: "read", file }                              -> { file, text? | children? | kind }
 //   { op: "save", name, content, folder? }            -> { file }
-// and, for a notes vault kept in MEGA (notes-tables.js), with paths from its folder:
+// and, for CoDev Notes kept in MEGA (notes-tables.js), with paths from its folder:
 //   { op: "tree", folder } -> { files: [{ path, size, modified }] }
-//   { op: "fetch", folder, path } -> { text }     { op: "put", folder, path, content } -> { ok, replaced }
-// Saving needs "allowWrite", and the page asks the user before every save. The MEGA
+//   { op: "fetch", folder, path } -> { text }     { op: "put", folder, path, content, byUser? } -> { ok, replaced }
+// An agent's save needs "allowWrite", and the page asks the user before every one; the
+// user's own saves from the 📝 Notes view (byUser) need only the sign-in. The MEGA
 // tools never change, move or delete files already in MEGA; a note or table edited
-// in the vault is saved as a new file and its old version goes to the Rubbish Bin.
+// in the notes folder is saved as a new file and its old version goes to the Rubbish Bin.
 //
 // The same file runs in the page and in Node (desktop/mega-connect.js and tests).
 (function (root, factory) {
@@ -248,7 +249,7 @@
             return { file: made && made.nodeId ? describeNode(st, made) : { name, path: `${pathOf(st, target)}/${name}`.replace(/^\/\//, "/"), link: `https://mega.nz/fm/${target.nodeId}` } };
         }
 
-        // ---- A folder used as a notes vault (notes-tables.js): every file under it by
+        // ---- A folder used for CoDev Notes (notes-tables.js): every file under it by
         // its path from that folder, one file's text, and writing one file (new, or a
         // new version whose old copy goes to the Rubbish Bin, where MEGA keeps it).
         function vaultRoot(st, folder) {
@@ -275,7 +276,7 @@
             const files = [];
             (function walk(node, prefix) {
                 for (const child of node.children || []) {
-                    if (!child.name || child.name.startsWith(".")) continue; // .obsidian, .trash
+                    if (!child.name || child.name.startsWith(".")) continue; // .trash and other hidden folders
                     const rel = prefix ? `${prefix}/${child.name}` : child.name;
                     if (child.directory) walk(child, rel);
                     else if (files.length < 5000) files.push({ path: rel, size: Number(child.size) || 0, modified: child.timestamp ? new Date(child.timestamp * 1000).toISOString() : null });
@@ -296,9 +297,11 @@
             return { text: new TextDecoder("utf-8").decode(data), modified: node.timestamp ? new Date(node.timestamp * 1000).toISOString() : null };
         }
 
-        async function putText({ folder, path: rel, content }) {
+        // byUser: the user's own save from CoDev's 📝 Notes view; agents' saves need allowWrite.
+        async function putText({ folder, path: rel, content, byUser }) {
             const saved = session();
-            if (!saved || !saved.allowWrite) return { error: "Saving to MEGA is off. Turn it on in Settings > MEGA cloud so notes and tables in MEGA can be saved." };
+            if (!saved) return { error: "CoDev isn't signed in to MEGA. Sign in under Settings > MEGA cloud." };
+            if (!byUser && !saved.allowWrite) return { error: "Saving to MEGA is off. Turn it on in Settings > MEGA cloud so notes and tables in MEGA can be saved." };
             if (typeof content !== "string") return { error: "content must be text." };
             const bytes = new TextEncoder().encode(content);
             if (bytes.length > MAX_SAVE_BYTES) return { error: "That's more than 5 MB of text." };
@@ -307,7 +310,7 @@
             const st = await open();
             let { base, error } = vaultRoot(st, folder);
             if (error) {
-                // The vault folder itself is made on the first save.
+                // The notes folder itself is made on the first save.
                 try { base = await makeFolders(st.root, String(folder || "").replace(/\\/g, "/").split("/").filter(Boolean).filter((p, i) => i || !/^cloud drive$/i.test(p))); } catch (err) { throw new Error(explain(err)); }
             }
             const name = parts.pop();
@@ -535,7 +538,7 @@
                 inputSchema: { type: "object", properties: {} }, run: statusReport
             },
             mega_search: {
-                description: "Search the user's MEGA cloud drive by file name, or list a folder (newest first). Returns ids, paths, sizes and dates. Read-only. MEGA encrypts files, so this matches names, not the text inside. Use it when the user mentions a file or folder in their MEGA, then mega_read_file with its id. For files on their computer use the project file tools instead, and for their Obsidian notes use notes_search.",
+                description: "Search the user's MEGA cloud drive by file name, or list a folder (newest first). Returns ids, paths, sizes and dates. Read-only. MEGA encrypts files, so this matches names, not the text inside. Use it when the user mentions a file or folder in their MEGA, then mega_read_file with its id. For files on their computer use the project file tools instead, and for their CoDev Notes use notes_search.",
                 inputSchema: { type: "object", properties: {
                     query: { type: "string", description: "Words in the file or folder name. Leave empty to list a folder." },
                     type: { type: "string", enum: ["folder", "image", "video", "audio", "pdf", "doc", "sheet", "slides", "text"], description: "Optional: only this kind of file." },
@@ -551,7 +554,7 @@
                 }, required: ["file"] }, run: megaReadFile
             },
             mega_save_file: {
-                description: "Save a new text file to the user's MEGA cloud drive. CoDev shows the user the file and saves only if they approve. It never changes or deletes existing files. Use it only when the user asks to save something to MEGA; to give them a spreadsheet or document as a download use create_spreadsheet or create_document instead, and for notes in their vault use notes_write.",
+                description: "Save a new text file to the user's MEGA cloud drive. CoDev shows the user the file and saves only if they approve. It never changes or deletes existing files. Use it only when the user asks to save something to MEGA; to give them a spreadsheet or document as a download use create_spreadsheet or create_document instead, and for their CoDev Notes use notes_write.",
                 inputSchema: { type: "object", properties: {
                     name: { type: "string", description: "File name, like \"NBA props 10-28.md\"." },
                     content: { type: "string", description: "The full text." },

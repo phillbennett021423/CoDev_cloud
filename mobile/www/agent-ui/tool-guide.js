@@ -95,7 +95,7 @@
         { when: "A game's story, characters and lore", tools: ["studio_read", "studio_save", "studio_remove", "studio_export", "studio_import"], how: "read before you write" },
         { when: "A fantasy world map (Azgaar's Fantasy Map Generator)", tools: ["map_read", "map_generate"], how: "map_read for anything about a map the user has" },
         { when: "The user's insurance clients, renewals, quotes and commissions", tools: ["insurance_clients", "insurance_alerts", "insurance_quote_brief", "insurance_save_client", "insurance_add_note", "insurance_save_quote", "insurance_commissions"] },
-        { when: "The user's notes (Obsidian) and data tables (CSV, JSON)", tools: ["notes_status", "notes_search", "notes_read", "notes_write", "table_read", "table_write"], how: "table_read for any number from a table" },
+        { when: "The user's CoDev Notes and data tables (CSV, JSON)", tools: ["notes_status", "notes_search", "notes_read", "notes_write", "table_read", "table_write"], how: "table_read for any number from a table" },
         { when: "Files in the user's MEGA cloud drive", tools: ["mega_status", "mega_search", "mega_read_file", "mega_save_file"] },
         { when: "Gmail, YouTube and Maps", tools: ["google_apps_status", "gmail_search", "gmail_read", "gmail_send", "youtube_search", "youtube_video", "maps_search_places", "maps_directions"] },
         { when: "Something from an earlier chat, or a lasting fact about the user", tools: ["search_past_chats", "save_memory", "forget_memory"] },

@@ -1,8 +1,8 @@
-// Notes and tables (agent-ui/notes-tables.js), in place of Google Docs and Sheets:
-// an Obsidian vault of Markdown notes and CSV/TSV/JSON tables, kept in a MEGA folder
-// (through the real MEGA account logic over a stand-in for megajs) or in the project
-// folder. Covers search, links and backlinks, every way of editing a note or a table,
-// that edits ask first and can be turned off, and one run in the real page.
+// CoDev Notes (agent-ui/notes-tables.js), in place of Google Docs and Sheets: Markdown
+// notes and CSV/TSV/JSON tables kept in CoDev on the device, in a MEGA folder (through
+// the real MEGA account logic over a stand-in for megajs) or in the project folder.
+// Covers search, links and backlinks, every way of editing a note or a table, that
+// agents' edits ask first and can be turned off, the 📝 Notes tab, and runs in the real page.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -30,15 +30,15 @@ A roguelike set in [[Continuum]], see [[Relay|the courier]].
 - Docks #todo
 `;
 
-// A MEGA account with a vault in /Obsidian.
+// A MEGA account with CoDev Notes in /CoDev Notes.
 async function megaVault(t, { allowWrite = true } = {}) {
     const mega = fakeMega();
-    const vault = mega.drive.add('Obsidian', mega.drive.rootId, { folder: true });
+    const vault = mega.drive.add('CoDev Notes', mega.drive.rootId, { folder: true });
     const projects = mega.drive.add('Projects', vault, { folder: true });
     mega.drive.add('Game ideas.md', projects, { text: IDEAS, ts: 1762000000 });
     mega.drive.add('Continuum.md', vault, { text: '# Continuum\nThe world. Home of [[Game ideas]].', ts: 1761000000 });
     mega.drive.add('Relay.md', vault, { text: '# Relay\nCourier.', ts: 1760000000 });
-    const hidden = mega.drive.add('.obsidian', vault, { folder: true });
+    const hidden = mega.drive.add('.sync', vault, { folder: true });
     mega.drive.add('workspace.json', hidden, { text: '{}' });
     const data = mega.drive.add('Data', vault, { folder: true });
     mega.drive.add('players.csv', data, { text: 'Player,Team,Points\r\nJokic,DEN,31\r\n"Doncic, Luka",LAL,28\r\nTatum,BOS,25\r\n' });
@@ -53,7 +53,7 @@ async function megaVault(t, { allowWrite = true } = {}) {
 
 function toolsFor(transport, { edit = true, approve = () => true, asked = [] } = {}) {
     return Notes.createNotesTables({
-        getStore: async () => Notes.megaStore(transport, '/Obsidian'),
+        getStore: async () => Notes.megaStore(transport, '/CoDev Notes'),
         canEdit: () => edit,
         confirmWrite: async message => { asked.push(message); return approve(message); }
     });
@@ -61,7 +61,7 @@ function toolsFor(transport, { edit = true, approve = () => true, asked = [] } =
 
 const textOf = (mega, name) => mega.drive.nodes.filter(n => n.name === name && n.parentId !== mega.drive.trashId).map(n => n.text).pop();
 
-test('notes: properties, tags and [[links]] are read the way Obsidian writes them', () => {
+test('notes: properties, tags and [[links]] are read from Markdown', () => {
     const note = Notes.parseNote(IDEAS);
     assert.deepEqual(note.props.tags, ['project', 'game']);
     assert.equal(note.props.status, 'draft');
@@ -69,7 +69,7 @@ test('notes: properties, tags and [[links]] are read the way Obsidian writes the
     assert.deepEqual(note.links, ['Continuum', 'Relay']);
     assert.deepEqual(note.headings, ['# Game ideas', '## Bosses', '## Levels']);
     assert.equal(Notes.cleanPath('../secret.md'), null);
-    assert.equal(Notes.cleanPath('.obsidian/x.md'), null);
+    assert.equal(Notes.cleanPath('.sync/x.md'), null);
     assert.equal(Notes.cleanPath('Projects\\Ideas.md'), 'Projects/Ideas.md');
 });
 
@@ -87,12 +87,12 @@ test('tables: CSV quoting, TSV and JSON round-trip and keep their format', () =>
     assert.match(Notes.parseTable('bad.json', '{"a": 1}').error, /no list of rows/);
 });
 
-test('notes in a MEGA vault: search, tags, reading with links and backlinks', async t => {
+test('notes in a MEGA folder: search, tags, reading with links and backlinks', async t => {
     const { transport } = await megaVault(t);
     const { TOOLS } = toolsFor(transport);
     const listed = await TOOLS.notes_search.run({});
     assert.match(listed, /^Projects\/Game ideas\.md/);
-    assert.doesNotMatch(listed, /workspace\.json|\.obsidian|players\.csv/);
+    assert.doesNotMatch(listed, /workspace\.json|\.sync|players\.csv/);
     assert.match(await TOOLS.notes_search.run({ query: 'roguelike' }), /Projects\/Game ideas\.md · #project #game #todo\n  …A roguelike set in \[\[Continuum\]\]/);
     assert.match(await TOOLS.notes_search.run({ tag: '#todo' }), /Game ideas\.md/);
     assert.match(await TOOLS.notes_search.run({ query: 'nothing here' }), /No notes match "nothing here"/);
@@ -113,7 +113,7 @@ test('notes_write creates, appends under a heading, edits and replaces, asking e
     let ok = true;
     const { TOOLS } = toolsFor(transport, { asked, approve: () => ok });
 
-    assert.match(await TOOLS.notes_write.run({ note: 'Daily/2026-11-02', content: '# Today\n- [ ] Ship MEGA' }), /Created Daily\/2026-11-02\.md in the MEGA folder \/Obsidian/);
+    assert.match(await TOOLS.notes_write.run({ note: 'Daily/2026-11-02', content: '# Today\n- [ ] Ship MEGA' }), /Created Daily\/2026-11-02\.md in the MEGA folder \/CoDev Notes/);
     assert.equal(textOf(mega, '2026-11-02.md'), '# Today\n- [ ] Ship MEGA');
     assert.match(asked[0], /Create the note Daily\/2026-11-02\.md/);
     assert.match(await TOOLS.notes_write.run({ note: 'Relay', content: 'x' }), /already exists/);
@@ -168,14 +168,23 @@ test('tools are offered only when they can work, and editing can be off', async 
     assert.deepEqual((await toolsFor(transport, { edit: false }).buildTools()).map(x => x.name), ['notes_status', 'notes_search', 'notes_read', 'table_read']);
     assert.deepEqual((await toolsFor(transport).buildTools()).map(x => x.name), Notes.NOTES_TOOL_NAMES);
     assert.match(await toolsFor(transport, { edit: false }).TOOLS.notes_write.run({ note: 'x', content: 'y' }), /Editing notes and tables is off/);
-    assert.match(await toolsFor(transport).TOOLS.notes_status.run(), /MEGA folder \/Obsidian: 3 notes and 2 tables/);
+    assert.match(await toolsFor(transport).TOOLS.notes_status.run(), /MEGA folder \/CoDev Notes: 3 notes and 2 tables/);
 
-    // A vault in MEGA also needs MEGA's own saving switch.
+    // An agent's save to MEGA also needs MEGA's own saving switch; the user's own save
+    // from the 📝 Notes tab doesn't.
     await connect.handle({ op: 'settings', allowWrite: false });
     await assert.rejects(toolsFor(transport).TOOLS.notes_write.run({ note: 'New', content: 'x' }), /Saving to MEGA is off/);
+    await Notes.megaStore(transport, '/CoDev Notes', { byUser: true }).put('Mine.md', '# Mine');
+    assert.equal(await Notes.megaStore(transport, '/CoDev Notes').fetch('Mine.md'), '# Mine');
 });
 
-test('a vault in the project folder, and a MEGA vault folder made on the first save', async t => {
+test('notes on the device, in the project folder, and a MEGA folder made on the first save', async t => {
+    const kv = Notes.memoryKv();
+    const device = Notes.createNotesTables({ getStore: async () => Notes.deviceStore(kv), canEdit: () => true, confirmWrite: async () => true });
+    assert.match(await device.TOOLS.notes_status.run(), /CoDev notes on this device: 0 notes and 0 tables/);
+    assert.match(await device.TOOLS.notes_write.run({ note: 'Inbox', content: '# Inbox\nSee [[Plan]]' }), /Created Inbox\.md in the CoDev notes on this device/);
+    assert.match(await device.TOOLS.notes_read.run({ note: 'Inbox' }), /Links to: \[\[Plan\]\]/);
+
     const files = { 'notes/Plan.md': '# Plan\nShip it', 'notes/data/a.csv': 'x,y\n1,2\n', 'src/app.js': '' };
     const writes = [];
     const tools = Notes.createNotesTables({
@@ -196,8 +205,8 @@ test('a vault in the project folder, and a MEGA vault folder made on the first s
     const fresh = toolsFor(Mega.backendTransport(req => connect.handle(req)));
     assert.match(await fresh.TOOLS.notes_search.run({}), /has no notes yet/);
     assert.match(await fresh.TOOLS.notes_write.run({ note: 'Inbox/First', content: 'hello' }), /Created Inbox\/First\.md/);
-    const vault = mega.drive.nodes.find(n => n.name === 'Obsidian');
-    assert.ok(vault && vault.folder, 'the vault folder was made');
+    const folder = mega.drive.nodes.find(n => n.name === 'CoDev Notes');
+    assert.ok(folder && folder.folder, 'the notes folder was made');
 });
 
 test('every notes and tables tool is documented', () => {
@@ -212,7 +221,7 @@ test('every notes and tables tool is documented', () => {
     assert.match(readme, /docs\/notes-and-tables\.md/);
 });
 
-// The real page: the vault in MEGA through server.js's /mega route, and table_read
+// The real page: CoDev Notes in MEGA through server.js's /mega route, and table_read
 // running on the page's own query engine (media-tools.js).
 test('in CoDev, an agent reads a note, totals a table and edits a note with the user\'s approval', async t => {
     const launched = await launchBrowser();
@@ -230,7 +239,7 @@ test('in CoDev, an agent reads a note, totals a table and edits a note with the 
         [{ name: 'notes_write', arguments: { note: 'Game ideas', mode: 'append', under_heading: 'Levels', content: '- Rooftops' } }],
         'Done: added Rooftops to your game ideas.'
     ] });
-    await page.evaluate(() => { localStorage.setItem('codev_vault_allow_edit', '1'); });
+    await page.evaluate(() => { localStorage.setItem('codev_vault_allow_edit', '1'); localStorage.setItem('codev_vault_location', 'mega'); localStorage.setItem('codev_vault_folder', '/CoDev Notes'); });
     await page.uncheck('#isSandboxCheckbox');
     const dialogs = await answerApprovals(page, () => true);
     await sendPrompt(page, 'Add rooftops to the levels in my game ideas note.');
@@ -246,5 +255,57 @@ test('in CoDev, an agent reads a note, totals a table and edits a note with the 
     assert.ok(steps.some(s => /📝 Reading the note Game ideas/.test(s)));
     await page.evaluate(() => { document.getElementById('settingsModal').style.display = 'flex'; document.getElementById('notesSettings').open = true; });
     await page.waitForFunction(() => /3 notes and 2 tables/.test(document.querySelector('#notesSettings [data-n="status"]').textContent));
+    assert.deepEqual(errors, []);
+});
+
+// The 📝 Notes tab: with nothing set up, notes are kept in CoDev on this device. Make a
+// note and a table, link notes, follow a [[link]], and find them again after a reload.
+test('the Notes tab writes, links and keeps notes in CoDev itself', async t => {
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-notes-tab-'));
+    t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+    const backend = createMockBackend({ workspace });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const { page, errors } = await openPage(launched.browser, url, {});
+    page.on('dialog', d => d.accept());
+    await page.evaluate(() => switchView('notes'));
+    await page.waitForFunction(() => /CoDev notes on this device/.test(document.querySelector('#view-notes [data-c="where"]').textContent));
+
+    await page.click('#view-notes [data-c="newNote"]');
+    await page.fill('#view-notes [data-c="newName"]', 'Projects/Game ideas');
+    await page.click('#view-notes [data-c="create"]');
+    await page.fill('#view-notes [data-c="editor"]', '# Game ideas\n\nSet in [[Continuum]]. #todo\n\n- Docks');
+    await page.click('#view-notes [data-c="save"]');
+    await page.waitForFunction(() => /Saved Projects\/Game ideas\.md/.test(document.querySelector('#view-notes [data-c="msg"]').textContent));
+
+    await page.click('#view-notes [data-c="mode"]');
+    assert.match(await page.textContent('#view-notes .cn-read'), /Set in Continuum\. #todo/);
+    // A link to a note that isn't there yet offers to make it (the dialog is accepted).
+    await page.click('#view-notes .cn-read .cn-link');
+    await page.waitForFunction(() => /Continuum\.md/.test(document.querySelector('#view-notes .cn-title').textContent));
+    await page.fill('#view-notes [data-c="editor"]', '# Continuum\n\nThe world.');
+    await page.click('#view-notes [data-c="save"]');
+    await page.click('#view-notes [data-c="mode"]');
+    await page.waitForFunction(() => /Linked from[\s\S]*Game ideas/.test(document.querySelector('#view-notes [data-c="backlinks"]').textContent));
+
+    await page.click('#view-notes [data-c="newTable"]');
+    await page.fill('#view-notes [data-c="newName"]', 'Data/players');
+    await page.click('#view-notes [data-c="create"]');
+    await page.fill('#view-notes [data-c="editor"]', 'Player,Points\nJokic,31\n');
+    await page.click('#view-notes [data-c="save"]');
+    await page.click('#view-notes [data-c="mode"]');
+    assert.equal(await page.textContent('#view-notes .cn-table td'), 'Jokic');
+
+    // The agents' tools see the same notes.
+    assert.match(await page.evaluate(() => notesTables.TOOLS.notes_search.run({ tag: 'todo' })), /Projects\/Game ideas\.md/);
+    await page.reload();
+    await page.waitForFunction(() => typeof switchView === 'function');
+    await page.evaluate(() => switchView('notes'));
+    await page.waitForFunction(() => document.querySelectorAll('#view-notes .cn-item').length === 3);
+    await page.fill('#view-notes [data-c="search"]', '#todo');
+    await page.waitForFunction(() => document.querySelectorAll('#view-notes .cn-item').length === 1);
     assert.deepEqual(errors, []);
 });

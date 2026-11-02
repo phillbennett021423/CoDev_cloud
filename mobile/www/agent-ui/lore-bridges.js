@@ -1,8 +1,9 @@
 // Lore bridges: Story Studio's bible to and from the free tools writers already use.
 //
-//   CodevLoreBridges.toObsidianVault(project)      { "Characters/Relay.md": "...", ... } one note per entry,
-//                                                   relationships as [[wikilinks]], so Obsidian's graph shows the web
-//   CodevLoreBridges.parseVault(files)             [{ path, text }] from an Obsidian (or any Markdown) vault ->
+//   CodevLoreBridges.toChroniclerVault(project)    { "Characters/Relay.md": "...", ... } a Chronicler vault: one
+//                                                   page per entry (short fields in its infobox), relationships
+//                                                   as [[wikilinks]]
+//   CodevLoreBridges.parseVault(files)             [{ path, text }] from a Chronicler (or any Markdown) vault ->
 //                                                   { name, pitch, engine, entries, skipped }
 //   CodevLoreBridges.fromAzgaar(text, options)     Azgaar's Fantasy Map Generator "Export > JSON" ->
 //                                                   { name, entries, stats }: states become factions with
@@ -44,7 +45,7 @@
     }
 
     // ---------- A small YAML front matter reader and writer ----------
-    // Enough for Obsidian properties: scalars, [inline, lists] and "- item" lists.
+    // Enough for Chronicler's page properties: scalars, [inline, lists] and "- item" lists.
 
     function yamlScalar(raw) {
         const v = String(raw).trim();
@@ -105,14 +106,13 @@
         return keys.length ? `---\n${keys.map(k => `${k}:${yamlValue(data[k])}`).join("\n")}\n---\n` : "";
     }
 
-    // ---------- Obsidian: export ----------
+    // ---------- Chronicler: export ----------
 
-    // Characters Obsidian (and Windows, macOS, Android) won't take in a file name.
+    // Characters Chronicler (and Windows, macOS, Android) won't take in a file name.
     function noteName(name) {
         return String(name || "Untitled").replace(/[*"\\/<>:|?#^[\]]/g, " ").replace(/\s+/g, " ").trim().replace(/^\.+/, "").slice(0, 100) || "Untitled";
     }
 
-    function tagWord(t) { return String(t).trim().replace(/^#/, "").replace(/\s+/g, "-").replace(/[^\p{L}\p{N}_/-]/gu, ""); }
 
     // Each entry's note path and how other notes link to it ([[Name]], or [[Folder/Name|Name]]
     // when two notes share a name, like a character and a faction both called Null).
@@ -144,24 +144,36 @@
 
     function linkTypeLabel(type) { return (LINK_TYPES.find(([t]) => t === type) || LINK_TYPES[LINK_TYPES.length - 1])[1]; }
 
-    function toObsidianVault(p, folder = "") {
+    // A short, one-line field shows in Chronicler's infobox (the box beside the page);
+    // longer ones become sections of the page.
+    const INFOBOX_MAX = 90;
+    const isInfobox = v => typeof v === "string" && v.length <= INFOBOX_MAX && !/[\n]/.test(v);
+
+    function toChroniclerVault(p, folder = "") {
         const base = String(folder || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
         const at = name => base ? `${base}/${name}` : name;
         const paths = notePaths(p);
         const files = {};
         for (const e of p.entries) {
             const kind = KINDS[e.kind] || KINDS.lore;
-            const fm = { codev_kind: e.kind, tags: [tagWord(e.kind), ...(e.tags || []).map(tagWord)].filter((t, i, a) => t && a.indexOf(t) === i) };
-            // Obsidian tags can't hold spaces or dots, so the exact tags ride along too.
-            if ((e.tags || []).some(t => tagWord(t) !== t)) fm.codev_tags = e.tags.slice();
-            if (noteName(e.name) !== e.name) fm.name = e.name;
-            if (e.order !== undefined) fm.order = e.order;
-            if (e.locked) fm.locked = true;
-            const out = [writeFrontMatter(fm)];
-            if (e.summary) out.push(e.summary, "");
             const order = kind.fields.map(([k]) => k);
             const keys = Object.keys(e.fields || {}).sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
-            for (const k of keys) out.push(`## ${fieldLabel(e.kind, k)}`, "", e.fields[k], "");
+            // Chronicler's own keys first (title, subtitle, tags), then the infobox fields
+            // under their labels, then what CoDev needs to read the page back exactly.
+            const fm = { title: e.name, subtitle: kind.label };
+            fm.tags = [e.kind, ...(e.tags || []).map(String)].filter((t, i, a) => t && a.indexOf(t) === i);
+            const long = [];
+            for (const k of keys) {
+                const v = e.fields[k];
+                if (isInfobox(v) && !/^(title|subtitle|tags|image|layout|infobox|codev_\w+)$/.test(fieldLabel(e.kind, k).toLowerCase())) fm[fieldLabel(e.kind, k)] = v;
+                else long.push(k);
+            }
+            fm.codev_kind = e.kind;
+            if (e.order !== undefined) fm.codev_order = e.order;
+            if (e.locked) fm.codev_locked = true;
+            const out = [writeFrontMatter(fm)];
+            if (e.summary) out.push(e.summary, "");
+            for (const k of long) out.push(`## ${fieldLabel(e.kind, k)}`, "", e.fields[k], "");
             if (e.links && e.links.length) {
                 out.push("## Relationships", "");
                 for (const l of e.links) {
@@ -174,19 +186,19 @@
             if (e.lines && e.lines.length) out.push("## Lines", "", ...e.lines.map(lineMarkdown), "");
             files[at(paths.get(e.id).path)] = out.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
         }
-        // The home note: the project, and every note grouped by kind.
-        const home = [writeFrontMatter({ codev_project: true, engine: p.engine }), p.pitch || "", ""];
+        // The home page: the project, and every page grouped by kind.
+        const home = [writeFrontMatter({ title: p.name, subtitle: "Story bible", tags: ["codev"], engine: p.engine, codev_project: true }), p.pitch || "", ""];
         for (const kind of KIND_NAMES) {
             const list = p.entries.filter(e => e.kind === kind);
             if (!list.length) continue;
             home.push(`## ${KINDS[kind].plural}`, "", ...list.map(e => `- ${paths.get(e.id).link}${e.summary ? `: ${e.summary.slice(0, 140)}` : ""}`), "");
         }
-        home.push("---", "*Made by CoDev's Story Studio. Edit these notes in Obsidian, then import the vault back into Story Studio (🧭 World tools) to update the bible.*");
+        home.push("---", "*Made by CoDev's Story Studio. Edit these pages in Chronicler, then import the vault back into Story Studio (🧭 World tools) to update the bible.*");
         files[at(`${noteName(p.name)}.md`)] = home.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
         return files;
     }
 
-    // ---------- Obsidian: import ----------
+    // ---------- Chronicler (or any Markdown vault): import ----------
 
     // Folder and tag words that say what kind of note it is.
     const KIND_WORDS = {
@@ -259,6 +271,14 @@
         return hit ? hit[0] : slug(h).slice(0, 40);
     }
 
+    // An infobox property: a field's own label or key ("Role in the story", "role") is
+    // that field; any other property keeps its own name.
+    function propertyKey(kind, key) {
+        const h = String(key || "").trim().toLowerCase();
+        const hit = (KINDS[kind] || KINDS.lore).fields.find(([k, label]) => label.toLowerCase() === h || k === slug(h));
+        return hit ? hit[0] : slug(h).slice(0, 40);
+    }
+
     function parseLineMarkdown(raw) {
         const t = raw.replace(/^\s*[-*]\s+/, "").trim();
         let m = t.match(/^\*\((.*)\)\*$/);
@@ -294,13 +314,20 @@
         return out;
     }
 
+    // Chronicler's page inserts ({{insert: Page}}) and spoilers (||text||) as plain text.
+    function plainChronicler(body) {
+        return String(body).replace(/^\s*\{\{insert:[^}]*\}\}\s*$/gim, "").replace(/\|\|([^|\n]+)\|\|/g, "$1");
+    }
+
     function noteToEntry(file, defaults = {}) {
-        const { data, body } = readFrontMatter(file.text.slice(0, MAX_NOTE_CHARS));
+        const read = readFrontMatter(file.text.slice(0, MAX_NOTE_CHARS));
+        const data = read.data;
+        const body = plainChronicler(read.body);
         const parts = sections(body);
         const folders = String(file.path).replace(/\\/g, "/").split("/").slice(0, -1);
         const tags = [].concat(data.tags || [], data.tag || []).map(t => String(t).replace(/^#/, "")).filter(Boolean);
         const ownTags = Array.isArray(data.codev_tags) ? data.codev_tags.map(String) : null;
-        const kind = kindFromWord(data.codev_kind) || kindFromWord(data.kind) || kindFromWord(data.type) || kindFromWord(data.category)
+        const kind = kindFromWord(data.codev_kind) || kindFromWord(data.kind) || kindFromWord(data.type) || kindFromWord(data.category) || kindFromWord(data.subtitle)
             || tags.map(kindFromWord).find(Boolean) || folders.slice().reverse().map(kindFromWord).find(Boolean) || defaults.kind || "lore";
         const name = clean(data.name || data.title || parts.title || baseName(file.path), 120);
         const entry = { kind, name, fields: {}, tags: (ownTags || tags.filter(t => ![kind, KINDS[kind].plural.toLowerCase()].includes(t.toLowerCase()))).slice(0, 20), links: [] };
@@ -311,11 +338,12 @@
             if (!entry.summary && intro.length <= MAX_SUMMARY_CHARS && !intro.includes("\n\n")) entry.summary = intro;
             else entry.fields[{ lore: "details", character: "backstory" }[kind] || KINDS[kind].fields[0][0]] = clean(intro, MAX_FIELD_CHARS);
         }
-        if (data.order !== undefined && Number.isFinite(Number(data.order))) entry.order = Number(data.order);
-        if (data.locked === true) entry.locked = true;
+        const order = data.codev_order !== undefined ? data.codev_order : data.order;
+        if (order !== undefined && Number.isFinite(Number(order))) entry.order = Number(order);
+        if (data.codev_locked === true || data.locked === true) entry.locked = true;
         if (data.aliases) entry.fields.aliases = [].concat(data.aliases).map(String).join(", ");
         // Other properties: relationship-ish keys become links, the rest become fields.
-        const skip = new Set(["codev_kind", "codev_tags", "kind", "type", "category", "name", "title", "tags", "tag", "summary", "order", "locked", "aliases", "cssclasses", "cssclass", "publish", "created", "updated", "modified", "date"]);
+        const skip = new Set(["codev_kind", "codev_tags", "codev_order", "codev_locked", "kind", "type", "category", "name", "title", "subtitle", "infobox", "image", "images", "layout", "tags", "tag", "summary", "order", "locked", "aliases", "cssclasses", "cssclass", "publish", "created", "updated", "modified", "date"]);
         for (const [k, v] of Object.entries(data)) {
             if (skip.has(k)) continue;
             const values = [].concat(v).map(String);
@@ -323,7 +351,7 @@
             const type = linkTypeFrom(k);
             if (linked.length && type !== "other") linked.forEach(to => entry.links.push({ to, type }));
             else if (linked.length) linked.forEach(to => entry.links.push({ to, type: "other", note: k.replace(/_/g, " ") }));
-            else entry.fields[slug(k).slice(0, 40)] = clean(values.join(", "), MAX_FIELD_CHARS);
+            else entry.fields[propertyKey(kind, k)] = clean(stripWiki(values.join(", ")), MAX_FIELD_CHARS);
         }
         let hasRelationships = false;
         for (const sec of parts.list) {
@@ -360,11 +388,11 @@
         return { entry, data };
     }
 
-    // files: [{ path, text }]. Folders Obsidian keeps for itself, templates and the
-    // trash are skipped, and so are files that aren't Markdown.
+    // files: [{ path, text }]. Folders an app keeps for itself (.chronicler), templates and
+    // the trash are skipped, and so are files that aren't Markdown.
     function parseVault(files, defaults = {}) {
         const list = (files || []).filter(f => f && typeof f.text === "string" && /\.md$/i.test(f.path || "")
-            && !String(f.path).replace(/\\/g, "/").split("/").some(seg => /^(\.|_)|^(templates?|\.trash|\.obsidian|attachments)$/i.test(seg)));
+            && !String(f.path).replace(/\\/g, "/").split("/").some(seg => /^(\.|_)|^(templates?|\.trash|attachments)$/i.test(seg)));
         const result = { name: "", pitch: "", engine: "", entries: [], skipped: Math.max(0, (files || []).length - list.length) };
         const byNote = new Map();
         const byPath = new Map();
@@ -604,7 +632,7 @@
     }
 
     return {
-        readFrontMatter, writeFrontMatter, toObsidianVault, parseVault, fromAzgaar, toStoryCraftr, fromStoryCraftr,
+        readFrontMatter, writeFrontMatter, toChroniclerVault, parseVault, fromAzgaar, toStoryCraftr, fromStoryCraftr,
         loreMatches, lookFor, linkTypeFrom, kindFromWord, noteName, STORYCRAFTR_FILES
     };
 });

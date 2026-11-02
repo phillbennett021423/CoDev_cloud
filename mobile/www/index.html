@@ -244,6 +244,32 @@
 
         /* Secondary Views */
         .alt-view-content { flex: 1; padding: 25px; overflow-y: auto; display: none; flex-direction: column; gap: 15px; }
+        /* 📝 Notes (agent-ui/notes-tables.js) */
+        #view-notes { gap: 10px; }
+        .cn-head, .cn-bar, .cn-new { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .cn-head h3 { margin: 0; }
+        .cn-where { font-size: 0.8rem; color: var(--text-muted); }
+        .cn-spacer { flex: 1; }
+        .cn-new input { flex: 1; min-width: 180px; }
+        .cn-body { display: flex; gap: 12px; flex: 1; min-height: 0; }
+        .cn-side { width: 260px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+        .cn-list { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
+        .cn-item { text-align: left; background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); border-radius: 6px; padding: 7px 10px; cursor: pointer; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .cn-item:hover, .cn-item.active { border-color: var(--accent); color: var(--accent); }
+        .cn-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; overflow-y: auto; }
+        .cn-title { overflow-wrap: anywhere; }
+        .cn-editor { flex: 1; min-height: 320px; width: 100%; resize: vertical; font-family: monospace; font-size: 0.9rem; background: var(--bg-dark); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; box-sizing: border-box; }
+        .cn-read { line-height: 1.55; overflow-wrap: anywhere; }
+        .cn-read pre { background: var(--bg-dark); padding: 10px; border-radius: 6px; overflow-x: auto; }
+        .cn-link { color: var(--accent); }
+        .cn-tag { color: var(--codev-purple); }
+        .cn-sub { font-size: 0.75rem; color: var(--text-muted); margin-top: 12px; }
+        .cn-backlinks { font-size: 0.85rem; }
+        .cn-table-wrap { overflow-x: auto; }
+        .cn-table { border-collapse: collapse; font-size: 0.85rem; }
+        .cn-table th, .cn-table td { border: 1px solid var(--border-color); padding: 4px 8px; text-align: left; }
+        .cn-empty, .cn-msg { font-size: 0.85rem; color: var(--text-muted); }
+        .cn-msg.bad { color: var(--danger, #f87171); }
         .file-tree { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; font-family: monospace; font-size: 0.85rem; display: flex; flex-direction: column; gap: 8px; }
         .file-item { padding: 8px 12px; cursor: pointer; border-radius: 6px; background: var(--bg-card); border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; transition: border-color 0.2s; }
         .file-item:hover { border-color: var(--accent); color: var(--accent); }
@@ -499,6 +525,8 @@
             .chat-input-area button.send-btn { flex: 1; min-height: 48px; padding: 12px; }
 
             .alt-view-content { padding: 14px; }
+            .cn-body { flex-direction: column; }
+            .cn-side { width: auto; max-height: 34vh; }
             .alt-view-content > div:first-child { flex-wrap: wrap; gap: 10px; }
             .project-grid { grid-template-columns: 1fr; grid-template-rows: auto 1fr; overflow: visible; }
             .file-tree { max-height: 30vh; overflow-y: auto; }
@@ -644,6 +672,7 @@
             <span id="tab-codev" onclick="switchView('codev')" style="color: var(--codev-blue); font-weight: bold;">⚡ CoDev Hub</span>
             <span id="tab-cloud" onclick="switchView('cloud')" style="color: var(--codev-purple); font-weight: bold;">☁️ CoDev Cloud</span>
             <span id="tab-outlier" onclick="switchView('outlier')" style="color: var(--success); font-weight: bold;">📈 Outlier</span>
+            <span id="tab-notes" onclick="switchView('notes')" style="color: var(--accent); font-weight: bold;">📝 Notes</span>
             <span id="tab-studio" onclick="switchView('studio')" style="color: var(--warning); font-weight: bold;">🎭 Story Studio</span>
             <span id="tab-insurance" onclick="switchView('insurance')" style="color: var(--codev-blue); font-weight: bold;">🩺 Insurance</span>
             <span id="tab-qtasks" onclick="switchView('qtasks')" style="color: var(--codev-purple); font-weight: bold;">🤖 Q Tasks</span>
@@ -987,6 +1016,9 @@
             <!-- Outlier slips (agents/outlier on CoDev's server; agent-ui/outlier-view.js draws it) -->
             <div id="view-outlier" class="alt-view-content"></div>
 
+            <!-- CoDev Notes: the user's notes and data tables (agent-ui/notes-tables.js) -->
+            <div id="view-notes" class="alt-view-content"></div>
+
             <!-- Story Studio: game projects, story bibles, character chats, scenes (agent-ui/story-studio.js) -->
             <div id="view-studio" class="alt-view-content"></div>
 
@@ -1097,6 +1129,7 @@
         <button class="mobile-tab active" data-view="chat" onclick="mobileTab('chat')"><span class="tab-icon"><span class="brand-mark"></span></span>Chat</button>
         <button class="mobile-tab" data-drawer="agents" onclick="mobileTab('agents')"><span class="tab-icon"><span class="brand-mark"></span></span>Agents</button>
         <button class="mobile-tab" data-view="project" onclick="mobileTab('project')"><span class="tab-icon">📁</span>Files</button>
+        <button class="mobile-tab" data-view="notes" onclick="mobileTab('notes')"><span class="tab-icon">📝</span>Notes</button>
         <button class="mobile-tab" data-view="studio" onclick="mobileTab('studio')"><span class="tab-icon">🎭</span>Story</button>
         <button class="mobile-tab" data-view="insurance" onclick="mobileTab('insurance')"><span class="tab-icon">🩺</span>Clients</button>
         <button class="mobile-tab" data-view="codev" onclick="mobileTab('codev')"><span class="tab-icon">⚡</span>Hub</button>
@@ -2146,8 +2179,8 @@
             document.getElementById("statusText").innerText = activeProviderKey() ? `${BACKEND_NAMES[currentBackend]} Live` : "Awaiting API Key";
         }
 
-        const VIEW_NAMES = ["chat", "project", "codev", "cloud", "outlier", "studio", "insurance", "qtasks", "console"];
-        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", outlier: "Switched to Outlier slips.", studio: "Switched to Story Studio.", insurance: "Switched to the Insurance Desk.", qtasks: "Switched to Q Tasks.", console: "Switched to Console Logs." };
+        const VIEW_NAMES = ["chat", "project", "codev", "cloud", "outlier", "notes", "studio", "insurance", "qtasks", "console"];
+        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", outlier: "Switched to Outlier slips.", notes: "Switched to Notes.", studio: "Switched to Story Studio.", insurance: "Switched to the Insurance Desk.", qtasks: "Switched to Q Tasks.", console: "Switched to Console Logs." };
 
         // STORY STUDIO (agent-ui/story-studio.js): each game project's story bible, kept
         // on this device. Agents get the studio_* tools and the bible's index when a task
@@ -2193,7 +2226,7 @@
             setTimeout(() => URL.revokeObjectURL(link.href), 1000);
         }
 
-        // Several text files, or a whole folder (an Obsidian vault) where the browser can
+        // Several text files, or a whole folder (a Chronicler vault) where the browser can
         // pick one: [{ path, text }] with paths inside the picked folder. Android's picker
         // takes several files instead.
         function pickTextFilesFromUser({ directory = false, accept = "" } = {}) {
@@ -2317,6 +2350,18 @@
             } finally {
                 if (runId === speechRunId) isSpeaking = false;
             }
+        }
+
+        // 📝 Notes: CoDev's own notes and tables, where Settings > Notes & tables keeps them.
+        let notesView = null;
+        function showNotesView() {
+            if (notesView) return notesView.refresh();
+            notesView = CodevNotesTables.mountNotesView(document.getElementById("view-notes"), {
+                getStore: () => notesStore({ byUser: true }),
+                confirm: async text => confirm(text),
+                onSaved: () => notesTables.forget()
+            });
+            notesView.refresh();
         }
 
         function showStudioView() {
@@ -2455,6 +2500,7 @@
             if (viewName === "project" && (Object.keys(loadedProjectFiles).length > 0 || Object.keys(loadedModelAssets).length > 0)) renderProjectFiles();
             if (viewName === "project") resumeModelViewer();
             if (viewName === "outlier") showOutlierView();
+            if (viewName === "notes") showNotesView();
             if (viewName === "studio") showStudioView();
             if (viewName === "insurance") showInsuranceView();
             if (viewName === "qtasks") { renderQTasks(); refreshQKeyHint(); }
@@ -4488,26 +4534,34 @@
             if (el) CodevMegaCloud.mountSettings(el, { transport: megaTransport, cloud: megaCloud, storage: localStorage });
         });
 
-        // NOTES & TABLES: an Obsidian vault (Markdown notes) and CSV/JSON tables in place
-        // of Google Docs and Sheets (agent-ui/notes-tables.js). The vault is a folder in
-        // MEGA or in the connected project folder. Every change asks first.
+        // CODEV NOTES: the user's notes (Markdown) and CSV/JSON tables, in place of Google
+        // Docs and Sheets (agent-ui/notes-tables.js), written in the 📝 Notes tab. They're
+        // kept in CoDev on this device, in a MEGA folder (shared by the computer and the
+        // phone) or in the connected project folder. Every change an agent makes asks first.
         const notesHasProject = typeof window.showDirectoryPicker === "function" || Boolean(window.codevDesktop);
-        const notesSettings = () => { try { return CodevNotesTables.settingsFrom(localStorage, notesHasProject); } catch (err) { return { location: "mega", folder: "/Obsidian", allowEdit: false }; } };
-        const notesTables = CodevNotesTables.createNotesTables({
-            getStore: async () => {
-                const set = notesSettings();
-                if (set.location === "project") {
-                    if (!connectedDirectoryHandle && !Object.keys(loadedProjectFiles).length) return { error: "The notes vault is set to a folder in the project folder, but no project folder is connected. Connect one with 📁, or pick MEGA in Settings > Notes & tables." };
-                    return CodevNotesTables.projectStore({
-                        files: async () => loadedProjectFiles,
-                        read: async path => (path in loadedProjectFiles ? loadedProjectFiles[path] : ((await readWorkspaceFolder(path))[0] || {}).text ?? null),
-                        write: async (path, text) => { const said = await writeWorkspaceFile(path, text, { asked: true }); return /^Saved|^Updated/.test(said) ? null : { error: said }; }
-                    }, set.folder);
-                }
+        const notesSettings = () => { try { return CodevNotesTables.settingsFrom(localStorage, notesHasProject); } catch (err) { return { location: "codev", folder: "", allowEdit: false }; } };
+        let notesDeviceStore = null;
+        // byUser: the 📝 Notes tab's own saves, which don't need MEGA's "let agents save".
+        async function notesStore({ byUser = false } = {}) {
+            const set = notesSettings();
+            if (set.location === "project") {
+                if (!connectedDirectoryHandle && !Object.keys(loadedProjectFiles).length) return { error: "CoDev Notes is set to a folder in the project folder, but no project folder is connected. Connect one with 📁, or pick another place in Settings > Notes & tables." };
+                return CodevNotesTables.projectStore({
+                    files: async () => loadedProjectFiles,
+                    read: async path => (path in loadedProjectFiles ? loadedProjectFiles[path] : ((await readWorkspaceFolder(path))[0] || {}).text ?? null),
+                    write: async (path, text) => { const said = await writeWorkspaceFile(path, text, { asked: true }); return /^Saved|^Updated/.test(said) ? null : { error: said }; }
+                }, set.folder);
+            }
+            if (set.location === "mega") {
                 const st = await megaCloud.status();
-                if (!st.signedIn) return { error: "The notes vault is in MEGA, but CoDev isn't signed in to MEGA. Sign in under Settings > MEGA cloud, or pick another place in Settings > Notes & tables." };
-                return CodevNotesTables.megaStore(megaTransport, set.folder);
-            },
+                if (!st.signedIn) return { error: "CoDev Notes is set to a MEGA folder, but CoDev isn't signed in to MEGA. Sign in under Settings > MEGA cloud, or pick another place in Settings > Notes & tables." };
+                return CodevNotesTables.megaStore(megaTransport, set.folder, { byUser });
+            }
+            if (typeof indexedDB === "undefined") return { error: "This browser can't keep notes on the device. Pick a MEGA folder in Settings > Notes & tables." };
+            return notesDeviceStore || (notesDeviceStore = CodevNotesTables.deviceStore(CodevNotesTables.indexedDbKv()));
+        }
+        const notesTables = CodevNotesTables.createNotesTables({
+            getStore: () => notesStore(),
             canEdit: () => notesSettings().allowEdit,
             confirmWrite: message => askPermission(message),
             runTableQuery: (entry, args) => runTableQuery(entry, args)
@@ -4529,7 +4583,7 @@
 
         document.addEventListener("DOMContentLoaded", () => {
             const el = document.getElementById("notesSettings");
-            if (el) CodevNotesTables.mountSettings(el, { storage: localStorage, tools: notesTables, hasProject: notesHasProject });
+            if (el) CodevNotesTables.mountSettings(el, { storage: localStorage, tools: notesTables, hasProject: notesHasProject, onChange: () => { if (notesView) notesView.refresh(); } });
         });
 
         // THE ODDS API: every sportsbook's lines and props, saved as snapshots for line
@@ -4992,7 +5046,7 @@
             return tools;
         }
 
-        // Many files at once (an Obsidian vault, a StoryCraftr book folder) with one question.
+        // Many files at once (a Chronicler vault, a StoryCraftr book folder) with one question.
         async function writeWorkspaceFiles(files, { asked = false } = {}) {
             const list = Object.entries(files).map(([path, content]) => [normalizeWorkspacePath(path), content]).filter(([name, content]) => name && typeof content === "string");
             if (!list.length) return "Nothing to write.";
@@ -8181,7 +8235,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 10. BE BRIEF: Say what the user needs and stop. Lead with the answer in plain words. No preamble, no restating the question, no repeating what you already said, no closing summary or offers of more help. A simple question gets one to three sentences, and most answers fit in about 150 words. Go longer only when the task needs it: code, a report or deep research, step-by-step instructions, or when the user asks for detail; even then, cut anything that doesn't help. Use lists or code blocks only when they help.
 
-11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); editing videos and audio the user attaches (cutting, joining, pauses and filler words, highlights, vertical for TikTok, captions, noise removal, voice and music separation, background music, beat-cut montages, slow motion, transitions, text, logos, color looks, AI voiceovers, background removal, upscaling, GIFs) with the media_* tools when CoDev runs on their computer with Docker; making and editing pictures (generate_image); the user's Obsidian notes and CSV/JSON data tables, in place of Google Docs and Sheets (notes_search, notes_read, notes_write, table_read, table_write); files in the user's MEGA cloud drive, in place of Google Drive (mega_search, mega_read_file, mega_save_file); fantasy maps from Azgaar's Fantasy Map Generator (map_read, map_generate); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
+11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); editing videos and audio the user attaches (cutting, joining, pauses and filler words, highlights, vertical for TikTok, captions, noise removal, voice and music separation, background music, beat-cut montages, slow motion, transitions, text, logos, color looks, AI voiceovers, background removal, upscaling, GIFs) with the media_* tools when CoDev runs on their computer with Docker; making and editing pictures (generate_image); the user's CoDev Notes (notes and CSV/JSON data tables kept in CoDev's 📝 Notes tab), in place of Google Docs and Sheets (notes_search, notes_read, notes_write, table_read, table_write); files in the user's MEGA cloud drive, in place of Google Drive (mega_search, mega_read_file, mega_save_file); fantasy maps from Azgaar's Fantasy Map Generator (map_read, map_generate); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
 
 12. ENGINE-SPECIFIC RULES:${engineRules ? `\n${engineRules}` : " none for this task."}`;
             

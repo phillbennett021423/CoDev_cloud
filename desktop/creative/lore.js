@@ -1,4 +1,4 @@
-// The universe bible for the art tools: an Obsidian vault (or any Markdown notes) and/or
+// The universe bible for the art tools: a Chronicler vault (or any Markdown pages) and/or
 // Story Studio's story_bible.json export, read from the project folder. When a brief
 // names a character, item, place or faction (by name or alias), art_generate adds how
 // it looks to the prompt, so a skin for Relay starts from Relay's canon look instead
