@@ -297,7 +297,8 @@
             name: "wide_research",
             description: "Research many items at once (companies, products, people, places, papers, stocks, schools...) and fill the same fields for each, in parallel: dozens of searches and pages in one call instead of one by one. "
                 + "Give items, or discover to have CoDev build the list first (\"the 25 largest US banks\"). Every row has its sources; fields the sources don't give stay empty (never guessed), and each item with gaps gets a second, targeted search. "
-                + "The table is saved as a dataset for create_spreadsheet / create_csv; you get a preview.",
+                + "The table is saved as a dataset for create_spreadsheet / create_csv; you get a preview. "
+                + "Use it whenever the user wants the same facts about 5 or more things; for one or two items use web_search and read_webpage instead, and for jobs whose parts differ use delegate_tasks.",
             inputSchema: { type: "object", properties: {
                 items: { type: "array", items: { type: "string" }, description: "The items to research, like [\"Stripe\", \"Adyen\", \"Square\"]." },
                 discover: { type: "string", description: "Instead of items: what list to build from the web, like \"top 30 AI startups by funding in 2026\"." },

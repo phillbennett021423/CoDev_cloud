@@ -275,7 +275,7 @@
 
         const TOOLS = {
             map_read: {
-                description: "Answer questions about a fantasy map from Azgaar's Fantasy Map Generator (its full JSON export in the project folder): overview; one state (capital, people, borders, allies, enemies, wars, provinces), city, province, culture or religion by name; cities (largest first, by state); markers; and route, the distance and towns between two cities over the map's roads and sea routes.",
+                description: "Answer questions about a fantasy map from Azgaar's Fantasy Map Generator (its full JSON export in the project folder): overview; one state (capital, people, borders, allies, enemies, wars, provinces), city, province, culture or religion by name; cities (largest first, by state); markers; and route, the distance and towns between two cities over the map's roads and sea routes. Use it when the user asks about their world map or where things are in it; don't guess places the map doesn't have. For their story's characters and lore use the story tools instead.",
                 inputSchema: { type: "object", properties: {
                     map: { type: "string", description: "The map's .json path in the project folder, like maps/continuum.json. Leave it out if there's only one." },
                     action: { type: "string", enum: ["overview", "state", "city", "cities", "province", "culture", "religion", "route", "markers"], description: "Default overview." },
@@ -286,7 +286,7 @@
                 } }, run: mapRead
             },
             map_generate: {
-                description: "Make a new fantasy world map with Azgaar's Fantasy Map Generator (states, provinces, cities, cultures, religions, rivers, roads) from a seed, save its full JSON export in the project folder, and describe it. The same seed always makes the same map; a word works as a seed. Asks the user first.",
+                description: "Make a new fantasy world map with Azgaar's Fantasy Map Generator (states, provinces, cities, cultures, religions, rivers, roads) from a seed, save its full JSON export in the project folder, and describe it. The same seed always makes the same map; a word works as a seed. Asks the user first. Use it only when the user asks for a new map; to answer questions about a map they already have, use map_read instead.",
                 inputSchema: { type: "object", properties: {
                     seed: { type: "string", description: "Optional: a number or word. Leave out for a random map." },
                     width: { type: "integer", description: "Optional: map width in pixels (default 1920)." },

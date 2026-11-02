@@ -821,39 +821,39 @@
         const statsParam = { type: "string", description: "Optional: the stats, comma-separated, in Outlier's words (\"Points, Rebounds, PRA\", \"Passing Yards\", \"Strikeouts\"). Each stat costs a credit per game, so ask only for what you need; leave it out for the sport's 3 main ones." };
         const TOOLS = {
             odds_status: {
-                description: "Whether The Odds API is set up, how many of the user's free monthly credits are left (and today's share), and what's saved. Call it when a line tool says it couldn't fetch, or when the user asks about the odds key or credits.",
+                description: "Whether The Odds API is set up, how many of the user's free monthly credits are left (and today's share), and what's saved. Call it when a line tool says it couldn't fetch, or when the user asks about the odds key or credits. Not needed before every odds call: the other odds tools report their own credit use.",
                 inputSchema: { type: "object", properties: {} }, run: status
             },
             odds_lookup_list: {
                 description: "The players, props and lines to look up on Outlier, from every sportsbook's current prices (The Odds API): props whose line or odds moved, props where the books disagree, and props the juice leans on, each with the side the market leans, the reason, and every book's line and price. Ends with the list as legs ready for outlier_research_list. "
-                    + "Call it first when the user wants props found, a ticket built or lines tracked, then research those legs on Outlier. With a game it fetches that game's props (a few credits, saved and reused for an hour); without one it ranks only props already saved and says which games' lines are moving.",
+                    + "Call it first when the user wants props found, a ticket built or lines tracked, then research those legs on Outlier. With a game it fetches that game's props (a few credits, saved and reused for an hour); without one it ranks only props already saved and says which games' lines are moving. For a hit-rate request (\"60%+ in the last 5\") use outlier_find_hit_rates instead, and when the user already gave a list of legs, research those with outlier_research_list rather than this.",
                 inputSchema: { type: "object", properties: { sport: sportParam, game: gameParam, stats: statsParam,
                     top: { type: "integer", description: "Optional: how many props to list (default 12, up to 30)." } }, required: ["sport"] }, run: lookupList
             },
             odds_player_props: {
-                description: "One game's player props at every sportsbook (The Odds API): each player's line and Over/Under price per book, the best price for each side, the fair chance with the margin removed, and how the line moved since CoDev first saw it. Costs 1 credit per stat per game; saved and reused for an hour.",
+                description: "One game's player props at every sportsbook (The Odds API): each player's line and Over/Under price per book, the best price for each side, the fair chance with the margin removed, and how the line moved since CoDev first saw it. Costs 1 credit per stat per game; saved and reused for an hour. Use it to compare prices at every book for one game's props, such as the user's own legs; don't call it for several games at once when one is asked about.",
                 inputSchema: { type: "object", properties: { sport: sportParam, game: gameParam, stats: statsParam,
                     player: { type: "string", description: "Optional: only this player." },
                     refresh: { type: "boolean", description: "Optional: fetch again even if saved in the last hour (still not within 10 minutes). Only when the user asks for the latest." } }, required: ["sport"] }, run: playerProps
             },
             odds_game_lines: {
-                description: "Moneyline, spread and total for a sport's games at every sportsbook (The Odds API), with the best price, the fair chance and how each line moved since CoDev first saw it. One call covers the whole slate (about 3 credits); saved and reused for 30 minutes.",
+                description: "Moneyline, spread and total for a sport's games at every sportsbook (The Odds API), with the best price, the fair chance and how each line moved since CoDev first saw it. One call covers the whole slate (about 3 credits); saved and reused for 30 minutes. Use it for game lines (who's favored, spreads, totals); for player props use odds_player_props instead.",
                 inputSchema: { type: "object", properties: { sport: sportParam, game: gameParam,
                     markets: { type: "string", description: "Optional: moneyline, spread, total (comma-separated). Default all three." },
                     refresh: { type: "boolean", description: "Optional: fetch again even if saved recently. Only when the user asks for the latest." } }, required: ["sport"] }, run: gameLines
             },
             odds_line_movement: {
-                description: "How saved lines moved over time, book by book (every snapshot CoDev took: time, line, price). Free: it reads only what odds_player_props, odds_game_lines and odds_lookup_list saved.",
+                description: "How saved lines moved over time, book by book (every snapshot CoDev took: time, line, price). Free: it reads only what odds_player_props, odds_game_lines and odds_lookup_list saved. Use it when the user asks how a line moved; it has nothing for a game no other odds tool fetched yet, so fetch that game first instead of calling it again.",
                 inputSchema: { type: "object", properties: { sport: sportParam, game: gameParam,
                     player: { type: "string", description: "Optional: a player." }, stat: { type: "string", description: "Optional: the stat or market (\"Points\", \"Spread\")." } } }, run: lineMovement
             },
             odds_steam: {
-                description: "Steam and sharp moves in the saved lines: several sportsbooks moving the same way between two snapshots (steam when within 90 minutes), whether a sharp book (Pinnacle, Circa...) moved first, and sharp moves the other books haven't followed yet (stale prices). Free: reads only what's saved. Use it to time an entry or to check whether the market is moving with or against a pick.",
+                description: "Steam and sharp moves in the saved lines: several sportsbooks moving the same way between two snapshots (steam when within 90 minutes), whether a sharp book (Pinnacle, Circa...) moved first, and sharp moves the other books haven't followed yet (stale prices). Free: reads only what's saved. Use it to time an entry or to check whether the market is moving with or against a pick. It only sees lines saved before, so for today's prices use odds_player_props or odds_game_lines instead.",
                 inputSchema: { type: "object", properties: { sport: sportParam, game: gameParam,
                     player: { type: "string", description: "Optional: a player." }, stat: { type: "string", description: "Optional: the stat or market." } } }, run: steamList
             },
             odds_show_chart: {
-                description: "Show the user a chart of a saved line's movement at each sportsbook, with a table comparing the books, in CoDev's window. Use it when the user wants to see a line's movement or the books side by side.",
+                description: "Show the user a chart of a saved line's movement at each sportsbook, with a table comparing the books, in CoDev's window. Use it when the user wants to see a line's movement or the books side by side; for the numbers alone use odds_line_movement instead.",
                 inputSchema: { type: "object", properties: { sport: sportParam, player: { type: "string", description: "A player, for a prop." },
                     team: { type: "string", description: "A team, for a game line." }, stat: { type: "string", description: "The stat or market." } } }, run: showChart
             }

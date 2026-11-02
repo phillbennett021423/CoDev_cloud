@@ -337,13 +337,13 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
     const tools = [
         {
             name: 'gamedev_status',
-            description: 'Check the game tools on the user\'s computer: the Godot project folder, whether Godot and Blender are installed, and whether the Godot editor is open with the CoDev Bridge plugin. Call it before using godot_editor, godot_validate or blender_run for the first time in a task.',
+            description: 'Check the game tools on the user\'s computer: the Godot project folder, whether Godot and Blender are installed, and whether the Godot editor is open with the CoDev Bridge plugin. Call it before using godot_editor, godot_validate or blender_run for the first time in a task, and follow what it says is missing (install Godot or Blender, open the editor, or godot_install_bridge). Once per task is enough; don\'t call it before every step.',
             inputSchema: { type: 'object', properties: {} },
             annotations: { readOnlyHint: true }
         },
         {
             name: 'godot_validate',
-            description: 'Run the real Godot engine headless on the user\'s project (as saved on disk) to check GDScript for parse and compile errors, and optionally run the main scene for a few seconds to catch runtime errors. Call it after changing scripts, besides the static godot_check. With sandbox review on, the changes are checked once the user approves them.',
+            description: 'Run the real Godot engine headless on the user\'s project (as saved on disk) to check GDScript for parse and compile errors, and optionally run the main scene for a few seconds to catch runtime errors. Call it after changing scripts, besides the static godot_check. With sandbox review on, the changes are checked once the user approves them, so it checks the saved files, not staged edits: don\'t use it to check sandbox edits before approval (use godot_check for those).',
             inputSchema: { type: 'object', properties: {
                 files: { type: 'array', items: { type: 'string' }, description: 'Scripts to check (res:// or project-relative paths). Leave it out to check every script (up to 60).' },
                 run_seconds: { type: 'number', description: 'Optional: also run the main scene headless for this many seconds (up to 60) and report errors it prints.' }
@@ -354,15 +354,16 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
             name: 'godot_editor',
             description: 'Control the Godot 4 editor the user has open, through the CoDev Bridge plugin: ping, scene_tree (the open scene\'s nodes), open_scene {path}, save_scene, reload_scene {path}, rescan (import new or changed files such as a .glb from Blender), play {scene?: "main" | "current" | res path}, stop, is_playing, '
                 + 'add_node {parent?, type, name, properties?}, instantiate {path (.tscn or .glb), parent?, name?, properties?}, set_property {node, property, value}, get_property {node, property}, remove_node {node}, select {node}. '
-                + 'Node paths are relative to the scene root ("." is the root, "Player/Camera3D"). Vectors and colors are arrays ([1, 2, 3]); res:// strings load resources. Changes show in the editor at once; save_scene writes them to disk.',
+                + 'Node paths are relative to the scene root ("." is the root, "Player/Camera3D"). Vectors and colors are arrays ([1, 2, 3]); res:// strings load resources. Changes show in the editor at once; save_scene writes them to disk. '
+                + 'Use it when the user has the Godot editor open and wants a scene built, changed or played; call gamedev_status first, and godot_install_bridge if it says the bridge is missing. To change .gd or .tscn files on disk, use the file tools instead. If an action fails, read scene_tree to check node paths before trying again.',
             inputSchema: { type: 'object', properties: {
-                action: { type: 'string', enum: EDITOR_ACTIONS },
+                action: { type: 'string', enum: EDITOR_ACTIONS, description: 'What to do in the editor, one of the actions above (ping to check the bridge is connected).' },
                 args: { type: 'object', description: 'The action\'s arguments, as listed in the description.' }
             }, required: ['action'] }
         },
         {
             name: 'godot_install_bridge',
-            description: 'Install the CoDev Bridge editor plugin into the user\'s Godot project (addons/codev_bridge) and turn it on in project.godot, so godot_editor can control the editor. The user is asked first. Only needed once per project.',
+            description: 'Install the CoDev Bridge editor plugin into the user\'s Godot project (addons/codev_bridge) and turn it on in project.godot, so godot_editor can control the editor. The user is asked first. Use it only when gamedev_status or godot_editor says the bridge isn\'t installed; it is needed once per project, so don\'t call it again after it worked.',
             inputSchema: { type: 'object', properties: {} },
             _meta: { 'codev/alwaysAsk': true }
         },

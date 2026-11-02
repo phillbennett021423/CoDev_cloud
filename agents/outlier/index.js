@@ -1695,7 +1695,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
         name: 'outlier',
         tools: [{
             name: 'outlier_slips',
-            description: 'The latest Outlier entries CoDev recommends (4- and 6-leg power/flex), with each leg\'s odds, L5 hit rate and estimated hit chance. Read-only; the user runs the scrape from the Outlier view.',
+            description: 'The latest Outlier entries CoDev recommends (4- and 6-leg power/flex), with each leg\'s odds, L5 hit rate and estimated hit chance, from the last scrape the user ran in the Outlier view. Read-only and opens nothing. Use it when the user asks what CoDev picked or for "my slips"; don\'t use it for a fresh board or a list of legs (use outlier_scan_board or outlier_research_list).',
             inputSchema: { type: 'object', properties: {}, additionalProperties: false }
         }, {
             name: 'outlier_import_board',
@@ -1705,7 +1705,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
             }, required: ['path'], additionalProperties: false }
         }, {
             name: 'outlier_scan_board',
-            description: 'Opens Outlier in the user\'s signed-in Outlier browser, goes to the sport, stat and game you name (e.g. sport "NBA", game "8pm" or "Lakers 3pm") by clicking Outlier\'s tabs and game cards, scrolls the board to the end reading every line, and runs the full audit (-119 consistency filter, sharp-book comparison, correlation and usage checks, Under engine, 4-6 leg tickets) on that game\'s props. Without sport or game it scans the pages set in the Outlier tab, or one app.outlier.bet address you give. It only reads and navigates: nothing is entered on Outlier, Underdog or Dabble. Give the user the ticket legs in your reply. You never get the browser itself or its cookies. If a tab isn\'t found, the error lists the tabs on the page: call again with the matching one as section or sport. ' + OUTLIER_PRIMER,
+            description: 'Opens Outlier in the user\'s signed-in Outlier browser, goes to the sport, stat and game you name (e.g. sport "NBA", game "8pm" or "Lakers 3pm") by clicking Outlier\'s tabs and game cards, scrolls the board to the end reading every line, and runs the full audit (-119 consistency filter, sharp-book comparison, correlation and usage checks, Under engine, 4-6 leg tickets) on that game\'s props. Without sport or game it scans the pages set in the Outlier tab, or one app.outlier.bet address you give. Use it for any Outlier props, parlay or ticket request that isn\'t a list of legs or a hit-rate filter: for those use outlier_research_list or outlier_find_hit_rates instead. It only reads and navigates: nothing is entered on Outlier, Underdog or Dabble. Give the user the ticket legs in your reply. You never get the browser itself or its cookies. If a tab isn\'t found, the error lists the tabs on the page: call again with the matching one as section or sport. ' + OUTLIER_PRIMER,
             inputSchema: { type: 'object', properties: {
                 section: { type: 'string', description: 'The Outlier tab to open first, by its name on the page (e.g. "Props"). Leave it out for the regular props board, never Positive EV.' },
                 sport: { type: 'string', description: 'The sport tab to open, e.g. "NBA", "NFL", "MLB", "NHL", "WNBA", "CBB".' },
@@ -1719,7 +1719,7 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
         }, {
             name: 'outlier_research',
             annotations: { readOnlyHint: true },
-            description: 'Opens one player\'s Market Details / player card on Outlier in the user\'s signed-in browser (the Props board, sport, game, then the player\'s name) and returns everything on it as text: the hit rate chart and splits, Supporting Stats (minutes, shots, targets, target share...), the opponent\'s rank against that position, injuries, Odds Movement and public bet/money splits. Without a player it opens the game\'s page on the Games tab: spread, total, moneyline, injuries, line movement and public splits. Use it to check the legs of a ticket after outlier_scan_board (see outlier_guide for what each number means). It only reads and clicks tabs, game cards and the player\'s name; nothing is added to My Picks or a slip.',
+            description: 'Opens one player\'s Market Details / player card on Outlier in the user\'s signed-in browser (the Props board, sport, game, then the player\'s name) and returns everything on it as text: the hit rate chart and splits, Supporting Stats (minutes, shots, targets, target share...), the opponent\'s rank against that position, injuries, Odds Movement and public bet/money splits. Without a player it opens the game\'s page on the Games tab: spread, total, moneyline, injuries, line movement and public splits. Use it to check the legs of a ticket after outlier_scan_board (see outlier_guide for what each number means). It only reads and clicks tabs, game cards and the player\'s name; nothing is added to My Picks or a slip. For more than one or two players, use outlier_research_list instead: it reads the whole list in one visit.',
             inputSchema: { type: 'object', properties: {
                 player: { type: 'string', description: 'The player, e.g. "LeBron James". Leave out for the game\'s page.' },
                 sport: { type: 'string', description: 'The sport tab, e.g. "NBA", "NFL", "MLB", "NHL".' },
@@ -1771,7 +1771,10 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
             description: 'The chance that ALL the legs of a ticket hit together, simulated 10,000 times from each leg\'s own game log at the user\'s line on the Outlier cards read by outlier_research_list in the last 15 minutes, with legs that moved together on the same dates moving together. Opens nothing. Call it with the 4-6 legs you picked and report its number as an estimate; never state a probability it didn\'t give.',
             inputSchema: { type: 'object', properties: {
                 legs: { type: 'array', description: 'The ticket\'s legs, as given to outlier_research_list.', items: { type: 'object', properties: {
-                    player: { type: 'string' }, stat: { type: 'string' }, line: { type: 'number' }, side: { type: 'string' }
+                    player: { type: 'string', description: 'The player, as given to outlier_research_list, e.g. "LeBron James".' },
+                    stat: { type: 'string', description: 'The stat, as given to outlier_research_list, e.g. "Points".' },
+                    line: { type: 'number', description: 'The user\'s line, e.g. 24.5.' },
+                    side: { type: 'string', description: 'Over/Higher/More or Under/Lower/Less (default Over).' }
                 }, required: ['player'], additionalProperties: false } }
             }, required: ['legs'], additionalProperties: false }
         }, {
@@ -1786,11 +1789,11 @@ function createService(config = {}, { log = console.log, pipeline, services = {}
         }, {
             name: 'outlier_guide',
             annotations: { readOnlyHint: true },
-            description: 'The full guide to Outlier: every section and tool (Insights, Props/Prop Finder with its filters and sorts, Games, Market Details, Popular, My Picks, +EV, Arbitrage, Middles, Boosts), what each number and color means (odds, implied probability, hit rates, opposition rank, line movement, public bet vs money), when to look at each one while building a ticket, and the research checklist by sport and stat. Read it before researching or building a ticket from Outlier.',
+            description: 'The full guide to Outlier: every section and tool (Insights, Props/Prop Finder with its filters and sorts, Games, Market Details, Popular, My Picks, +EV, Arbitrage, Middles, Boosts), what each number and color means (odds, implied probability, hit rates, opposition rank, line movement, public bet vs money), when to look at each one while building a ticket, and the research checklist by sport and stat. Read it before researching or building a ticket from Outlier, or when you don\'t know what a section or number means. Opens nothing. Not needed when it is already in your instructions as [Outlier guide]: don\'t call it twice.',
             inputSchema: { type: 'object', properties: {}, additionalProperties: false }
         }, {
             name: 'outlier_extract_page',
-            description: 'Runs the Outlier DOM extraction on the page open in YOUR browser (open it first with browser_navigate) and returns the props it finds as JSON: player, market, line, side, odds by book, hit rates. With add_to_analysis true, they are added to the latest Outlier read and the entries are re-scored.',
+            description: 'Runs the Outlier DOM extraction on the page open in YOUR browser (open it first with browser_navigate) and returns the props it finds as JSON: player, market, line, side, odds by book, hit rates. With add_to_analysis true, they are added to the latest Outlier read and the entries are re-scored. Use it only for an Outlier page you opened in your own browser yourself, such as a shared link; for the user\'s Outlier board use outlier_scan_board or outlier_research_list instead, which use their signed-in browser.',
             inputSchema: { type: 'object', properties: {
                 kind: { type: 'string', enum: ['props', 'odds', 'slips', 'history'], description: 'What the page shows (default props).' },
                 add_to_analysis: { type: 'boolean', description: 'Add the props to the Outlier analysis (default false).' }

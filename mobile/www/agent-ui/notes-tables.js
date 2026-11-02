@@ -519,15 +519,15 @@
         }
 
         const filterSchema = { type: "array", description: "Optional: rows must match all of these.", items: { type: "object", properties: {
-            column: { type: "string" }, op: { type: "string", enum: ["=", "!=", ">", ">=", "<", "<=", "contains", "empty", "not_empty"] }, value: { type: "string" } }, required: ["column"] } };
+            column: { type: "string", description: "The column to test, by its name." }, op: { type: "string", enum: ["=", "!=", ">", ">=", "<", "<=", "contains", "empty", "not_empty"], description: "How to compare (default =)." }, value: { type: "string", description: "The value to compare with (not needed for empty and not_empty)." } }, required: ["column"] } };
 
         const TOOLS = {
             notes_status: {
-                description: "Check where the user's notes vault is (an Obsidian vault of Markdown notes, plus CSV/JSON data tables; this replaces Google Docs and Sheets), how many notes and tables it has, and whether editing is on.",
+                description: "Check where the user's notes vault is (an Obsidian vault of Markdown notes, plus CSV/JSON data tables; this replaces Google Docs and Sheets), how many notes and tables it has, and whether editing is on. Call it when the user asks about their notes setup or a notes tool they need isn't listed. Not needed when the notes tool you want is already in your tool list: just use it.",
                 inputSchema: { type: "object", properties: {} }, run: statusReport
             },
             notes_search: {
-                description: "Search the user's Obsidian notes (Markdown) by words in the name or text, or by #tag, or list the newest notes. kind \"tables\" lists the CSV, TSV and JSON data tables instead. Read-only.",
+                description: "Search the user's Obsidian notes (Markdown) by words in the name or text, or by #tag, or list the newest notes. kind \"tables\" lists the CSV, TSV and JSON data tables instead. Read-only. Use it when the user mentions their notes, a tag or a table without giving its exact path, then notes_read or table_read.",
                 inputSchema: { type: "object", properties: {
                     query: { type: "string", description: "Words that must all be in the note (name or text). Leave empty to list notes." },
                     tag: { type: "string", description: "Optional: only notes with this tag (with or without #)." },
@@ -537,14 +537,14 @@
                 } }, run: notesSearch
             },
             notes_read: {
-                description: "Read one Obsidian note by its path (Projects/Ideas.md) or name (Ideas), with its tags, the notes it [[links]] to and the notes that link to it. Read-only.",
+                description: "Read one Obsidian note by its path (Projects/Ideas.md) or name (Ideas), with its tags, the notes it [[links]] to and the notes that link to it. Read-only. Use it when the user asks about a note; for a CSV or JSON table use table_read instead.",
                 inputSchema: { type: "object", properties: {
                     note: { type: "string", description: "The note's path or name." },
                     start: { type: "integer", description: "Optional: the character to start from, for the next part of a long note." }
                 }, required: ["note"] }, run: notesRead
             },
             notes_write: {
-                description: "Create or edit an Obsidian note (Markdown, with [[links]], #tags and --- properties --- if useful). mode create makes a new note; append adds text at the end or under_heading; edit swaps one exact piece of text (find -> replace_with); replace rewrites the whole note. CoDev shows the user the change and saves only if they approve.",
+                description: "Create or edit an Obsidian note (Markdown, with [[links]], #tags and --- properties --- if useful). mode create makes a new note; append adds text at the end or under_heading; edit swaps one exact piece of text (find -> replace_with); replace rewrites the whole note. CoDev shows the user the change and saves only if they approve. Use it when the user asks to make or change a note; read the note with notes_read before editing it. For a data table use table_write instead.",
                 inputSchema: { type: "object", properties: {
                     note: { type: "string", description: "The note's path inside the vault, like Projects/Ideas.md (.md is added if missing)." },
                     mode: { type: "string", enum: ["create", "append", "edit", "replace"], description: "Default create." },
@@ -555,20 +555,20 @@
                 }, required: ["note"] }, run: notesWrite
             },
             table_read: {
-                description: "Read or query a CSV, TSV or JSON data table from the notes vault (these replace Google Sheets): action rows lists rows (filters, sort, columns, offset, limit); stats gives count, sum, average, median, min and max; group totals a column per value of another; search finds rows with text; columns describes every column. The math runs over every row.",
+                description: "Read or query a CSV, TSV or JSON data table from the notes vault (these replace Google Sheets): action rows lists rows (filters, sort, columns, offset, limit); stats gives count, sum, average, median, min and max; group totals a column per value of another; search finds rows with text; columns describes every column. The math runs over every row. Use it for any number from a table; don't add up rows by eye. For a spreadsheet attached in the chat use query_table instead.",
                 inputSchema: { type: "object", properties: {
                     table: { type: "string", description: "The table's path, like Data/players.csv." },
                     action: { type: "string", enum: ["rows", "stats", "group", "search", "columns"], description: "Default rows." },
                     filters: filterSchema,
                     columns: { type: "array", items: { type: "string" }, description: "Optional: columns to show (rows) or measure (stats)." },
-                    group_by: { type: "string" }, value_column: { type: "string" },
-                    aggregate: { type: "string", enum: ["count", "sum", "avg", "min", "max", "median", "count_distinct"] },
-                    sort_by: { type: "string" }, descending: { type: "boolean" }, query: { type: "string", description: "search: the text to find." },
-                    offset: { type: "integer" }, limit: { type: "integer", description: "How many rows (default 50)." }
+                    group_by: { type: "string", description: "group: the column whose values make the groups." }, value_column: { type: "string", description: "group: the column to total per group." },
+                    aggregate: { type: "string", enum: ["count", "sum", "avg", "min", "max", "median", "count_distinct"], description: "group: how to total it (default count)." },
+                    sort_by: { type: "string", description: "rows: the column to sort by." }, descending: { type: "boolean", description: "rows: sort largest first (default false)." }, query: { type: "string", description: "search: the text to find." },
+                    offset: { type: "integer", description: "rows: how many rows to skip, for the next page (default 0)." }, limit: { type: "integer", description: "How many rows (default 50)." }
                 }, required: ["table"] }, run: tableRead
             },
             table_write: {
-                description: "Create or edit a CSV, TSV or JSON data table in the notes vault. mode create or replace writes columns and rows; append_rows adds rows; update_rows sets values on the rows matching where; delete_rows removes them; add_column adds a column. Rows are lists in column order or objects by column name. The file keeps its format. CoDev shows the user the change and saves only if they approve.",
+                description: "Create or edit a CSV, TSV or JSON data table in the notes vault. mode create or replace writes columns and rows; append_rows adds rows; update_rows sets values on the rows matching where; delete_rows removes them; add_column adds a column. Rows are lists in column order or objects by column name. The file keeps its format. CoDev shows the user the change and saves only if they approve. Use it when the user asks to make or change a table in their vault; read it with table_read first. To give them an Excel file instead use create_spreadsheet.",
                 inputSchema: { type: "object", properties: {
                     table: { type: "string", description: "The table's path, like Data/players.csv (.csv is added if there's no .csv, .tsv or .json)." },
                     mode: { type: "string", enum: ["create", "replace", "append_rows", "update_rows", "delete_rows", "add_column"], description: "Default create." },

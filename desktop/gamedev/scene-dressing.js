@@ -989,14 +989,14 @@ function createSceneDressing({ getRoot, bridge, log = () => {} }) {
     const tools = [
         {
             name: 'scene_assets',
-            description: 'Scan the project\'s 3D asset library (.glb/.gltf models, .png/.jpg textures) and say what each one is, worked out from the files themselves: its kind (desk, desk_lamp vs floor_lamp, office_chair...), real size in meters (models made in centimeters are spotted and scaled), materials, colors and style (retro, modern, industrial, wood, chrome...). No naming rules or manifests needed. action "index" lists everything (re-reads only changed files); "search" finds assets by words, category or tags.',
+            description: 'Scan the project\'s 3D asset library (.glb/.gltf models, .png/.jpg textures) and say what each one is, worked out from the files themselves: its kind (desk, desk_lamp vs floor_lamp, office_chair...), real size in meters (models made in centimeters are spotted and scaled), materials, colors and style (retro, modern, industrial, wood, chrome...). No naming rules or manifests needed. action "index" lists everything (re-reads only changed files); "search" finds assets by words, category or tags. Use it when the user asks what models or textures they have, or before placing a specific one; to furnish a room use scene_dress instead, which picks assets on its own.',
             inputSchema: { type: 'object', properties: {
-                action: { type: 'string', enum: ['index', 'search'] },
+                action: { type: 'string', enum: ['index', 'search'], description: 'index lists every asset; search finds some (default index).' },
                 query: { type: 'string', description: 'search: words like "80s desk lamp" or "dark wood table".' },
                 category: { type: 'string', description: 'search: only this kind, like desk_lamp.' },
                 tags: { type: 'array', items: { type: 'string' }, description: 'search: style, material or color tags it must have.' },
-                kind: { type: 'string', enum: ['model', 'texture'] },
-                limit: { type: 'number' }
+                kind: { type: 'string', enum: ['model', 'texture'], description: 'Optional: only models or only textures.' },
+                limit: { type: 'number', description: 'How many assets to list (default all for index, 20 for search).' }
             } },
             annotations: { readOnlyHint: true }
         },
@@ -1005,34 +1005,35 @@ function createSceneDressing({ getRoot, bridge, log = () => {} }) {
             description: 'Furnish and arrange a 3D scene from the user\'s own assets with real-world placement rules: desk lamps and monitors stand on the desk\'s top, the office chair is tucked in front of the desk facing it, chairs go around a dining table, nightstands beside the bed\'s head, rugs under tables, pictures on the wall above the sofa. Things never overlap, stay inside the room and leave walkways clear. '
                 + 'Assets are chosen to match the style asked for and what the user has shown they like; before each run it learns from what the user moved, deleted or swapped since last time. Kinds missing from the library get gray placeholder boxes (placeholders: false skips them). '
                 + 'target "godot" places everything in the open Godot editor under a "Dressing" node (then godot_editor save_scene), building on what the scene already has (an existing desk gets the lamp); "blender" returns a bpy script for blender_run; "plan" only describes it. '
-                + `Presets: ${Object.keys(PRESETS).filter(k => !['study', 'living', 'dining'].includes(k)).join(', ')}. Items: categories or {category, on/of (a node name or category), count, asset (res:// path), name, place, optional}.`,
+                + `Presets: ${Object.keys(PRESETS).filter(k => !['study', 'living', 'dining'].includes(k)).join(', ')}. Items: categories or {category, on/of (a node name or category), count, asset (res:// path), name, place, optional}. '
+                + 'Use it when the user asks to furnish, dress or fill a room or scene; to change one thing already placed use scene_edit instead.`,
             inputSchema: { type: 'object', properties: {
                 preset: { type: 'string', description: 'A room to furnish: office, bedroom, living_room, dining_room or kitchen.' },
                 items: { type: 'array', items: {}, description: 'Things to place (as well as the preset\'s), e.g. ["desk_lamp", {"category": "book", "count": 3, "on": "shelf"}].' },
                 room: { type: 'object', description: 'The room: {size: [width, height, depth] in meters (default [6, 3, 5]), center: [x, y, z] (floor center, default [0, 0, 0])}.' },
                 style: { type: 'string', description: 'Style words to prefer, like "80s retro wood" or "modern chrome".' },
                 seed: { type: 'number', description: 'The same seed gives the same layout; leave it out for a fresh one.' },
-                target: { type: 'string', enum: ['godot', 'blender', 'plan'] },
-                placeholders: { type: 'boolean' }
+                target: { type: 'string', enum: ['godot', 'blender', 'plan'], description: 'Where it goes: the open Godot editor, a Blender script, or only a plan.' },
+                placeholders: { type: 'boolean', description: 'Gray boxes for kinds missing from the library (default true).' }
             } }
         },
         {
             name: 'scene_edit',
-            description: 'Edit the open Godot scene the way furniture works: "clear" takes everything off a surface (the desk stays, the lamp, monitor and mug on it go), "remove" removes a node together with everything standing on it, "move" moves a node and carries what\'s on it along (position [x, y, z], rotation_y in degrees). What\'s "on" it comes from what CoDev placed and from measuring the scene. dry_run lists what would change.',
+            description: 'Edit the open Godot scene the way furniture works: "clear" takes everything off a surface (the desk stays, the lamp, monitor and mug on it go), "remove" removes a node together with everything standing on it, "move" moves a node and carries what\'s on it along (position [x, y, z], rotation_y in degrees). What\'s "on" it comes from what CoDev placed and from measuring the scene. dry_run lists what would change. Use it when the user asks to clear, remove or move furniture in the scene; to add new things use scene_dress instead.',
             inputSchema: { type: 'object', properties: {
-                action: { type: 'string', enum: ['clear', 'remove', 'move'] },
+                action: { type: 'string', enum: ['clear', 'remove', 'move'], description: 'clear a surface, remove a node, or move it.' },
                 node: { type: 'string', description: 'The node\'s path or name, like "Dressing/Desk".' },
-                position: { type: 'array', items: { type: 'number' } },
-                rotation_y: { type: 'number' },
-                dry_run: { type: 'boolean' }
+                position: { type: 'array', items: { type: 'number' }, description: 'move: the new position [x, y, z] in meters.' },
+                rotation_y: { type: 'number', description: 'move: the new turn around the vertical axis, in degrees.' },
+                dry_run: { type: 'boolean', description: 'Only list what would change (default false).' }
             }, required: ['action', 'node'] }
         },
         {
             name: 'scene_learn',
-            description: 'Learn the user\'s taste for scene dressing. Without arguments it compares the open Godot scene with what CoDev placed (moved, deleted, swapped, newly added props) and says what it learned and what it knows so far. feedback records what the user said ("too cluttered", "more wood", "I like this lamp"): [{asset or node, verdict: like|dislike, style, note}]. corrections fix what an asset is: [{asset, category, add_tags, remove_tags, scale}]. It\'s kept in the project (.codev/scene), so the whole team\'s edits count.',
+            description: 'Learn the user\'s taste for scene dressing. Without arguments it compares the open Godot scene with what CoDev placed (moved, deleted, swapped, newly added props) and says what it learned and what it knows so far. feedback records what the user said ("too cluttered", "more wood", "I like this lamp"): [{asset or node, verdict: like|dislike, style, note}]. corrections fix what an asset is: [{asset, category, add_tags, remove_tags, scale}]. It\'s kept in the project (.codev/scene), so the whole team\'s edits count. Use it when the user says what they like or dislike about a dressed scene, or after they edit one by hand; scene_dress already learns before each run, so don\'t call it just before scene_dress.',
             inputSchema: { type: 'object', properties: {
-                feedback: { type: 'array', items: { type: 'object' } },
-                corrections: { type: 'array', items: { type: 'object' } }
+                feedback: { type: 'array', items: { type: 'object' }, description: 'What the user said: [{asset or node, verdict: like|dislike, style, note}].' },
+                corrections: { type: 'array', items: { type: 'object' }, description: 'Fixes to what an asset is: [{asset, category, add_tags, remove_tags, scale}].' }
             } }
         }
     ];

@@ -531,11 +531,11 @@
 
         const TOOLS = {
             mega_status: {
-                description: "Check whether CoDev is signed in to the user's MEGA cloud drive (MEGA / MEGAsync), and whether saving is on. Call it when the user asks about MEGA and the MEGA tool they need isn't listed.",
+                description: "Check whether CoDev is signed in to the user's MEGA cloud drive (MEGA / MEGAsync), and whether saving is on. Call it when the user asks about MEGA and the MEGA tool they need isn't listed. Not needed when the MEGA tool you want is already in your tool list: just use it.",
                 inputSchema: { type: "object", properties: {} }, run: statusReport
             },
             mega_search: {
-                description: "Search the user's MEGA cloud drive by file name, or list a folder (newest first). Returns ids, paths, sizes and dates. Read-only. MEGA encrypts files, so this matches names, not the text inside.",
+                description: "Search the user's MEGA cloud drive by file name, or list a folder (newest first). Returns ids, paths, sizes and dates. Read-only. MEGA encrypts files, so this matches names, not the text inside. Use it when the user mentions a file or folder in their MEGA, then mega_read_file with its id. For files on their computer use the project file tools instead, and for their Obsidian notes use notes_search.",
                 inputSchema: { type: "object", properties: {
                     query: { type: "string", description: "Words in the file or folder name. Leave empty to list a folder." },
                     type: { type: "string", enum: ["folder", "image", "video", "audio", "pdf", "doc", "sheet", "slides", "text"], description: "Optional: only this kind of file." },
@@ -544,14 +544,14 @@
                 } }, run: megaSearch
             },
             mega_read_file: {
-                description: "Read a text file from the user's MEGA cloud drive (txt, md, csv, json, code and similar) by its id or path from mega_search. A folder lists what's in it. Read-only.",
+                description: "Read a text file from the user's MEGA cloud drive (txt, md, csv, json, code and similar) by its id or path from mega_search. A folder lists what's in it. Read-only. Use it with an id or path from mega_search. It can't read pictures, videos or PDFs, so don't call it on those.",
                 inputSchema: { type: "object", properties: {
                     file: { type: "string", description: "The file's id or path from mega_search, like \"/Notes/picks.md\"." },
                     start: { type: "integer", description: "Optional: the character to start from, for the next part of a long file." }
                 }, required: ["file"] }, run: megaReadFile
             },
             mega_save_file: {
-                description: "Save a new text file to the user's MEGA cloud drive. CoDev shows the user the file and saves only if they approve. It never changes or deletes existing files.",
+                description: "Save a new text file to the user's MEGA cloud drive. CoDev shows the user the file and saves only if they approve. It never changes or deletes existing files. Use it only when the user asks to save something to MEGA; to give them a spreadsheet or document as a download use create_spreadsheet or create_document instead, and for notes in their vault use notes_write.",
                 inputSchema: { type: "object", properties: {
                     name: { type: "string", description: "File name, like \"NBA props 10-28.md\"." },
                     content: { type: "string", description: "The full text." },

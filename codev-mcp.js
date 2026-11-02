@@ -42,8 +42,15 @@ function createCodevMcp({ workspace, env = process.env, services } = {}) {
         return [
             `CoDev's game-art pipeline for the project at ${workspace}. Every file path is relative to that folder.`,
             'Start with art_status. The studio rules below are the project\'s memory: follow its budgets, naming and art direction, and record new rules with art_rules (op "note" or "set") instead of keeping them in your head.',
-            rules
-        ].join('\n\n');
+            rules,
+            toolGuide()
+        ].filter(Boolean).join('\n\n');
+    }
+
+    // Which tool fits which request, and how to recover from a failed call: the same
+    // guide CoDev's own agents get (mobile/www/agent-ui/tool-guide.js).
+    function toolGuide() {
+        try { return require('./mobile/www/agent-ui/tool-guide.js').toolGuideNote(tools()); } catch { return ''; }
     }
 
     function tools() {
