@@ -22,7 +22,13 @@
 // (handleMcp) and server.js loads agents/creative, which wraps this. Every file read
 // or written is inside the project folder. Nothing here uploads anything: ComfyUI,
 // Blender, Python and the trainers all run on the same computer, and the only
-// online call is the free Pollinations picture service when ComfyUI isn't running.
+// online calls are the free Pollinations picture service when ComfyUI isn't running,
+// and ComfyUI itself when the user points it at a rented GPU (CODEV_COMFYUI_URL or
+// comfyui.url in codev-studio.json, e.g. a RunPod pod).
+//
+// Skins are held to the visible-first rule (skin-quality.js): what a player sees must
+// look perfect, art_mesh op "review" checks it from every angle, and art_skin_pipeline
+// makes a skin in passes (concept, mesh, textures, effects) that the user approves.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -32,6 +38,7 @@ const R = require('./rules');
 const L = require('./lore');
 const T = require('./training');
 const { buildPlayable, TEMPLATES } = require('./playable');
+const Q = require('./skin-quality');
 
 const ART_TOOLS = path.join(__dirname, 'python', 'art_tools.py');
 const BPY_PIPELINE = path.join(__dirname, 'bpy', 'asset_pipeline.py');
@@ -100,7 +107,19 @@ function exec(file, args, { cwd, env, timeoutMs = 300000, input } = {}) {
 }
 
 function createCreativeService({ getProjectDir = () => '', log = () => {}, env = process.env, fetchImpl = globalThis.fetch, comfy: comfyClient, findBlender } = {}) {
-    const comfy = comfyClient || createComfy({ url: env.CODEV_COMFYUI_URL, fetchImpl });
+    // ComfyUI on this computer, or a remote one (a RunPod pod): comfyui.url in the studio
+    // rules wins, then CODEV_COMFYUI_URL. The token only ever comes from the environment.
+    const comfyClients = new Map();
+    function currentComfy() {
+        let url = '';
+        try { url = String((rules().comfyui || {}).url || '').trim(); } catch { /* no project open */ }
+        url = url || env.CODEV_COMFYUI_URL || undefined;
+        const key = url || '';
+        if (!comfyClients.has(key)) comfyClients.set(key, createComfy({ url, token: env.CODEV_COMFYUI_TOKEN || '', fetchImpl }));
+        return comfyClients.get(key);
+    }
+    const comfy = comfyClient || new Proxy({}, { get: (_, k) => { const c = currentComfy(); const v = c[k]; return typeof v === 'function' ? v.bind(c) : v; } });
+    const isRemote = () => !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/i.test(String(comfy.url));
     const jobs = T.createJobs({ log });
     findBlender = findBlender || (() => require('../gamedev').findBlender(env));
     let pythonCmd = null;
@@ -282,9 +301,9 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
         const lines = [];
         const t = tools_found();
         let models = null;
-        try { models = await comfy.models(); } catch (err) { lines.push(`ComfyUI: not running at ${comfy.url} (${err.message}). Pictures fall back to free Pollinations; inpainting, try-on, sketches and AI reframing need ComfyUI (free: github.com/comfyanonymous/ComfyUI, or the ComfyUI Desktop app). Set CODEV_COMFYUI_URL if it runs elsewhere.`); }
+        try { models = await comfy.models(); } catch (err) { lines.push(`ComfyUI: not reachable at ${comfy.url} (${err.message}). Pictures fall back to free Pollinations; inpainting, try-on, sketches and AI reframing need ComfyUI (free: github.com/comfyanonymous/ComfyUI, or the ComfyUI Desktop app). ${isRemote() ? 'It\'s a remote address: check the pod is running and the address is right.' : 'To use a rented GPU (e.g. a RunPod ComfyUI pod), art_rules op set with patch {"comfyui": {"url": "https://<pod-id>-8188.proxy.runpod.net"}}, or set CODEV_COMFYUI_URL.'}`); }
         if (models) {
-            lines.push(`ComfyUI: running at ${comfy.url}. ${models.checkpoints.length} checkpoint(s)${models.checkpoints.length ? `: ${models.checkpoints.slice(0, 12).join(', ')}` : ' (put .safetensors models in ComfyUI/models/checkpoints)'}.`);
+            lines.push(`ComfyUI: running at ${comfy.url}${isRemote() ? ' (remote GPU; pictures go to it and back)' : ''}. ${models.checkpoints.length} checkpoint(s)${models.checkpoints.length ? `: ${models.checkpoints.slice(0, 12).join(', ')}` : ' (put .safetensors models in ComfyUI/models/checkpoints)'}.`);
             lines.push(`  LoRAs ${models.loras.length}, ControlNets ${models.controlnets.length}, upscalers ${models.upscalers.length}, IP-Adapter ${models.ipadapter ? 'yes' : 'no (ComfyUI_IPAdapter_plus adds style references and try-on references)'}.`);
         }
         try { const info = await py('info', {}, 60000); lines.push(`Python: ${await python()} with numpy and Pillow${info.have.rembg ? ' and rembg' : '; cutouts need: pip install rembg'}.`); } catch (err) { lines.push(`Python tools: ${err.message}`); }
@@ -332,6 +351,9 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             else ckpts = ckpts.length ? ckpts.slice(0, 6).map(w => pickCheckpoint(models.checkpoints, w)) : [pickCheckpoint(models.checkpoints, style.checkpoint)];
             if (variants.length * ckpts.length * count > 24) return text(`That's ${variants.length * ckpts.length * count} pictures; the limit for one call is 24. Use fewer directions, models or count.`, true);
             const refs = await styleRefsFor(style, models, warnings);
+            const extraRefs = [].concat(args.references || []).slice(0, 4);
+            if (extraRefs.length && !models.ipadapter) warnings.push('The reference pictures need IP-Adapter in ComfyUI (ComfyUI_IPAdapter_plus), so only the words were used.');
+            else for (const rel of extraRefs) { try { refs.push(await uploadToComfy(inProject(rel, { mustExist: true, label: 'references' }))); } catch (err) { warnings.push(`Skipped reference ${rel}: ${err.message}`); } }
             const loras = lorasFor(style, args.lora, models, warnings);
             for (const ck of [...new Set(ckpts)]) {
                 const s = samplerFor(ck);
@@ -352,6 +374,7 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             const list = services.length ? services : ['flux'];
             if (variants.length * list.length * count > 8) return text('Without ComfyUI the free picture service is slow (one picture every 15 to 45 s), so one call makes at most 8. Use fewer directions or count, or start ComfyUI.', true);
             warnings.push('ComfyUI isn\'t running, so these came from the free Pollinations service (FLUX) without the studio\'s LoRAs or style references. Start ComfyUI for the full pipeline.');
+            if ([].concat(args.references || []).length) warnings.push('Reference pictures need ComfyUI with IP-Adapter, so only the words were used.');
             for (const svc of list) for (const [vi, d] of variants.entries()) for (let i = 0; i < count; i++) {
                 const { width, height } = sizeFor(args.aspect || '1:1', 1024);
                 const buf = await pollinations(fullPrompt(d), { width, height, seed: seedOf(args.seed, vi * 10 + i), model: svc });
@@ -375,7 +398,7 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
     }
 
     async function needComfy(what) {
-        if (!(await comfyUp())) throw new Error(`${what} needs ComfyUI running on this computer (${comfy.url}). It's free: github.com/comfyanonymous/ComfyUI or the ComfyUI Desktop app. Start it, or set CODEV_COMFYUI_URL.`);
+        if (!(await comfyUp())) throw new Error(`${what} needs ComfyUI, which isn't reachable at ${comfy.url}. It's free: github.com/comfyanonymous/ComfyUI or the ComfyUI Desktop app. Start it, or point CoDev at a remote one (a RunPod pod) with art_rules op set patch {"comfyui": {"url": "https://..."}}.`);
         const models = await comfy.models();
         if (!models.checkpoints.length) throw new Error('ComfyUI has no checkpoints; put a model in ComfyUI/models/checkpoints.');
         return models;
@@ -785,7 +808,7 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
 
     async function artMesh(args = {}) {
         const op = args.op;
-        if (!['inspect', 'cleanup', 'uv', 'bake', 'texture', 'rig', 'retarget'].includes(op)) return text('op is inspect, cleanup, uv, bake, texture, rig or retarget.', true);
+        if (!['inspect', 'cleanup', 'uv', 'bake', 'texture', 'rig', 'retarget', 'review'].includes(op)) return text('op is inspect, cleanup, uv, bake, texture, rig, retarget or review.', true);
         const blender = findBlender();
         if (!blender) return text('Blender isn\'t installed where CoDev can find it. It\'s free from blender.org; or set CODEV_BLENDER_PATH.', true);
         const r = rules();
@@ -796,9 +819,16 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
         const outName = args.output ? inProject(args.output) : path.join(folder('models'), `${R.assetName(r, { category, name: args.name || stem.replace(new RegExp(`^${category}_`), ''), variant: { cleanup: 'lod0', uv: 'uv', bake: '', texture: 'textured', rig: 'rigged', retarget: 'anim' }[op] || '' })}.glb`);
         const work = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-mesh-'));
         const job = { op, input, result: path.join(work, 'result.json') };
-        if (op !== 'inspect') job.output = outName;
-        if (op === 'cleanup') Object.assign(job, { target_tris: Number(args.target_tris) || budget, remesh: Boolean(args.remesh), remesh_resolution: Number(args.remesh_resolution) || 256, smooth_angle: Number(args.smooth_angle) || 40 });
-        if (op === 'uv') Object.assign(job, { margin: Number(args.margin) || 0.01, keep_existing: Boolean(args.keep_existing) });
+        if (op !== 'inspect' && op !== 'review') job.output = outName;
+        const q = r.skin_quality || R.DEFAULT_RULES.skin_quality;
+        if (op === 'cleanup') Object.assign(job, { target_tris: Number(args.target_tris) || budget, remesh: Boolean(args.remesh), remesh_resolution: Number(args.remesh_resolution) || 256, smooth_angle: Number(args.smooth_angle) || 40,
+            merge_distance: Number(args.merge_distance) || 0.0001, drop_hidden: args.drop_hidden === undefined ? Boolean(q.drop_hidden) : Boolean(args.drop_hidden) });
+        if (op === 'uv') Object.assign(job, { margin: Number(args.margin) || 0.01, keep_existing: Boolean(args.keep_existing), angle_limit: Number(args.angle_limit) || 66 });
+        if (op === 'review') {
+            const views = [].concat(args.views || q.review_views || []).map(String);
+            Object.assign(job, { out_dir: folder('reviews', slug(args.name || stem, 40)), name: slug(args.name || stem, 40), views, size: Math.min(Number(args.size) || 512, 1024),
+                engine: args.engine || env.CODEV_REVIEW_ENGINE || 'eevee', samples: Number(args.samples) || 16, clay: Boolean(args.clay), game_camera: q.game_camera });
+        }
         if (op === 'bake') {
             const size = Math.min(Number(args.size) || r.budgets.texture_size, 4096);
             Object.assign(job, { high_poly: args.high_poly ? inProject(args.high_poly, { mustExist: true, label: 'high_poly' }) : '', size, maps: args.maps, samples: Number(args.samples) || 16,
@@ -821,13 +851,32 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
         }
         const jobFile = path.join(work, 'job.json');
         fs.writeFileSync(jobFile, JSON.stringify(job));
-        const run = await exec(blender, ['--background', '--factory-startup', '--python-exit-code', '1', '--python', BPY_PIPELINE, '--', jobFile], { cwd: work, env: childEnv(env), timeoutMs: Math.min(Number(args.timeout_seconds) || 900, 3600) * 1000 });
+        const blend = () => exec(blender, ['--background', '--factory-startup', '--python-exit-code', '1', '--python', BPY_PIPELINE, '--', jobFile], { cwd: work, env: childEnv(env), timeoutMs: Math.min(Number(args.timeout_seconds) || 900, 3600) * 1000 });
+        let run = await blend();
         let report;
         try { report = JSON.parse(fs.readFileSync(job.result, 'utf8')); } catch { report = { ok: false, error: `Blender stopped before finishing (exit ${run.code}).`, trace: run.output.slice(-2000) }; }
+        // EEVEE needs a graphics card Blender can use; without one, render the review with Cycles on the CPU.
+        if (op === 'review' && !report.ok && job.engine !== 'cycles') {
+            job.engine = 'cycles';
+            fs.writeFileSync(jobFile, JSON.stringify(job));
+            run = await blend();
+            try { report = JSON.parse(fs.readFileSync(job.result, 'utf8')); } catch { report = { ok: false, error: `Blender stopped before finishing (exit ${run.code}).`, trace: run.output.slice(-2000) }; }
+        }
         fs.rmSync(work, { recursive: true, force: true });
         if (!report.ok) return text(`Blender ${op} failed: ${report.error}\n${report.trace || ''}`, true);
+        if (op === 'review') {
+            const problems = Q.problemsFrom(report, q, { textured: !args.clay, budget });
+            const views = Object.entries(report.views || {});
+            const result = text([`Reviewed ${relOf(input)} from ${views.length} angle(s) (${views.map(v => v[0]).join(', ') || 'none rendered'}), ${report.triangles} triangles:`, Q.reviewSummary(report, problems),
+                views.length ? `Renders in ${relOf(job.out_dir)}. Look at the sheet too: the face, hair, hands, outer layer, back and underside must look finished. Melted or smeared details, stretched textures and gaps the numbers can't catch are yours to spot.` : ''].filter(Boolean).join('\n'),
+                false, args.no_preview || !views.length ? [] : await preview(views.map(v => v[1]), views.map(v => v[0])));
+            result.structuredContent = { passed: !problems.length, problems, mesh_checks: report.mesh_checks, image_checks: report.image_checks, triangles: report.triangles, budget,
+                views: Object.fromEntries(views.map(([k, f]) => [k, relOf(f)])) };
+            return result;
+        }
         const lines = [];
         if (report.output) lines.push(`Saved ${relOf(report.output)}.`);
+        if (report.hidden_tris_dropped) lines.push(`Dropped ${report.hidden_tris_dropped} triangles no camera angle can see.`);
         if (report.before_triangles) lines.push(`Triangles: ${report.before_triangles} → ${report.triangles}.`);
         else if (report.triangles !== undefined) lines.push(`Triangles: ${report.triangles}.`);
         if (report.triangles > budget) lines.push(`Over budget: the studio allows ${budget} triangles for a ${category} on ${r.budgets.platform}. art_mesh op "cleanup" with target_tris ${budget} brings it down.`);
@@ -957,7 +1006,9 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             const res = await py('sfx', { preset: args.preset, output: out, duration: args.duration, seed: args.seed, pitch: args.pitch });
             let final = out;
             if (args.fx) final = await voiceFx(out, args.fx, t);
-            return text(`Made the ${args.preset} sound (${res.seconds} s): ${relOf(final)}. Change seed for a variation, pitch to make it bigger (0.7) or smaller (1.4).`);
+            const made = text(`Made the ${args.preset} sound (${res.seconds} s): ${relOf(final)}. Change seed for a variation, pitch to make it bigger (0.7) or smaller (1.4).`);
+            made.structuredContent = { file: relOf(final), seconds: res.seconds };
+            return made;
         }
         if (op === 'fx') {
             const input = inProject(args.input, { mustExist: true, label: 'input' });
@@ -1117,66 +1168,230 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
         return result;
     }
 
+    // A skin from a brief, in passes the user approves: concept art, the mesh, the
+    // textures, then effects and sounds; installed in Godot once the last one is approved.
+    // Every mesh and texture pass is reviewed from every angle (art_mesh op "review") and
+    // fixed on its own up to max_fix_rounds times before anyone is shown it. The skin's
+    // brief and progress are kept in art/skins/<name>/skin.json, so each call picks up
+    // where the last one stopped.
     async function artSkinPipeline(args = {}) {
-        const brief = String(args.brief || '').trim();
-        if (!brief) return text('art_skin_pipeline needs brief: what the skin is (e.g. "A.E.G.I.S. armour for Relay, angular plates, cyan energy seams").', true);
-        if (!args.character || !args.slot) return text('art_skin_pipeline needs character (e.g. relay) and slot (e.g. chest).', true);
         const r = rules();
-        const name = String(args.name || brief.split(/[,.]/)[0]).slice(0, 40);
-        const variants = Array.isArray(args.variants) ? args.variants.map(String).slice(0, 6) : Array.from({ length: Math.min(Math.max(Number(args.variants) || 1, 1), 6) }, (_, i) => (Number(args.variants) > 1 ? `variant ${i + 1}` : ''));
-        const stages = [].concat(args.stages || ['factory', 'worn', 'battle']);
-        const category = args.category || 'skin';
+        const q = r.skin_quality || R.DEFAULT_RULES.skin_quality;
+        const name = String(args.name || String(args.brief || '').split(/[,.]/)[0]).trim().slice(0, 40);
+        if (!name) return text('art_skin_pipeline needs brief: what the skin is (e.g. "A.E.G.I.S. armour for Relay, angular plates, cyan energy seams"), or name to carry on with a skin already started.', true);
+        const stateFile = path.join(folder('skins', slug(name, 40)), 'skin.json');
+        let state = {};
+        try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { /* a new skin */ }
+        state.name = state.name || name;
+        state.passes = state.passes || {};
+        for (const k of Q.BRIEF_KEYS) if (args[k] !== undefined) state[k] = args[k];
+        const tpl = args.template ? (q.templates || {})[slug(args.template, 40)] : null;
+        if (args.template && !tpl) return text(`No saved template "${args.template}". Saved: ${Object.keys(q.templates || {}).join(', ') || 'none yet (a skin saves one when it\'s installed)'}.`, true);
+        if (tpl) for (const [k, v] of Object.entries(tpl)) if (state[k] === undefined) state[k] = v;
+        if (!String(state.brief || '').trim()) return text('art_skin_pipeline needs brief: what the skin is (e.g. "A.E.G.I.S. armour for Relay, angular plates, cyan energy seams").', true);
+        if (!state.character || !state.slot) return text('art_skin_pipeline needs character (e.g. relay) and slot (e.g. chest).', true);
+        // The base rig: given now (and remembered for this character), or remembered from before.
+        const charKey = slug(state.character, 30);
+        if (args.base) {
+            state.base = args.base;
+            if ((q.base_rigs || {})[charKey] !== args.base) R.saveRules(root(), R.merge(r, { skin_quality: { base_rigs: { [charKey]: args.base } } }));
+        }
+        state.base = state.base || (q.base_rigs || {})[charKey] || '';
+        if (args.mesh) state.mesh = args.mesh;
+        const category = state.category || 'skin';
+        const budget = R.trisBudget(r, category);
+        const stages = [].concat(state.stages || ['factory', 'worn', 'battle']);
+        const v = state.variants;
+        const variants = Array.isArray(v) ? v.map(String).slice(0, 6) : Array.from({ length: Math.min(Math.max(Number(v) || 1, 1), 6) }, (_, i) => (Number(v) > 1 ? `variant ${i + 1}` : ''));
+        const feedback = String(args.feedback || '').trim();
         const log = [];
         const sheet = [];
         const labels = [];
+        const textOf = res => res.content.filter(c => c.type === 'text').map(c => c.text).join(' ').slice(0, 600);
         const step = async (label, fn) => {
             const res = await fn();
             if (res.isError) throw new Error(`${label}: ${textOf(res)}`);
             log.push(`✓ ${label}`);
             return res.structuredContent || {};
         };
-        const textOf = res => res.content.filter(c => c.type === 'text').map(c => c.text).join(' ').slice(0, 600);
-        const installed = [];
+        const save = () => { state.updated = new Date().toISOString(); fs.writeFileSync(stateFile, JSON.stringify(state, null, 2) + '\n'); };
+        const vName = vr => (vr ? `${state.name} ${vr}` : state.name);
+
+        // Review a model from every angle; fix what can be fixed and look again.
+        const reviewAndFix = async (model, { label, textured, maps, rigged }) => {
+            const rounds = Math.max(0, Number(q.max_fix_rounds) || 0);
+            let rev;
+            for (let round = 0; ; round++) {
+                rev = await step(`${label}: review from every angle${round ? ` (after fix ${round})` : ''}`, () => artMesh({ op: 'review', input: model, name: label, clay: !textured, category, no_preview: true }));
+                const fixes = new Set((rev.problems || []).map(p => p.fix).filter(Boolean));
+                if (!fixes.size || round >= rounds) break;
+                if (fixes.has('cleanup')) model = (await step(`${label}: closed gaps, merged seams and turned faces outward`, () => artMesh({ op: 'cleanup', input: model, category, name: label, merge_distance: round ? 0.001 : 0.0005, target_tris: budget, no_preview: true }))).output;
+                if (fixes.has('uv')) model = (await step(`${label}: unwrapped again with less stretch`, () => artMesh({ op: 'uv', input: model, category, name: label, angle_limit: 45, no_preview: true }))).output;
+                if (textured && maps && (fixes.has('uv') || fixes.has('texture'))) model = (await step(`${label}: material put back on`, () => artMesh({ op: 'texture', input: model, category, name: label, maps, tile_scale: state.tile_scale || 2, no_preview: true }))).output;
+            }
+            const views = rev.views || {};
+            for (const [k, f] of Object.entries(views)) { sheet.push(inProject(f)); labels.push(`${label} ${k}`); }
+            return { model, passed: rev.passed !== false, problems: rev.problems || [], views, hidden_tris: (rev.mesh_checks || {}).hidden_tris, rigged };
+        };
+
+        const runPass = {
+            async concept() {
+                if (state.concepts === false) return { status: 'skipped' };
+                const files = [];
+                for (const vr of variants) {
+                    const c = await step(`concept for ${vName(vr)}`, () => artGenerate({ prompt: Q.conceptPrompt(state, q, vr, feedback), negative: Q.negativeWords(q), references: state.references, count: 1, category, name: vName(vr), style: state.style, lore_subject: state.character, no_preview: true }));
+                    const f = c.files && c.files[0];
+                    files.push(f || '');
+                    if (f) { sheet.push(inProject(f)); labels.push(`${vName(vr)} concept`); }
+                }
+                return { status: 'ready', files };
+            },
+            async mesh() {
+                const fullBody = /full/.test(String(state.slot)) && state.base;
+                const src = state.mesh || (fullBody ? state.base : '');
+                if (!src) {
+                    const concepts = ((state.passes.concept || {}).files || []).filter(Boolean);
+                    return { status: 'waiting_for_mesh', note: `Next: make the 3D piece in Tripo or Meshy${concepts.length ? ` from the approved concept (${concepts.join(', ')})` : ''}, export it as .glb into the project folder, then call art_skin_pipeline again with name "${state.name}" and mesh set to that file.` };
+                }
+                let model;
+                if (src === state.base) {
+                    // Re-skinning the base rig itself: keep its skeleton and UVs.
+                    model = (await step('base rig kept as the mesh (its UVs and skeleton stay)', () => artMesh({ op: 'uv', input: src, category, name: state.name, keep_existing: true, no_preview: true }))).output;
+                } else {
+                    const clean = await step(`mesh cleaned to the ${category} budget`, () => artMesh({ op: 'cleanup', input: src, category, name: state.name, remesh: Boolean(state.remesh), no_preview: true }));
+                    model = (await step('UVs unwrapped', () => artMesh({ op: 'uv', input: clean.output, category, name: state.name, no_preview: true }))).output;
+                    if (state.base) model = (await step(`rigged to ${state.base}`, () => artMesh({ op: 'rig', input: model, base: state.base, category, name: state.name, no_preview: true }))).output;
+                }
+                const rev = await reviewAndFix(model, { label: state.name, textured: false, rigged: Boolean(state.base) });
+                return { status: rev.passed ? 'ready' : 'needs_fix', model: rev.model, problems: rev.problems, views: rev.views, hidden_tris: rev.hidden_tris };
+            },
+            async textures() {
+                const model = (state.passes.mesh || {}).model;
+                const out = [];
+                for (const vr of variants) {
+                    const mats = await step(`PBR material for ${vName(vr)}`, () => artMaterials({ materials: [Q.materialPrompt(state, vr, feedback)], style: state.style, size: state.texture_size, no_preview: true }));
+                    const set = mats.sets[0];
+                    const aged = await step(`weathering (${stages.join(', ')}) for ${vName(vr)}`, () => artWeathering({ albedo: set.albedo, roughness: set.roughness, metallic: set.metallic, ao: set.ao, curvature: set.curvature, stages, name: slug(vName(vr), 40), no_preview: true }));
+                    const stageMaps = Object.fromEntries(Object.entries(aged.stages).map(([s, f]) => [s, { albedo: f.albedo, orm: f.orm, normal: set.normal, emission: set.emission }]));
+                    if (!model) {
+                        const last = aged.stages[stages[stages.length - 1]];
+                        if (last) { sheet.push(inProject(last.albedo)); labels.push(`${vName(vr)} ${stages[stages.length - 1]}`); }
+                        out.push({ variant: vr, stage_maps: stageMaps });
+                        continue;
+                    }
+                    const maps = { albedo: set.albedo, normal: set.normal, roughness: set.roughness, metallic: set.metallic, emission: set.emission };
+                    const tex = await step(`material on the mesh for ${vName(vr)}`, () => artMesh({ op: 'texture', input: model, category, name: vName(vr), maps, tile_scale: state.tile_scale || 2, no_preview: true }));
+                    const rev = await reviewAndFix(tex.output, { label: vName(vr), textured: true, maps, rigged: Boolean(state.base) });
+                    out.push({ variant: vr, model: rev.model, stage_maps: stageMaps, problems: rev.problems, views: rev.views });
+                }
+                const problems = out.flatMap(o => o.problems || []);
+                return { status: problems.length ? 'needs_fix' : 'ready', variants: out, problems };
+            },
+            async fx() {
+                const files = [];
+                for (const preset of Q.list(state.sfx).slice(0, 8)) {
+                    const a = await step(`sound: ${preset}`, () => artAudio({ op: 'sfx', preset, name: `${slug(state.name, 30)}_${preset}`, duration: preset === 'hum' ? 2 : undefined }));
+                    if (a.file) files.push(a.file);
+                }
+                if (!files.length) log.push('No sounds asked for (sfx, e.g. ["power_up", "shield"]); none made.');
+                // The last look: the skin at the distance and angle players see it from.
+                const games = {};
+                for (const tv of ((state.passes.textures || {}).variants || []).filter(t => t.model)) {
+                    const g = await step(`${vName(tv.variant)}: in-game camera check`, () => artMesh({ op: 'review', input: tv.model, name: `${vName(tv.variant)} game`, views: ['game', 'front', 'back'], category, no_preview: true }));
+                    for (const [k, f] of Object.entries(g.views || {})) { sheet.push(inProject(f)); labels.push(`${vName(tv.variant)} ${k}`); }
+                    games[tv.variant || 'main'] = g.views || {};
+                }
+                return { status: 'ready', sounds: files, game_views: games };
+            }
+        };
+
+        async function install() {
+            const installed = [];
+            const tv = (state.passes.textures || {}).variants || [];
+            const concepts = (state.passes.concept || {}).files || [];
+            for (const [i, t] of tv.entries()) {
+                if (!t.model) continue;
+                const done = await step(`installed ${vName(t.variant)} in Godot`, () => artGodotSkin({ model: t.model, name: vName(t.variant), character: state.character, slot: state.slot, tier: state.tier, rarity: state.rarity, variants: t.stage_maps,
+                    icon: concepts[i] || undefined, rigged: Boolean(state.base), tile_scale: state.tile_scale || 2, description: Q.briefOf(state), stats: state.stats, tags: state.tags, category, godot_dir: state.godot_dir }));
+                installed.push(done.id);
+            }
+            // What came out well is kept for the next skin (template "<name>").
+            if (installed.length) {
+                const keep = Object.fromEntries(['sfx', 'stages', 'tile_scale', 'style', 'materials', 'palette', 'texture_size'].filter(k => state[k] !== undefined).map(k => [k, state[k]]));
+                R.saveRules(root(), R.merge(rules(), { skin_quality: { templates: { [slug(state.name, 40)]: keep } } }));
+            }
+            return installed;
+        }
+
+        const finish = (headline, isError = false, extra = {}) => {
+            save();
+            const lines = [headline, ...log, `Visible-first: ${q.visible_first}`];
+            const result = text(lines.filter(Boolean).join('\n'), isError);
+            result.structuredContent = { name: state.name, state: relOf(stateFile), passes: Object.fromEntries(Object.entries(state.passes).map(([k, p]) => [k, p.status])), installed: state.installed || [], log, ...extra };
+            return result;
+        };
+        const describe = (p, res) => {
+            const n = Q.PASSES.indexOf(p) + 1;
+            const issues = (res.problems || []).map(x => `- ${x.message}`);
+            if (res.status === 'waiting_for_mesh') return `Pass ${n} of 4 (${Q.PASS_NAMES[p]}) for "${state.name}" is waiting for a mesh. ${res.note}`;
+            if (res.status === 'needs_fix') return [`Pass ${n} of 4 (${Q.PASS_NAMES[p]}) for "${state.name}" still has problems after ${q.max_fix_rounds} automatic fix round(s), so don't show it to the user as finished:`, ...issues,
+                `Fix them (art_mesh, art_edit, or a cleaner mesh from Tripo/Meshy) and call again with name "${state.name}" and pass "${p}", or with feedback. Only if the user accepts it as it is: approve true with accept_issues true.`].join('\n');
+            return [`Pass ${n} of 4 (${Q.PASS_NAMES[p]}) for "${state.name}" passed its checks and is ready for the user. Show them the sheet${p === 'mesh' || p === 'textures' ? ' (every angle plus the face close-up)' : ''} and ask if they approve.`,
+                `Approved: call art_skin_pipeline with name "${state.name}" and approve true. Changes: call with name "${state.name}" and feedback (their words); the pass is made again.`].join('\n');
+        };
+
+        const runOne = async p => {
+            const res = await runPass[p]();
+            state.passes[p] = { ...res, at: new Date().toISOString(), ...(feedback ? { feedback } : {}) };
+            // A pass made again means the ones after it need doing again too.
+            for (const later of Q.PASSES.slice(Q.PASSES.indexOf(p) + 1)) delete state.passes[later];
+            delete state.installed;
+            return res;
+        };
+
         try {
-            let base = null;
-            if (args.mesh) {
-                const clean = await step(`mesh cleaned to the ${category} budget`, () => artMesh({ op: 'cleanup', input: args.mesh, category, name, remesh: Boolean(args.remesh), no_preview: true }));
-                const uv = await step('UVs unwrapped', () => artMesh({ op: 'uv', input: clean.output, category, name, no_preview: true }));
-                base = uv.output;
+            if (args.approve) {
+                const waiting = Q.PASSES.find(p => ['ready', 'needs_fix'].includes((state.passes[p] || {}).status));
+                if (!waiting) return finish(`Nothing for "${state.name}" is waiting for approval${state.installed ? '; it\'s already installed' : ''}.`, !state.installed);
+                if (state.passes[waiting].status === 'needs_fix' && !args.accept_issues) return finish(`The ${Q.PASS_NAMES[waiting]} pass still has problems a player would notice. Fix them first, or pass accept_issues true only if the user said to keep it as it is.`, true);
+                state.passes[waiting].status = 'approved';
+                state.passes[waiting].approved = new Date().toISOString();
+                log.push(`✓ the user approved the ${Q.PASS_NAMES[waiting]}`);
             }
-            for (const v of variants) {
-                const vName = v ? `${name} ${v}` : name;
-                let concept;
-                if (args.concepts !== false) {
-                    try {
-                        const c = await step(`concept for ${vName}`, () => artGenerate({ prompt: `${brief}${v ? `, ${v}` : ''}`, count: 1, category, name: vName, style: args.style, lore_subject: args.character, no_preview: true }));
-                        concept = c.files && c.files[0];
-                        if (concept) { sheet.push(inProject(concept)); labels.push(`${vName} concept`); }
-                    } catch (err) { log.push(`✗ concept for ${vName} (${err.message.slice(0, 200)}); carrying on`); }
+            const mode = args.pass || (q.approve_each_pass === false ? 'all' : 'next');
+            if (mode === 'all') {
+                for (const p of Q.PASSES) {
+                    const res = await runOne(p);
+                    if (res.status === 'waiting_for_mesh') { log.push('No mesh was given, so the 3D steps were skipped: pass mesh (a .glb/.fbx/.obj of the armour, from Tripo, Meshy or Blender) to texture, rig and install it in Godot.'); continue; }
+                    if (res.status === 'needs_fix') return finish(describe(p, res), false, { problems: res.problems });
+                    if (res.status === 'ready') res.status = state.passes[p].status = 'approved';
                 }
-                const mats = await step(`PBR material for ${vName}`, () => artMaterials({ materials: [`${args.material || brief}${v ? `, ${v}` : ''}`], style: args.style, size: args.texture_size, no_preview: true }));
-                const set = mats.sets[0];
-                const aged = await step(`weathering (${stages.join(', ')}) for ${vName}`, () => artWeathering({ albedo: set.albedo, roughness: set.roughness, metallic: set.metallic, ao: set.ao, curvature: set.curvature, stages, name: slug(vName, 40), no_preview: true }));
-                for (const [s, f] of Object.entries(aged.stages)) { if (s === stages[stages.length - 1]) { sheet.push(inProject(f.albedo)); labels.push(`${vName} ${s}`); } }
-                if (!base) continue;
-                const maps = { albedo: set.albedo, normal: set.normal, roughness: set.roughness, metallic: set.metallic, emission: set.emission };
-                const tex = await step(`material on the mesh for ${vName}`, () => artMesh({ op: 'texture', input: base, category, name: vName, maps, tile_scale: args.tile_scale || 2, no_preview: true }));
-                let model = tex.output;
-                if (args.base) model = (await step(`rigged to ${args.base}`, () => artMesh({ op: 'rig', input: model, base: args.base, category, name: vName, no_preview: true }))).output;
-                if (args.install !== false) {
-                    const variantsMaps = Object.fromEntries(Object.entries(aged.stages).map(([s, f]) => [s, { albedo: f.albedo, orm: f.orm, normal: set.normal, emission: set.emission }]));
-                    const done = await step(`installed ${vName} in Godot`, () => artGodotSkin({ model, name: vName, character: args.character, slot: args.slot, tier: args.tier, rarity: args.rarity, variants: variantsMaps,
-                        icon: concept, rigged: Boolean(args.base), tile_scale: args.tile_scale || 2, description: brief, stats: args.stats, tags: args.tags, category, godot_dir: args.godot_dir }));
-                    installed.push(done.id);
-                }
+                if (state.install !== false) state.installed = await install();
+                const all = finish(`Skin pipeline for "${state.name}" (${variants.length} variant(s)), every pass run in one go${state.installed && state.installed.length ? `. Equippable in Godot: ${state.installed.join(', ')}` : ''}.`);
+                if (!args.no_preview) all.content.push(...await preview(sheet, labels));
+                return all;
             }
+            const p = mode === 'next' ? Q.nextPass(state) : mode;
+            if (p && !Q.PASSES.includes(p)) return text(`pass is next, all, ${Q.PASSES.join(', ')}.`, true);
+            if (!p) {
+                if (!state.installed && state.install !== false) {
+                    state.installed = await install();
+                    return finish(`Every pass of "${state.name}" is approved. ${state.installed.length ? `Installed in Godot: ${state.installed.join(', ')}. Its settings are saved as template "${slug(state.name, 40)}" for the next skin.` : 'Nothing to install (no textured mesh).'}`);
+                }
+                return finish(`"${state.name}" is finished${(state.installed || []).length ? ` and installed: ${state.installed.join(', ')}` : ''}.`);
+            }
+            const cur = state.passes[p];
+            if (mode === 'next' && cur && ['ready', 'needs_fix'].includes(cur.status) && !feedback && !args.mesh) return finish(`The ${Q.PASS_NAMES[p]} pass for "${state.name}" is waiting for the user: approve true when they're happy, or feedback with what to change.`);
+            const res = await runOne(p);
+            if (res.status === 'skipped') { save(); return artSkinPipeline({ name: state.name, no_preview: args.no_preview }); }
+            save();
+            const result = finish(describe(p, res), false, { pass: p, status: res.status, problems: res.problems || [] });
+            if (!args.no_preview) result.content.push(...await preview(sheet, labels));
+            return result;
         } catch (err) {
+            save();
             return text([`Stopped: ${err.message}`, 'Done before that:', ...log].join('\n'), true, await preview(sheet, labels));
         }
-        if (!args.mesh) log.push('No mesh was given, so the 3D steps were skipped: pass mesh (a .glb/.fbx/.obj of the armour, from Blender, Tripo or any image-to-3D tool) to texture, rig and install it in Godot.');
-        const result = text([`Skin pipeline for "${name}" (${variants.length} variant(s)):`, ...log, installed.length ? `Equippable in Godot: ${installed.join(', ')}` : '', R.summary(r).split('\n')[0]].filter(Boolean).join('\n'), false, await preview(sheet, labels));
-        result.structuredContent = { installed, log };
-        return result;
     }
 
     // ---------- tool list ----------
@@ -1191,7 +1406,7 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             inputSchema: { type: 'object', properties: { op: str('get, set, note or name', { enum: ['get', 'set', 'note', 'name'] }), patch: { type: 'object', description: 'For set: the parts to change (deep-merged; null removes a key)' }, note: str('For note: a studio rule in plain words'), category: str('For name: the asset category, like skin or weapon'), name: str('For name: the asset name, like AEGIS armour'), variant: str('For name: the variant, like crimson'), file: str('For name: a file name to check') } } },
         { name: 'art_models', description: 'List the models installed in ComfyUI (checkpoints, LoRAs, ControlNets, upscalers, IP-Adapter) with the sampler settings CoDev uses for each. Use it to pick a checkpoint, LoRA or ControlNet by its real name before passing one to another art_ tool; don\'t guess model names.', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } },
         { name: 'art_generate', description: 'Concept art for a skin or asset brief. Pitches several creative directions across several models at once (any checkpoints in ComfyUI: FLUX, SDXL, custom ones; "all" tries each), with the studio\'s style, LoRA and reference pictures applied, and returns a contact sheet. Without ComfyUI it uses the free Pollinations FLUX service. Saves into art/concepts. Use it for game art from a brief; for one picture in the chat use generate_image instead, and to change an existing picture use art_edit.',
-            inputSchema: { type: 'object', properties: { lore: bool('Add the look of characters, items and places the brief names, from the universe bible (default true)'), lore_subject: str('Who it is for, when the prompt doesn\'t name them (e.g. relay)'), prompt: str('The brief: what the skin/asset is'), directions: arr('Creative directions to pitch side by side, e.g. ["chrome samurai", "bio-organic chitin", "salvaged scrap"]'), models: arr('Checkpoint names (or parts of them), or ["all"]'), count: num('Pictures per direction per model (1-8)'), aspect: str('Picture shape, e.g. 1:1 (default), 3:4, 16:9'), style: str('A saved style name; "" for none; default is the studio default'), lora: arr('Extra LoRAs: names or {name, weight}', { type: ['string', 'object'] }), style_strength: num('How strongly reference pictures steer (0-1)'), negative: str('Extra things to avoid'), seed: num('Seed for repeatable results; leave it out for a new random one'), tileable: bool('Make tileable textures'), category: str('For file names, e.g. skin'), name: str('Short name for the files'), out_dir: str('Folder in the project') }, required: ['prompt'] } },
+            inputSchema: { type: 'object', properties: { lore: bool('Add the look of characters, items and places the brief names, from the universe bible (default true)'), lore_subject: str('Who it is for, when the prompt doesn\'t name them (e.g. relay)'), prompt: str('The brief: what the skin/asset is'), directions: arr('Creative directions to pitch side by side, e.g. ["chrome samurai", "bio-organic chitin", "salvaged scrap"]'), models: arr('Checkpoint names (or parts of them), or ["all"]'), count: num('Pictures per direction per model (1-8)'), aspect: str('Picture shape, e.g. 1:1 (default), 3:4, 16:9'), style: str('A saved style name; "" for none; default is the studio default'), lora: arr('Extra LoRAs: names or {name, weight}', { type: ['string', 'object'] }), style_strength: num('How strongly reference pictures steer (0-1)'), references: arr('Extra reference pictures in the project for this generation only (up to 4), on top of the style\'s; they need ComfyUI with IP-Adapter'), negative: str('Extra things to avoid'), seed: num('Seed for repeatable results; leave it out for a new random one'), tileable: bool('Make tileable textures'), category: str('For file names, e.g. skin'), name: str('Short name for the files'), out_dir: str('Folder in the project') }, required: ['prompt'] } },
         { name: 'art_edit', description: 'Change part of a picture while keeping the rest (inpainting: swap a pauldron, change a visor glow, alter chest plating), rework the whole picture (img2img), or turn a rough sketch into finished art in the studio style (sketch: ControlNet scribble/lineart when installed). Needs ComfyUI. Use it when the user wants an existing picture changed; for new concepts use art_generate instead, and to put an outfit on a character use art_try_on.',
             inputSchema: { type: 'object', properties: { image: str('Picture in the project'), image_data: str('Or a data:image/png;base64 URL'), mode: str('inpaint, img2img or sketch', { enum: ['inpaint', 'img2img', 'sketch'] }), prompt: str('What the changed part (or the sketch) should become'), mask: str('Mask picture in the project: white = change'), mask_box: arr('Or [x, y, width, height] as fractions 0-1 (or a list of boxes)', { type: ['number', 'array'] }), denoise: num('0-1: how much to change (inpaint 0.9, img2img 0.55)'), checkpoint: str('ComfyUI checkpoint name or part of it (art_models lists them); default: the studio default'), style: str('A saved style name (art_style op list); default: the studio default style'), lora: arr('Extra LoRAs on top of the style\'s: names, or {name, weight} with weight 0-1.5', { type: ['string', 'object'] }), controlnet: str('For sketch: ControlNet name'), strength: num('For sketch: how closely to follow the lines (0-1)'), fast: bool('For sketch: use a turbo/schnell model for speed'), seed: num('Seed for repeatable results; leave it out for a new random one'), output: str('Output path in the project; default: the studio rules\' folder and naming') }, required: ['prompt'] } },
         { name: 'art_try_on', description: 'Virtual try-on: put a garment, armour set or rig onto an existing character picture, fitted to their pose and silhouette. The region (head, upper, torso, arms, lower, legs, feet, full, outfit) is masked inside the character\'s outline automatically. Needs ComfyUI; an outfit picture needs IP-Adapter. Use it when the user wants a garment or armour shown on a character picture; for other changes to a picture use art_edit instead.',
@@ -1209,8 +1424,11 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             inputSchema: { type: 'object', properties: { image: str('Texture picture'), name: str('Material name'), out_dir: str('Output folder in the project; default: the studio rules\' folder for this kind of file'), size: num('Resize to (px, square)'), seamless: bool('Make it tile first'), metallic: num('Metallic 0-1'), metallic_mask: str('Or a mask picture'), metal_from_color: bool('Guess metal from grey, bright areas'), normal_format: str('gl for Godot and Blender (default), dx for DirectX engines'), normal_strength: num('How deep the normal map reads (default 2)'), roughness_bias: num('Shift roughness from -0.5 (glossier) to 0.5 (rougher); default 0'), delight: num('0-1: remove baked-in shading') }, required: ['image'] } },
         { name: 'art_weathering', description: 'Surface weathering and age variations: turns a texture set into stages from factory-fresh to light wear, worn, battle-damaged and ruined (edge wear and chipped paint on convex edges, scratches, rust in cavities, scorch marks, grime, dust), each with albedo, roughness, metallic and ORM. Uses the curvature and AO maps next to the albedo when present. Use it after a PBR set exists (art_pbr_maps or art_materials); don\'t use it on concept art.',
             inputSchema: { type: 'object', properties: { albedo: str('Albedo/base colour picture'), roughness: str('Optional matching map from the same texture set; read from next to the albedo when left out'), metallic: str('Optional matching map from the same texture set; read from next to the albedo when left out'), ao: str('Optional matching map from the same texture set; read from next to the albedo when left out'), curvature: str('Optional matching map from the same texture set; read from next to the albedo when left out'), stages: arr('Any of factory, light, worn, battle, ruined'), overrides: { type: 'object', description: '{"battle": {"rust": 0.6}}: edge, scratch, rust, scorch, grime, dust 0-1' }, name: str('Short name used in the output file names'), out_dir: str('Output folder in the project; default: the studio rules\' folder for this kind of file'), seed: num('Seed for repeatable results; leave it out for a new random one') }, required: ['albedo'] } },
-        { name: 'art_mesh', description: 'Game-ready 3D in Blender (runs in the background): "inspect" counts triangles, materials, bones; "cleanup" fixes raw AI meshes (merge, loose parts, normals, optional voxel remesh) and decimates to the studio\'s triangle budget for the category; "uv" unwraps and packs; "bake" bakes PBR maps (albedo, normal, roughness, metallic, emission, AO, curvature), from a high-poly when given, into one material; "texture" puts a tileable PBR set (maps) on the mesh, tiled by tile_scale; "rig" puts a cosmetic mesh on a base character\'s skeleton (copies the body\'s skin weights); "retarget" moves animations from another skeleton (Mixamo, Rigify, UE names matched). Exports .glb for Godot and checks budgets and naming. Use it for any step on a 3D asset; for a custom Blender script use blender_run instead. Run op inspect first when you don\'t know the mesh.',
-            inputSchema: { type: 'object', properties: { op: str('inspect, cleanup, uv, bake, texture, rig or retarget', { enum: ['inspect', 'cleanup', 'uv', 'bake', 'texture', 'rig', 'retarget'] }), maps: { type: 'object', description: 'texture: {albedo, normal, roughness, metallic, ao, emission} paths' }, tile_scale: num('texture: how many times the material repeats across the UVs'), input: str('.glb/.gltf/.fbx/.obj/.stl/.blend in the project'), output: str('Where to save (.glb by default)'), category: str('Budget category: character, skin, weapon, vehicle, prop, environment'), name: str('Asset name for file names'), target_tris: num('cleanup: triangle target (default: the budget)'), remesh: bool('cleanup: voxel remesh first'), remesh_resolution: num('cleanup: voxels across the longest side'), high_poly: str('bake: high-poly source'), maps: arr('bake: which maps'), size: num('bake: map size'), samples: num('bake: Cycles samples'), base: str('rig: base character with skeleton'), method: str('rig: transfer or auto'), keep_body: bool('rig: keep the base body in the file'), animations: str('retarget: file with the animations'), bone_map: { type: 'object', description: 'retarget: {target_bone: source_bone}' }, actions: arr('retarget: only these animations'), timeout_seconds: num('Stop Blender after this many seconds (default 900)') }, required: ['op', 'input'] } },
+        { name: 'art_mesh', description: 'Game-ready 3D in Blender (runs in the background): "inspect" counts triangles, materials, bones; "cleanup" fixes raw AI meshes (merge, loose parts, normals, optional voxel remesh) and decimates to the studio\'s triangle budget for the category; "uv" unwraps and packs; "bake" bakes PBR maps (albedo, normal, roughness, metallic, emission, AO, curvature), from a high-poly when given, into one material; "texture" puts a tileable PBR set (maps) on the mesh, tiled by tile_scale; "rig" puts a cosmetic mesh on a base character\'s skeleton (copies the body\'s skin weights); "retarget" moves animations from another skeleton (Mixamo, Rigify, UE names matched); "review" is the visible-first check: renders front, back, left, right, top, below, a face close-up and the in-game camera into one sheet, and checks what a player can see (holes, flipped faces, stretched UVs, missing textures, empty views) and counts triangles nobody can see. Exports .glb for Godot and checks budgets and naming. Use it for any step on a 3D asset; for a custom Blender script use blender_run instead. Run op inspect first when you don\'t know the mesh.',
+            inputSchema: { type: 'object', properties: { op: str('inspect, cleanup, uv, bake, texture, rig, retarget or review', { enum: ['inspect', 'cleanup', 'uv', 'bake', 'texture', 'rig', 'retarget', 'review'] }), maps: { type: 'object', description: 'texture: {albedo, normal, roughness, metallic, ao, emission} paths' }, tile_scale: num('texture: how many times the material repeats across the UVs'), input: str('.glb/.gltf/.fbx/.obj/.stl/.blend in the project'), output: str('Where to save (.glb by default)'), category: str('Budget category: character, skin, weapon, vehicle, prop, environment'), name: str('Asset name for file names'), target_tris: num('cleanup: triangle target (default: the budget)'), remesh: bool('cleanup: voxel remesh first'), remesh_resolution: num('cleanup: voxels across the longest side'), high_poly: str('bake: high-poly source'), maps: arr('bake: which maps'), size: num('bake: map size'), samples: num('bake: Cycles samples'), base: str('rig: base character with skeleton'), method: str('rig: transfer or auto'), keep_body: bool('rig: keep the base body in the file'), animations: str('retarget: file with the animations'), bone_map: { type: 'object', description: 'retarget: {target_bone: source_bone}' }, actions: arr('retarget: only these animations'), timeout_seconds: num('Stop Blender after this many seconds (default 900)'),
+                merge_distance: num('cleanup: weld vertices closer than this (default 0.0001); larger closes seams and gaps'), drop_hidden: bool('cleanup: delete faces no camera angle can see, so the budget goes where players look (default: studio rules skin_quality.drop_hidden)'),
+                angle_limit: num('uv: Smart UV angle in degrees (default 66; lower cuts more seams but stretches less)'), views: arr('review: which views (front, back, left, right, top, below, face, game); default all of them'),
+                clay: bool('review: plain grey material to judge the shape (default false: the real textures)'), engine: str('review: eevee (default, needs a graphics card) or cycles (works anywhere, slower)') }, required: ['op', 'input'] } },
         { name: 'art_reframe', description: 'Dynamic reframing: expands a hero key-art picture to every ad and store size (vertical mobile 9:16, square, feed 4:5, widescreen 16:9, banner 1.91:1, headers...) without stretching or cropping it, painting the new space with ComfyUI outpainting (or a soft colour-matched fill without ComfyUI). Use it when the user needs key art in other ad or store sizes; don\'t use it to change what the picture shows (use art_edit).',
             inputSchema: { type: 'object', properties: { image: str('The hero key-art picture in the project'), aspects: arr('e.g. ["9:16", "16:9"]'), presets: arr(`Named sizes: ${Object.keys(ASPECT_PRESETS).join(', ')}`), prompt: str('What the extended background is'), method: str('auto, ai or fill'), checkpoint: str('ComfyUI checkpoint name or part of it (art_models lists them); default: the studio default'), name: str('Short name used in the output file names'), out_dir: str('Output folder in the project; default: the studio rules\' folder for this kind of file'), seed: num('Seed for repeatable results; leave it out for a new random one') }, required: ['image'] } },
         { name: 'art_cutout', description: 'Batch background removal: transparent PNG cut-outs of characters and items (rembg, on this computer), trimmed to the subject. Use it when the user needs transparent cut-outs, such as for a playable ad; don\'t use it on textures.',
@@ -1226,8 +1444,20 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             _meta: { 'codev/alwaysAsk': true } },
         { name: 'art_godot_skin', description: 'Install a finished skin in the Godot 4 project as an equippable item: copies the .glb, its textures and an icon into the skins folder, writes one ORMMaterial3D per weathering stage, adds or updates the skin in the skin manifest JSON (id, name, character, slot, tier, rarity, model, materials, icon, stats, triangles), and keeps a SkinRegistry autoload that equips skins by slot (SkinRegistry.equip(character, id, variant)). Folders, slots and tiers come from the godot section of codev-studio.json. Use it when a finished .glb skin should become equippable in the game; to run every step from a brief use art_skin_pipeline instead.',
             inputSchema: { type: 'object', properties: { model: str('.glb from art_mesh'), name: str('Skin name, e.g. AEGIS armour'), display_name: str('Shown in game, if different'), character: str('The character the skin is for, e.g. relay'), slot: str('e.g. helmet, chest, arms, legs, weapon, full_body'), tier: num('1-5 (studio tiers map to rarities)'), rarity: str('Or the rarity itself'), variants: { type: 'object', description: '{stage: {albedo, orm, normal, emission}} from art_weathering' }, maps: { type: 'object', description: 'Or one map set {albedo, orm, normal, emission}' }, icon: str('Picture for the icon (a concept or render)'), rigged: bool('Skinned to the character\'s skeleton (art_mesh op "rig")'), tile_scale: num('Texture tiling used on the mesh'), stats: { type: 'object', description: 'Game stats to store' }, tags: arr('Tags stored with the skin, like ["neon", "season4"]'), description: str('Item description'), tris: num('Triangle count if known'), category: str('Budget category (default skin)'), id: str('A fixed skin id to keep (default: made from the name); pass the old id to update a skin'), godot_dir: str('Folder with project.godot'), registry: bool('Write the SkinRegistry autoload (default true)') }, required: ['model', 'name', 'character', 'slot'] } },
-        { name: 'art_skin_pipeline', description: 'One command from a skin brief to an equippable skin in Godot, run locally end to end: concept art per variant, a tileable PBR material per variant, the mesh cleaned to the poly budget and UV-unwrapped, the material put on it, weathering stages (factory to battle-worn), rigged onto the base character, then art_godot_skin installs it with the manifest entry. E.g. "three tier-3 epic variants of Relay\'s A.E.G.I.S. armour". Without a mesh it stops after concepts, materials and weathering. Use it when the user wants a skin made end to end; for a single step call that step\'s tool instead (art_generate, art_materials, art_mesh, art_godot_skin).',
-            inputSchema: { type: 'object', properties: { brief: str('What the skin is, in the user\'s words'), character: str('The character the skin is for, e.g. relay'), slot: str('The equipment slot, e.g. chest or helmet'), name: str('Skin name, e.g. AEGIS armour (default: from the brief)'), variants: { type: ['array', 'number'], items: { type: 'string' }, description: 'Variant names (e.g. ["crimson", "void", "gold"]) or a count, max 6' }, tier: num('Tier 1-5; the studio rules map tiers to rarities'), rarity: str('Or the rarity itself, like "epic" (default: from the tier)'), mesh: str('The armour/garment mesh (.glb/.fbx/.obj/.blend) in the project'), base: str('Base character with skeleton, to rig onto'), material: str('Material words if different from the brief'), stages: arr('Weathering stages (default factory, worn, battle)'), style: str('A saved style name (art_style op list); default: the studio default style'), tile_scale: num('Texture tiling (default 2)'), texture_size: num('Texture map size in px (default: the studio budget)'), remesh: bool('Voxel remesh raw AI meshes first'), concepts: bool('Make concept art (default true)'), install: bool('Install in Godot (default true)'), stats: { type: 'object', description: 'Game stats to store with the skin, like {"armor": 12}' }, tags: arr('Tags stored with the skin, like ["neon", "season4"]'), category: str('Budget category (default skin)'), godot_dir: str('Folder with project.godot') }, required: ['brief', 'character', 'slot'] } },
+        { name: 'art_skin_pipeline', description: 'Make a skin from a brief to an equippable item in Godot, held to the visible-first rule: anything the player can see (face, hair, outer armour and clothing, hands, weapon, back and underside) must look perfect, and hidden geometry is low priority. It works in four passes the user approves one at a time: 1 concept art per variant, 2 the mesh (from the user\'s Tripo or Meshy export: cleaned to the poly budget, UV-unwrapped, rigged onto the character\'s base rig), 3 textures (a PBR material per variant, weathering stages, put on the mesh), 4 effects and sounds plus the in-game camera check. Passes 2 and 3 are rendered from every angle (front, back, sides, top, below, face close-up) and checked; what can be fixed is fixed and checked again before the user sees it. Once pass 4 is approved it installs the skin in Godot and saves its settings as a template. Progress is kept in art/skins/<name>/skin.json, so call it again with name to carry on. Use it when the user wants a skin made; for a single step call that step\'s tool instead (art_generate, art_materials, art_mesh, art_godot_skin). Never pass approve true unless the user said they approve what you showed them.',
+            inputSchema: { type: 'object', properties: { brief: str('What the skin is, in the user\'s words'), theme: str('The theme or idea, e.g. "winter festival" or "void knight"'), palette: arr('Colours, as names or #hex, e.g. ["deep red", "gold", "#1a1a1a"]'),
+                materials: arr('Materials, e.g. ["carbon fibre", "polished gold", "glowing runes"]'), silhouette: str('What changes on the outline, e.g. "adds swept-back wings and a crown"'), references: arr('Up to 4 reference pictures in the project that show the look'),
+                character: str('The character the skin is for, e.g. relay'), slot: str('The equipment slot, e.g. chest, helmet or full_body'), name: str('Skin name, e.g. AEGIS armour (default: from the brief); the same name carries on a skin already started'),
+                pass: str('Which pass to run: next (default: the next one not approved), all (every pass in one go without stopping for approval), concept, mesh, textures or fx (make that pass again)', { enum: ['next', 'all', 'concept', 'mesh', 'textures', 'fx'] }),
+                approve: bool('The user approved the pass they were shown; marks it approved and runs the next one'), feedback: str('The user\'s changes for the pass they were shown, in their words; the pass is made again with them'),
+                accept_issues: bool('With approve: the user accepts a pass that still has listed problems (only when they say so)'),
+                variants: { type: ['array', 'number'], items: { type: 'string' }, description: 'Variant names (e.g. ["crimson", "void", "gold"]) or a count, max 6' }, tier: num('Tier 1-5; the studio rules map tiers to rarities'), rarity: str('Or the rarity itself, like "epic" (default: from the tier)'),
+                mesh: str('The armour or garment mesh (.glb/.fbx/.obj/.blend) in the project, e.g. exported from Tripo or Meshy'), base: str('Base character with skeleton to build on and rig onto (remembered per character), e.g. the Relay carbon rig'),
+                material: str('Material words if different from the brief and materials'), stages: arr('Weathering stages (default factory, worn, battle)'), sfx: arr('Fx pass sounds: whoosh, zap, laser, power_up, impact, explosion, hum, servo, shield, coin'),
+                template: str('A saved template (from a finished skin) whose sounds, stages, tiling and style to reuse'), style: str('A saved style name (art_style op list); default: the studio default style'), tile_scale: num('Texture tiling (default 2)'),
+                texture_size: num('Texture map size in px (default: the studio budget)'), remesh: bool('Voxel remesh raw AI meshes first'), concepts: bool('Make concept art (default true)'), install: bool('Install in Godot at the end (default true)'),
+                stats: { type: 'object', description: 'Game stats to store with the skin, like {"armor": 12}' }, tags: arr('Tags stored with the skin, like ["neon", "season4"]'), category: str('Budget category (default skin)'), godot_dir: str('Folder with project.godot'),
+                no_preview: bool('Leave out the contact sheet picture (saves tokens; default false)') } } },
         { name: 'art_lore', description: 'Read the universe bible the art tools use: the Chronicler vault in lore/ and Story Studio\'s game_data/story_bible.json (sources set in codev-studio.json lore). With no name it lists every character, faction, place and item; with name it returns that entry (appearance, powers, relationships); with query it finds entries that mention something. Read it before a skin or asset for a named character so the art stays on canon; art_generate also adds the look of anyone the brief names on its own. Use it when the user asks what a character or place looks like, or before art for a named one; to change the lore use the Story Studio tools instead.',
             inputSchema: { type: 'object', properties: { name: str('An entry\'s name or alias, e.g. Relay'), query: str('Words to find in every entry') } }, annotations: { readOnlyHint: true } }
     ];

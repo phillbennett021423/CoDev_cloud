@@ -38,7 +38,29 @@ const DEFAULT_RULES = {
     },
     folders: {
         concepts: 'art/concepts', textures: 'art/textures', models: 'art/models', styles: 'art/styles',
-        training: 'art/training', marketing: 'marketing', audio: 'audio'
+        training: 'art/training', marketing: 'marketing', audio: 'audio', skins: 'art/skins', reviews: 'art/reviews'
+    },
+    // What art_skin_pipeline holds every skin to (desktop/creative/skin-quality.js): what a
+    // player sees must look perfect, it's checked from every angle before anyone is shown
+    // it, and it's made in passes the user approves one at a time.
+    skin_quality: {
+        visible_first: 'Anything the player can see must look perfect: face, hair, outer armour and clothing, hands, weapon, and the back and underside of the model. Hidden geometry is low priority: simplify or delete it.',
+        prompt_words: 'sharp detailed face, clean defined hair, crisp finished outer armour and clothing, well-formed hands with five fingers, finished back and underside, consistent materials on every side',
+        negative_words: 'melted details, smeared face, blurry face, fused fingers, deformed hands, stretched texture, visible seams, holes, unfinished back, missing parts',
+        // art_mesh op "review" renders these: the six sides, a face close-up, and the in-game camera.
+        review_views: ['front', 'back', 'left', 'right', 'top', 'below', 'face', 'game'],
+        // The in-game camera, in model heights: distance from the model, camera height, and
+        // yaw in degrees (0 = in front of the character, 180 = behind it, over the shoulder).
+        game_camera: { distance: 2.2, height: 1.05, yaw: 200, fov: 55 },
+        // How many times the pipeline fixes and re-checks a pass on its own before it asks.
+        max_fix_rounds: 2,
+        approve_each_pass: true,
+        drop_hidden: false,
+        limits: { max_open_edges: 0, max_nonmanifold_edges: 0, max_flipped: 0.005, max_uv_stretch: 0.05, max_missing_texture: 0.002, min_coverage: 0.005, min_face_detail: 0.00005 },
+        // The base rig each character's skins build on, e.g. {"relay": "characters/relay/Relay_CarbonSkin.glb"}.
+        base_rigs: {},
+        // Settings from finished skins that came out well (sounds, stages, tiling), reused with template.
+        templates: {}
     },
     // The universe bible the art tools read (desktop/creative/lore.js): a Chronicler vault
     // folder and/or Story Studio's story_bible.json. A brief that names a character adds
@@ -140,6 +162,7 @@ function summary(rules) {
     if (rules.art_direction.default_style) lines.push(`Default style: ${rules.art_direction.default_style}`);
     const styles = Object.keys(rules.styles || {});
     if (styles.length) lines.push(`Saved styles: ${styles.join(', ')}`);
+    if (rules.skin_quality && rules.skin_quality.visible_first) lines.push(`Skins: ${rules.skin_quality.visible_first}`);
     if ((rules.notes || []).length) lines.push(`Notes: ${rules.notes.slice(-10).map(n => `- ${n}`).join('\n')}`);
     return lines.join('\n');
 }

@@ -21,6 +21,10 @@ file gets a JSON report (triangle counts, maps written, bones matched...). Ops:
   retarget   copies the animations of one skeleton onto another by bone names
              (Mixamo, Rigify, UE and generic names are matched), baking them into
              actions the .glb carries
+  review     the visible-first check: renders the model from the front, back, both
+             sides, top and below, a face close-up and the in-game camera, then
+             checks what a player can see (holes, flipped faces, stretched UVs,
+             missing textures, empty views) and counts the faces nobody can see
 """
 import bpy
 import bmesh
@@ -29,6 +33,8 @@ import math
 import os
 import re
 import sys
+from mathutils import Vector
+from mathutils.bvhtree import BVHTree
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 JOB = json.load(open(argv[0], encoding="utf-8"))
@@ -157,6 +163,23 @@ def op_cleanup():
             mod.voxel_size = size / float(JOB.get("remesh_resolution", 256))
             mod.use_smooth_shade = True
             bpy.ops.object.modifier_apply(modifier=mod.name)
+    if JOB.get("drop_hidden"):
+        # Faces no camera angle can see (inside armour, under plates) spend the triangle
+        # budget where nobody looks, so they go before decimating.
+        parts = world_parts(ms)
+        vis = visibility(parts)
+        dropped = 0
+        for (ob, bm, _), seen in zip(parts, vis["per_object"]):
+            local = bmesh.new()
+            local.from_mesh(ob.data)
+            local.faces.ensure_lookup_table()
+            gone = [local.faces[i] for i, s in enumerate(seen) if not s and i < len(local.faces)]
+            dropped += sum(len(f.verts) - 2 for f in gone)
+            bmesh.ops.delete(local, geom=gone, context="FACES")
+            local.to_mesh(ob.data)
+            local.free()
+            bm.free()
+        REPORT["hidden_tris_dropped"] = dropped
     total = sum(tris(o) for o in ms)
     if target and total > target:
         for ob in ms:
@@ -626,6 +649,295 @@ def op_retarget():
     export(JOB["output"], keep)
 
 
+# ---------- visible-first review ----------
+
+# The directions a camera can look from: the six sides plus the eight corners, so a
+# face inside a crease still counts as seen from some angle.
+VIEW_DIRS = [Vector(d).normalized() for d in [
+    (0, 1, 0), (0, -1, 0), (1, 0, 0), (-1, 0, 0), (0, 0, -1), (0, 0, 1),
+    (1, 1, 1), (1, 1, -1), (1, -1, 1), (1, -1, -1), (-1, 1, 1), (-1, 1, -1), (-1, -1, 1), (-1, -1, -1)]]
+
+# Camera direction for each named view (the way the camera looks). glTF characters face
+# +Z, which is Blender's -Y, so "front" looks from -Y towards +Y.
+VIEWS = {"front": (0, 1, 0), "back": (0, -1, 0), "left": (-1, 0, 0), "right": (1, 0, 0), "top": (0, 0, -1), "below": (0, 0, 1)}
+
+
+def world_parts(ms):
+    """Each mesh as it's posed, in world space: [(object, bmesh, face_count)]."""
+    dg = bpy.context.evaluated_depsgraph_get()
+    parts = []
+    for ob in ms:
+        ev = ob.evaluated_get(dg)
+        me = ev.to_mesh()
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        ev.to_mesh_clear()
+        bm.transform(ob.matrix_world)
+        # glTF splits vertices along UV seams and hard edges; weld them back by position
+        # so a seam doesn't count as a hole (faces stay the same, in the same order).
+        if bm.verts:
+            span = max((max(v.co[i] for v in bm.verts) - min(v.co[i] for v in bm.verts)) for i in range(3))
+            bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=max(span, 1e-6) * 1e-5)
+        bm.normal_update()
+        bm.verts.index_update()
+        bm.faces.index_update()
+        parts.append((ob, bm, len(bm.faces)))
+    return parts
+
+
+def bounds(parts):
+    pts = [v.co for _, bm, _ in parts for v in bm.verts]
+    if not pts:
+        return Vector((0, 0, 0)), Vector((0, 0, 0))
+    lo = Vector((min(p[i] for p in pts) for i in range(3)))
+    hi = Vector((max(p[i] for p in pts) for i in range(3)))
+    return lo, hi
+
+
+def visibility(parts, max_faces=80000):
+    """Which faces a camera can see from outside, and which show their back (flipped)."""
+    verts, polys = [], []
+    for _, bm, _ in parts:
+        base = len(verts)
+        verts.extend(v.co.copy() for v in bm.verts)
+        polys.extend([base + v.index for v in f.verts] for f in bm.faces)
+    out = {"per_object": [], "flipped": [], "total": len(polys)}
+    if not polys:
+        return out
+    tree = BVHTree.FromPolygons(verts, polys, all_triangles=False)
+    lo, hi = bounds(parts)
+    reach = max((hi - lo).length, 1e-6) * 2.0
+    eps = reach * 1e-4
+    step = max(1, len(polys) // max_faces)
+    gi = 0
+    for _, bm, _ in parts:
+        seen = []
+        flipped = []
+        for f in bm.faces:
+            if (gi % step) and step > 1:
+                seen.append(True)
+                flipped.append(False)
+                gi += 1
+                continue
+            c = f.calc_center_median()
+            n = f.normal
+            front = back = 0
+            for d in VIEW_DIRS:
+                hit, _, idx, _ = tree.ray_cast(c - d * reach, d, reach * 2)
+                if hit is not None and (idx == gi or (hit - c).length < eps):
+                    if n.dot(-d) >= 0:
+                        front += 1
+                    else:
+                        back += 1
+            seen.append(front + back > 0)
+            flipped.append(front == 0 and back > 0)
+            gi += 1
+        out["per_object"].append(seen)
+        out["flipped"].append(flipped)
+    return out
+
+
+def mesh_checks(parts, vis):
+    """What a player could notice on the faces they can see."""
+    seen_area = hidden_tris = flipped_area = stretched_area = 0.0
+    open_edges = nonmanifold = 0
+    no_uv = []
+    for (ob, bm, _), seen, flipped in zip(parts, vis["per_object"], vis["flipped"]):
+        uv = bm.loops.layers.uv.active
+        if uv is None:
+            no_uv.append(ob.name)
+        areas = [f.calc_area() for f in bm.faces]
+        uv_areas = []
+        if uv is not None:
+            for f in bm.faces:
+                pts = [l[uv].uv for l in f.loops]
+                uv_areas.append(abs(sum(pts[i].x * pts[i - 1].y - pts[i - 1].x * pts[i].y for i in range(len(pts)))) / 2)
+        total_a = sum(a for a, s in zip(areas, seen) if s) or 1e-9
+        total_uv = sum(u for u, s in zip(uv_areas, seen) if s) or 1e-9
+        for i, f in enumerate(bm.faces):
+            if not seen[i]:
+                hidden_tris += len(f.verts) - 2
+                continue
+            seen_area += areas[i]
+            if flipped[i]:
+                flipped_area += areas[i]
+            if uv_areas and areas[i] > 0:
+                density = (uv_areas[i] / total_uv) / (areas[i] / total_a)
+                if density < 0.2 or density > 5:
+                    stretched_area += areas[i]
+        for e in bm.edges:
+            k = len(e.link_faces)
+            if k > 2:
+                nonmanifold += 1
+            elif k == 1 and seen[e.link_faces[0].index]:
+                open_edges += 1
+    total = seen_area or 1e-9
+    return {
+        "visible_open_edges": open_edges, "nonmanifold_edges": nonmanifold,
+        "flipped_visible": round(flipped_area / total, 4), "uv_stretched_visible": round(stretched_area / total, 4),
+        "meshes_without_uvs": no_uv, "hidden_tris": int(hidden_tris), "visible_tris": int(sum(len(f.verts) - 2 for _, bm, _ in parts for f in bm.faces) - hidden_tris),
+    }
+
+
+def head_point(objs, lo, hi):
+    """Where the face is: a head bone when the skeleton has one, else the top front."""
+    for arm in (o for o in objs if o.type == "ARMATURE"):
+        for b in arm.data.bones:
+            if re.search(r"head", b.name, re.I) and not re.search(r"end|top|_end", b.name, re.I):
+                return arm.matrix_world @ ((b.head_local + b.tail_local) / 2), True
+    h = hi.z - lo.z
+    return Vector(((lo.x + hi.x) / 2, lo.y, hi.z - 0.07 * h)), False
+
+
+def setup_render(engine, size):
+    scene = bpy.context.scene
+    want = (engine or "eevee").lower()
+    names = [e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items]
+    if want == "cycles" or not any(n.startswith("BLENDER_EEVEE") for n in names):
+        scene.render.engine = "CYCLES"
+        scene.cycles.samples = int(JOB.get("samples", 16))
+        scene.cycles.device = "CPU"
+        try:
+            scene.cycles.use_denoising = False
+        except Exception:
+            pass
+    else:
+        scene.render.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in names else "BLENDER_EEVEE"
+    scene.render.resolution_x = scene.render.resolution_y = size
+    scene.render.resolution_percentage = 100
+    scene.render.film_transparent = True
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.color_mode = "RGBA"
+    world = bpy.data.worlds.new("review") if not scene.world else scene.world
+    scene.world = world
+    world.use_nodes = True
+    bg = world.node_tree.nodes.get("Background")
+    if bg:
+        bg.inputs[0].default_value = (0.55, 0.57, 0.6, 1)
+        bg.inputs[1].default_value = 0.9
+    # A key light from the front-top and a weaker one from below, so the underside reads too.
+    for name, rot, energy in (("key", (math.radians(50), 0, math.radians(-30)), 3.0), ("rim", (math.radians(-60), 0, math.radians(160)), 2.0), ("under", (math.radians(180), 0, 0), 0.8)):
+        lamp = bpy.data.lights.new(name, "SUN")
+        lamp.energy = energy
+        ob = bpy.data.objects.new(name, lamp)
+        ob.rotation_euler = rot
+        scene.collection.objects.link(ob)
+    return scene.render.engine
+
+
+def camera(name, ortho=True):
+    cam = bpy.data.cameras.new(name)
+    cam.type = "ORTHO" if ortho else "PERSP"
+    ob = bpy.data.objects.new(name, cam)
+    bpy.context.scene.collection.objects.link(ob)
+    bpy.context.scene.camera = ob
+    return ob
+
+
+def aim(ob, direction):
+    d = Vector(direction).normalized()
+    if abs(d.z) > 0.99:
+        ob.rotation_euler = (0, 0, 0) if d.z < 0 else (math.pi, 0, 0)
+    else:
+        ob.rotation_euler = d.to_track_quat("-Z", "Y").to_euler()
+
+
+def frame(ob, corners, center, d, reach, margin=1.12):
+    aim(ob, d)
+    bpy.context.view_layer.update()
+    rot = ob.matrix_world.to_3x3()
+    right, up = rot.col[0], rot.col[1]
+    xs = [(p - center).dot(right) for p in corners]
+    ys = [(p - center).dot(up) for p in corners]
+    mid = center + right * (max(xs) + min(xs)) / 2 + up * (max(ys) + min(ys)) / 2
+    ob.location = mid - Vector(d).normalized() * reach
+    ob.data.ortho_scale = max(max(xs) - min(xs), max(ys) - min(ys), 1e-4) * margin
+    ob.data.clip_end = reach * 4
+
+
+def image_checks(path):
+    import numpy as np
+    img = bpy.data.images.load(path)
+    w, h = img.size
+    px = np.array(img.pixels[:], dtype=np.float32).reshape(h, w, 4)
+    bpy.data.images.remove(img)
+    alpha = px[..., 3] > 0.5
+    cover = float(alpha.mean())
+    rgb = px[..., :3]
+    magenta = alpha & (rgb[..., 0] > 0.75) & (rgb[..., 1] < 0.25) & (rgb[..., 2] > 0.75)
+    lum = rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    lap = 4 * lum[1:-1, 1:-1] - lum[:-2, 1:-1] - lum[2:, 1:-1] - lum[1:-1, :-2] - lum[1:-1, 2:]
+    inner = alpha[1:-1, 1:-1] & alpha[:-2, 1:-1] & alpha[2:, 1:-1] & alpha[1:-1, :-2] & alpha[1:-1, 2:]
+    detail = float(lap[inner].var()) if inner.any() else 0.0
+    return {"coverage": round(cover, 4), "missing_texture": round(float(magenta.sum()) / max(int(alpha.sum()), 1), 4), "detail": round(detail, 6)}
+
+
+def op_review():
+    objs = import_any(JOB["input"])
+    ms = meshes(objs)
+    if not ms:
+        raise ValueError("no mesh in the input")
+    parts = world_parts(ms)
+    lo, hi = bounds(parts)
+    center = (lo + hi) / 2
+    height = max(hi.z - lo.z, 1e-4)
+    reach = max((hi - lo).length, 1e-4) * 2
+    corners = [Vector((x, y, z)) for x in (lo.x, hi.x) for y in (lo.y, hi.y) for z in (lo.z, hi.z)]
+    vis = visibility(parts)
+    checks = mesh_checks(parts, vis)
+    for _, bm, _ in parts:
+        bm.free()
+    REPORT["mesh_checks"] = checks
+    REPORT.update(stats(objs))
+    out_dir = JOB["out_dir"]
+    os.makedirs(out_dir, exist_ok=True)
+    if JOB.get("clay"):
+        clay = bpy.data.materials.new("review_clay")
+        clay.use_nodes = True
+        b = principled(clay)
+        b.inputs["Base Color"].default_value = (0.62, 0.6, 0.58, 1)
+        b.inputs["Roughness"].default_value = 0.55
+        bpy.context.view_layer.material_override = clay
+    size = int(JOB.get("size", 512))
+    REPORT["engine"] = setup_render(JOB.get("engine"), size)
+    name = JOB.get("name", "review")
+    views = JOB.get("views") or list(VIEWS) + ["face", "game"]
+    rendered, images = {}, {}
+    for view in views:
+        if view in VIEWS:
+            cam = camera(f"cam_{view}")
+            frame(cam, corners, center, VIEWS[view], reach)
+        elif view == "face":
+            cam = camera("cam_face")
+            point, from_bone = head_point(objs, lo, hi)
+            aim(cam, (0, 1, 0))
+            cam.location = Vector((point.x, lo.y - reach, point.z))
+            cam.data.ortho_scale = max(0.2 * height, 1e-3) if from_bone else max(0.24 * min(height, max(hi.x - lo.x, hi.y - lo.y) * 2.5), 1e-3)
+            cam.data.clip_end = reach * 4
+            REPORT["face_from_bone"] = from_bone
+        elif view == "game":
+            g = JOB.get("game_camera") or {}
+            cam = camera("cam_game", ortho=False)
+            yaw = math.radians(float(g.get("yaw", 200)))
+            dist = float(g.get("distance", 2.2)) * height
+            # yaw 0 is in front of the character (-Y), 180 behind it.
+            cam.location = Vector((center.x + math.sin(yaw) * dist, center.y - math.cos(yaw) * dist, lo.z + float(g.get("height", 1.05)) * height))
+            cam.data.angle = math.radians(float(g.get("fov", 55)))
+            aim(cam, center - cam.location)
+            cam.data.clip_end = reach * 10
+            bpy.context.scene.render.resolution_x, bpy.context.scene.render.resolution_y = int(size * 1.25), int(size * 0.7)
+        else:
+            continue
+        path = os.path.join(out_dir, f"{name}_{view}.png")
+        bpy.context.scene.render.filepath = path
+        bpy.ops.render.render(write_still=True)
+        bpy.context.scene.render.resolution_x = bpy.context.scene.render.resolution_y = size
+        rendered[view] = path
+        images[view] = image_checks(path)
+    REPORT["views"] = rendered
+    REPORT["image_checks"] = images
+
+
 def op_inspect():
     objs = import_any(JOB["input"])
     REPORT.update(stats(objs))
@@ -633,7 +945,7 @@ def op_inspect():
 
 try:
     clear_scene()
-    {"inspect": op_inspect, "cleanup": op_cleanup, "uv": op_uv, "bake": op_bake, "texture": op_texture, "rig": op_rig, "retarget": op_retarget}[JOB["op"]]()
+    {"inspect": op_inspect, "cleanup": op_cleanup, "uv": op_uv, "bake": op_bake, "texture": op_texture, "rig": op_rig, "retarget": op_retarget, "review": op_review}[JOB["op"]]()
 except Exception as err:
     import traceback
     REPORT["ok"] = False

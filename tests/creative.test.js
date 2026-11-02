@@ -15,6 +15,7 @@ const { createComfy, graphs, samplerFor, sizeFor, pickCheckpoint } = require('..
 const T = require('../desktop/creative/training');
 const { buildPlayable } = require('../desktop/creative/playable');
 const { createCreativeService } = require('../desktop/creative');
+const Q = require('../desktop/creative/skin-quality');
 const { loadServices } = require('../agent-services');
 const { createCodevMcp } = require('../codev-mcp');
 
@@ -42,6 +43,7 @@ function textOf(result) { return result.content.filter(c => c.type === 'text').m
 function fakeComfy({ checkpoints = ['flux1-schnell-fp8.safetensors', 'sdxl_base.safetensors', 'sdxl-inpaint.safetensors'], ipadapter = false } = {}) {
     const prompts = [];
     const uploads = [];
+    const auth = [];
     const objectInfo = {
         CheckpointLoaderSimple: { input: { required: { ckpt_name: [checkpoints] } } },
         LoraLoader: { input: { required: { model: ['MODEL'], clip: ['CLIP'], lora_name: [['studio_style.safetensors']], strength_model: ['FLOAT', { default: 1 }], strength_clip: ['FLOAT', { default: 1 }] } } },
@@ -70,6 +72,7 @@ function fakeComfy({ checkpoints = ['flux1-schnell-fp8.safetensors', 'sdxl_base.
     }
     const server = http.createServer((req, res) => {
         const url = new URL(req.url, 'http://x');
+        auth.push(req.headers.authorization || '');
         let body = [];
         req.on('data', c => body.push(c));
         req.on('end', () => {
@@ -89,7 +92,7 @@ function fakeComfy({ checkpoints = ['flux1-schnell-fp8.safetensors', 'sdxl_base.
             res.statusCode = 404; res.end('nope');
         });
     });
-    return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ url: `http://127.0.0.1:${server.address().port}`, prompts, uploads, close: () => server.close() })));
+    return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ url: `http://127.0.0.1:${server.address().port}`, prompts, uploads, auth, close: () => server.close() })));
 }
 
 test('studio rules: defaults, deep merge with null deletes, names, styles', () => {
@@ -340,7 +343,7 @@ test('free tools without ComfyUI: PBR maps, weathering stages, fill reframing, u
     assert.ok(gen.isError);
     assert.match(textOf(gen), /at most 8/);
     const edit = await svc.callTool('art_edit', { image: 'refs/plate.png', prompt: 'x' });
-    assert.match(textOf(edit), /needs ComfyUI running/);
+    assert.match(textOf(edit), /needs ComfyUI, which isn't reachable/);
 });
 
 test('art_mesh runs the Blender pipeline with budgets and naming; voice cloning needs consent', { skip: !unix }, async () => {
@@ -499,7 +502,7 @@ test('art_skin_pipeline: one command from brief to equippable skins in Godot', {
         fs.chmodSync(blender, 0o755);
         const svc = createCreativeService({ getProjectDir: () => dir, env: { ...process.env, CODEV_COMFYUI_URL: fake.url }, findBlender: () => blender });
         const res = await svc.callTool('art_skin_pipeline', { brief: 'A.E.G.I.S. armour for Relay, angular plates, cyan energy seams', name: 'AEGIS', character: 'relay', slot: 'chest', tier: 3,
-            variants: ['crimson', 'void'], mesh: 'refs/aegis_raw.glb', base: 'refs/relay_base.glb', stages: ['factory', 'battle'] });
+            variants: ['crimson', 'void'], mesh: 'refs/aegis_raw.glb', base: 'refs/relay_base.glb', stages: ['factory', 'battle'], pass: 'all', sfx: ['power_up'] });
         const out = textOf(res);
         assert.ok(!res.isError, out);
         assert.match(out, /✓ mesh cleaned to the skin budget/);
@@ -507,13 +510,223 @@ test('art_skin_pipeline: one command from brief to equippable skins in Godot', {
         assert.match(out, /✓ weathering \(factory, battle\) for AEGIS void/);
         assert.match(out, /✓ rigged to refs\/relay_base.glb/);
         assert.deepEqual(res.structuredContent.installed, ['relay_chest_aegis_crimson_epic', 'relay_chest_aegis_void_epic']);
-        assert.deepEqual(fs.readFileSync(ops, 'utf8').trim().split('\n').map(l => l.split(' ')[0]), ['cleanup', 'uv', 'texture', 'rig', 'inspect', 'texture', 'rig', 'inspect']);
+        assert.deepEqual(fs.readFileSync(ops, 'utf8').trim().split('\n').map(l => l.split(' ')[0]), ['cleanup', 'uv', 'rig', 'review', 'texture', 'review', 'texture', 'review', 'review', 'review', 'inspect', 'inspect']);
+        assert.match(out, /✓ sound: power_up/);
+        assert.match(out, /Visible-first: Anything the player can see must look perfect/);
+        // The base rig is remembered for the character, and the settings are kept as a template.
+        const saved = JSON.parse(fs.readFileSync(path.join(dir, 'codev-studio.json'), 'utf8'));
+        assert.equal(saved.skin_quality.base_rigs.relay, 'refs/relay_base.glb');
+        assert.deepEqual(saved.skin_quality.templates.aegis.sfx, ['power_up']);
         assert.match(fs.readFileSync(ops, 'utf8'), /texture albedo,normal,roughness,metallic/);
         const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'game/data/skin_manifest.json'), 'utf8'));
         assert.equal(manifest.skins.length, 2);
         assert.ok(manifest.skins.every(s => s.rigged && s.icon && s.materials.battle && s.bones === 40));
         assert.ok(fs.existsSync(path.join(dir, 'game/assets/skins/relay/relay_chest_aegis_void_epic/icon.png')));
-        const noMesh = await svc.callTool('art_skin_pipeline', { brief: 'chitin gauntlets', character: 'relay', slot: 'arms', concepts: false });
+        const noMesh = await svc.callTool('art_skin_pipeline', { brief: 'chitin gauntlets', character: 'relay', slot: 'arms', concepts: false, pass: 'all' });
         assert.match(textOf(noMesh), /No mesh was given/);
     } finally { fake.close(); }
+});
+
+test('visible-first rules: the brief, the prompt words, review problems and the passes', () => {
+    const q = R.DEFAULT_RULES.skin_quality;
+    const s = { brief: 'Santa hat for Relay', theme: 'winter festival', palette: ['red', '#ffffff'], materials: ['velvet', 'fur trim'], silhouette: 'a tall floppy hat' };
+    assert.equal(Q.briefOf(s), 'Santa hat for Relay. Theme: winter festival. Colour palette: red, #ffffff. Materials: velvet, fur trim. Silhouette changes: a tall floppy hat');
+    const prompt = Q.conceptPrompt(s, q, 'gold', 'bigger pompom');
+    assert.match(prompt, /sharp detailed face/);
+    assert.match(prompt, /front and back visible/);
+    assert.match(prompt, /Changes asked for: bigger pompom/);
+    assert.match(Q.materialPrompt(s), /^velvet, fur trim, palette red #ffffff/);
+    assert.match(Q.negativeWords(q), /melted details/);
+    const report = { triangles: 14000, mesh_checks: { visible_open_edges: 6, nonmanifold_edges: 0, flipped_visible: 0.03, uv_stretched_visible: 0.2, meshes_without_uvs: [], hidden_tris: 900, visible_tris: 13100 },
+        image_checks: { front: { coverage: 0.3, missing_texture: 0.01, detail: 0.01 }, top: { coverage: 0.001, missing_texture: 0, detail: 0 }, face: { coverage: 0.6, missing_texture: 0, detail: 0.00001 } } };
+    const problems = Q.problemsFrom(report, q, { textured: true, budget: 12000 });
+    assert.deepEqual(problems.map(p => p.code), ['holes', 'flipped', 'uv_stretch', 'over_budget', 'missing_texture', 'empty_view', 'soft_face']);
+    assert.deepEqual(problems.map(p => p.fix), ['cleanup', 'cleanup', 'uv', 'cleanup', 'texture', '', '']);
+    // Clay renders (the mesh pass) don't judge textures.
+    assert.deepEqual(Q.problemsFrom(report, q, { textured: false }).map(p => p.code), ['holes', 'flipped', 'uv_stretch', 'empty_view']);
+    const summary = Q.reviewSummary(report, problems);
+    assert.match(summary, /7 problem\(s\) a player would notice/);
+    assert.match(summary, /900 of 14000 triangles can't be seen/);
+    assert.match(Q.reviewSummary({}, []), /^Passed/);
+    assert.equal(Q.nextPass({ passes: {} }), 'concept');
+    assert.equal(Q.nextPass({ passes: { concept: { status: 'skipped' }, mesh: { status: 'approved' }, textures: { status: 'ready' } } }), 'textures');
+    assert.equal(Q.nextPass({ passes: Object.fromEntries(Q.PASSES.map(p => [p, { status: 'approved' }])) }), '');
+    assert.match(R.summary(R.loadRules('')), /Skins: Anything the player can see must look perfect/);
+});
+
+test('a remote ComfyUI (a RunPod pod): the project setting wins and the token is sent', async () => {
+    const fake = await fakeComfy();
+    try {
+        const comfy = createComfy({ url: fake.url + '/', token: 'pod-secret' });
+        assert.equal(comfy.url, fake.url);
+        await comfy.models();
+        assert.equal(fake.auth[0], 'Bearer pod-secret');
+        const dir = project();
+        const svc = createCreativeService({ getProjectDir: () => dir, env: { ...process.env, CODEV_COMFYUI_URL: 'http://127.0.0.1:1', CODEV_COMFYUI_TOKEN: 'tok' } });
+        assert.match(textOf(await svc.callTool('art_rules', { op: 'set', patch: { comfyui: { url: fake.url } } })), /Saved/);
+        assert.match((await svc.status()).detail, /ComfyUI running at http:\/\/127\.0\.0\.1:\d+/);
+        assert.equal(fake.auth[fake.auth.length - 1], 'Bearer tok');
+        await svc.callTool('art_rules', { op: 'set', patch: { comfyui: null } });
+        assert.match((await svc.status()).detail, /not running at http:\/\/127\.0\.0\.1:1/);
+    } finally { fake.close(); }
+});
+
+// A stand-in Blender whose reviews find problems until a cleanup has run, to drive the fix loop.
+function reviewingBlender({ stubborn = false } = {}) {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-fakeblender-'));
+    const blender = path.join(bin, 'blender');
+    const ops = path.join(bin, 'ops.log');
+    fs.writeFileSync(blender, `#!${process.execPath}
+const fs = require('fs'); const path = require('path');
+const a = process.argv.slice(2);
+const job = JSON.parse(fs.readFileSync(a[a.indexOf('--') + 1], 'utf8'));
+fs.appendFileSync(${JSON.stringify(ops)}, job.op + ' ' + path.basename(job.input) + (job.clay ? ' clay' : '') + '\\n');
+if (job.output) fs.writeFileSync(job.output, 'glb');
+const report = { ok: true, op: job.op, output: job.output, triangles: 8000, materials: 1, armatures: [] };
+if (job.op === 'review') {
+    const fixed = ${stubborn ? 'false' : "fs.readFileSync(" + JSON.stringify(ops) + ", 'utf8').split('\\n').filter(l => l.startsWith('cleanup')).length >= 2"};
+    report.mesh_checks = { visible_open_edges: fixed ? 0 : 4, nonmanifold_edges: 0, flipped_visible: 0, uv_stretched_visible: 0, meshes_without_uvs: [], hidden_tris: 300, visible_tris: 7700 };
+    report.views = {}; report.image_checks = {};
+    for (const v of job.views) { const f = path.join(job.out_dir, job.name + '_' + v + '.png'); fs.writeFileSync(f, Buffer.from(${JSON.stringify(PNG.toString('base64'))}, 'base64')); report.views[v] = f; report.image_checks[v] = { coverage: 0.3, missing_texture: 0, detail: 0.01 }; }
+}
+fs.writeFileSync(job.result, JSON.stringify(report));
+`);
+    fs.chmodSync(blender, 0o755);
+    return { blender, ops: () => fs.readFileSync(ops, 'utf8').trim().split('\n') };
+}
+
+test('art_mesh op review: every angle, the problems a player would notice, the renders', { skip: !unix }, async () => {
+    const dir = project();
+    fs.writeFileSync(path.join(dir, 'refs', 'hat.glb'), 'glb');
+    const fb = reviewingBlender();
+    const svc = createCreativeService({ getProjectDir: () => dir, env: { ...process.env, CODEV_COMFYUI_URL: 'http://127.0.0.1:1' }, findBlender: () => fb.blender });
+    const res = await svc.callTool('art_mesh', { op: 'review', input: 'refs/hat.glb', name: 'santa hat', clay: true, no_preview: true });
+    const out = textOf(res);
+    assert.ok(!res.isError, out);
+    assert.match(out, /from 8 angle\(s\) \(front, back, left, right, top, below, face, game\)/);
+    assert.match(out, /4 open edges where a player can see them/);
+    assert.match(out, /300 of 8000 triangles can't be seen/);
+    assert.equal(res.structuredContent.passed, false);
+    assert.equal(res.structuredContent.views.face, 'art/reviews/santa_hat/santa_hat_face.png');
+    assert.ok(fs.existsSync(path.join(dir, 'art/reviews/santa_hat/santa_hat_below.png')));
+});
+
+test('art_skin_pipeline in approval passes: concept, mesh with a fix loop, textures, effects, then install', { skip: !hasPython || !unix }, async () => {
+    const fake = await fakeComfy();
+    const dir = godotProject();
+    try {
+        fs.writeFileSync(path.join(dir, 'refs', 'hat_tripo.glb'), 'glb');
+        fs.writeFileSync(path.join(dir, 'refs', 'Relay_CarbonSkin.glb'), 'glb');
+        const fb = reviewingBlender();
+        const svc = createCreativeService({ getProjectDir: () => dir, env: { ...process.env, CODEV_COMFYUI_URL: fake.url }, findBlender: () => fb.blender });
+        const call = args => svc.callTool('art_skin_pipeline', { name: 'Santa hat', no_preview: true, ...args });
+        // Pass 1: concept art, with the structured brief and the visible-first words.
+        let res = await call({ brief: 'Santa hat for Relay', theme: 'winter festival', palette: ['red', 'white'], materials: ['velvet', 'fur trim'], silhouette: 'tall floppy hat', character: 'relay', slot: 'helmet', tier: 3, base: 'refs/Relay_CarbonSkin.glb', sfx: ['coin'], stages: ['factory'] });
+        assert.ok(!res.isError, textOf(res));
+        assert.match(textOf(res), /Pass 1 of 4 \(concept art\) for "Santa hat" passed its checks and is ready for the user/);
+        const prompt = JSON.stringify(fake.prompts[0]);
+        assert.match(prompt, /Theme: winter festival/);
+        assert.match(prompt, /sharp detailed face/);
+        assert.match(prompt, /melted details/);
+        // Asking again without approving doesn't redo the work.
+        assert.match(textOf(await call({})), /is waiting for the user/);
+        // Feedback makes the pass again with the user's words.
+        res = await call({ feedback: 'make the pompom bigger' });
+        assert.match(JSON.stringify(fake.prompts[fake.prompts.length - 1]), /Changes asked for: make the pompom bigger/);
+        // Pass 2 waits for the mesh from Tripo or Meshy.
+        res = await call({ approve: true });
+        assert.match(textOf(res), /✓ the user approved the concept art/);
+        assert.match(textOf(res), /waiting for a mesh.*Tripo or Meshy/s);
+        // With the mesh: cleaned, unwrapped, rigged onto the Relay rig, reviewed, fixed, reviewed again.
+        res = await call({ mesh: 'refs/hat_tripo.glb' });
+        const meshOut = textOf(res);
+        assert.ok(!res.isError, meshOut);
+        assert.match(meshOut, /✓ rigged to refs\/Relay_CarbonSkin.glb/);
+        assert.match(meshOut, /closed gaps, merged seams and turned faces outward/);
+        assert.match(meshOut, /review from every angle \(after fix 1\)/);
+        assert.match(meshOut, /Pass 2 of 4 \(mesh\).*ready for the user/);
+        // Pass 3: textures on the mesh, reviewed with the real materials.
+        res = await call({ approve: true });
+        assert.match(textOf(res), /Pass 3 of 4 \(textures\).*ready for the user/);
+        // Pass 4: sounds and the in-game camera.
+        res = await call({ approve: true });
+        assert.match(textOf(res), /✓ sound: coin/);
+        assert.match(textOf(res), /in-game camera check/);
+        assert.ok(fs.existsSync(path.join(dir, 'audio/sfx/santa_hat_coin.wav')));
+        // The last approval installs it in Godot and keeps the settings as a template.
+        res = await call({ approve: true });
+        assert.match(textOf(res), /Installed in Godot: relay_helmet_santa_hat_epic/);
+        const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'game/data/skin_manifest.json'), 'utf8'));
+        assert.equal(manifest.skins[0].id, 'relay_helmet_santa_hat_epic');
+        assert.match(manifest.skins[0].description, /Silhouette changes: tall floppy hat/);
+        const state = JSON.parse(fs.readFileSync(path.join(dir, 'art/skins/santa_hat/skin.json'), 'utf8'));
+        assert.deepEqual(Object.values(state.passes).map(p => p.status), ['approved', 'approved', 'approved', 'approved']);
+        const rules = JSON.parse(fs.readFileSync(path.join(dir, 'codev-studio.json'), 'utf8'));
+        assert.deepEqual(rules.skin_quality.templates.santa_hat.sfx, ['coin']);
+        assert.match(textOf(await call({})), /is finished and installed/);
+        const ops = fb.ops().map(l => l.split(' ')[0]);
+        assert.deepEqual(ops.slice(0, 7), ['cleanup', 'uv', 'rig', 'review', 'cleanup', 'review', 'texture']);
+        assert.ok(fb.ops()[3].endsWith('clay'), 'the mesh pass is judged in plain clay');
+        // A template carries the sounds over to the next skin.
+        res = await svc.callTool('art_skin_pipeline', { brief: 'Elf hat', character: 'relay', slot: 'helmet', template: 'santa hat', concepts: false, no_preview: true });
+        assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'art/skins/elf_hat/skin.json'), 'utf8')).sfx[0], 'coin');
+        assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'art/skins/elf_hat/skin.json'), 'utf8')).base, 'refs/Relay_CarbonSkin.glb', 'the base rig is remembered for relay');
+    } finally { fake.close(); }
+});
+
+test('a pass that still fails its checks after the fix rounds is held back from the user', { skip: !hasPython || !unix }, async () => {
+    const dir = godotProject();
+    fs.writeFileSync(path.join(dir, 'refs', 'cape.glb'), 'glb');
+    const fb = reviewingBlender({ stubborn: true });
+    const svc = createCreativeService({ getProjectDir: () => dir, env: { ...process.env, CODEV_COMFYUI_URL: 'http://127.0.0.1:1' }, findBlender: () => fb.blender });
+    const call = args => svc.callTool('art_skin_pipeline', { name: 'Cape', no_preview: true, ...args });
+    let res = await call({ brief: 'torn cape', character: 'relay', slot: 'back', concepts: false, mesh: 'refs/cape.glb' });
+    assert.match(textOf(res), /Pass 2 of 4 \(mesh\).*still has problems after 2 automatic fix round\(s\), so don't show it/s);
+    assert.equal(fb.ops().filter(l => l.startsWith('review')).length, 3);
+    res = await call({ approve: true });
+    assert.ok(res.isError);
+    assert.match(textOf(res), /accept_issues true only if the user said/);
+    res = await call({ approve: true, accept_issues: true });
+    assert.match(textOf(res), /✓ the user approved the mesh/);
+    // pass "all" stops at a failing pass instead of installing it.
+    const all = await svc.callTool('art_skin_pipeline', { brief: 'torn cape two', character: 'relay', slot: 'back', concepts: false, mesh: 'refs/cape.glb', pass: 'all', no_preview: true });
+    assert.match(textOf(all), /still has problems/);
+    assert.ok(!fs.existsSync(path.join(dir, 'game/data/skin_manifest.json')));
+});
+
+// The real Blender script, when a Blender is around (CODEV_TEST_BLENDER, a blender binary
+// or a wrapper around the bpy module): a box with a hole, faces turned inward and a hidden
+// box inside it.
+test('the Blender review finds holes, flipped faces and hidden triangles', { skip: !process.env.CODEV_TEST_BLENDER && 'set CODEV_TEST_BLENDER to a Blender to run it' }, async () => {
+    const dir = project();
+    const make = path.join(dir, 'make.py');
+    fs.writeFileSync(make, `import bpy, bmesh, sys
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 1)); body = bpy.context.object; body.scale = (0.4, 0.25, 1)
+bpy.ops.object.transform_apply(scale=True)
+bm = bmesh.new(); bm.from_mesh(body.data)
+bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=4, use_grid_fill=True)
+bm.faces.ensure_lookup_table()
+bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.normal.y > 0.9][:1], context='FACES')
+bm.faces.ensure_lookup_table()
+bmesh.ops.reverse_faces(bm, faces=[f for f in bm.faces if f.normal.y < -0.9][:3])
+bm.to_mesh(body.data); bm.free()
+bpy.ops.mesh.primitive_cube_add(size=0.2, location=(0, 0, 1))
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.export_scene.gltf(filepath=sys.argv[-1], export_format='GLB')
+`);
+    execFileSync(process.env.CODEV_TEST_BLENDER, ['--background', '--factory-startup', '--python', make, '--', path.join(dir, 'refs', 'box.glb')], { stdio: 'ignore' });
+    const svc = createCreativeService({ getProjectDir: () => dir, env: { ...process.env, CODEV_COMFYUI_URL: 'http://127.0.0.1:1' }, findBlender: () => process.env.CODEV_TEST_BLENDER });
+    const res = await svc.callTool('art_mesh', { op: 'review', input: 'refs/box.glb', clay: true, engine: 'cycles', size: 128, samples: 4, no_preview: true });
+    assert.ok(!res.isError, textOf(res));
+    const m = res.structuredContent.mesh_checks;
+    assert.equal(m.visible_open_edges, 4, 'the one missing face on the back');
+    assert.ok(m.flipped_visible > 0 && m.flipped_visible < 0.1, `flipped ${m.flipped_visible}`);
+    assert.equal(m.hidden_tris, 12, 'the box inside');
+    assert.deepEqual(res.structuredContent.problems.map(p => p.code), ['holes', 'flipped']);
+    assert.equal(Object.keys(res.structuredContent.views).length, 8);
+    assert.ok(Object.values(res.structuredContent.image_checks).every(c => c.coverage > 0.05));
+    // drop_hidden spends the budget where players look.
+    const clean = await svc.callTool('art_mesh', { op: 'cleanup', input: 'refs/box.glb', drop_hidden: true, no_preview: true });
+    assert.match(textOf(clean), /Dropped 12 triangles no camera angle can see/);
 });
