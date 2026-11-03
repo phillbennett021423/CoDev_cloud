@@ -78,6 +78,7 @@ async function moduleTools() {
     const Notes = require(path.join(UI, 'notes-tables.js'));
     const Maps = require(path.join(UI, 'azgaar-maps.js'));
     const Brain = require(path.join(UI, 'project-brain.js'));
+    const Code = require(path.join(UI, 'code-runner.js'));
 
     const desk = Desk.createDeskStore(memoryStorage(), { docs: Desk.memoryDocs() });
     desk.saveSettings({ agentAccess: true });
@@ -96,6 +97,7 @@ async function moduleTools() {
         ...strip('page', CodeIntel.buildTools({ getIndex: async () => null })),
         ...strip('page', Brain.createProjectBrain(Brain.memoryFiles(memoryStorage())).buildTools()),
         ...strip('page', Files.buildFileTools(deps)),
+        ...strip('page', Code.buildCodeTools({ runner: { run: async () => ({}) } })),
         ...strip('page', Tasks.buildTaskTools({ limits: () => Tasks.LIMITS.groq, datasets: deps.datasets })),
         ...strip('page', Studio.buildStudioTools(Studio.createStudioStore(memoryStorage()), {})),
         ...strip('page', deskTools),

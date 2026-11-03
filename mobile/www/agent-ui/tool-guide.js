@@ -75,6 +75,7 @@
         { when: "A file the user attached in this chat", tools: ["read_attachment", "query_table"], how: "query_table for any number from a spreadsheet" },
         { when: "Screenshots or a folder of images", tools: ["read_screenshots", "read_image"], how: "read_image only for one picture's pixels" },
         { when: "A deliverable file (Excel, PowerPoint, Word, CSV, a web app)", tools: ["create_spreadsheet", "create_slides", "create_document", "create_csv", "create_web_app", "list_datasets"] },
+        { when: "Exact math, statistics, analyzing an attached file's data, a chart, or checking a code snippet works", tools: ["run_code"], how: "print what you need; read the output before answering" },
         { when: "Understanding the user's code", tools: ["code_map", "find_symbol", "file_outline", "read_lines"], how: "code_map first on a big project" },
         { when: "Reading and changing project files, running code", tools: ["list_files", "read_file", "search_files", "edit_file", "write_file", "delete_file", "run_command"], how: "read before you edit; edit_file for changes, write_file for new files" },
         { when: "Finishing sandboxed work", tools: ["sandbox_diff", "submit_changes"], how: "sandbox_diff, fix failed checks, then submit_changes once" },
