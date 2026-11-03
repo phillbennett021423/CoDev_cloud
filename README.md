@@ -12,7 +12,7 @@ One-time setup: **Settings > Pages > Build and deployment > Source: GitHub Actio
 
 ## Sharing CoDev with your keys built in
 
-To give someone CoDev with your keys already in it, add your keys as repository secrets (Settings > Secrets and variables > Actions): `CODEV_SHARED_GROQ`, `CODEV_SHARED_OPENROUTER`, `CODEV_SHARED_ANTHROPIC`, `CODEV_SHARED_GEMINI`, `CODEV_SHARED_TAVILY`, `CODEV_SHARED_AZURE_SPEECH` (and `CODEV_SHARED_AZURE_SPEECH_REGION`), `CODEV_SHARED_ODDS`, plus a `PRIVATE_BUILD_PASSWORD`. Any you leave out are simply not built in. Then run **Actions > Private build with built-in keys > Run workflow**, download the zips from the run, open them with 7-Zip using the password, and send the APK or installer to the person directly. These builds are never published as releases, and the public downloads have no keys.
+To give someone CoDev with your keys already in it, add your keys as repository secrets (Settings > Secrets and variables > Actions): `CODEV_SHARED_GROQ`, `CODEV_SHARED_OPENROUTER`, `CODEV_SHARED_ANTHROPIC`, `CODEV_SHARED_GEMINI`, `CODEV_SHARED_TAVILY`, `CODEV_SHARED_AZURE_SPEECH` (and `CODEV_SHARED_AZURE_SPEECH_REGION`), `CODEV_SHARED_ODDS`, plus a `PRIVATE_BUILD_PASSWORD` (and optionally `CODEV_FEEDBACK_EMAIL`, where testers' feedback emails go). Any you leave out are simply not built in. Then run **Actions > Private build with built-in keys > Run workflow**, download the zips from the run, open them with 7-Zip using the password, and send the APK or installer to the person directly. These builds are never published as releases, and the public downloads have no keys.
 
 The app uses a built-in key only when its own Settings has none, and Settings never shows it. Someone determined could still dig a key out of the app file, so only share it with people you trust and set a spending limit with each provider.
 
@@ -265,6 +265,16 @@ CoDev's agents work like a seasoned pro in whatever field you're in, at your lev
 - **Your level** changes how agents talk: plain words and the why for someone just starting, the non-obvious choices for someone with some experience, peer-to-peer for a pro.
 - **Teach me or do it for me.** The button by Send switches how agents help: 🤖 the agent decides (does the work, and explains briefly when you're new), 🎓 teach me (step by step, you do each step and the agent checks your work against the pro standard), ⚡ do it for me (the whole job, finished, with its tools). Saying "show me how" or "just do it" in a message switches it for that message only.
 - **Safety first** in licensed or high-stakes fields (electrical, medical, legal, money, insurance): agents give the safety, legal or money check first and say when a licensed pro must do or sign off on the work.
+
+## Using CoDev at work, and handing it to testers
+
+- **💼 Work kit** (by Send): one tap for everyday jobs. Pick one (reply to a client, explain a plan in plain words, compare plans, life-event steps, open enrollment checklist, call notes to a case note, summarize, meeting notes to action items, plan my day...), paste the email or notes into the big box, and the agents do it. The user's field comes first: benefits and health insurance, insurance agent, customer support, then everyday office actions. **➕ Save one of my own** keeps a reusable job in a tap (`mobile/www/agent-ui/work-kit.js`).
+- **🔒 Privacy check**: before a message goes to the AI provider, CoDev looks for Social Security numbers, card and bank numbers, tax IDs (EIN), birth dates, Medicare numbers and member or policy IDs, and offers to hide them. It runs on the device and catches the common formats, not everything. Off in Settings > 🔒 Privacy check.
+- **👋 Setup guide**: the first time someone opens CoDev, three short steps: what they do (sets their playbook and Work kit), connect the AI (step-by-step for Claude or Groq's free key, skipped when the copy has a key built in) and what to try. Settings > 👋 Easy setup guide opens it again. It never shows in automated browsers (tests, the cloud runner).
+- **💬 Feedback** (top bar): rating, what they tried, what worked, what was confusing, how it compares to other AI apps, and whether they'd use it again. It's kept on the device until the tester sends it with the share sheet, email or copy. For a private build, add a `CODEV_FEEDBACK_EMAIL` secret and the Email button fills in your address.
+- CoDev can't log into a company's own systems. Testers copy and paste what they need, and only work info their employer allows with AI tools.
+
+Tests: `node --test tests/work-kit.test.js`.
 
 ## Memory, web reading and self-checks
 
