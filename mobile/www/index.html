@@ -320,6 +320,9 @@
         .message.no-anim { animation: none; }
         .file-item.active { border-color: var(--accent); }
         .modal { max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; }
+        /* The Work kit, privacy check, setup guide and feedback dialogs (agent-ui/work-kit.js, tester-kit.js). */
+        :is(#workKitModal, #privacyGuardModal, #welcomeModal, #feedbackModal) .btn-secondary { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); padding: 10px 12px; border-radius: 8px; cursor: pointer; }
+        :is(#workKitModal, #privacyGuardModal, #welcomeModal, #feedbackModal) .btn-secondary:hover { border-color: var(--accent); }
         .modal-buttons .btn-secondary { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); padding: 12px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.8rem; }
         .project-grid { display: grid; grid-template-columns: 260px 1fr; gap: 15px; flex: 1; overflow: hidden; }
         .project-editor-col { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
@@ -681,6 +684,7 @@
                 <span class="status-dot"></span> <span id="statusText">Active Browser Storage</span>
             </div>
             <button class="settings-btn" id="liveViewBtn" onclick="toggleLiveView()" title="Watch the agents' browsers live and take over" style="display: none;">🖥️<span class="hide-on-mobile"> Live view</span></button>
+            <button class="settings-btn" id="feedbackBtn" type="button" title="Send feedback: what worked, what didn't">💬<span class="hide-on-mobile"> Feedback</span></button>
             <button class="settings-btn" onclick="openSettingsModal()" title="Settings">⚙️<span class="hide-on-mobile"> Settings</span></button>
         </div>
     </header>
@@ -890,6 +894,7 @@
                             <button id="screenshotFolderBtn" class="tool-btn" onclick="pickScreenshotFolder()" title="Pick a folder of screenshots (like Dabble slips) for the agents to read">📸</button>
                             <button id="deepResearchBtn" class="tool-btn" onclick="toggleDeepResearch()" title="Deep research: read many sources and write a cited report (for your next message)" aria-pressed="false">🔬</button>
                             <button id="webSearchBtn" class="tool-btn" onclick="toggleWebSearch()" title="Search the web for every message: off (technical questions are searched automatically)" aria-pressed="false">🔎</button>
+                            <button id="workKitBtn" class="tool-btn" type="button" title="Work kit: one tap for everyday jobs (reply to an email, summarize, explain a plan...)" aria-label="Work kit">💼</button>
                             <button id="helpModeBtn" class="tool-btn" type="button" title="How agents help: teach you to do it, or do it for you" aria-label="Help mode">🤖</button>
                             <select id="responseLengthSelect" class="tool-btn" onchange="setResponseLength(this.value)" title="Reply length" aria-label="Reply length">
                                 <option value="short">Short</option>
@@ -1107,6 +1112,7 @@
     <div class="modal-overlay" id="settingsModal">
         <div class="modal" style="width: 520px;">
             <h3 style="display: flex; align-items: center; gap: 8px;">⚡ Welcome to CoDev Studio Pro</h3>
+            <button class="btn-secondary" type="button" id="openWelcomeBtn" onclick="closeSettingsModal(); if (testerWelcome) testerWelcome.open();" style="padding: 10px; border-radius: 8px; font-weight: bold; cursor: pointer;">👋 Easy setup guide (pick your job, connect the AI)</button>
             <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;">
                 CoDev's agents run on <strong>Claude</strong> (Anthropic): Claude Haiku 5.5 for quick asks and Claude Sonnet 5.5 for bigger multi-step tasks, kept inside the spending limits below. Groq's free tier is still there as a fallback, but its small limits run out on real agent tasks.
             </p>
@@ -1245,6 +1251,8 @@
             </details>
 
             <details class="settings-extra" id="expertSettings"></details>
+
+            <details class="settings-extra" id="privacySettings"></details>
 
             <details class="settings-extra" id="memorySettings">
                 <summary>🧠 Memory (kept across all chats)</summary>
@@ -1398,6 +1406,8 @@
     <script src="agent-ui/cloud-queue.js"></script>
     <script src="agent-ui/tool-guide.js"></script>
     <script src="agent-ui/expert-coach.js"></script>
+    <script src="agent-ui/work-kit.js"></script>
+    <script src="agent-ui/tester-kit.js"></script>
     <script src="agent-ui/sketch-pad.js"></script>
     <script src="companion/companion.js"></script>
     <script src="companion/companion-bridge.js"></script>
@@ -4737,6 +4747,62 @@
             const settings = document.getElementById("expertSettings");
             const button = document.getElementById("helpModeBtn");
             expertViews = [expertise.mountSettings(settings), expertise.mountModeButton(button)].filter(Boolean);
+        });
+
+        // TESTERS AND EVERYDAY WORK: the 💼 Work kit by Send (one-tap jobs for the user's field,
+        // agent-ui/work-kit.js), the privacy check that offers to hide SSNs, bank numbers and
+        // member IDs before a message goes to the AI provider, the first-run setup guide and the
+        // 💬 feedback form (agent-ui/tester-kit.js).
+        const privacyGuard = window.CodevWorkKit ? CodevWorkKit.createPrivacyGuard({ storage: localStorage }) : null;
+        const workKit = window.CodevWorkKit ? CodevWorkKit.createWorkKit({
+            storage: localStorage,
+            professionId: () => { const p = expertise && expertise.profile().profession; const known = p && CodevExpertise.findProfession(p); return known ? known.id : ""; },
+            send: text => sendChatMessage(text),
+            attach: () => document.getElementById("attachmentInput").click()
+        }) : null;
+        // The welcome guide saves a key the same way Settings does, after checking it.
+        async function saveWelcomeKey(provider, key) {
+            const clean = cleanApiKey(key);
+            if (provider === "anthropic") {
+                const problem = await checkAnthropicKey(clean);
+                if (problem) return problem.replace(/ Press Launch again to save it anyway\.$/, "");
+                anthropicKey = clean;
+                localStorage.setItem("codev_anthropic_key", anthropicKey);
+            } else if (provider === "groq") {
+                if (!/^gsk_\w{20,}$/.test(clean)) return "That Groq key looks too short. Copy the whole key and paste it again.";
+                groqKey = clean;
+                localStorage.setItem("codev_groq_key", groqKey);
+            } else return "Pick Claude or Groq.";
+            currentBackend = provider;
+            localStorage.setItem("codev_backend", provider);
+            updateStatusDisplay();
+            logConsoleActivity(`Setup guide: connected ${BACKEND_NAMES[provider]}.`);
+            return "";
+        }
+        const testerWelcome = window.CodevTesterKit ? CodevTesterKit.createWelcome({
+            storage: localStorage,
+            expertise,
+            hasKey: () => !!activeProviderKey() || pickProviderWithKey(),
+            saveKey: saveWelcomeKey,
+            // Never in tests or the cloud runner: they drive the page without a person.
+            automated: () => !!(navigator.webdriver || window.CODEV_CLOUD_RUN),
+            openWorkKit: workKit ? () => workKit.open() : null
+        }) : null;
+        const testerFeedback = window.CodevTesterKit ? CodevTesterKit.createFeedback({
+            storage: localStorage,
+            feedbackTo: String(window.CODEV_FEEDBACK_TO || ""),
+            info: () => {
+                const p = expertise ? expertise.profile().profession : "";
+                const app = window.codevDesktop ? "Windows app" : (window.Capacitor?.isNativePlatform?.() ? "Android app" : (isHostedWebPage() ? "web page" : "local page"));
+                return { app, platform: navigator.userAgent.replace(/^Mozilla\/5\.0 /, "").slice(0, 140), screen: `${window.innerWidth}x${window.innerHeight}`, provider: BACKEND_NAMES[currentBackend], profession: p };
+            },
+            log: () => [...(document.getElementById("consoleOutput")?.children || [])].slice(-25).map(n => n.textContent)
+                .join("\n").replace(/\b(sk-ant-|sk-or-|gsk_|AIza|tvly-)[\w-]*/g, "[key removed]")
+        }) : null;
+        document.addEventListener("DOMContentLoaded", () => {
+            if (workKit) workKit.mount(document.getElementById("workKitBtn"));
+            if (privacyGuard) privacyGuard.mountSettings(document.getElementById("privacySettings"));
+            if (testerFeedback) testerFeedback.mount(document.getElementById("feedbackBtn"));
         });
 
         // THE ODDS API: every sportsbook's lines and props, saved as snapshots for line
@@ -9381,9 +9447,17 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
 
         const RESUME_REQUEST = /^\s*(continue|resume|keep going|carry on|pick (it )?(back )?up|go on)\b[\s.!]*$/i;
 
-        async function sendChatMessage() {
+        // text: a message to send instead of what's in the chat bar (the Work kit's actions,
+        // which can hold line breaks the one-line bar would drop).
+        async function sendChatMessage(text) {
             let inputField = document.getElementById("userInput");
-            let userText = inputField.value.trim();
+            let userText = (typeof text === "string" ? text : inputField.value).trim();
+            // Customer details (SSNs, bank numbers, member IDs...) are offered to be hidden first.
+            if (userText && privacyGuard && !window.CODEV_CLOUD_RUN) {
+                const checked = await privacyGuard.review(userText);
+                if (!checked.send) { if (typeof text === "string" && !inputField.value) inputField.value = text.replace(/\s+/g, " ").slice(0, 2000); return; }
+                userText = checked.text;
+            }
             // Right after the click or Enter: the only moment the browser lets CoDev ask to read
             // a remembered screenshots folder again.
             if (screenshotFolder?.handle && (IMAGE_TASK.test(userText) || PROPS_TASK.test(userText))) await screenshotFolderAccess(true);
@@ -9577,6 +9651,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             });
             // Cloud runs that finished while CoDev was closed come into their chats now.
             if (cloudConfigured() && !window.CODEV_CLOUD_RUN) refreshCloudTasks(false);
+            // First time here: the short setup guide (job, AI key, what to try). Once only.
+            if (testerWelcome && testerWelcome.shouldShow()) testerWelcome.open();
         });
     </script>
     <script>CodevCompanion.mount(document.body, { anchor: document.querySelector(".chat-input-wrapper .chat-input-area") });</script>
