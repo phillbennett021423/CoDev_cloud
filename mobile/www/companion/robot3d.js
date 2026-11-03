@@ -931,6 +931,8 @@ export function createRobot(THREE, host, options = {}) {
     raf = requestAnimationFrame(frame);
     if (typeof document !== 'undefined' && document.hidden) { last = ms; return; }
     if (!host.clientWidth) { last = ms; return; }
+    // About 30 frames a second is plenty for a little companion and halves the work.
+    if (last && ms - last < 30) return;
     const dt = Math.min(0.1, last ? (ms - last) / 1000 : 0.016);
     last = ms;
     now += dt;

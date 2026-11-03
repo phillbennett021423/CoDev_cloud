@@ -218,10 +218,19 @@
   function reducedMotion() {
     try { return Boolean(root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (err) { return false; }
   }
+  // WebGL on a real graphics chip. A software renderer (no GPU, or a GPU-less VM)
+  // would spend a CPU core drawing the robot, so those get the flat robot instead.
+  var SOFTWARE_GL = /swiftshader|llvmpipe|softpipe|software|basic render|mesa offscreen/i;
   function webglOk() {
     try {
       var c = root.document.createElement('canvas');
-      return Boolean(root.WebGLRenderingContext && (c.getContext('webgl2') || c.getContext('webgl')));
+      var gl = root.WebGLRenderingContext && (c.getContext('webgl2') || c.getContext('webgl'));
+      if (!gl) return false;
+      var info = gl.getExtension('WEBGL_debug_renderer_info');
+      var name = String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER) || '');
+      var lose = gl.getExtension('WEBGL_lose_context');
+      if (lose) lose.loseContext();
+      return !SOFTWARE_GL.test(name);
     } catch (err) { return false; }
   }
   function dropRobot() {
