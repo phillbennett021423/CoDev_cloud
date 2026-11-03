@@ -16,6 +16,29 @@ To give someone CoDev with your keys already in it, add your keys as repository 
 
 The app uses a built-in key only when its own Settings has none, and Settings never shows it. Someone determined could still dig a key out of the app file, so only share it with people you trust and set a spending limit with each provider.
 
+## Cloud agents (work with your phone and PC off)
+
+The **☁️ Cloud Agents** tab, or **☁️ Run in the Cloud** in the chat's execution modes, sends a task to your agents running on GitHub's servers. GitHub runs it in a full copy of CoDev, with the same agents, settings, tools and headless browser. The reply and any files come back to the chat the task came from the next time CoDev is open. A task can run once or on a schedule (every hour, every day, weekdays or weekly at a time you pick). Nothing needs to be rented: it uses GitHub Actions in this repo, which is free for a public repo.
+
+**Set it up once (about 5 minutes):**
+
+1. **Pick a passphrase** of 12 or more characters. In the repo, open **Settings > Secrets and variables > Actions > New repository secret**, and add it as `CODEV_CLOUD_PASSPHRASE`.
+2. **Give the cloud a key.** The cloud uses the same secrets as the private build: `CODEV_SHARED_ANTHROPIC`, `CODEV_SHARED_GROQ`, `CODEV_SHARED_OPENROUTER` and the others (see "Sharing CoDev with your keys built in"). Add at least the one for the provider you use. Your phone's own keys are never sent.
+3. **Make a GitHub token** at github.com > Settings > Developer settings > Fine-grained tokens > Generate new token. Choose **Only select repositories** and pick this repo. Under Repository permissions, set **Contents: Read and write** and **Actions: Read and write**.
+4. In CoDev, open **⚙️ Settings > ☁️ Cloud agents**. Enter the repo, the token and the same passphrase, then press **💾 Save & test**.
+
+**How it works.** CoDev seals the task with your passphrase (AES-256-GCM) and writes it to the `agent-queue` branch, then starts the **Cloud agents** workflow. The workflow (`.github/workflows/cloud-agent.yml`) opens CoDev in Chromium on the runner (`scripts/cloud-agent.js`). It types the task into a new chat and waits for the agents to finish, then writes the sealed replies, the files they made and the files they wrote in their project folder back to the branch. A check runs every hour for scheduled tasks and only takes a few seconds when nothing is due. The repo is public, so anyone can see the branch, but all they can see is when tasks run and whether they finished. The words and the results stay sealed. The run logs never print them either.
+
+**Limits:**
+
+- **Spending.** Your daily and per-task limits from Settings go with each task. The cloud keeps its own count for the day (`state/spend.json`), separate from the phone's.
+- **Time.** One run stops after 2 hours and posts what it has so far. GitHub stops a job at 6 hours, so the runner stops starting new tasks at 5.5 hours and hands the rest to a fresh run.
+- **Nobody to ask.** Questions an agent would normally ask you, like spending money or signing in somewhere, get "no" in the cloud. Attachments stay on the device: the cloud gets the message only. The cloud browser has no saved logins.
+- **Timing.** A new task usually starts within a minute or two. GitHub can start scheduled runs 5 to 15 minutes late when it's busy, and it pauses schedules in a public repo after 60 days without any commits.
+- **No GPU.** These are CPU machines. GPU work (ComfyUI art, LoRA training) still needs a GPU service.
+
+**Remove** a task in the Cloud Agents tab to delete it and its results. A run in progress stops within a minute. Tests: `node --test tests/cloud-agents.test.js` (a stand-in GitHub and a scripted model, so no token or key is needed).
+
 ## Windows desktop app
 
 Download and run the installer: https://github.com/phillbennett021423/CoDev_cloud/releases/latest/download/CoDev-Studio-Setup.exe
