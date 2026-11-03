@@ -14,6 +14,10 @@ const file = path.join(__dirname, "..", "mobile", "www", "shared-keys.js");
 const source = fs.readFileSync(file, "utf8");
 const empty = "window.CODEV_SHARED_KEYS = {};";
 if (!source.includes(empty)) throw new Error(`${file} doesn't have the empty key list to fill in.`);
-fs.writeFileSync(file, source.replace(empty, `window.CODEV_SHARED_KEYS = ${JSON.stringify(keys)};`));
+let filled = source.replace(empty, `window.CODEV_SHARED_KEYS = ${JSON.stringify(keys)};`);
+// Where testers' feedback emails go: an email address, or nothing.
+const feedbackTo = String(process.env.CODEV_FEEDBACK_EMAIL || "").trim();
+if (feedbackTo && /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(feedbackTo)) filled = filled.replace('window.CODEV_FEEDBACK_TO = "";', `window.CODEV_FEEDBACK_TO = ${JSON.stringify(feedbackTo)};`);
+fs.writeFileSync(file, filled);
 // Names only, never the keys.
-console.log(`Built-in keys: ${Object.keys(keys).join(", ") || "none"}`);
+console.log(`Built-in keys: ${Object.keys(keys).join(", ") || "none"}${feedbackTo ? "; feedback email set" : ""}`);
