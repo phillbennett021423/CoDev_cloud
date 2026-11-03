@@ -1,0 +1,53 @@
+name: Web version (GitHub Pages)
+
+# Publishes mobile/www, the same page the apps use, to GitHub Pages whenever it
+# changes on main. One-time setup: Settings > Pages > Build and deployment >
+# Source: GitHub Actions. Keys are never part of the site: people paste their own
+# in Settings and they stay in that browser's storage.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/www/**'
+      - '.github/workflows/web-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Build the site
+        run: |
+          # The public site must never carry built-in keys (those are only for
+          # the private build workflow).
+          if ! grep -qx 'window.CODEV_SHARED_KEYS = {};' mobile/www/shared-keys.js; then
+            echo "::error::mobile/www/shared-keys.js has built-in keys; refusing to publish them."
+            exit 1
+          fi
+          mkdir _site
+          cp -r mobile/www/. _site/
+          touch _site/.nojekyll
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
