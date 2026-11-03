@@ -384,6 +384,19 @@
         .memory-row { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; padding: 4px 0; border-bottom: 1px solid var(--border-color); overflow-wrap: anywhere; }
         .msg-sources { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; font-size: 0.75rem; color: var(--text-muted); }
         .msg-sources a { color: var(--accent); text-decoration: none; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 3px 8px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* Cloud agents */
+        .cloud-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .cloud-row select, .cloud-row input[type=time] { background: var(--bg-dark); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px; }
+        .cloud-task-list { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+        .cloud-task { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 8px; font-size: 0.85rem; }
+        .cloud-task-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+        .cloud-task-title { font-weight: bold; color: var(--text-main); overflow-wrap: anywhere; }
+        .cloud-status { padding: 3px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: bold; white-space: nowrap; background: rgba(59, 130, 246, 0.15); color: var(--codev-blue); }
+        .cloud-status.done { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+        .cloud-status.waiting, .cloud-status.timeout { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+        .cloud-status.failed { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+        .cloud-meta { color: var(--text-muted); font-size: 0.78rem; overflow-wrap: anywhere; }
+        .cloud-reply { background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto; }
         .settings-extra { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; font-size: 0.85rem; }
         .settings-extra summary { cursor: pointer; font-weight: bold; }
         .settings-extra .form-group, .settings-extra .checkbox-group { margin-top: 10px; }
@@ -654,7 +667,7 @@
             <span id="tab-chat" class="active" onclick="switchView('chat')">Chat & Swarm</span>
             <span id="tab-project" onclick="switchView('project')">📁 Project Files</span>
             <span id="tab-codev" onclick="switchView('codev')" style="color: var(--codev-blue); font-weight: bold;">⚡ CoDev Hub</span>
-            <span id="tab-cloud" onclick="switchView('cloud')" style="color: var(--codev-purple); font-weight: bold;">☁️ CoDev Cloud</span>
+            <span id="tab-cloud" onclick="switchView('cloud')" style="color: var(--codev-purple); font-weight: bold;">☁️ Cloud Agents</span>
             <span id="tab-outlier" onclick="switchView('outlier')" style="color: var(--success); font-weight: bold;">📈 Outlier</span>
             <span id="tab-notes" onclick="switchView('notes')" style="color: var(--accent); font-weight: bold;">📝 Notes</span>
             <span id="tab-studio" onclick="switchView('studio')" style="color: var(--warning); font-weight: bold;">🎭 Story Studio</span>
@@ -756,7 +769,7 @@
                     <span class="menu-icon">⚡</span> CoDev Hub
                 </div>
                 <div class="menu-item" onclick="switchView('cloud')">
-                    <span class="menu-icon">☁️</span> CoDev Cloud
+                    <span class="menu-icon">☁️</span> Cloud Agents
                 </div>
                 <div class="menu-item" onclick="switchView('project')">
                     <span class="menu-icon">📁</span> Project Files
@@ -836,6 +849,9 @@
                                 <label class="checkbox-group" style="color: var(--warning);">
                                     <input type="checkbox" id="isBackgroundWorkerCheckbox"> ⚡ Autonomous Background Task
                                 </label>
+                                <label class="checkbox-group" style="color: var(--codev-purple);" title="Send the message to your agents on GitHub's servers. They keep working with this device off, and the reply comes back to this chat.">
+                                    <input type="checkbox" id="isCloudRunCheckbox"> ☁️ Run in the Cloud
+                                </label>
                                 <label class="checkbox-group" style="color: var(--success);">
                                     <input type="checkbox" id="isSelfHealCheckbox" checked> 🛡️ Self-Healing Code Loop
                                 </label>
@@ -856,6 +872,7 @@
                             <span class="collapse-controls-btn" onclick="toggleChatControls()">▼ Expand</span>
                             <div class="compact-badge" id="badgeGroup" style="display:none;">🌐 Group</div>
                             <div class="compact-badge" id="badgeBackground" style="color: var(--warning); display:none;">⚡ Background</div>
+                            <div class="compact-badge" id="badgeCloudRun" style="color: var(--codev-purple); display:none;">☁️ Cloud</div>
                             <div class="compact-badge" id="badgeSelfHeal" style="color: var(--success); display:none;">🛡️ Self-Heal</div>
                             <div class="compact-badge" id="badgeReasoning" style="color: var(--codev-blue); display:none;">⚡ Deep Reasoning</div>
                             <div class="compact-badge" id="badgeWebSearch" style="color: var(--codev-blue); display:none;">🔎 Web Search</div>
@@ -948,46 +965,40 @@
                 </div>
             </div>
 
-            <!-- CoDev Cloud Orchestration View -->
+            <!-- Cloud agents: tasks that run on GitHub's servers (agent-ui/cloud-queue.js, scripts/cloud-agent.js) -->
             <div id="view-cloud" class="alt-view-content">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <h3>☁️ CoDev Cloud Control Center</h3>
-                    <button class="btn-primary" style="background: var(--codev-purple);" onclick="triggerCloudRoutine()">🚀 Trigger Cloud Autonomous Routine</button>
-                </div>
-                <p style="font-size: 0.85rem; color: var(--text-muted);">CoDev Cloud operates continuous routines, multi-app orchestration, and 24/7 background automations.</p>
-                
-                <div class="codev-hub-grid">
-                    <div class="codev-hub-card">
-                        <h4>☁️ Cloud Daemon Status</h4>
-                        <span class="codev-badge" id="cloudDaemonStatus">Active 24/7</span>
-                        <div style="font-size: 1.5rem; font-weight: bold; color: var(--text-main); margin-top: 5px;" id="cloudTaskCount">14 Routines Executed</div>
-                        <p style="font-size: 0.8rem; color: var(--text-muted);">Connected to Claude (Anthropic), OpenRouter or Groq, whichever is picked in Settings.</p>
-                    </div>
-                    <div class="codev-hub-card">
-                        <h4>🔗 Workspace Integrations</h4>
-                        <div style="display: flex; flex-direction: column; gap: 6px; font-size: 0.85rem;">
-                            <span>📧 Gmail Daemon: <strong style="color: var(--success);">Synchronized</strong></span>
-                            <span>📅 Calendar Scheduler: <strong style="color: var(--success);">Active</strong></span>
-                            <span>☁️ MEGA Sync: <strong style="color: var(--success);">Connected</strong></span>
-                        </div>
-                    </div>
-                    <div class="codev-hub-card">
-                        <h4>⚡ Autonomous Skills</h4>
-                        <div style="font-size: 0.85rem; color: var(--text-muted);">
-                            • Automated Code Refactoring<br>
-                            • Daily Changelog Compilation<br>
-                            • Bug Sweeper Routine
-                        </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;">
+                    <h3>☁️ Cloud Agents</h3>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn-ghost" onclick="refreshCloudTasks(true)">🔄 Refresh</button>
+                        <button class="btn-ghost" onclick="openCloudSettings()">⚙️ Cloud settings</button>
                     </div>
                 </div>
-
-                <div style="margin-top: 15px;">
-                    <h4 style="font-size: 0.9rem; margin-bottom: 8px;">CoDev Cloud Event Log</h4>
-                    <div class="console-output" id="cloudLogOutput" style="height: 160px;">
-                        [08:00:00] CoDev Cloud Node initialized successfully.<br>
-                        [08:00:15] Background routine 'Bug Sweeper' verified 0 syntax issues.
+                <p style="font-size: 0.85rem; color: var(--text-muted);">Your agents run on GitHub's servers, so a task keeps going with this phone or PC off. A new task starts within a minute or two; repeating ones run on their schedule (GitHub can start them up to 15 minutes late). Replies and files come back to the chat the task came from. Your spending limits apply in the cloud too.</p>
+                <div id="cloudSetupHint" style="font-size: 0.8rem; color: var(--warning);"></div>
+                <div class="codev-hub-card">
+                    <div class="form-group">
+                        <label for="cloudPrompt">What should the agents do?</label>
+                        <textarea id="cloudPrompt" style="font-family: inherit; font-size: 0.85rem;" placeholder="e.g. Every morning, check the NBA injury news and the line moves, and give me a 4-leg ticket with the reasons."></textarea>
+                    </div>
+                    <div class="cloud-row">
+                        <select id="cloudAgent" aria-label="Agent"></select>
+                        <select id="cloudRepeat" aria-label="How often" onchange="updateCloudRepeatFields()">
+                            <option value="once">Once, now</option>
+                            <option value="hourly">Every hour</option>
+                            <option value="daily">Every day</option>
+                            <option value="weekdays">Weekdays</option>
+                            <option value="weekly">Every week</option>
+                        </select>
+                        <select id="cloudDay" aria-label="Day" style="display: none;">
+                            <option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option>
+                        </select>
+                        <input type="time" id="cloudAt" value="08:00" aria-label="Time" style="display: none;">
+                        <label class="checkbox-group" id="cloudRunNowLabel" style="display: none;"><input type="checkbox" id="cloudRunNow"> Also run it now</label>
+                        <button class="btn-primary" id="cloudStartBtn" style="background: var(--codev-purple); color: white;" onclick="startCloudTaskFromView()">☁️ Send to the cloud</button>
                     </div>
                 </div>
+                <div class="cloud-task-list" id="cloudTaskList"></div>
             </div>
 
             <!-- Outlier slips (agents/outlier on CoDev's server; agent-ui/outlier-view.js draws it) -->
@@ -1161,6 +1172,29 @@
                     <input type="number" id="modalTaskSpendLimit" min="0" max="100" step="0.05">
                 </div>
                 <div id="spendStatus" style="font-size: 0.8rem; color: var(--text-muted);"></div>
+            </details>
+
+            <details class="settings-extra" id="cloudSettings">
+                <summary>☁️ Cloud agents (GitHub)</summary>
+                <div style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.5;">
+                    Lets your agents work on GitHub's servers while this device is off. Tasks and results are sealed with your passphrase before they go to GitHub, because your repo is public. Setup is in the README under "Cloud agents".
+                </div>
+                <div class="form-group">
+                    <label>GitHub repo</label>
+                    <input type="text" id="modalCloudRepo" autocomplete="off" spellcheck="false" placeholder="owner/name">
+                </div>
+                <div class="form-group">
+                    <label>GitHub token (fine-grained: Contents and Actions, read and write, this repo only)</label>
+                    <input type="password" id="modalCloudToken" autocomplete="off" spellcheck="false" placeholder="github_pat_..." style="font-family: monospace;">
+                </div>
+                <div class="form-group">
+                    <label>Cloud passphrase (12+ characters, the same as the CODEV_CLOUD_PASSPHRASE secret)</label>
+                    <input type="password" id="modalCloudPassphrase" autocomplete="off" spellcheck="false">
+                </div>
+                <div class="cloud-row">
+                    <button class="btn-secondary" type="button" onclick="saveCloudSettings(true)">💾 Save &amp; test</button>
+                </div>
+                <div id="cloudSettingsStatus" style="font-size: 0.8rem; color: var(--text-muted);"></div>
             </details>
 
             <details class="settings-extra" id="mediaSettings">
@@ -1353,6 +1387,7 @@
     <script src="agent-ui/qa-loop.js"></script>
     <script src="agent-ui/file-builder.js"></script>
     <script src="agent-ui/task-runner.js"></script>
+    <script src="agent-ui/cloud-queue.js"></script>
     <script src="agent-ui/tool-guide.js"></script>
     <script src="agent-ui/sketch-pad.js"></script>
     <script src="companion/companion.js"></script>
@@ -2149,6 +2184,7 @@
 
                 document.getElementById("badgeGroup").style.display = isGroupChecked ? "flex" : "none";
                 document.getElementById("badgeBackground").style.display = isBgChecked ? "flex" : "none";
+                document.getElementById("badgeCloudRun").style.display = document.getElementById("isCloudRunCheckbox").checked ? "flex" : "none";
                 document.getElementById("badgeSelfHeal").style.display = isHealChecked ? "flex" : "none";
                 document.getElementById("badgeReasoning").style.display = isReasonChecked ? "flex" : "none";
                 document.getElementById("badgeWebSearch").style.display = webSearchEnabled ? "flex" : "none";
@@ -2164,7 +2200,7 @@
         }
 
         const VIEW_NAMES = ["chat", "project", "codev", "cloud", "outlier", "notes", "studio", "insurance", "console"];
-        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to CoDev Cloud view.", outlier: "Switched to Outlier slips.", notes: "Switched to Notes.", studio: "Switched to Story Studio.", insurance: "Switched to the Insurance Desk.", console: "Switched to Console Logs." };
+        const VIEW_LOG_MESSAGES = { codev: "Switched to CoDev Hub.", cloud: "Switched to Cloud Agents.", outlier: "Switched to Outlier slips.", notes: "Switched to Notes.", studio: "Switched to Story Studio.", insurance: "Switched to the Insurance Desk.", console: "Switched to Console Logs." };
 
         // STORY STUDIO (agent-ui/story-studio.js): each game project's story bible, kept
         // on this device. Agents get the studio_* tools and the bible's index when a task
@@ -2487,6 +2523,7 @@
             if (viewName === "notes") showNotesView();
             if (viewName === "studio") showStudioView();
             if (viewName === "insurance") showInsuranceView();
+            if (viewName === "cloud") { updateCloudRepeatFields(); renderCloudTasks(); refreshCloudTasks(true); }
             if (VIEW_LOG_MESSAGES[viewName]) logConsoleActivity(VIEW_LOG_MESSAGES[viewName]);
             if (isMobileLayout() && openDrawerName) closeDrawers();
             updateMobileTabs();
@@ -6723,16 +6760,333 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (window.speechSynthesis.getVoices().length) lockWebVoice();
         }
 
-        // CODEV HUB & CLOUD ROUTINES
-        let cloudRoutineCount = 14;
-        function triggerCloudRoutine() {
-            cloudRoutineCount++;
-            document.getElementById("cloudTaskCount").innerText = `${cloudRoutineCount} Routines Executed`;
-            appendLogLine(document.getElementById("cloudLogOutput"), "🚀 CoDev Cloud initiated background automated cycle. Verified workspace integrity.");
-            logConsoleActivity("CoDev Cloud executed autonomous routine.");
-            alert("CoDev Cloud routine executed successfully!");
+        // CLOUD AGENTS
+        // Tasks that run on GitHub's servers, so the agents keep working with this device
+        // off (agent-ui/cloud-queue.js has the queue, scripts/cloud-agent.js the runner).
+        // Sending one seals the prompt, the agents and the settings that shape them (never
+        // keys: the runner has its own as GitHub secrets) and starts the "Cloud agents"
+        // workflow. While CoDev is open it checks the queue and posts each finished run's
+        // replies and files into the chat the task came from.
+        const CLOUD_LOCAL = "codev_cloud_tasks";
+        const CLOUD_POLL_BUSY_MS = 60 * 1000;
+        const CLOUD_POLL_IDLE_MS = 5 * 60 * 1000;
+        // Settings the cloud copy of CoDev doesn't get: keys and logins, this device's own
+        // records (chats, files, spending, cloud settings), and big stores the task can't use.
+        const CLOUD_SETTINGS_SKIP = /key|token|pass|secret|vault|codev_chats|codev_made_files|codev_spend|codev_cloud|codev_mcp|insurance|desk|studio|notes|outlier/i;
+        let cloudRepo = localStorage.getItem("codev_cloud_repo") || "phillbennett021423/codev_cloud";
+        let cloudToken = localStorage.getItem("codev_cloud_token") || "";
+        let cloudPassphrase = localStorage.getItem("codev_cloud_passphrase") || "";
+        let cloudView = { tasks: [], results: {}, opened: {}, error: "", loading: false };
+        let cloudPollTimer = null;
+
+        const cloudConfigured = () => !!(cloudRepo && cloudToken && cloudPassphrase.length >= 12);
+
+        function cloudQueue() {
+            const github = CodevCloud.createGitHub({ repo: cloudRepo, token: cloudToken });
+            return { github, queue: CodevCloud.createQueue({ github, passphrase: cloudPassphrase }) };
         }
 
+        function loadCloudLocal() {
+            try {
+                const list = JSON.parse(localStorage.getItem(CLOUD_LOCAL) || "{}");
+                return list && typeof list === "object" && !Array.isArray(list) ? list : {};
+            } catch (err) { return {}; }
+        }
+        let cloudLocal = loadCloudLocal();
+        function saveCloudLocal() {
+            try { localStorage.setItem(CLOUD_LOCAL, JSON.stringify(cloudLocal)); } catch (err) { /* storage full */ }
+        }
+
+        function cloudSettingsSnapshot() {
+            const out = {};
+            let total = 0;
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (!key || !key.startsWith("codev_") || CLOUD_SETTINGS_SKIP.test(key)) continue;
+                const value = localStorage.getItem(key) || "";
+                if (value.length > 200000 || total + value.length > 1500000) continue;
+                out[key] = value;
+                total += value.length;
+            }
+            return out;
+        }
+
+        function openCloudSettings() {
+            openSettingsModal();
+            const box = document.getElementById("cloudSettings");
+            box.open = true;
+            box.scrollIntoView({ block: "nearest" });
+        }
+
+        function fillCloudSettings() {
+            document.getElementById("modalCloudRepo").value = cloudRepo;
+            document.getElementById("modalCloudToken").value = cloudToken;
+            document.getElementById("modalCloudPassphrase").value = cloudPassphrase;
+        }
+
+        // Saves the three fields; with test, also checks the token can reach the repo, its
+        // queue and its workflow, and says what's missing.
+        async function saveCloudSettings(test) {
+            const status = document.getElementById("cloudSettingsStatus");
+            cloudRepo = document.getElementById("modalCloudRepo").value.trim();
+            cloudToken = document.getElementById("modalCloudToken").value.trim();
+            cloudPassphrase = document.getElementById("modalCloudPassphrase").value;
+            localStorage.setItem("codev_cloud_repo", cloudRepo);
+            localStorage.setItem("codev_cloud_token", cloudToken);
+            localStorage.setItem("codev_cloud_passphrase", cloudPassphrase);
+            if (!test) return;
+            if (!cloudConfigured()) { status.textContent = "Fill in all three. The passphrase needs 12 or more characters."; return; }
+            status.textContent = "Checking…";
+            try {
+                const { github, queue } = cloudQueue();
+                const info = await github.repoInfo();
+                if (info.permissions && !info.permissions.push) throw new Error("this token can read the repo but not write to it. Give it Contents: Read and write.");
+                await queue.ensureBranch();
+                await github.latestRuns();
+                status.textContent = `✅ Connected to ${github.repo}. Add the same passphrase as the CODEV_CLOUD_PASSPHRASE secret on GitHub if you haven't yet.`;
+                refreshCloudTasks(true);
+            } catch (err) {
+                status.textContent = `❌ ${err.status === 401 ? "GitHub didn't accept the token." : err.status === 404 ? "GitHub can't find the repo or the Cloud agents workflow with this token. Check the repo name and that the token covers it (Contents and Actions, read and write)." : err.message}`;
+            }
+        }
+
+        function updateCloudRepeatFields() {
+            const every = document.getElementById("cloudRepeat").value;
+            document.getElementById("cloudAt").style.display = ["daily", "weekdays", "weekly"].includes(every) ? "" : "none";
+            document.getElementById("cloudDay").style.display = every === "weekly" ? "" : "none";
+            document.getElementById("cloudRunNowLabel").style.display = every === "once" ? "none" : "";
+        }
+
+        // Queues a task and starts the workflow. chatId: where the replies go.
+        async function startCloudTask({ prompt, agent, repeat, runNow = true, chatId }) {
+            if (!cloudConfigured()) throw new Error("Set up cloud agents first: ⚙️ Settings > ☁️ Cloud agents.");
+            const { github, queue } = cloudQueue();
+            await queue.ensureBranch();
+            const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+            const title = prompt.length > 60 ? `${prompt.slice(0, 57)}…` : prompt;
+            const body = {
+                prompt, agent, title, chatId,
+                limits: { daily: dailySpendLimit, task: taskSpendLimit },
+                settings: cloudSettingsSnapshot()
+            };
+            const task = await queue.addTask({ body, repeat, timeZone, runNow });
+            cloudLocal[task.id] = { title, chatId, seen: [] };
+            saveCloudLocal();
+            // A task that waits for its time is picked up by the hourly check instead.
+            if (task.nextRun <= Date.now() + 60000) {
+                try { await github.dispatch(); } catch (err) {
+                    logConsoleActivity(`[Cloud] Queued, but couldn't start the workflow (${err.message}); the hourly check will pick it up.`);
+                }
+            }
+            logConsoleActivity(`[Cloud] Queued "${title}" (${CodevCloud.describeRepeat(task.repeat)}).`);
+            scheduleCloudPoll(5000);
+            return task;
+        }
+
+        async function startCloudTaskFromView() {
+            const prompt = document.getElementById("cloudPrompt").value.trim();
+            if (!prompt) { document.getElementById("cloudPrompt").focus(); return; }
+            const button = document.getElementById("cloudStartBtn");
+            button.disabled = true;
+            button.textContent = "Sending…";
+            try {
+                const every = document.getElementById("cloudRepeat").value;
+                const repeat = { every, at: document.getElementById("cloudAt").value || "08:00", day: Number(document.getElementById("cloudDay").value) };
+                const agent = document.getElementById("cloudAgent").value;
+                await startCloudTask({ prompt, agent, repeat, runNow: every === "once" || document.getElementById("cloudRunNow").checked, chatId: activeChatId });
+                document.getElementById("cloudPrompt").value = "";
+                await refreshCloudTasks(true);
+            } catch (err) {
+                alert(`The task wasn't sent: ${err.message}`);
+            } finally {
+                button.disabled = false;
+                button.textContent = "☁️ Send to the cloud";
+            }
+        }
+
+        // From the chat, with ☁️ Run in the Cloud ticked.
+        async function sendChatToCloud(session, prompt, attachments) {
+            appendMessageToSession(session, "☁️ Cloud", "Sending this to your cloud agents…");
+            const placeholder = session.messages[session.messages.length - 1];
+            if (session.id === activeChatId) renderActiveChatFeed();
+            try {
+                if (attachments.length) placeholder.text = "Attachments stay on this device: the cloud agents get the message only.\n";
+                const agent = (agents.find(a => a.id === selectedAgentId) || agents[0] || {}).name || "";
+                const task = await startCloudTask({ prompt, agent, repeat: { every: "once" }, chatId: session.id });
+                placeholder.text = `${placeholder.text.startsWith("Attachments") ? placeholder.text : ""}Queued on GitHub (task ${task.id}). It usually starts within a minute or two and keeps going with this device off. The reply comes back here; follow it in ☁️ Cloud Agents.`;
+            } catch (err) {
+                placeholder.sender = "❌ Cloud Error";
+                placeholder.text = err.message;
+            }
+            if (session.id === activeChatId) renderActiveChatFeed();
+            scheduleChatSave();
+        }
+
+        // Puts a finished run's replies and files into a chat (a new one when the task's
+        // chat is gone or the task came from another device).
+        async function deliverCloudRun(task, run, title) {
+            const local = cloudLocal[task.id] || (cloudLocal[task.id] = { title, seen: [] });
+            let session = chatSessions.find(s => s.id === local.chatId);
+            if (!session) {
+                const id = "chat_" + Date.now();
+                session = newChatSession(id, `☁️ ${title.slice(0, 20)}`, false, "Cloud task results.");
+                chatSessions.unshift(session);
+                local.chatId = id;
+            }
+            const when = new Date(run.started).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+            const status = { done: "finished", timeout: "stopped at its time limit", failed: "failed", waiting: "is waiting" }[run.status] || run.status;
+            appendMessageToSession(session, "☁️ Cloud", `"${title}" ${status} (run from ${when}${run.spentUsd ? `, about ${formatUsd(run.spentUsd)}` : ""}).${run.error ? `\n${run.error}` : ""}`);
+            const savedIds = [];
+            for (const file of run.files || []) {
+                try {
+                    const bytes = CodevCloud.fromBase64(file.b64);
+                    const { id } = await saveMadeFile({ name: file.name, mime: file.mime, bytes, kind: file.kind || "" });
+                    savedIds.push({ id, name: file.name, size: bytes.length, mime: file.mime, format: file.kind || "" });
+                } catch (err) { savedIds.push(null); }
+            }
+            for (const m of run.messages || []) {
+                const attachments = (m.attachments || []).map(a => {
+                    if (a.kind === "file" && Number.isInteger(a.cloudFile) && savedIds[a.cloudFile]) {
+                        const f = savedIds[a.cloudFile];
+                        return { name: f.name, kind: "file", fileId: f.id, size: f.size, mime: f.mime, format: f.format };
+                    }
+                    return a.kind === "note" ? null : a;
+                }).filter(Boolean);
+                appendMessageToSession(session, `☁️ ${m.sender}`, m.text, attachments, m.sources);
+            }
+            // Files the agents wrote in their project folder, which no message points to.
+            const projectFiles = (run.files || []).map((f, i) => ({ f, saved: savedIds[i] })).filter(x => x.saved && x.f.name.startsWith("project/"));
+            if (projectFiles.length) {
+                appendMessageToSession(session, "☁️ Cloud", `Files the agents wrote in their project folder:`, projectFiles.map(({ saved }) => ({ name: saved.name, kind: "file", fileId: saved.id, size: saved.size, mime: saved.mime })));
+            }
+            local.seen = (local.seen || []).concat(run.started).slice(-20);
+            saveCloudLocal();
+            if (session.id === activeChatId) renderActiveChatFeed();
+            renderChatList();
+            scheduleChatSave();
+        }
+
+        // Reads the queue, posts finished runs that haven't been posted, and redraws the list.
+        async function refreshCloudTasks(showErrors) {
+            if (!cloudConfigured()) { renderCloudTasks(); return false; }
+            if (cloudView.loading) return false;
+            cloudView.loading = true;
+            let busy = false;
+            try {
+                const { queue } = cloudQueue();
+                const tasks = await queue.listTasks();
+                const results = {};
+                await Promise.all(tasks.map(async t => { results[t.id] = await queue.getResult(t.id); }));
+                for (const task of tasks) {
+                    const result = results[task.id];
+                    if (CodevCloud.isDue(task) || result?.status === "running") busy = true;
+                    let opened = cloudView.opened[task.id];
+                    if (!opened || opened.updated !== result?.updated) {
+                        try {
+                            const body = await queue.openTask(task);
+                            const runs = result ? (await queue.openResult(result)).runs : [];
+                            opened = cloudView.opened[task.id] = { updated: result?.updated, title: body.title || body.prompt.slice(0, 60), prompt: body.prompt, agent: body.agent, runs };
+                        } catch (err) {
+                            opened = cloudView.opened[task.id] = { updated: result?.updated, title: "(sealed with a different passphrase)", prompt: "", runs: [], sealedError: true };
+                        }
+                    }
+                    const local = cloudLocal[task.id];
+                    for (const run of opened.runs) {
+                        if (run.status === "running" || !run.finished) continue;
+                        // Runs from before this device knew the task show in the list, not the chat.
+                        if (!local || (local.seen || []).includes(run.started)) continue;
+                        await deliverCloudRun(task, run, opened.title);
+                    }
+                }
+                Object.keys(cloudLocal).forEach(id => { if (!tasks.some(t => t.id === id)) delete cloudLocal[id]; });
+                saveCloudLocal();
+                cloudView = { ...cloudView, tasks, results, error: "" };
+            } catch (err) {
+                cloudView.error = err.message;
+                if (showErrors) logConsoleActivity(`[Cloud] ${err.message}`);
+            } finally {
+                cloudView.loading = false;
+            }
+            renderCloudTasks();
+            scheduleCloudPoll(busy ? CLOUD_POLL_BUSY_MS : CLOUD_POLL_IDLE_MS);
+            return busy;
+        }
+
+        function scheduleCloudPoll(ms) {
+            clearTimeout(cloudPollTimer);
+            if (!cloudConfigured()) return;
+            cloudPollTimer = setTimeout(() => refreshCloudTasks(false), ms);
+        }
+
+        async function cloudTaskAction(id, action) {
+            try {
+                const { github, queue } = cloudQueue();
+                if (action === "remove") {
+                    if (!confirm("Remove this cloud task and its results? A run in progress stops within a minute.")) return;
+                    await queue.removeTask(id);
+                    delete cloudLocal[id];
+                    delete cloudView.opened[id];
+                    saveCloudLocal();
+                } else if (action === "run") {
+                    await queue.runNow(id);
+                    if (!cloudLocal[id]) cloudLocal[id] = { title: cloudView.opened[id]?.title || id, seen: [] };
+                    saveCloudLocal();
+                    await github.dispatch().catch(err => logConsoleActivity(`[Cloud] Couldn't start the workflow: ${err.message}`));
+                } else if (action === "pause" || action === "resume") {
+                    await queue.updateTask(id, t => ({ ...t, paused: action === "pause", nextRun: action === "resume" && !t.nextRun ? CodevCloud.nextRun(t.repeat, Date.now(), t.timeZone) : t.nextRun }));
+                }
+            } catch (err) {
+                alert(`Cloud: ${err.message}`);
+            }
+            refreshCloudTasks(true);
+        }
+
+        function renderCloudTasks() {
+            const hint = document.getElementById("cloudSetupHint");
+            const list = document.getElementById("cloudTaskList");
+            const agentPick = document.getElementById("cloudAgent");
+            if (!list) return;
+            const keep = agentPick.value;
+            agentPick.replaceChildren(...agents.map(a => new Option(`🤖 ${a.name}`, a.name)));
+            agentPick.value = keep || (agents.find(a => a.id === selectedAgentId) || agents[0] || {}).name || "";
+            hint.textContent = cloudConfigured() ? cloudView.error ? `Couldn't read the queue: ${cloudView.error}` : "" : "Not set up yet: add your GitHub repo, a token and a passphrase in ⚙️ Cloud settings.";
+            if (!cloudView.tasks.length) {
+                list.innerHTML = `<div class="cloud-meta">No cloud tasks yet. Describe one above, or tick ☁️ Run in the Cloud in the chat's execution modes.</div>`;
+                return;
+            }
+            const labels = { running: "Running", done: "Done", failed: "Failed", timeout: "Stopped at time limit", waiting: "Waiting" };
+            const tasks = cloudView.tasks.slice().sort((a, b) => b.created - a.created);
+            list.innerHTML = tasks.map(task => {
+                const result = cloudView.results[task.id];
+                const opened = cloudView.opened[task.id] || { title: task.id, runs: [] };
+                const last = opened.runs[opened.runs.length - 1];
+                const statusKey = result?.status || (CodevCloud.isDue(task) ? "queued" : task.paused ? "paused" : task.nextRun ? "scheduled" : "queued");
+                const label = labels[statusKey] || { queued: "Starting soon", scheduled: "Scheduled", paused: "Paused" }[statusKey] || statusKey;
+                const reply = last && [...(last.messages || [])].reverse().find(m => !/Web Search|System/.test(m.sender));
+                const next = task.paused ? "paused" : task.nextRun ? new Date(task.nextRun).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "—";
+                const repeating = task.repeat && task.repeat.every !== "once";
+                const id = escapeHtml(task.id);
+                return `<div class="cloud-task">
+                    <div class="cloud-task-head"><div class="cloud-task-title">${escapeHtml(opened.title)}</div><span class="cloud-status ${escapeHtml(statusKey)}">${escapeHtml(label)}</span></div>
+                    <div class="cloud-meta">${escapeHtml(CodevCloud.describeRepeat(task.repeat))}${opened.agent ? ` · ${escapeHtml(opened.agent)}` : ""} · next run: ${escapeHtml(next)}${last ? ` · last run: ${escapeHtml(new Date(last.started).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}` : ""}${last?.spentUsd ? ` · ${escapeHtml(formatUsd(last.spentUsd))}` : ""}</div>
+                    ${last?.error ? `<div class="cloud-meta" style="color: var(--warning);">${escapeHtml(last.error)}</div>` : ""}
+                    ${reply ? `<div class="cloud-reply">${escapeHtml(String(reply.text).slice(0, 3000))}</div>` : ""}
+                    ${last?.files?.length ? `<div class="cloud-meta">📎 ${last.files.map(f => escapeHtml(f.name)).join(", ")}</div>` : ""}
+                    <div class="cloud-row">
+                        <button class="btn-ghost" data-cloud-action="run" data-cloud-id="${id}">▶ Run now</button>
+                        ${repeating ? `<button class="btn-ghost" data-cloud-action="${task.paused ? "resume" : "pause"}" data-cloud-id="${id}">${task.paused ? "▶ Resume schedule" : "⏸ Pause schedule"}</button>` : ""}
+                        <button class="btn-ghost" data-cloud-action="remove" data-cloud-id="${id}">🗑 Remove</button>
+                    </div>
+                </div>`;
+            }).join("");
+        }
+
+        document.addEventListener("click", event => {
+            const button = event.target.closest && event.target.closest("[data-cloud-action]");
+            if (button) cloudTaskAction(button.dataset.cloudId, button.dataset.cloudAction);
+        });
+
+        // CODEV HUB
         function runCodevEnhancer() {
             const inputField = document.getElementById("userInput");
             if (!inputField.value.trim()) {
@@ -6828,6 +7182,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             document.getElementById("modalToolsAutoRun").checked = toolsAutoRun;
             document.getElementById("modalCodeAutopilot").checked = codeAutopilot;
             document.getElementById("modalMcpServers").value = mcpServersConfig;
+            fillCloudSettings();
             if (window.codevDesktop?.mcpFolder) {
                 document.getElementById("desktopMcpGroup").style.display = "flex";
                 window.codevDesktop.mcpFolder().then(folder => {
@@ -7069,6 +7424,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             }
             helperCommandsCache.at = 0;
             localStorage.setItem("codev_search_helper_url", searchHelperUrl);
+            saveCloudSettings(false);
 
             localStorage.setItem("codev_groq_key", codevOwnKey("groq", groqKey));
             updateStatusDisplay();
@@ -9023,6 +9379,11 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
 
             if (session) session.isGroup = isGroup;
 
+            // ☁️ Run in the Cloud: the message goes to the agents on GitHub's servers.
+            const cloudCheckbox = document.getElementById("isCloudRunCheckbox");
+            if (session && cloudCheckbox.checked) {
+                return sendChatToCloud(session, userText, attachments);
+            }
             // 🔬 armed, or a message starting "deep research" or /research: the research pipeline answers it.
             if (session && (deepResearchArmed || DEEP_RESEARCH_REQUEST.test(userText))) {
                 if (deepResearchArmed) toggleDeepResearch(false);
@@ -9152,6 +9513,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                 liveViewAvailable = true;
                 watchLiveAgent("");
             });
+            // Cloud runs that finished while CoDev was closed come into their chats now.
+            if (cloudConfigured() && !window.CODEV_CLOUD_RUN) refreshCloudTasks(false);
         });
     </script>
     <script>CodevCompanion.mount(document.body, { anchor: document.querySelector(".chat-input-wrapper .chat-input-area") });</script>
