@@ -140,6 +140,28 @@
         .message pre { background: #05070b; padding: 14px; border-radius: 6px; margin-top: 10px; overflow-x: auto; border: 1px solid var(--border-color); }
         .message code { background: #05070b; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.9rem; color: #34d399; }
         .message pre code { background: none; padding: 0; color: #e2e8f0; }
+
+        /* An agent's first-open intro (agent-ui/agent-intros.js). Lines come in one by one only
+           when the intro is new or replayed; re-rendering the chat shows it still. */
+        .message.intro-message { border-color: var(--accent); background: linear-gradient(160deg, var(--accent-glow), var(--bg-panel) 55%); }
+        .agent-intro { margin-top: 6px; }
+        .agent-intro .intro-headline { font-size: 1.35rem; font-weight: 800; line-height: 1.25; color: var(--text-main, #fff); letter-spacing: -0.01em; }
+        .agent-intro .intro-line { margin: 10px 0 0; font-size: 0.95rem; line-height: 1.6; }
+        .agent-intro .intro-closer { margin-top: 14px; font-weight: 700; color: var(--accent); font-size: 1.02rem; }
+        .agent-intro .intro-starters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+        .agent-intro .intro-starter { background: var(--bg-dark); color: inherit; border: 1px solid var(--accent); border-radius: 999px; padding: 8px 14px; font-size: 0.85rem; cursor: pointer; min-height: 40px; text-align: left; }
+        .agent-intro .intro-starter:hover, .agent-intro .intro-starter:focus-visible { background: var(--accent-glow); }
+        .agent-intro .intro-actions { display: flex; gap: 8px; margin-top: 10px; }
+        .agent-intro .intro-action { background: transparent; color: var(--text-muted); border: 1px solid var(--border-color); border-radius: 8px; padding: 6px 10px; font-size: 0.8rem; cursor: pointer; min-height: 36px; }
+        .intro-fresh .intro-headline { animation: introPop 0.5s cubic-bezier(.2,1.4,.4,1) both; }
+        .intro-fresh .intro-line, .intro-fresh .intro-closer, .intro-fresh .intro-starters, .intro-fresh .intro-actions { animation: introIn 0.45s ease both; animation-delay: calc(var(--i) * 450ms); }
+        @keyframes introPop { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: scale(1); } }
+        @keyframes introIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        @media (prefers-reduced-motion: reduce) { .intro-fresh .intro-headline, .intro-fresh .intro-line, .intro-fresh .intro-closer, .intro-fresh .intro-starters, .intro-fresh .intro-actions { animation: none; } }
+        @media (max-width: 900px) {
+            .agent-intro .intro-headline { font-size: 1.15rem; }
+            .agent-intro .intro-starter { flex: 1 1 100%; }
+        }
         
         /* Input & Collapsible Settings Bar */
         .chat-input-wrapper { max-width: 1000px; width: 100%; margin: 0 auto; padding: 0 20px 20px 20px; background: transparent; }
@@ -1004,6 +1026,7 @@
 
             <div class="editor-actions">
                 <button class="btn-save-agent" onclick="saveCurrentAgentEdits()">💾 Save agent</button>
+                <button class="btn-secondary" type="button" id="replayIntroBtn" onclick="replayAgentIntro(selectedAgentId)" title="Show this agent's introduction again">🎬 Replay intro</button>
                 <button class="btn-danger" onclick="deleteSelectedAgent()">Delete agent</button>
             </div>
         </div>
@@ -1273,8 +1296,11 @@
 
             <details class="settings-extra" id="voiceSettings">
                 <summary>🔊 Voice</summary>
+                <label class="checkbox-group" style="margin-bottom: 10px;">
+                    <input type="checkbox" id="modalKoreVoice"> 🎙️ Read aloud in Kore (Gemini's voice; uses your Gemini key, on phone and PC)
+                </label>
                 <div class="form-group">
-                    <label>Read-aloud voice</label>
+                    <label>Read-aloud voice when Kore is off or there's no Gemini key</label>
                     <select id="modalVoice" style="width: 100%;"></select>
                 </div>
                 <div class="form-group">
@@ -1328,6 +1354,7 @@
     <script src="agent-ui/expert-coach.js"></script>
     <script src="agent-ui/work-kit.js"></script>
     <script src="agent-ui/tester-kit.js"></script>
+    <script src="agent-ui/agent-intros.js"></script>
     <script src="agent-ui/sketch-pad.js"></script>
     <script src="companion/companion.js"></script>
     <script src="companion/companion-bridge.js"></script>
@@ -2620,6 +2647,7 @@
             if (existing) {
                 if (existing.id !== activeChatId) switchChatSession(existing.id);
                 else switchView("chat");
+                maybeShowAgentIntro(id);
                 return;
             }
             document.getElementById("isGroupChatCheckbox").checked = false;
@@ -2637,6 +2665,127 @@
             }
             switchView("chat");
             renderChatList();
+            maybeShowAgentIntro(id);
+        }
+
+        // AGENT INTROS (agent-ui/agent-intros.js)
+        // The first time an agent's chat opens, the agent introduces itself: once per agent on
+        // this device, never over the setup guide, and never for a chat already in use.
+        // 🎬 Replay intro in the agent's settings shows it again.
+        var introTracker = window.CodevAgentIntros ? CodevAgentIntros.createTracker(localStorage) : null;
+        var freshIntros = new WeakMap();
+        var introWaitTimer = 0;
+
+        // Agents get a browser, Godot and Blender in the Windows app and with npm start.
+        function introHasDesktopTools() {
+            return !!window.codevDesktop || (/^https?:$/.test(location.protocol) && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname));
+        }
+        function introForAgent(agent) { return CodevAgentIntros.introFor(agent, { desktop: introHasDesktopTools() }); }
+        // Tests and the cloud runner drive the page without a person; a test can opt in.
+        function introsAutomated() {
+            return !!(navigator.webdriver || window.CODEV_CLOUD_RUN) && localStorage.getItem("codev_intros_in_tests") !== "1";
+        }
+
+        function maybeShowAgentIntro(agentId) {
+            if (!introTracker || introsAutomated() || introTracker.seen(agentId)) return;
+            // The setup guide comes first; the intro follows once it's closed.
+            if (document.getElementById("welcomeModal")) {
+                clearInterval(introWaitTimer);
+                introWaitTimer = setInterval(() => {
+                    if (document.getElementById("welcomeModal")) return;
+                    clearInterval(introWaitTimer);
+                    if (selectedAgentId === agentId) maybeShowAgentIntro(agentId);
+                }, 400);
+                return;
+            }
+            const session = chatSessions.find(s => s.id === activeChatId);
+            if (!session || session.isGroup || session.agentId !== agentId) return;
+            introTracker.markSeen(agentId);
+            // Someone already talking with this agent doesn't need it; Replay intro is there.
+            if (session.messages.some(m => String(m.sender || "").startsWith("👤"))) return;
+            showAgentIntro(session, agentId);
+        }
+
+        function showAgentIntro(session, agentId) {
+            const agent = agents.find(a => a.id === agentId);
+            if (!agent || !window.CodevAgentIntros) return;
+            const intro = introForAgent(agent);
+            const message = { sender: `🤖 ${agent.name}`, text: CodevAgentIntros.plainText(intro), intro: { agentId } };
+            freshIntros.set(message, Date.now() + CodevAgentIntros.revealMs(intro) + 1000);
+            session.messages.push(message);
+            chatScroll.follow = true;
+            renderChatList();
+            if (session.id === activeChatId) renderActiveChatFeed();
+            celebrateIntro(intro);
+            logConsoleActivity(`${agent.name} introduced itself.`);
+        }
+
+        // The chat's robot waves hello, then strikes the Tada! pose as the last line lands.
+        function celebrateIntro(intro) {
+            const robot = window.VortexCompanion;
+            if (!robot || !CodevCompanion.enabled()) return;
+            try {
+                robot.play(20);
+                setTimeout(() => { try { robot.play(5); } catch (err) { /* robot gone */ } }, CodevAgentIntros.revealMs(intro));
+            } catch (err) { /* the robot is optional */ }
+        }
+
+        function replayAgentIntro(agentId) {
+            const agent = agents.find(a => a.id === agentId);
+            if (!agent) return;
+            openAgentChat(agentId);
+            const session = chatSessions.find(s => s.id === activeChatId);
+            if (session && session.agentId === agentId) showAgentIntro(session, agentId);
+            if (isMobileLayout() && openDrawerName) closeDrawers();
+        }
+
+        // The intro card's buttons: a starter fills the message box; 🔊 reads the intro aloud;
+        // ↻ plays it again in place.
+        function handleIntroClick(event) {
+            const button = event.target.closest("[data-intro-starter], [data-intro-action]");
+            const messageEl = button && button.closest(".message");
+            if (!messageEl) return;
+            const session = chatSessions.find(s => s.id === activeChatId);
+            const msg = session && session.messages[Number(messageEl.dataset.msgIndex)];
+            const agent = msg && msg.intro && agents.find(a => a.id === msg.intro.agentId);
+            if (!agent) return;
+            const intro = introForAgent(agent);
+            if (button.dataset.introStarter !== undefined) {
+                const starter = intro.starters[Number(button.dataset.introStarter)];
+                if (!starter) return;
+                if (starter.groupSwarm) {
+                    const box = document.getElementById("isGroupChatCheckbox");
+                    if (!box.checked) { box.checked = true; toggleGroupChatMode(); }
+                }
+                const input = document.getElementById("userInput");
+                input.value = starter.prompt;
+                input.focus();
+                try { input.setSelectionRange(input.value.length, input.value.length); } catch (err) { /* not a text field */ }
+                if (starter.groupSwarm) input.placeholder = "What should the whole team work on?";
+            } else if (button.dataset.introAction === "speak") {
+                speakText(CodevAgentIntros.plainText(intro));
+            } else if (button.dataset.introAction === "replay") {
+                freshIntros.set(msg, Date.now() + CodevAgentIntros.revealMs(intro) + 1000);
+                messageEl.classList.remove("intro-fresh");
+                void messageEl.offsetWidth; // restart the CSS animation
+                messageEl.classList.add("intro-fresh");
+                celebrateIntro(intro);
+            }
+        }
+
+        // On launch: the agent whose chat is open introduces itself if it hasn't yet. A fresh
+        // install's empty first chat becomes that agent's chat, as tapping the agent would.
+        function startupAgentIntro() {
+            if (!introTracker || introsAutomated() || introTracker.seen(selectedAgentId)) return;
+            const session = chatSessions.find(s => s.id === activeChatId);
+            if (!session || session.isGroup) return;
+            if (session.agentId && session.agentId !== selectedAgentId) return;
+            if (!session.agentId) {
+                if (session.messages.some(m => String(m.sender || "").startsWith("👤"))) return;
+                openAgentChat(selectedAgentId);
+            } else {
+                maybeShowAgentIntro(selectedAgentId);
+            }
         }
 
         function toggleGroupChatMode() {
@@ -2724,6 +2873,14 @@
                 div.className = index === lastIndex ? "message" : "message no-anim";
                 div.dataset.msgIndex = index;
                 div.dataset.sender = msg.sender;
+                const introAgent = msg.intro && window.CodevAgentIntros && agents.find(a => a.id === msg.intro.agentId);
+                if (introAgent) {
+                    div.classList.add("intro-message");
+                    if (freshIntros && (freshIntros.get(msg) || 0) > Date.now()) div.classList.add("intro-fresh");
+                    div.innerHTML = `<div class="sender" style="margin-bottom: 0;">${brandMarkHtml()}${escapeHtml(introAgent.name)}</div>${CodevAgentIntros.cardHtml(introForAgent(introAgent), escapeHtml)}`;
+                    fragment.appendChild(div);
+                    return;
+                }
                 const formattedText = formatMessageText(msg.text);
                 
                 let speakButtonHtml = "";
@@ -6784,6 +6941,73 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             });
         }
 
+        // KORE: CoDev's default read-aloud voice, Gemini's prebuilt "Kore" voice. It works the same
+        // on phones, the web page and the Windows app whenever a Gemini key is saved (Settings >
+        // Gemini); without one, or if Gemini fails, the voices below read instead. Off in Settings >
+        // Voice brings back the computer's or phone's own voice.
+        const KORE_VOICE = "Kore";
+        // Gemini's speech models, newest first; the first one that answers is kept for the session.
+        const GEMINI_TTS_MODELS = ["gemini-2.5-flash-tts", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"];
+        let geminiTtsModelIndex = 0;
+        let koreVoiceOn = localStorage.getItem("codev_tts_kore") !== "0";
+
+        function koreVoiceReady() { return koreVoiceOn && !!geminiSearchKey(); }
+
+        // Gemini sends raw 16-bit mono PCM (24 kHz unless it says otherwise); a WAV header makes it playable.
+        function pcmToWav(bytes, rate = 24000) {
+            const header = new ArrayBuffer(44);
+            const v = new DataView(header);
+            const ascii = (at, text) => [...text].forEach((c, i) => v.setUint8(at + i, c.charCodeAt(0)));
+            ascii(0, "RIFF"); v.setUint32(4, 36 + bytes.length, true); ascii(8, "WAVE");
+            ascii(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+            v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+            ascii(36, "data"); v.setUint32(40, bytes.length, true);
+            return new Blob([header, bytes], { type: "audio/wav" });
+        }
+
+        async function fetchKoreSpeech(text) {
+            for (; geminiTtsModelIndex < GEMINI_TTS_MODELS.length; geminiTtsModelIndex++) {
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TTS_MODELS[geminiTtsModelIndex]}:generateContent`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "x-goog-api-key": geminiSearchKey() },
+                    signal: AbortSignal.timeout(30000),
+                    body: JSON.stringify({
+                        contents: [{ role: "user", parts: [{ text }] }],
+                        generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: KORE_VOICE } } } }
+                    })
+                });
+                // This model isn't offered to this key: try the next one.
+                if (response.status === 404) continue;
+                if (response.status === 400 || response.status === 401 || response.status === 403) throw new Error(`Gemini rejected the request (HTTP ${response.status}); check the Gemini key`);
+                if (!response.ok) throw new Error(`Gemini speech returned HTTP ${response.status}`);
+                const data = await response.json();
+                const part = (data.candidates?.[0]?.content?.parts || []).find(p => p.inlineData?.data);
+                if (!part) throw new Error("Gemini sent no audio");
+                const raw = atob(part.inlineData.data);
+                const bytes = new Uint8Array(raw.length);
+                for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+                const rate = Number(/rate=(\d+)/.exec(part.inlineData.mimeType || "")?.[1]) || 24000;
+                return /wav|mpeg|mp3|ogg/.test(part.inlineData.mimeType || "") ? new Blob([bytes], { type: part.inlineData.mimeType }) : pcmToWav(bytes, rate);
+            }
+            geminiTtsModelIndex = 0;
+            throw new Error("none of Gemini's speech models are available to this key");
+        }
+
+        async function speakWithKore(text, runId) {
+            // Short first piece so the voice starts quickly; the next one loads while this one plays.
+            const first = splitTextForSpeech(text, 400);
+            const chunks = [first[0], ...splitTextForSpeech(first.slice(1).join(" "), 1500)].filter(Boolean);
+            let next = fetchKoreSpeech(chunks[0]);
+            for (let i = 0; i < chunks.length; i++) {
+                const blob = await next;
+                if (runId !== speechRunId) return;
+                next = i + 1 < chunks.length ? fetchKoreSpeech(chunks[i + 1]) : null;
+                if (next) next.catch(() => {});
+                await playAudioBlob(blob);
+                if (runId !== speechRunId) return;
+            }
+        }
+
         async function speakWithAzure(text, runId) {
             // Fetch the next piece while the current one plays, so there are no gaps.
             const chunks = splitTextForSpeech(text, 2500);
@@ -6838,6 +7062,15 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             logConsoleActivity("Playing text-to-speech audio for agent response.");
 
             try {
+                if (koreVoiceReady()) {
+                    try {
+                        await speakWithKore(cleanText, runId);
+                        return;
+                    } catch (err) {
+                        if (runId !== speechRunId) return;
+                        logConsoleActivity(`Kore voice failed (${err.message}); using the ${nativeTts ? "phone's" : "computer's"} voice.`);
+                    }
+                }
                 const webVoice = nativeTts ? null : await waitForWebVoices();
                 // A real Ava voice on this computer (Edge has one) wins; otherwise Azure's Ava when a key is set.
                 const hasLocalAva = webVoice && /Microsoft\s+Ava/i.test(webVoice.name);
@@ -7226,10 +7459,12 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const select = document.getElementById("modalVoice");
             const hint = document.getElementById("voiceHint");
             if (!select) return;
+            const koreBox = document.getElementById("modalKoreVoice");
+            if (koreBox) koreBox.checked = koreVoiceOn;
             if (getNativeSpeechPlugin("TextToSpeech") || !window.speechSynthesis) {
                 select.innerHTML = `<option value="">Phone's text-to-speech voice</option>`;
                 select.disabled = true;
-                hint.textContent = "Change the voice in Android Settings > Accessibility > Text-to-speech.";
+                hint.textContent = koreVoiceHint() + "Otherwise the phone's voice reads: change it in Android Settings > Accessibility > Text-to-speech.";
                 return;
             }
             const voices = window.speechSynthesis.getVoices().slice()
@@ -7242,9 +7477,14 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const hasAva = voices.some(v => /Microsoft\s+Ava/i.test(v.name));
             document.getElementById("modalAzureKey").value = codevOwnKey("azureSpeech", azureSpeechKey);
             document.getElementById("modalAzureRegion").value = azureSpeechRegion;
-            hint.textContent = !voices.length ? "No voices loaded yet. Reopen Settings in a moment."
+            hint.textContent = koreVoiceHint() + (!voices.length ? "No voices loaded yet. Reopen Settings in a moment."
                 : hasAva ? "Ava is available on this computer and is used automatically."
-                : "Windows doesn't share its natural Ava voice with this app, only robotic ones. Add an Azure Speech key above for Ava (HD), or open CoDev in Microsoft Edge, which includes Ava for free.";
+                : "Windows doesn't share its natural Ava voice with this app, only robotic ones. Add an Azure Speech key above for Ava (HD), or open CoDev in Microsoft Edge, which includes Ava for free.");
+        }
+
+        function koreVoiceHint() {
+            if (!koreVoiceOn) return "";
+            return geminiSearchKey() ? "Kore reads answers aloud. " : "Kore needs a Gemini key (Settings, Gemini section); until then the voice below reads. ";
         }
 
         function chooseWebVoiceAuto() {
@@ -7262,12 +7502,15 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         function testVoice() {
             const select = document.getElementById("modalVoice");
             const saved = chosenVoiceName;
+            const savedKore = koreVoiceOn;
+            const koreBox = document.getElementById("modalKoreVoice");
+            if (koreBox) koreVoiceOn = koreBox.checked;
             readAzureSettings();
             chosenVoiceName = select && !select.disabled ? select.value : saved;
             lockedWebVoice = null;
             if (isSpeaking) stopSpeaking();
             speakText("Hi, this is the voice CoDev Studio Beta will use to read answers aloud. For example, version 4.2 of the file main.py is ready.")
-                .finally(() => { chosenVoiceName = saved; lockedWebVoice = null; });
+                .finally(() => { chosenVoiceName = saved; koreVoiceOn = savedKore; lockedWebVoice = null; });
         }
 
         if (window.speechSynthesis) window.speechSynthesis.addEventListener("voiceschanged", () => {
@@ -7524,6 +7767,11 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             readAzureSettings();
             localStorage.setItem("codev_azure_speech_key", codevOwnKey("azureSpeech", azureSpeechKey));
             localStorage.setItem("codev_azure_speech_region", azureSpeechRegion);
+            const koreBox = document.getElementById("modalKoreVoice");
+            if (koreBox) {
+                koreVoiceOn = koreBox.checked;
+                localStorage.setItem("codev_tts_kore", koreVoiceOn ? "1" : "0");
+            }
             const voiceSelect = document.getElementById("modalVoice");
             if (voiceSelect && !voiceSelect.disabled) {
                 chosenVoiceName = voiceSelect.value;
@@ -8205,7 +8453,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         function historyEntry(msg) {
             const sender = String(msg.sender || "");
             // Welcome notes, search banners and "working" placeholders aren't part of the conversation.
-            if (!msg.text || /^(⚙️|🔎)/.test(sender) || /\(Working\.\.\.\)$/.test(sender)) return null;
+            if (!msg.text || msg.intro || /^(⚙️|🔎)/.test(sender) || /\(Working\.\.\.\)$/.test(sender)) return null;
             const clip = text => text.length > MAX_HISTORY_MESSAGE_CHARS ? text.slice(0, MAX_HISTORY_MESSAGE_CHARS) + " …[cut]" : text;
             if (sender.startsWith("👤")) {
                 const files = (msg.attachments || []).map(a => a.name).join(", ");
@@ -9601,6 +9849,9 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             if (cloudConfigured() && !window.CODEV_CLOUD_RUN) refreshCloudTasks(false);
             // First time here: the short setup guide (job, AI key, what to try). Once only.
             if (testerWelcome && testerWelcome.shouldShow()) testerWelcome.open();
+            // Then the open agent introduces itself (after the guide, if it's showing).
+            startupAgentIntro();
+            document.getElementById("chatFeed").addEventListener("click", handleIntroClick);
         });
     </script>
     <script>CodevCompanion.start();</script>
