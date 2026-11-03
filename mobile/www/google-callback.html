@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>CoDev Google sign-in</title>
+<style>
+    body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; font-family: system-ui, sans-serif; background: #0f1117; color: #e6e6e6; }
+    p { max-width: 28rem; padding: 0 16px; text-align: center; line-height: 1.5; }
+</style>
+</head>
+<body>
+<p id="message">Finishing your Google sign-in…</p>
+<script>
+// Google sends the web page's sign-in back here (agent-ui/google-apps.js, webTransport).
+// Hand Google's answer to the CoDev page through this browser's own storage, take the
+// token out of the address bar, and close. Nothing leaves this browser.
+(function () {
+    "use strict";
+    var raw = location.hash.length > 1 ? location.hash.slice(1) : location.search.slice(1);
+    var params = new URLSearchParams(raw);
+    var reply = {};
+    ["access_token", "expires_in", "scope", "state", "error"].forEach(function (name) { if (params.get(name)) reply[name] = params.get(name); });
+    try { history.replaceState(null, "", location.pathname); } catch (err) { /* keep going */ }
+    var message = document.getElementById("message");
+    if (!reply.state) { message.textContent = "This page finishes CoDev's Google sign-in. Go back to CoDev and press Sign in with Google."; return; }
+    try {
+        localStorage.setItem("codev_google_web_reply", JSON.stringify(reply));
+    } catch (err) {
+        message.textContent = "This browser blocked CoDev's storage, so the sign-in can't finish. Allow site data for this page and try again.";
+        return;
+    }
+    message.textContent = reply.error ? "Google sign-in was cancelled. You can close this window and go back to CoDev." : "Done. You can close this window and go back to CoDev.";
+    setTimeout(function () { window.close(); }, 600);
+})();
+</script>
+</body>
+</html>

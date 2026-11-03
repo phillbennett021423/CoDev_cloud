@@ -305,6 +305,96 @@ test('the Android app signs in to Google on the phone itself', async () => {
     assert.equal((await phone.handle({ op: 'status' })).signedIn, false);
 });
 
+// The web page (GitHub Pages): each visitor signs in with Google's sign-in for web
+// pages. Google comes back to google-callback.html, which leaves the answer in this
+// browser's storage (stood in for here). No client secret, no refresh token.
+test('the web page signs each visitor in to Google in their own browser', async () => {
+    const store = new Map();
+    const storage = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) };
+    const google = fakeGoogle({ 'GET https://gmail.googleapis.com/gmail/v1/users/me/messages': (url, init) => init.headers.Authorization === 'Bearer web-2' ? json({ messages: [] }) : json({ error: { message: 'bad token' } }, 401) });
+    let clock = 1_000_000;
+    const opened = [];
+    const asked = [];
+    let approve = true;
+    const win = { location: new URL('https://pb.github.io/codev_cloud/index.html?x=1'), CODEV_GOOGLE_WEB_CLIENT_ID: '', open: url => { opened.push(url); return {}; } };
+    const web = Google.webTransport({ win, storage, fetchImpl: google.fetchImpl, now: () => clock, ask: async message => { asked.push(message); return approve; } });
+    assert.equal(web.kind, 'web');
+    assert.deepEqual(web.setupValues(), { origin: 'https://pb.github.io', redirectUri: 'https://pb.github.io/codev_cloud/google-callback.html' });
+    assert.match((await web.handle({ op: 'signin' })).error, /no Google sign-in set up/);
+    assert.match((await web.handle({ op: 'signin', clientId: 'nope' })).error, /doesn't look like/);
+    win.CODEV_GOOGLE_WEB_CLIENT_ID = '123-abc.apps.googleusercontent.com';
+    assert.equal(web.hasBuiltInClient(), true);
+
+    const reply = await web.handle({ op: 'signin', allowWrite: true });
+    assert.equal(reply.opened, false);
+    const auth = new URL(reply.url);
+    assert.equal(auth.origin + auth.pathname, 'https://accounts.google.com/o/oauth2/v2/auth');
+    assert.equal(auth.searchParams.get('client_id'), '123-abc.apps.googleusercontent.com');
+    assert.equal(auth.searchParams.get('response_type'), 'token');
+    assert.equal(auth.searchParams.get('redirect_uri'), 'https://pb.github.io/codev_cloud/google-callback.html');
+    assert.match(auth.searchParams.get('scope'), /gmail\.readonly.*gmail\.send/);
+    assert.equal(auth.searchParams.get('client_secret'), null);
+    assert.equal((await web.handle({ op: 'status' })).signingIn, true);
+
+    // Another tab's answer is ignored; ours signs this browser in.
+    storage.setItem(Google.STORE.webReply, JSON.stringify({ state: 'someone-else', access_token: 'x' }));
+    assert.equal((await web.handle({ op: 'status' })).signedIn, false);
+    const scope = ['openid', 'email', Google.SCOPE.gmailRead, Google.SCOPE.gmailSend].join(' ');
+    storage.setItem(Google.STORE.webReply, JSON.stringify({ state: auth.searchParams.get('state'), access_token: 'web-1', expires_in: '3599', scope }));
+    let status = await web.handle({ op: 'status' });
+    assert.equal(status.signedIn, true);
+    assert.equal(status.expired, false);
+    assert.equal(store.has(Google.STORE.webReply), false, 'the hand-off is cleared');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await web.handle({ op: 'status' })).email, 'pb@example.com');
+
+    // The sending setting and the OK before every email still hold on the web.
+    const confirms = [];
+    const apps = Google.createGoogleApps({ transport: web, confirmWrite: async message => { confirms.push(message); return false; } });
+    assert.ok((await apps.buildTools()).some(tool => tool.name === 'gmail_send'));
+    assert.match(await apps.TOOLS.gmail_send.run({ to: 'a@b.com', body: 'Hi' }), /declined/);
+    assert.equal(confirms.length, 1);
+
+    // After the hour, CoDev asks before opening Google's sign-in again, then carries on.
+    clock += 3600 * 1000;
+    assert.equal((await web.handle({ op: 'status' })).expired, true);
+    const search = apps.TOOLS.gmail_search.run({ query: 'x' });
+    while (!opened.length) await new Promise(resolve => setImmediate(resolve));
+    assert.match(asked[0], /pb@example\.com/);
+    const again = new URL(opened[0]);
+    assert.equal(again.searchParams.get('login_hint'), 'pb@example.com');
+    storage.setItem(Google.STORE.webReply, JSON.stringify({ state: again.searchParams.get('state'), access_token: 'web-2', expires_in: '3599', scope }));
+    assert.match(await search, /No emails match "x"/);
+    assert.equal(google.calls.at(-1).headers.Authorization, 'Bearer web-2');
+
+    // Declining the new sign-in stops the tool with a plain reason.
+    clock += 3600 * 1000;
+    approve = false;
+    await assert.rejects(apps.TOOLS.gmail_search.run({ query: 'x' }), /has ended/);
+    assert.equal(opened.length, 1);
+    assert.match((await web.handle({ op: 'request', url: 'https://example.com/' })).error, /only sends Google requests/);
+
+    // Signing out revokes the token and forgets it in this browser.
+    await web.handle({ op: 'signout' });
+    assert.ok(google.calls.some(c => c.url.startsWith('https://oauth2.googleapis.com/revoke')));
+    status = await web.handle({ op: 'status' });
+    assert.equal(status.signedIn, false);
+    assert.equal(store.has(Google.STORE.webAccount), false);
+});
+
+test('Google\'s answer on google-callback.html is handed to the page and taken out of the address bar', async t => {
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const html = fs.readFileSync(path.join(__dirname, '../mobile/www/google-callback.html'), 'utf8');
+    const page = await launched.browser.newPage();
+    await page.route('https://pb.example/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: html }));
+    await page.goto('https://pb.example/codev/google-callback.html#state=s1&access_token=tok&expires_in=3599&scope=email');
+    await page.waitForFunction(() => /Done/.test(document.body.textContent));
+    assert.deepEqual(JSON.parse(await page.evaluate(() => localStorage.getItem('codev_google_web_reply'))), { access_token: 'tok', expires_in: '3599', scope: 'email', state: 's1' });
+    assert.equal(await page.evaluate(() => location.href), 'https://pb.example/codev/google-callback.html');
+});
+
 test('email helpers: headers, bodies and links', () => {
     assert.equal(Google.encodeHeader('Plain subject'), 'Plain subject');
     const encoded = Google.encodeHeader('Picks ✅');

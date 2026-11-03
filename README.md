@@ -6,7 +6,7 @@ The app is a single page, `mobile/www/index.html`. It talks to Groq directly fro
 
 CoDev is also a web page you can open on any device: https://phillbennett021423.github.io/codev_cloud/
 
-It's the same page as the apps, published by `.github/workflows/web-pages.yml` whenever `mobile/www` changes on main. Your API keys and chats are saved only in the browser you paste them into, never on the site, and the site never has built-in keys (the workflow refuses to publish if `shared-keys.js` has any). Chat, agents, running Python and JavaScript (`run_code`), Claude's web search, Gemini search, voice and notes work there. Reading whole web pages, the agent browser, sandboxes, Outlier, MEGA, Google apps, local MCP servers and the 3D/art tools need the Windows app, the Android app or `start-codev.bat`.
+It's the same page as the apps, published by `.github/workflows/web-pages.yml` whenever `mobile/www` changes on main. Your API keys and chats are saved only in the browser you paste them into, never on the site, and the site never has built-in keys (the workflow refuses to publish if `shared-keys.js` has any). Chat, agents, running Python and JavaScript (`run_code`), Claude's web search, Gemini search, voice, notes and Google apps work there (each visitor signs in with their own Google account, kept only in their browser; see [docs/google-apps.md](docs/google-apps.md#on-the-web-page-github-pages)). Reading whole web pages, the agent browser, sandboxes, Outlier, MEGA, local MCP servers and the 3D/art tools need the Windows app, the Android app or `start-codev.bat`.
 
 One-time setup: **Settings > Pages > Build and deployment > Source: GitHub Actions**, then run **Actions > Web version (GitHub Pages) > Run workflow** (or push a change to `mobile/www`).
 

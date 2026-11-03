@@ -1110,7 +1110,7 @@
                 CoDev's agents run on <strong>Claude</strong> (Anthropic): Claude Haiku 5.5 for quick asks and Claude Sonnet 5.5 for bigger multi-step tasks, kept inside the spending limits below. Groq's free tier is still there as a fallback, but its small limits run out on real agent tasks.
             </p>
             <p id="webVersionNotice" style="display: none; font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px;">
-                🌐 <strong>This is CoDev's web version.</strong> Your keys and chats are saved only in this browser on this device, never on the website. Chat, agents, running Python and JavaScript, web search (Claude's own search, or Google with a Gemini key), voice and notes work here. Reading whole web pages, the agent browser, sandboxes, Outlier, MEGA, Google apps, MCP servers on your computer and the 3D/art tools need the Windows app, the Android app or start-codev.bat.
+                🌐 <strong>This is CoDev's web version.</strong> Your keys and chats are saved only in this browser on this device, never on the website. Chat, agents, running Python and JavaScript, web search (Claude's own search, or Google with a Gemini key), voice, notes and Google apps (sign in with your own Google account for Gmail and YouTube) work here. Reading whole web pages, the agent browser, sandboxes, Outlier, MEGA, MCP servers on your computer and the 3D/art tools need the Windows app, the Android app or start-codev.bat.
             </p>
 
             <!-- Step-by-Step Guidance Box -->
@@ -1374,6 +1374,7 @@
     <script src="agent-ui/diff-review.js"></script>
     <script src="agent-ui/outlier-view.js"></script>
     <script src="media-tools.js"></script>
+    <script src="google-web-client.js"></script>
     <script src="agent-ui/google-apps.js"></script>
     <script src="agent-ui/mega-cloud.js"></script>
     <script src="agent-ui/notes-tables.js"></script>
@@ -4642,7 +4643,8 @@
         // Without a Google key, YouTube and Maps fall back to the free web search,
         // YouTube's oEmbed and OpenStreetMap. Sending email always asks first.
         // (Cloud files moved from Google Drive to MEGA: see MEGA CLOUD below.)
-        const googleTransport = CodevGoogleApps.detectTransport(window);
+        // On the web page, CoDev asks before opening Google's sign-in again when the hour is up.
+        const googleTransport = CodevGoogleApps.detectTransport(window, { ask: message => askPermission(message, "CoDev") });
         const googleApps = CodevGoogleApps.createGoogleApps({
             transport: googleTransport,
             getApiKey: () => { try { return localStorage.getItem(CodevGoogleApps.STORE.apiKey) || ""; } catch (err) { return ""; } },

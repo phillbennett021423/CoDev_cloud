@@ -32,6 +32,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build the site
+        env:
+          # Optional repository variable (Settings > Secrets and variables > Actions >
+          # Variables): a Google OAuth client ID of the "Web application" type, so
+          # visitors can sign in with Google without their own Google Cloud setup. It
+          # is public, not a secret. See docs/google-apps.md.
+          GOOGLE_WEB_CLIENT_ID: ${{ vars.GOOGLE_WEB_CLIENT_ID }}
         run: |
           # The public site must never carry built-in keys (those are only for
           # the private build workflow).
@@ -42,6 +48,14 @@ jobs:
           mkdir _site
           cp -r mobile/www/. _site/
           touch _site/.nojekyll
+          if [ -n "$GOOGLE_WEB_CLIENT_ID" ]; then
+            if ! printf '%s' "$GOOGLE_WEB_CLIENT_ID" | grep -Eqx '[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com'; then
+              echo "::error::GOOGLE_WEB_CLIENT_ID doesn't look like a Google OAuth client ID (it ends in .apps.googleusercontent.com)."
+              exit 1
+            fi
+            printf 'window.CODEV_GOOGLE_WEB_CLIENT_ID = "%s";\n' "$GOOGLE_WEB_CLIENT_ID" > _site/google-web-client.js
+            echo "Built in the Google sign-in client for visitors."
+          fi
 
       - name: Upload site
         uses: actions/upload-pages-artifact@v3

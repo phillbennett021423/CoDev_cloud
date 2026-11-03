@@ -13,6 +13,9 @@
 //    for installed apps as the computer's). Anywhere, the user can instead sign in on
 //    the computer and copy a "phone link code" across. The page then refreshes tokens
 //    on its own.
+//  - A web page on https (GitHub Pages): here in the page too, but each visitor signs in
+//    with Google's sign-in for web pages (webTransport) and the sign-in stays in that
+//    visitor's browser.
 // Every transport takes the same requests: status, signin, signout, link, import
 // (phone only) and request ({ method, url, headers, body, auth: "user" | "key", apiKey }).
 // YouTube and Maps can use an API key alone; Gmail needs the sign-in.
@@ -40,7 +43,8 @@
         gmailRead: "https://www.googleapis.com/auth/gmail.readonly",
         gmailSend: "https://www.googleapis.com/auth/gmail.send"
     };
-    const STORE = { apiKey: "codev_google_api_key", clientId: "codev_google_client_id", clientSecret: "codev_google_client_secret", allowWrite: "codev_google_allow_write", phoneAccount: "codev_google_phone_account" };
+    const STORE = { apiKey: "codev_google_api_key", clientId: "codev_google_client_id", clientSecret: "codev_google_client_secret", allowWrite: "codev_google_allow_write", phoneAccount: "codev_google_phone_account",
+        webAccount: "codev_google_web_account", webReply: "codev_google_web_reply" };
     const READ_CHUNK = 12000;
     const GOOGLE_TOOL_NAMES = ["google_apps_status", "youtube_search", "youtube_video", "maps_search_places", "maps_directions",
         "gmail_search", "gmail_read", "gmail_send"];
@@ -228,11 +232,161 @@
         };
     }
 
-    function detectTransport(win) {
+    // The web page (GitHub Pages or any https address): each visitor signs in with their
+    // own Google account, and the sign-in stays in that visitor's browser. A web page
+    // can't run the loopback listener the apps use, so this is Google's sign-in for
+    // browser pages: a "Web application" OAuth client, and Google sends the visitor
+    // back to google-callback.html on this site with an access token. That page hands
+    // the answer back here through this browser's storage and closes. Google gives a web
+    // page no refresh token, so the sign-in lasts about an hour; after that, CoDev asks
+    // the visitor (ask) before opening Google's sign-in again. No client secret is used.
+    // The site's owner can build a client ID into the site (google-web-client.js, filled
+    // by the web-pages workflow); a visitor can also paste their own.
+    function webTransport({ win, storage, fetchImpl, ask = null, now = () => Date.now() }) {
+        let pending = null;   // { state, clientId, scopes, startedAt }
+        let lastSignIn = null;
+        let reconnecting = null;
+        const load = () => { try { return JSON.parse(storage.getItem(STORE.webAccount) || "null"); } catch (err) { return null; } };
+        const save = account => { if (account) storage.setItem(STORE.webAccount, JSON.stringify(account)); else storage.removeItem(STORE.webAccount); };
+        const builtInClientId = () => String((win && win.CODEV_GOOGLE_WEB_CLIENT_ID) || "").trim();
+        const redirectUri = () => new URL("google-callback.html", win.location.href).href.replace(/[?#].*$/, "");
+        const origin = () => win.location.origin;
+        const randomText = size => Array.from(crypto.getRandomValues(new Uint8Array(size)), b => b.toString(16).padStart(2, "0")).join("");
+
+        async function send({ method, url, headers = {}, body, form }) {
+            const response = await fetchImpl(url, {
+                method, headers: form ? { ...headers, "Content-Type": "application/x-www-form-urlencoded" } : headers,
+                body: form ? new URLSearchParams(form).toString() : (body === undefined || typeof body === "string" ? body : JSON.stringify(body))
+            });
+            const text = await response.text();
+            let data = text;
+            try { data = JSON.parse(text); } catch (err) { /* plain text */ }
+            return { status: response.status, body: data };
+        }
+
+        function start({ clientId, scopes, hint }) {
+            const state = randomText(16);
+            pending = { state, clientId, scopes, startedAt: now() };
+            lastSignIn = null;
+            const params = { client_id: clientId, redirect_uri: redirectUri(), response_type: "token", scope: scopes.join(" "), state, include_granted_scopes: "true" };
+            if (hint) params.login_hint = hint; else params.prompt = "select_account";
+            return `${AUTH_URL}?${new URLSearchParams(params)}`;
+        }
+
+        // google-callback.html left Google's answer in storage: take it if it's ours.
+        function takeReply() {
+            if (pending && now() - pending.startedAt > SIGNIN_TIMEOUT_MS) { pending = null; lastSignIn = { error: "The Google sign-in timed out. Press Sign in with Google again." }; }
+            let reply = null;
+            try { reply = JSON.parse(storage.getItem(STORE.webReply) || "null"); } catch (err) { /* unreadable */ }
+            if (!reply) return;
+            storage.removeItem(STORE.webReply);
+            const sign = pending;
+            if (!sign || reply.state !== sign.state) return;   // another tab's sign-in, or an old one
+            pending = null;
+            if (reply.error || !reply.access_token) { lastSignIn = { error: `Google sign-in didn't finish (${reply.error || "no token"}).` }; return; }
+            const previous = load();
+            const account = {
+                clientId: sign.clientId, accessToken: reply.access_token, expiresAt: now() + (Number(reply.expires_in) || 3600) * 1000,
+                scopes: String(reply.scope || sign.scopes.join(" ")).split(/\s+/).filter(Boolean),
+                email: previous && previous.clientId === sign.clientId ? previous.email : null
+            };
+            save(account);
+            lastSignIn = { ok: true };
+            send({ method: "GET", url: USERINFO_URL, headers: { Authorization: `Bearer ${account.accessToken}` } }).then(who => {
+                const current = load();
+                if (current && current.accessToken === account.accessToken && who.body && who.body.email) save({ ...current, email: who.body.email });
+            }).catch(() => { /* the account still works without the address */ });
+        }
+        if (win && win.addEventListener) win.addEventListener("storage", event => { if (event.key === STORE.webReply && event.newValue) takeReply(); });
+
+        async function waitForSignIn() {
+            while (pending) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+                takeReply();
+            }
+        }
+
+        // The hour is up: ask before opening Google's sign-in again. The OK is a click,
+        // so the browser lets CoDev open the sign-in window.
+        async function reconnect(account) {
+            if (!ask || !(await ask(`Google ended this web page's sign-in${account.email ? ` for ${account.email}` : ""} (on a web page it lasts about an hour). Sign in to Google again so the agent can carry on?\n\nGoogle's sign-in opens in a new window.`))) {
+                throw new Error("The Google sign-in on this web page has ended (Google keeps it for about an hour). Sign in again under Settings > Google apps.");
+            }
+            const tab = win.open(start({ clientId: account.clientId, scopes: account.scopes, hint: account.email }), "_blank");
+            if (!tab) { pending = null; throw new Error("The browser blocked Google's sign-in window. Sign in again under Settings > Google apps."); }
+            await waitForSignIn();
+            const fresh = load();
+            if (fresh && fresh.expiresAt > now() + 60000) return fresh.accessToken;
+            throw new Error((lastSignIn && lastSignIn.error) || "Google's sign-in didn't finish.");
+        }
+
+        async function token() {
+            takeReply();
+            const account = load();
+            if (!account || !account.accessToken) throw new Error("Not signed in to Google on this page. Open Settings > Google apps and press Sign in with Google.");
+            if (account.expiresAt > now() + 60000) return account.accessToken;
+            if (!reconnecting) reconnecting = reconnect(account).finally(() => { reconnecting = null; });
+            return reconnecting;
+        }
+
+        return {
+            kind: "web",
+            canSignIn: true,
+            hasBuiltInClient: () => Boolean(builtInClientId()),
+            setupValues: () => ({ origin: origin(), redirectUri: redirectUri() }),
+            async handle(req) {
+                try {
+                    takeReply();
+                    const account = load();
+                    switch (req.op) {
+                        case "status": return { signedIn: Boolean(account && account.accessToken), email: account && account.email || null, scopes: account && account.scopes || [], apiKey: false,
+                            clientId: Boolean(builtInClientId()), web: true, expired: Boolean(account && account.expiresAt <= now() + 60000), signingIn: Boolean(pending), signInError: (lastSignIn && lastSignIn.error) || null };
+                        case "signin": {
+                            const clientId = String(req.clientId || "").trim() || builtInClientId();
+                            if (!clientId) return { error: "This site has no Google sign-in set up yet. Paste a Google OAuth client ID (\"Web application\" type) above; the setup guide shows how to make one." };
+                            if (!/\.apps\.googleusercontent\.com$/.test(clientId)) return { error: "That doesn't look like a Google OAuth client ID. It ends in .apps.googleusercontent.com." };
+                            const scopes = ["openid", "email", SCOPE.youtube, SCOPE.gmailRead, ...(req.allowWrite ? [SCOPE.gmailSend] : [])];
+                            return { url: start({ clientId, scopes }), opened: false };
+                        }
+                        case "signout":
+                            pending = null;
+                            if (account && account.accessToken) await send({ method: "POST", url: REVOKE_URL, form: { token: account.accessToken } }).catch(() => {});
+                            save(null);
+                            return { ok: true };
+                        case "link": case "import": return { error: "On the web page, press Sign in with Google instead of using a phone link code." };
+                        case "request": {
+                            if (!isGoogleApiUrl(req.url)) return { error: "CoDev only sends Google requests to Google's API addresses." };
+                            const target = new URL(req.url);
+                            const headers = { ...(req.headers || {}) };
+                            if (req.auth === "key") {
+                                if (!req.apiKey) return { error: "No Google API key. Add one in Settings > Google apps." };
+                                target.searchParams.set("key", req.apiKey);
+                            } else {
+                                headers.Authorization = `Bearer ${await token()}`;
+                            }
+                            if (req.body !== undefined && !Object.keys(headers).some(h => h.toLowerCase() === "content-type")) headers["Content-Type"] = "application/json";
+                            const reply = await send({ method: req.method || "GET", url: target.href, headers, body: req.body });
+                            if (reply.status === 401 && req.auth !== "key") {
+                                const current = load();
+                                if (current) save({ ...current, expiresAt: 0 });
+                                return { error: "Google says the sign-in on this page is no longer valid. Sign in again under Settings > Google apps." };
+                            }
+                            return reply;
+                        }
+                        default: return { error: "Unknown Google request." };
+                    }
+                } catch (err) { return { error: err.message || String(err) }; }
+            }
+        };
+    }
+
+    function detectTransport(win, { ask = null } = {}) {
         if (win.codevDesktop && win.codevDesktop.google) return backendTransport(req => win.codevDesktop.google(req), "computer");
         const cap = win.Capacitor;
         const native = cap && cap.isNativePlatform && cap.isNativePlatform();
         if (!native && win.location && win.location.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(win.location.hostname)) return serverTransport(win.fetch.bind(win));
+        // A page from the web (GitHub Pages or any https site): each visitor signs in in their own browser.
+        if (!native && win.location && win.location.protocol === "https:") return webTransport({ win, storage: win.localStorage, fetchImpl: win.fetch.bind(win), ask });
         return phoneTransport({ http: native ? (cap.Plugins && cap.Plugins.CapacitorHttp) || null : null, storage: win.localStorage, fetchImpl: win.fetch.bind(win),
             loopback: native ? (cap.Plugins && cap.Plugins.CodevBrowser) || null : null });
     }
@@ -714,17 +868,33 @@
     // they change. apps: from createGoogleApps; el: the <details> element.
     function mountSettings(el, { transport, apps, storage, openWindow }) {
         const phone = transport.kind === "phone";
+        const web = transport.kind === "web";
         const phoneSignIn = phone && transport.canSignIn;
+        const setup = web ? transport.setupValues() : null;
         const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[c]);
         el.innerHTML = `
             <summary>🔗 Google apps (YouTube, Maps, Gmail)</summary>
             <div data-g="status" style="font-size: 0.85rem; white-space: pre-line;"></div>
-            <div style="font-size: 0.8rem; color: var(--text-muted);">Needs a one-time setup in Google Cloud (about 10 minutes). <a href="${GUIDE_URL}" target="_blank" rel="noopener noreferrer" style="color: var(--accent);">Open the setup guide</a></div>
+            <div style="font-size: 0.8rem; color: var(--text-muted);">${web && transport.hasBuiltInClient() ? "Gmail: just press Sign in with Google below. An API key is optional." : "Needs a one-time setup in Google Cloud (about 10 minutes)."} <a href="${GUIDE_URL}" target="_blank" rel="noopener noreferrer" style="color: var(--accent);">Open the setup guide</a></div>
             <div class="form-group">
                 <label>Google API key, for YouTube and Maps (starts with AIza)</label>
                 <input type="text" data-g="apiKey" placeholder="AIza..." autocomplete="off" style="font-family: monospace;">
             </div>
-            ${phoneSignIn ? `
+            ${web ? `
+            <div style="font-size: 0.8rem; color: var(--text-muted);">Sign in with your own Google account so agents can use your Gmail and YouTube. Your sign-in is saved only in this browser on this device, never on the website. Google ends a web page's sign-in after about an hour; CoDev asks you before signing in again.</div>
+            <div class="form-group">
+                <label>OAuth client ID ("Web application" type)${transport.hasBuiltInClient() ? ": optional, this site has one built in" : ""}</label>
+                <input type="text" data-g="clientId" placeholder="${transport.hasBuiltInClient() ? "Leave blank to use this site's" : "1234-abc.apps.googleusercontent.com"}" autocomplete="off" style="font-family: monospace;">
+            </div>
+            <details>
+                <summary style="font-size: 0.8rem;">Using your own OAuth client? Add these to it in Google Cloud</summary>
+                <div style="font-size: 0.8rem; overflow-wrap: anywhere;">Authorized JavaScript origin: <code>${esc(setup.origin)}</code><br>Authorized redirect URI: <code>${esc(setup.redirectUri)}</code></div>
+            </details>
+            <label class="checkbox-group"><input type="checkbox" data-g="allowWrite"> Let agents send email (CoDev asks me every time). Sign in again after changing this.</label>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button class="btn-secondary" type="button" data-g="signin">🔐 Sign in with Google</button>
+                <button class="btn-secondary" type="button" data-g="signout">Sign out</button>
+            </div>` : phoneSignIn ? `
             <div class="form-group">
                 <label>OAuth client ID, for Gmail ("Desktop app" type)</label>
                 <input type="text" data-g="clientId" placeholder="1234-abc.apps.googleusercontent.com" autocomplete="off" style="font-family: monospace;">
@@ -787,7 +957,8 @@
             const lines = [];
             if (report.error) lines.push(`⚠️ ${report.error}`);
             else lines.push(report.signedIn ? `✅ Signed in${report.email ? ` as ${report.email}` : ""}${phone && !report.onPhone ? " (linked from your computer)" : ""}` : report.signingIn ? "⏳ Waiting for you to finish signing in to Google in your browser…" : "Gmail: not signed in");
-            if (report.signInError && !report.signedIn) lines.push(`⚠️ ${report.signInError}`);
+            if (report.signedIn && report.expired) lines.push("⏳ Google ended this page's sign-in (it lasts about an hour on the web). Press Sign in with Google to carry on, or CoDev asks when an agent needs it.");
+            if (report.signInError && (!report.signedIn || report.expired)) lines.push(`⚠️ ${report.signInError}`);
             lines.push((storage.getItem(STORE.apiKey) || report.apiKey) ? "✅ API key set: YouTube and Maps are on" : "YouTube and Maps: add an API key");
             if (report.signedIn) {
                 const s = report.scopes || [];
@@ -806,14 +977,14 @@
             if (reply.error) { if (tab) tab.close(); note(reply.error); return refresh(); }
             if (tab && !reply.opened) tab.location.href = reply.url;
             else if (tab) tab.close();
-            note(reply.opened ? "Google's sign-in opened in your browser. Finish there, then come back." : tab ? "Finish signing in on the Google tab, then come back." : `Open this address to sign in: ${reply.url}`);
+            note(reply.opened ? "Google's sign-in opened in your browser. Finish there, then come back." : web && tab ? "Finish signing in on the Google window. It closes by itself when you're done." : tab ? "Finish signing in on the Google tab, then come back." : `Open this address to sign in: ${reply.url}`);
             clearInterval(polling);
             const started = Date.now();
             polling = setInterval(async () => {
                 const st = await refresh();
-                if (st.signedIn || !st.signingIn || Date.now() - started > 5 * 60 * 1000) {
+                if ((st.signedIn && !st.expired) || !st.signingIn || Date.now() - started > 5 * 60 * 1000) {
                     clearInterval(polling);
-                    if (st.signedIn) note("Connected. Agents can use your Google apps now.");
+                    if (st.signedIn && !st.expired) note("Connected. Agents can use your Google apps now.");
                 }
             }, 2000);
             refresh();
@@ -840,7 +1011,7 @@
 
     return {
         STORE, SCOPE, GUIDE_URL, GOOGLE_TOOL_NAMES, isGoogleApiUrl,
-        backendTransport, serverTransport, phoneTransport, detectTransport,
+        backendTransport, serverTransport, phoneTransport, webTransport, detectTransport,
         createGoogleApps, mountSettings,
         base64UrlToText, textToBase64Url, encodeHeader, htmlToText, formatDuration, youtubeId, gmailBody
     };
