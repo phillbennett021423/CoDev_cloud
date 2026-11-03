@@ -1,0 +1,109 @@
+name: Cloud 3D worker
+
+# Runs CoDev's 3D asset steps (cleanup to the poly budget, UVs, PBR bakes,
+# texturing, rigging, retargeting, all-angle review renders) in headless
+# Blender on GitHub's computers, so they run without the user's phone or PC.
+# CPU only: reviews render with Cycles on the CPU.
+#
+# Three ways it starts:
+# - CoDev sends a job (art_mesh with where "cloud"): job_id and release_id are
+#   set; the inputs and results travel through a temporary draft release.
+# - By hand from the Actions tab (also on the GitHub phone app): paste a link
+#   to a .glb/.fbx/.obj in mesh_url; the results are attached to the run.
+# - A push that changes the pipeline runs the self-test.
+run-name: ${{ github.event_name == 'push' && 'Cloud 3D worker self-test' || (inputs.job_id != '' && format('3D job {0}', inputs.job_id) || format('3D {0} on {1}', inputs.ops, inputs.name)) }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Set by CoDev; leave empty when starting by hand'
+        required: false
+        default: ''
+      release_id:
+        description: 'Set by CoDev; leave empty when starting by hand'
+        required: false
+        default: ''
+      mesh_url:
+        description: 'By hand: https link to a .glb, .gltf, .fbx or .obj (e.g. a Tripo or Meshy export)'
+        required: false
+        default: ''
+      ops:
+        description: 'By hand: steps in order (inspect, cleanup, uv, bake, review)'
+        required: false
+        default: 'cleanup,uv,review'
+      category:
+        description: 'By hand: budget category (character, skin, weapon, vehicle, prop, environment)'
+        required: false
+        default: 'skin'
+      name:
+        description: 'By hand: asset name for the files'
+        required: false
+        default: 'asset'
+  push:
+    paths:
+      - desktop/creative/bpy/**
+      - .github/workflows/cloud-3d.yml
+
+env:
+  BLENDER_VERSION: '4.2.3'
+  BLENDER_SERIES: '4.2'
+
+jobs:
+  work:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Restore Blender
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/blender
+          key: blender-${{ env.BLENDER_VERSION }}-linux-x64
+
+      - name: Download Blender
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/blender
+          curl -fsSL --retry 4 "https://download.blender.org/release/Blender${BLENDER_SERIES}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" \
+            | tar -xJ --strip-components=1 -C ~/blender
+
+      - name: Install Blender's system libraries
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libxi6 libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 libgl1 libegl1
+          ~/blender/blender --version | head -1
+
+      - name: Self-test
+        if: github.event_name == 'push'
+        run: python3 desktop/creative/bpy/cloud_worker.py --blender ~/blender/blender --work "$RUNNER_TEMP/cloud" --self-test
+
+      - name: Run CoDev's job
+        if: github.event_name == 'workflow_dispatch' && inputs.release_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: python3 desktop/creative/bpy/cloud_worker.py --blender ~/blender/blender --work "$RUNNER_TEMP/cloud" --release "$RELEASE_ID"
+
+      - name: Run the steps on the linked mesh
+        if: github.event_name == 'workflow_dispatch' && inputs.release_id == ''
+        env:
+          MESH_URL: ${{ inputs.mesh_url }}
+          OPS: ${{ inputs.ops }}
+          CATEGORY: ${{ inputs.category }}
+          NAME: ${{ inputs.name }}
+        run: python3 desktop/creative/bpy/cloud_worker.py --blender ~/blender/blender --work "$RUNNER_TEMP/cloud" --mesh-url "$MESH_URL" --ops "$OPS" --category "$CATEGORY" --name "$NAME"
+
+      - name: Attach the results to this run
+        if: always() && (github.event_name == 'push' || inputs.release_id == '')
+        uses: actions/upload-artifact@v4
+        with:
+          name: 3d-results
+          path: ${{ runner.temp }}/cloud/out
+          if-no-files-found: ignore
+          retention-days: 14
