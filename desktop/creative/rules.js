@@ -54,6 +54,9 @@ const DEFAULT_RULES = {
         game_camera: { distance: 2.2, height: 1.05, yaw: 200, fov: 55 },
         // How many times the pipeline fixes and re-checks a pass on its own before it asks.
         max_fix_rounds: 2,
+        // How closely a pass must match the skin's reference pictures (art_compare_reference's
+        // overall score, 0-1) before it's shown to the user.
+        reference_match: 0.8,
         approve_each_pass: true,
         drop_hidden: false,
         limits: { max_open_edges: 0, max_nonmanifold_edges: 0, max_flipped: 0.005, max_uv_stretch: 0.05, max_missing_texture: 0.002, min_coverage: 0.005, min_face_detail: 0.00005 },

@@ -25,6 +25,14 @@ const PageExtract = (() => {
     return null;
 })();
 
+// Watching videos (frames and captions) is shared with the phone's browser too.
+const VideoWatch = (() => {
+    for (const rel of ['../www/agent-ui/video-watch.js', '../../mobile/www/agent-ui/video-watch.js']) {
+        try { return require(rel); } catch { /* try the next */ }
+    }
+    return null;
+})();
+
 const ACTION_TIMEOUT_MS = 10000;
 const NAVIGATION_TIMEOUT_MS = 30000;
 const DEFAULT_TEXT_CHARS = 10000;
@@ -225,6 +233,34 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
         return PageExtract.toolResult(result, { name: args.name });
     }
 
+    // The video on the page, watched: frames as pictures and its captions, via video-watch.js.
+    async function watchVideo(args, ctx) {
+        if (!VideoWatch) throw new ToolError('browser_watch_video is not installed in this copy of CoDev.');
+        if (!manager.has(ctx.agentId)) throw new ToolError('Your browser is not open. Open the video\'s page with browser_navigate first.');
+        const page = await manager.workPage(ctx.agentId);
+        const adapter = {
+            evaluate: (source, arg) => page.evaluate(`(${source})(${JSON.stringify(arg)})`),
+            capture: async rect => {
+                const video = page.locator('video[data-codev-watch]').first();
+                try {
+                    return { data: (await video.screenshot({ type: 'jpeg', quality: 78, timeout: ACTION_TIMEOUT_MS })).toString('base64'), mimeType: 'image/jpeg' };
+                } catch (err) {
+                    if (!rect || !(rect.width > 0 && rect.height > 0)) throw err;
+                    return { data: (await page.screenshot({ type: 'jpeg', quality: 78, clip: rect, timeout: ACTION_TIMEOUT_MS })).toString('base64'), mimeType: 'image/jpeg' };
+                }
+            },
+            sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+            now: () => Date.now()
+        };
+        let watched;
+        try { watched = await VideoWatch.watchVideo(adapter, args); } catch (err) {
+            if (err instanceof VideoWatch.WatchError) throw new ToolError(err.message);
+            throw err;
+        }
+        log(`[Browser] ${ctx.agentName} watched ${watched.frames.length} frame(s) of ${watched.info.url}${watched.lines.length ? ` with ${watched.lines.length} caption line(s)` : ''}.`);
+        return VideoWatch.toolResult(watched, args);
+    }
+
     // A dead link, redirect or parked page: the browser stays open with that page shown,
     // paused for the user in the live view, and the agent is told to wait.
     function pausedFor(ctx, page, problem) {
@@ -379,6 +415,7 @@ function createBrowserTools({ manager, vault, getProjectDir = () => '', screensh
               selector: { ...selectorProp, description: 'Element to capture; omit for the page.' },
               full_page: { type: 'boolean', description: 'Capture the whole scrollable page, not just the visible part.' },
               save_as: { type: 'string', description: 'Save it in the project folder at this path (like screenshots/home.png); omit to keep it in CoDev\'s screenshots folder.' } } } },
+        ...(VideoWatch ? [{ ...VideoWatch.TOOL, run: watchVideo, annotations: { readOnlyHint: true, openWorldHint: true } }] : []),
         { name: 'browser_close', run: closeBrowser, annotations: { readOnlyHint: false },
           description: 'Close your browser when a web task is finished. Use it once at the end; don\'t close it between steps of the same task. A browser the user has opened or used in the live view stays open for them.',
           inputSchema: { type: 'object', properties: {} } },
