@@ -17,7 +17,7 @@
 // codev-studio.json under skin_quality (rules.js has the defaults).
 const PASSES = ['concept', 'mesh', 'textures', 'fx'];
 const PASS_NAMES = { concept: 'concept art', mesh: 'mesh', textures: 'textures', fx: 'effects and sounds' };
-const BRIEF_KEYS = ['brief', 'theme', 'palette', 'materials', 'silhouette', 'references', 'character', 'slot', 'variants', 'tier', 'rarity', 'material', 'stages', 'style',
+const BRIEF_KEYS = ['brief', 'theme', 'palette', 'materials', 'silhouette', 'references', 'reference_views', 'character', 'slot', 'variants', 'tier', 'rarity', 'material', 'stages', 'style',
     'tile_scale', 'texture_size', 'sfx', 'stats', 'tags', 'category', 'godot_dir', 'remesh', 'concepts', 'install'];
 
 const list = v => [].concat(v === undefined || v === null || v === '' ? [] : v).map(String).map(s => s.trim()).filter(Boolean);

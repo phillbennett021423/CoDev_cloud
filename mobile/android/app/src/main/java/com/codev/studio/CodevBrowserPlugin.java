@@ -369,6 +369,8 @@ public class CodevBrowserPlugin extends Plugin {
         s.setJavaScriptCanOpenWindowsAutomatically(false);
         s.setAllowFileAccess(false);
         s.setAllowContentAccess(false);
+        // Agents' videos (browser_watch_video) play muted without a tap.
+        s.setMediaPlaybackRequiresUserGesture(false);
         CookieManager jar = cookies();
         jar.setAcceptCookie(true);
         jar.setAcceptThirdPartyCookies(view, true);

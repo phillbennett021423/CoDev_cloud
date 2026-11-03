@@ -1128,7 +1128,11 @@ def step_montage(cur, info, step, job):
 
 MODELS = os.environ.get("CODEV_MODELS_DIR", "/opt/models")
 PIPER_VOICES = {"lessac": "en_US-lessac-medium", "ryan": "en_US-ryan-medium", "amy": "en_US-amy-medium", "alan": "en_GB-alan-medium"}
-KOKORO_VOICES = ["af", "af_bella", "af_nicole", "af_sarah", "af_sky", "am_adam", "am_michael", "bf_emma", "bf_isabella", "bm_george", "bm_lewis"]
+# Kokoro 1.0's English voices (a = American, b = British, f = female, m = male); Kore is the default.
+KOKORO_DEFAULT_VOICE = "af_kore"
+KOKORO_VOICES = ["af_kore", "af_heart", "af_bella", "af_nicole", "af_sarah", "af_sky", "af_alloy", "af_aoede", "af_jessica", "af_nova", "af_river",
+                 "am_adam", "am_michael", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_onyx", "am_puck",
+                 "bf_emma", "bf_isabella", "bf_alice", "bf_lily", "bm_george", "bm_lewis", "bm_daniel", "bm_fable"]
 
 
 def speak_to_wav(text, wav, engine="kokoro", voice=None, speed=1.0):
@@ -1153,11 +1157,13 @@ def speak_to_wav(text, wav, engine="kokoro", voice=None, speed=1.0):
         return
     import soundfile as sf
     from kokoro_onnx import Kokoro
-    voice = str(voice or "af_sarah")
+    voice = str(voice or KOKORO_DEFAULT_VOICE)
+    if voice == "af":  # the old mixed voice of Kokoro 0.19
+        voice = KOKORO_DEFAULT_VOICE
     if voice not in KOKORO_VOICES:
         raise MediaError(f"Kokoro voices: {', '.join(KOKORO_VOICES)} (a = American, b = British, f = female, m = male)")
     say(f"[Kokoro] speaking with {voice}")
-    k = Kokoro(os.path.join(MODELS, "kokoro", "kokoro-v0_19.onnx"), os.path.join(MODELS, "kokoro", "voices.json"))
+    k = Kokoro(os.path.join(MODELS, "kokoro", "kokoro-v1.0.onnx"), os.path.join(MODELS, "kokoro", "voices-v1.0.bin"))
     lang = "en-gb" if voice.startswith("b") else "en-us"
     audio, rate = k.create(text, voice=voice, speed=speed, lang=lang)
     sf.write(wav, audio, rate)

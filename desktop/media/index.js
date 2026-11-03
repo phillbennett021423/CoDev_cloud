@@ -439,7 +439,7 @@ function createMedia({ dataDir, log = () => {}, dockerPath, resolveUser, authori
             + 'Times are seconds or "m:ss". Example, "remove the background noise, keep the people talking and add music quietly underneath": '
             + '[{"op": "clean_speech"}, {"op": "add_music", "file": "uploads/song.mp3", "volume": 0.12}]. '
             + 'Music, logos and voiceovers must be files in the media folder: attached by the user, or found on their computer with media_find_on_computer and copied in with media_import. If none fits, ask the user. '
-            + 'Voices are the ones media_speak lists (Kokoro af_sarah by default). '
+            + 'Voices are the ones media_speak lists (Kokoro af_kore by default). '
             + 'Long clips take minutes. Use it whenever the user asks to change a video or audio file; to only read what is said use media_transcribe instead.',
           inputSchema: { type: 'object', properties: {
               input: fileProp,
@@ -460,8 +460,8 @@ function createMedia({ dataDir, log = () => {}, dockerPath, resolveUser, authori
           inputSchema: { type: 'object', properties: { file: fileProp, length: { type: 'number', description: 'About how long each highlight should be, in seconds (default 30).' },
               count: { type: 'integer', description: 'How many to find (default 5).' }, language: { type: 'string', description: 'Optional: a language code like "en"; detected when left out.' } }, required: ['file'] } },
         { name: 'media_speak', run: toolSpeak, annotations: { readOnlyHint: false, destructiveHint: false },
-          description: 'Read text aloud with a free AI voice on the user\'s computer (Kokoro, natural; or Piper, quicker) and save it as an MP3: for voiceovers, narration, intros. Voices: Kokoro af_sarah (default), af_bella, af_nicole, af_sky, am_adam, am_michael, bf_emma, bf_isabella, bm_george, bm_lewis; Piper lessac, amy, ryan, alan (a American, b British, f female, m male). English only. Use it when the user wants a voice file on its own; to put a voice over a video in one go use media_edit\'s voiceover step instead.',
-          inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'The words to read aloud.' }, voice: { type: 'string', description: 'A voice from the list above (default af_sarah).' }, engine: { type: 'string', enum: ['kokoro', 'piper'], description: 'kokoro (natural, default) or piper (quicker).' },
+          description: 'Read text aloud with a free AI voice on the user\'s computer (Kokoro, natural; or Piper, quicker) and save it as an MP3: for voiceovers, narration, intros. Voices: Kokoro af_kore (Kore, the default), af_heart, af_bella, af_nicole, af_sarah, af_sky, af_alloy, af_aoede, af_jessica, af_nova, af_river, am_adam, am_michael, am_echo, am_eric, am_fenrir, am_liam, am_onyx, am_puck, bf_emma, bf_isabella, bf_alice, bf_lily, bm_george, bm_lewis, bm_daniel, bm_fable; Piper lessac, amy, ryan, alan (a American, b British, f female, m male). English only. Use it when the user wants a voice file on its own; to put a voice over a video in one go use media_edit\'s voiceover step instead.',
+          inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'The words to read aloud.' }, voice: { type: 'string', description: 'A voice from the list above (default af_kore).' }, engine: { type: 'string', enum: ['kokoro', 'piper'], description: 'kokoro (natural, default) or piper (quicker).' },
               speed: { type: 'number', description: '0.5 to 2 (default 1).' }, output_name: { type: 'string', description: 'Optional: a short name for the MP3, without extension.' } }, required: ['text'] } }
     ];
 

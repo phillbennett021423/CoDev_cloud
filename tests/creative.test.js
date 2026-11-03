@@ -730,3 +730,71 @@ bpy.ops.export_scene.gltf(filepath=sys.argv[-1], export_format='GLB')
     const clean = await svc.callTool('art_mesh', { op: 'cleanup', input: 'refs/box.glb', drop_hidden: true, no_preview: true });
     assert.match(textOf(clean), /Dropped 12 triangles no camera angle can see/);
 });
+
+// Reference pictures: what an agent made is held against them detail by detail.
+function helmetPicture(file, { visor = '(0,220,220)', crest = true, stripes = true } = {}) {
+    execFileSync(unix ? 'python3' : 'python', ['-c', [
+        'from PIL import Image, ImageDraw',
+        'im = Image.new("RGB", (400, 600), (255, 255, 255)); d = ImageDraw.Draw(im)',
+        'd.ellipse([120, 40, 280, 200], fill=(60, 60, 70))',
+        `d.rectangle([140, 100, 260, 140], fill=${visor})`,
+        crest ? 'd.polygon([(200, 0), (215, 45), (185, 45)], fill=(200, 40, 40))' : 'pass',
+        'd.rectangle([110, 200, 290, 520], fill=(80, 80, 90))',
+        stripes ? '[d.line([(120, y), (280, y)], fill=(200, 200, 210), width=3) for y in range(220, 500, 16)]' : 'pass',
+        `im.save(r"${file}")`].join('\n')]);
+}
+
+test('art_compare_reference: the render beside the reference, what differs and where, as pictures', { skip: !hasPython }, async () => {
+    const dir = project();
+    helmetPicture(path.join(dir, 'refs', 'ref.png'));
+    helmetPicture(path.join(dir, 'refs', 'render.png'), { visor: '(220,120,0)', crest: false, stripes: false });
+    helmetPicture(path.join(dir, 'refs', 'same.png'));
+    const svc = createCreativeService({ getProjectDir: () => dir, env: { ...process.env, CODEV_COMFYUI_URL: 'http://127.0.0.1:1' } });
+    assert.ok(svc.tools.some(t => t.name === 'art_compare_reference'));
+    const res = await svc.callTool('art_compare_reference', { references: [{ image: 'refs/ref.png', view: 'front' }], renders: ['refs/render.png'], name: 'aegis helmet' });
+    const out = textOf(res);
+    assert.ok(!res.isError, out);
+    assert.equal(res.structuredContent.passed, false);
+    assert.match(out, /^front: \d+% match \(below the 80% target\); shape \d+%, colours \d+%, fine detail \d+%\./m);
+    assert.match(out, /colours differ: the reference is #\w{6}, the render #\w{6}/);
+    assert.match(out, /the reference has [\d.]+x the fine detail here/);
+    assert.match(out, /Colours in the reference the render lacks: #\w{6}/);
+    assert.match(out, /list each difference/);
+    assert.equal(res.content.filter(c => c.type === 'image').length, 2, 'the sheet and the close-ups');
+    const pair = res.structuredContent.pairs[0];
+    assert.ok(fs.existsSync(path.join(dir, pair.sheet)) && fs.existsSync(path.join(dir, pair.closeups)));
+    assert.match(pair.sheet, /^art\/reviews\/aegis_helmet-match\//);
+    // The same picture matches.
+    const same = await svc.callTool('art_compare_reference', { references: ['refs/ref.png'], renders: ['refs/same.png'], no_preview: true });
+    assert.equal(same.structuredContent.passed, true, textOf(same));
+    assert.ok(same.structuredContent.pairs[0].overall > 0.97);
+    assert.equal(same.content.filter(c => c.type === 'image').length, 0);
+    // Shape only (a clay render): colours don't count.
+    const shape = await svc.callTool('art_compare_reference', { references: ['refs/ref.png'], renders: ['refs/render.png'], mode: 'shape', no_preview: true });
+    assert.equal(shape.structuredContent.mode, 'shape');
+    assert.doesNotMatch(textOf(shape), /colours differ/);
+    // Nothing to compare with.
+    assert.ok((await svc.callTool('art_compare_reference', { references: ['refs/ref.png'] })).isError);
+    assert.ok((await svc.callTool('art_compare_reference', {})).isError);
+});
+
+test('art_skin_pipeline holds each pass to the reference pictures before the user sees it', { skip: !hasPython || !unix }, async () => {
+    const fake = await fakeComfy();
+    const dir = godotProject();
+    try {
+        helmetPicture(path.join(dir, 'refs', 'aegis_front.png'));
+        const svc = createCreativeService({ getProjectDir: () => dir, env: { ...process.env, CODEV_COMFYUI_URL: fake.url } });
+        // The stand-in ComfyUI makes a 1x1 picture, which is nothing like the reference.
+        const res = await svc.callTool('art_skin_pipeline', { brief: 'AEGIS helmet', character: 'relay', slot: 'helmet', references: ['refs/aegis_front.png'], reference_views: ['front'], no_preview: true });
+        const out = textOf(res);
+        assert.ok(!res.isError, out);
+        assert.match(out, /✓ AEGIS helmet concept: held against the reference \(front \d+%\)/);
+        assert.match(out, /Pass 1 of 4 \(concept art\) for "AEGIS helmet" still has problems, so don't show it/);
+        assert.match(out, /doesn't match the reference "front" yet/);
+        assert.match(out, /It doesn't look like the reference yet\. Open the comparison sheets/);
+        assert.equal(res.structuredContent.problems[0].code, 'reference');
+        const state = JSON.parse(fs.readFileSync(path.join(dir, 'art/skins/aegis_helmet/skin.json'), 'utf8'));
+        assert.deepEqual(state.reference_views, ['front']);
+        assert.equal(state.passes.concept.status, 'needs_fix');
+    } finally { fake.close(); }
+});

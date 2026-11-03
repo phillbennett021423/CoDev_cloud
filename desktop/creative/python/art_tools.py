@@ -19,6 +19,9 @@ Nothing here goes online. Commands:
   upscale       2x/4x Lanczos with sharpening (fallback when no AI upscaler)
   palette       the main colours of pictures
   contact       a labelled contact sheet of pictures
+  compare       a reference picture next to a render, detail by detail: shape,
+                colours and fine detail compared in a grid, the worst places
+                boxed, close-ups of them, and scores
   box_mask      a white-on-black mask for a box in a picture
   region_mask   a try-on mask: a body region of a character, inside its silhouette
   thumb         a square icon from a picture
@@ -544,6 +547,235 @@ def cmd_sfx(a):
         f.setframerate(sr)
         f.writeframes((y * 32767).astype("<i2").tobytes())
     return {"ok": True, "files": {"sfx": a["output"]}, "seconds": round(len(y) / sr, 2)}
+
+
+# ---------- Reference vs render ----------
+
+ROW_NAMES = {3: ["top", "middle", "bottom"], 4: ["top", "upper middle", "lower middle", "bottom"], 5: ["top", "upper", "middle", "lower", "bottom"]}
+COL_NAMES = {3: ["left", "centre", "right"], 4: ["far left", "left", "right", "far right"], 5: ["far left", "left", "centre", "right", "far right"]}
+
+
+def hexof(c):
+    c = np.clip(np.asarray(c, np.float32), 0, 1)
+    return "#%02x%02x%02x" % tuple(int(v * 255 + 0.5) for v in c[:3])
+
+
+def subject(img, height, pad=0.04):
+    """The subject cut out of its background, cropped to it and scaled to height."""
+    img = img.convert("RGBA")
+    sil = silhouette(img)
+    ys, xs = np.nonzero(sil > 0.5)
+    if not len(ys):
+        sil = np.ones(sil.shape, np.float32)
+        ys, xs = np.nonzero(sil)
+    y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+    py, px = int((y1 - y0) * pad), int((x1 - x0) * pad)
+    y0, y1, x0, x1 = max(0, y0 - py), min(sil.shape[0], y1 + py), max(0, x0 - px), min(sil.shape[1], x1 + px)
+    rgb = arr(img.convert("RGB"))[y0:y1, x0:x1]
+    m = sil[y0:y1, x0:x1]
+    w = max(1, int(round((x1 - x0) * height / max(1, y1 - y0))))
+    rgb = arr(to_img(rgb).resize((w, height), Image.LANCZOS))
+    m = np.asarray(Image.fromarray((m * 255).astype(np.uint8)).resize((w, height), Image.BILINEAR), np.float32) / 255
+    # On one neutral grey, so the backgrounds (white paper, a render's sky) don't count.
+    rgb = rgb * m[..., None] + 0.5 * (1 - m[..., None])
+    return rgb, m
+
+
+def centre(a, width, fill):
+    h, w = a.shape[:2]
+    out = np.full((h, width) + a.shape[2:], fill, np.float32)
+    x = (width - w) // 2
+    out[:, x:x + w] = a
+    return out
+
+
+def shift_scale(a, s, tx, ty, fill):
+    """a scaled by s about its centre and moved by tx, ty pixels (same size out)."""
+    h, w = a.shape[:2]
+    cx, cy = w / 2, h / 2
+    coeffs = (1 / s, 0, cx - (cx + tx) / s, 0, 1 / s, cy - (cy + ty) / s)
+    if a.ndim == 2:
+        img = Image.fromarray((np.clip(a, 0, 1) * 255).astype(np.uint8), "L")
+        return np.asarray(img.transform((w, h), Image.AFFINE, coeffs, Image.BILINEAR, fillcolor=int(fill * 255)), np.float32) / 255
+    return arr(to_img(a).transform((w, h), Image.AFFINE, coeffs, Image.BICUBIC, fillcolor=tuple([int(fill * 255)] * 3)))
+
+
+def align(ref_m, ren_rgb, ren_m, bg):
+    """Moves and scales the render so its outline sits best on the reference's (a part
+    missing at the top shouldn't make the whole render look the wrong size)."""
+    h, w = ref_m.shape
+    f = 64 / h
+    small = lambda m: np.asarray(Image.fromarray((m * 255).astype(np.uint8)).resize((max(8, int(w * f)), 64), Image.BILINEAR), np.float32) / 255 > 0.5
+    rs, ns = small(ref_m), small(ren_m).astype(np.float32)
+    best, pick = -1, (1.0, 0, 0)
+    for s in np.arange(0.8, 1.21, 0.05):
+        for dy in range(-6, 7, 1):
+            for dx in range(-4, 5, 1):
+                m = shift_scale(ns, s, dx, dy, 0) > 0.5
+                iou = (m & rs).sum() / max(1, (m | rs).sum())
+                if iou > best + 1e-6 or (abs(iou - best) < 1e-6 and abs(s - 1) + abs(dx) + abs(dy) < abs(pick[0] - 1) + abs(pick[1]) + abs(pick[2])):
+                    best, pick = iou, (float(s), dx, dy)
+    s, dx, dy = pick
+    if (s, dx, dy) == (1.0, 0, 0):
+        return ren_rgb, ren_m, pick
+    return shift_scale(ren_rgb, s, dx / f, dy / f, bg), shift_scale(ren_m, s, dx / f, dy / f, 0), pick
+
+
+def detail_map(rgb):
+    g = gray(rgb)
+    gx = np.abs(np.diff(g, axis=1, append=g[:, -1:]))
+    gy = np.abs(np.diff(g, axis=0, append=g[-1:, :]))
+    return gx + gy
+
+
+def main_colours(rgb, mask, count=6):
+    px = rgb[mask > 0.5]
+    if len(px) < 10:
+        return []
+    if len(px) > 40000:
+        px = px[:: len(px) // 40000 + 1]
+    q = Image.fromarray((px.reshape(-1, 1, 3) * 255).astype(np.uint8)).quantize(colors=count, method=Image.Quantize.MEDIANCUT)
+    pal = np.asarray(q.getpalette()[: count * 3], np.float32).reshape(-1, 3) / 255
+    total = len(px)
+    return [{"hex": hexof(pal[i]), "rgb": pal[i].tolist(), "share": round(n / total, 3)} for n, i in sorted(q.getcolors(), reverse=True) if i < len(pal)]
+
+
+def cmd_compare(a):
+    height = int(a.get("size", 512))
+    grid = max(3, min(5, int(a.get("grid", 3))))
+    mode = a.get("mode", "full")  # full: shape, colour and detail; shape: the outline only (clay renders)
+    out_dir = a["output_dir"]
+    os.makedirs(out_dir, exist_ok=True)
+    try:
+        font = ImageFont.load_default(size=16)
+        small = ImageFont.load_default(size=13)
+    except TypeError:
+        font = small = ImageFont.load_default()
+    results = []
+    for n, pair in enumerate(a["pairs"]):
+        label = str(pair.get("label") or f"pair {n + 1}")
+        ref_rgb, ref_m = subject(Image.open(pair["reference"]), height)
+        ren_rgb, ren_m = subject(Image.open(pair["render"]), height)
+        width = max(ref_rgb.shape[1], ren_rgb.shape[1])
+        bg = 0.5
+        ref_rgb, ren_rgb = centre(ref_rgb, width, bg), centre(ren_rgb, width, bg)
+        ref_m, ren_m = centre(ref_m, width, 0), centre(ren_m, width, 0)
+        if a.get("align", True):
+            ren_rgb, ren_m, moved = align(ref_m, ren_rgb, ren_m, bg)
+        else:
+            moved = (1.0, 0, 0)
+        both, union = (ref_m > 0.5) & (ren_m > 0.5), (ref_m > 0.5) | (ren_m > 0.5)
+        shape = float(both.sum() / max(1, union.sum()))
+        ref_s, ren_s = blur(ref_rgb, 1.5), blur(ren_rgb, 1.5)
+        cdiff = np.abs(ref_s - ren_s).mean(-1)
+        colour = float(1 - min(1, cdiff[both].mean() / 0.35)) if both.any() else 0.0
+        ref_d, ren_d = detail_map(ref_rgb), detail_map(ren_rgb)
+        rd, nd = float(ref_d[ref_m > 0.5].mean()) if (ref_m > 0.5).any() else 0, float(ren_d[ren_m > 0.5].mean()) if (ren_m > 0.5).any() else 0
+        detail = float(min(rd, nd) / max(rd, nd, 1e-6))
+        overall = shape if mode == "shape" else 0.4 * shape + 0.35 * colour + 0.25 * detail
+
+        # The grid: where the two differ most.
+        cells = []
+        rows, cols = ROW_NAMES[grid], COL_NAMES[grid]
+        H, W = height, width
+        for r in range(grid):
+            for c in range(grid):
+                y0, y1, x0, x1 = r * H // grid, (r + 1) * H // grid, c * W // grid, (c + 1) * W // grid
+                u = union[y0:y1, x0:x1]
+                if u.mean() < 0.02:
+                    continue
+                rm, nm = ref_m[y0:y1, x0:x1] > 0.5, ren_m[y0:y1, x0:x1] > 0.5
+                missing = float((rm & ~nm).sum() / max(1, u.sum()))
+                extra = float((nm & ~rm).sum() / max(1, u.sum()))
+                b = rm & nm
+                cd = float(cdiff[y0:y1, x0:x1][b].mean()) if b.any() else 0.0
+                rdc = float(ref_d[y0:y1, x0:x1][rm].mean()) if rm.any() else 0.0
+                ndc = float(ren_d[y0:y1, x0:x1][nm].mean()) if nm.any() else 0.0
+                ratio = (ndc + 1e-4) / (rdc + 1e-4)
+                dgap = min(1.0, abs(math.log2(ratio)) / 2)
+                score = 0.45 * (missing + extra) + (0 if mode == "shape" else 0.35 * min(1, cd / 0.35) + 0.2 * dgap)
+                notes = []
+                if missing > 0.12:
+                    notes.append(f"the reference has a part here the render is missing ({round(missing * 100)}% of this area)")
+                if extra > 0.12:
+                    notes.append(f"the render has shape here the reference doesn't ({round(extra * 100)}% of this area)")
+                if mode != "shape" and b.any() and cd > 0.12:
+                    notes.append(f"colours differ: the reference is {hexof(ref_rgb[y0:y1, x0:x1][b].mean(0))}, the render {hexof(ren_rgb[y0:y1, x0:x1][b].mean(0))}")
+                if mode != "shape" and rm.any() and nm.any() and ratio < 0.6:
+                    notes.append(f"the reference has {round(1 / ratio, 1)}x the fine detail here (trims, panel lines, engraving, pattern, texture); the render is flatter")
+                if mode != "shape" and rm.any() and nm.any() and ratio > 1.7:
+                    notes.append(f"the render is {round(ratio, 1)}x busier or noisier here than the reference")
+                cells.append({"cell": f"{'ABCDE'[r]}{c + 1}", "where": f"{rows[r]} {cols[c]}" if rows[r] != "middle" or cols[c] != "centre" else "centre",
+                              "box": [x0, y0, x1, y1], "score": round(score, 3), "missing": round(missing, 3), "extra": round(extra, 3),
+                              "colour_diff": round(cd, 3), "detail_ratio": round(ratio, 2), "notes": notes})
+        places = [c for c in sorted(cells, key=lambda c: -c["score"]) if c["score"] > 0.1 and c["notes"]][:8]
+        worst = places[: int(a.get("closeups", 3))]
+
+        # The sheet: reference | render | differences, the grid over each, the worst places boxed.
+        heat = np.repeat(gray(ref_rgb)[..., None] * 0.55, 3, -1)
+        heat[..., 0] = np.maximum(heat[..., 0], np.clip(cdiff / 0.35, 0, 1) * both if mode != "shape" else 0)
+        mis, ext = (ref_m > 0.5) & (ren_m <= 0.5), (ren_m > 0.5) & (ref_m <= 0.5)
+        heat[mis] = [1.0, 0.85, 0.1]   # yellow: in the reference, missing from the render
+        heat[ext] = [0.2, 0.6, 1.0]    # blue: in the render, not in the reference
+        top = 30
+        sheet = Image.new("RGB", (max(W * 3 + 20, 760), H + top + 44), (24, 24, 28))
+        d = ImageDraw.Draw(sheet)
+        for i, (panel, name) in enumerate([(ref_rgb, "REFERENCE"), (ren_rgb, "RENDER"), (heat, "DIFFERENCES")]):
+            x = i * (W + 10)
+            sheet.paste(to_img(panel), (x, top))
+            d.text((x + 6, 7), name, fill=(240, 240, 240), font=font)
+            for g in range(1, grid):
+                d.line([(x + g * W // grid, top), (x + g * W // grid, top + H)], fill=(90, 90, 100), width=1)
+                d.line([(x, top + g * H // grid), (x + W, top + g * H // grid)], fill=(90, 90, 100), width=1)
+            for c in cells:
+                d.text((x + c["box"][0] + 3, top + c["box"][1] + 2), c["cell"], fill=(160, 160, 170), font=small)
+            for k, c in enumerate(worst):
+                bx = c["box"]
+                d.rectangle([x + bx[0] + 1, top + bx[1] + 1, x + bx[2] - 2, top + bx[3] - 2], outline=(255, 60, 60), width=3)
+                d.text((x + bx[2] - 16, top + bx[3] - 20), str(k + 1), fill=(255, 80, 80), font=font)
+        d.text((6, top + H + 5), f"{label}: overall {round(overall * 100)}%  shape {round(shape * 100)}%" + ("" if mode == "shape" else f"  colour {round(colour * 100)}%  detail {round(detail * 100)}%"), fill=(230, 230, 230), font=small)
+        d.text((6, top + H + 23), "Differences: yellow = in the reference, missing from the render; blue = extra in the render; red = colour off. Boxes 1-3: the worst places.", fill=(170, 170, 180), font=small)
+        base = os.path.join(out_dir, f"compare_{n + 1}")
+        sheet_path = save(sheet, base + "_sheet.jpg")
+
+        # Close-ups of the worst places, reference beside render.
+        close_path = ""
+        if worst:
+            ch = int(a.get("closeup_size", 320))
+            tiles = []
+            for k, c in enumerate(worst):
+                x0, y0, x1, y1 = c["box"]
+                mx, my = (x1 - x0) // 6, (y1 - y0) // 6
+                box = (max(0, x0 - mx), max(0, y0 - my), min(W, x1 + mx), min(H, y1 + my))
+                cw = max(1, int(round((box[2] - box[0]) * ch / max(1, box[3] - box[1]))))
+                tile = Image.new("RGB", (cw * 2 + 10, ch + 24), (24, 24, 28))
+                tile.paste(to_img(ref_rgb).crop(box).resize((cw, ch), Image.LANCZOS), (0, 24))
+                tile.paste(to_img(ren_rgb).crop(box).resize((cw, ch), Image.LANCZOS), (cw + 10, 24))
+                ImageDraw.Draw(tile).text((4, 4), f"{k + 1}: {c['cell']} {c['where']} - reference | render", fill=(255, 120, 120), font=small)
+                tiles.append(tile)
+            cw = max(t.width for t in tiles)
+            closeups = Image.new("RGB", (cw, sum(t.height + 8 for t in tiles)), (24, 24, 28))
+            y = 0
+            for t in tiles:
+                closeups.paste(t, (0, y))
+                y += t.height + 8
+            close_path = save(closeups, base + "_closeups.jpg")
+
+        ref_pal, ren_pal = main_colours(ref_rgb, ref_m), main_colours(ren_rgb, ren_m)
+        missing_colours, extra_colours = [], []
+        if mode != "shape":
+            dist = lambda p, q: float(np.sqrt(((np.asarray(p["rgb"]) - np.asarray(q["rgb"])) ** 2).sum() / 3))
+            for p in ref_pal:
+                if p["share"] >= 0.05 and (not ren_pal or min(dist(p, q) for q in ren_pal) > 0.12):
+                    missing_colours.append(p)
+            for q in ren_pal:
+                if q["share"] >= 0.05 and (not ref_pal or min(dist(q, p) for p in ref_pal) > 0.12):
+                    extra_colours.append(q)
+        results.append({"label": label, "sheet": sheet_path, "closeups": close_path, "overall": round(overall, 3), "shape": round(shape, 3),
+                        "colour": round(colour, 3), "detail": round(detail, 3), "aligned": {"scale": round(moved[0], 2), "dx": moved[1], "dy": moved[2]},
+                        "worst": worst, "places": places, "cells": cells, "reference_palette": ref_pal, "render_palette": ren_pal,
+                        "missing_colours": missing_colours, "extra_colours": extra_colours})
+    return {"ok": True, "pairs": results}
 
 
 def cmd_info(a):

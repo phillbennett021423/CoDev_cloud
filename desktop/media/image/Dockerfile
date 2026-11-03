@@ -18,7 +18,11 @@ RUN apt-get update \
 # Torch 2.0 is the last one DeepFilterNet 0.5 runs on; Demucs is happy with it too.
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.0.1 torchaudio==2.0.2 \
  && pip install --no-cache-dir "numpy<2" faster-whisper==1.1.1 demucs==4.0.1 deepfilternet==0.5.6 soundfile==0.12.1 \
-      piper-tts==1.8.0 kokoro-onnx==0.3.3 rembg==2.0.69 librosa==0.11.0 pillow
+      piper-tts==1.8.0 rembg==2.0.69 librosa==0.11.0 pillow \
+ && pip install --no-cache-dir "numpy<2" onnxruntime==1.20.1 phonemizer-fork==3.3.2 espeakng-loader==0.2.4 colorlog==6.9.0 \
+ && pip install --no-cache-dir --no-deps kokoro-onnx==0.4.9
+# Kokoro 1.0 (its voices include Kore, CoDev's default) asks pip for numpy 2, but runs on
+# the numpy 1 that Torch 2.0 needs, so it goes in without its own requirements.
 
 ENV TORCH_HOME=/opt/models/torch \
     XDG_CACHE_HOME=/opt/models/cache \

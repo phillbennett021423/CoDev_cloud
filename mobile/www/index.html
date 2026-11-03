@@ -1310,6 +1310,7 @@
     <script src="agent-ui/notes-tables.js"></script>
     <script src="agent-ui/azgaar-maps.js"></script>
     <script src="agent-ui/page-extract.js"></script>
+    <script src="agent-ui/video-watch.js"></script>
     <script src="agent-ui/phone-browser.js"></script>
     <script src="agent-ui/story-studio.js"></script>
     <script src="agent-ui/lore-bridges.js"></script>
@@ -4521,6 +4522,55 @@
             return callMcpTool(tool, args, ctx);
         }
 
+        // SEEING TOOL PICTURES
+        // Claude sees the pictures in a tool's result as pictures (in the tool_result):
+        // browser screenshots, frames from browser_watch_video, art_mesh renders and
+        // art_compare_reference sheets. Other providers' text models can't, so a vision
+        // model writes down what the pictures show instead, when there's a Groq key.
+        const MAX_TOOL_IMAGES_PER_RESULT = 24;
+        const MAX_TOOL_IMAGES_KEPT = 48;
+        const TOOL_IMAGE_EDGE = 1568;
+
+        async function toolImagesForModel(content) {
+            const images = (content || []).filter(c => c && c.type === "image" && c.data).slice(0, MAX_TOOL_IMAGES_PER_RESULT);
+            const out = [];
+            for (const image of images) {
+                const url = `data:${image.mimeType || "image/png"};base64,${image.data}`;
+                try {
+                    const img = await loadImageElement(url);
+                    const big = Math.max(img.naturalWidth, img.naturalHeight) > TOOL_IMAGE_EDGE;
+                    // Small JPEGs go as they are; big or PNG pictures are made a smaller JPEG.
+                    out.push(!big && /jpe?g/.test(image.mimeType || "") && image.data.length < 1500000 ? url : sourceToJpeg(img, img.naturalWidth, img.naturalHeight, TOOL_IMAGE_EDGE, 0.85));
+                } catch (err) {
+                    if (/^image\/(png|jpe?g|gif|webp)$/.test(image.mimeType || "") && image.data.length < 5000000) out.push(url);
+                }
+            }
+            return out;
+        }
+
+        async function describeToolImagesInWords(images, toolName) {
+            if (!groqKey || typeof readImagesWithVision !== "function") return "\n[This model can't see pictures. Switch to Claude (Anthropic) in Settings for agents that look at screenshots, video frames and renders themselves.]";
+            try {
+                const notes = await readImagesWithVision(images.map((url, i) => ({ name: `Picture ${i + 1}`, url })),
+                    `${toolName} returned these pictures. Describe exactly what each one shows: layout, objects, colours, shapes, text and small details.`);
+                return `\n\n[What the pictures show, written by the vision model]\n${notes}`;
+            } catch (err) {
+                return `\n[The vision model couldn't read the pictures: ${err.message}]`;
+            }
+        }
+
+        // Pictures stay with the conversation for later rounds; past MAX_TOOL_IMAGES_KEPT the oldest go.
+        function trimToolImages(messages) {
+            let total = messages.reduce((n, m) => n + (m.images ? m.images.length : 0), 0);
+            for (const m of messages) {
+                if (total <= MAX_TOOL_IMAGES_KEPT) break;
+                if (!m.images || !m.images.length) continue;
+                total -= m.images.length;
+                delete m.images;
+                m.content = `${m.content}\n[The pictures from this step were dropped to make room for newer ones; call the tool again to see them.]`;
+            }
+        }
+
         async function callMcpTool(tool, args, ctx) {
             const shownName = tool.qualifiedName || tool.name;
             let result;
@@ -4542,10 +4592,25 @@
                 result = await mcpHubRequest({ op: "callTool", server: tool.server, name: tool.name, arguments: args });
             }
             let text = mcpContentToText(result.content);
+            // Pictures a tool returns (screenshots, video frames, art_* renders and
+            // comparison sheets) go to the agent's model too, so it can look at them.
+            const seen = ctx ? await toolImagesForModel(result.content) : [];
+            if (seen.length) {
+                let n = 0;
+                text = text.replace(/\[image content(?:, image\/[\w+.-]+)?\]/g, () => (++n <= seen.length ? `[picture ${n}: attached for you to look at]` : "[picture]"));
+                if (currentBackend === "anthropic") ctx.toolImages = seen;
+                else text += await describeToolImagesInWords(seen, shownName);
+            }
             // Pictures a CoDev tool returns (art_* contact sheets) show under the reply.
             if (tool.transport === "browser" && typeof keepToolImages === "function") {
                 const kept = await keepToolImages(result.content, shownName, ctx);
                 if (kept) text = text.replace(/\[image content, image\/\w+\]/g, "[picture shown to the user under your reply]");
+            }
+            // browser_watch_video's recorded sound (a video with no captions): its speech as text.
+            const sound = result.structuredContent && result.structuredContent.audio;
+            if (sound && sound.data && typeof transcribeVideoSound === "function") {
+                text += await transcribeVideoSound(sound);
+                delete result.structuredContent.audio;
             }
             // browser_extract sends every row here and only a preview as text: the rows
             // become a dataset for create_spreadsheet / create_csv.
@@ -5337,6 +5402,8 @@
             if (name === "browser_get_text") return "📖 Reading the page";
             if (name === "browser_wait_for") return "⏳ Waiting for the page";
             if (name === "browser_screenshot") return "📸 Taking a screenshot";
+            if (name === "browser_watch_video") return `🎬 Watching the video${args.start || args.end ? ` (${args.start || "0:00"} to ${args.end || "the end"})` : ""}`;
+            if (name === "art_compare_reference") return `🔍 Comparing ${args.name || "the render"} with the reference${[].concat(args.references || []).length > 1 ? "s" : ""}`;
             if (name === "browser_close") return "🌐 Closing the browser";
             if (name === "browser_list_credentials") return "🔐 Checking saved logins";
             if (name === "browser_login") return "🔐 Signing in (asks you first)";
@@ -5534,6 +5601,7 @@
                             const progress = await outlierProgress();
                             if (progress) show(`${step}\n⏳ ${progress}`);
                         }, 1500) : null;
+                        ctx.toolImages = null;
                         if (callCounts.get(signature) > 2) {
                             result = "Not run: you already made this exact call twice in this task. Repeating it won't change the result. Check what the earlier results actually show, then try a different approach, or stop and tell the user what is blocking you.";
                         } else {
@@ -5564,8 +5632,13 @@
                         }
                     }
                     // A researched list of legs is one line each: let a long list through whole.
-                    const limit = /^(outlier_research_list|read_screenshots|delegate_tasks|wide_research)$/.test(call.function?.name) ? MAX_TOOL_RESULT_CHARS * 6 : MAX_TOOL_RESULT_CHARS;
-                    messages.push({ role: "tool", tool_call_id: call.id, name: call.function?.name || "unknown", content: String(result).slice(0, limit) });
+                    const limit = /^(outlier_research_list|read_screenshots|delegate_tasks|wide_research|browser_watch_video)$/.test(call.function?.name) ? MAX_TOOL_RESULT_CHARS * 6 : MAX_TOOL_RESULT_CHARS;
+                    const toolMessage = { role: "tool", tool_call_id: call.id, name: call.function?.name || "unknown", content: String(result).slice(0, limit) };
+                    // The tool's pictures (screenshots, video frames, renders) go to the model with its result.
+                    if (tool && ctx.toolImages && ctx.toolImages.length) toolMessage.images = ctx.toolImages;
+                    ctx.toolImages = null;
+                    messages.push(toolMessage);
+                    trimToolImages(messages);
                     checkpoint();
                 }
             }
@@ -7905,6 +7978,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             // The reply length picked by the chat input caps every provider (a caller's own cap wins).
             body = { max_tokens: RESPONSE_LENGTHS[responseLength].maxTokens, ...body };
             if (currentBackend === "anthropic") return anthropicChatMessage(body, extras);
+            // Tool pictures are only for Claude; the other providers got them in words.
+            if (body.messages && body.messages.some(m => m.images)) body = { ...body, messages: body.messages.map(({ images, ...m }) => m) };
             const openRouter = currentBackend === "openrouter";
             const provider = openRouter
                 ? { name: "OpenRouter", host: "openrouter.ai", url: "https://openrouter.ai/api/v1/chat/completions", key: openRouterKey,
@@ -8009,7 +8084,11 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 if (m.role === "system") {
                     system.push(typeof m.content === "string" ? m.content : m.content.map(p => p.text || "").join("\n"));
                 } else if (m.role === "tool") {
-                    push("user", [{ type: "tool_result", tool_use_id: m.tool_call_id, content: String(m.content ?? "") }]);
+                    // A tool's pictures go inside its result, each after a label the text refers to.
+                    const content = m.images && m.images.length
+                        ? [{ type: "text", text: String(m.content ?? "") }, ...m.images.flatMap((url, i) => [{ type: "text", text: `Picture ${i + 1}:` }, toAnthropicImage(url)])]
+                        : String(m.content ?? "");
+                    push("user", [{ type: "tool_result", tool_use_id: m.tool_call_id, content }]);
                 } else if (m.role === "assistant") {
                     if (m.anthropic_content) { push("assistant", m.anthropic_content); continue; }
                     const blocks = m.content ? [{ type: "text", text: m.content }] : [];
@@ -8210,7 +8289,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 10. BE BRIEF: Say what the user needs and stop. Lead with the answer in plain words. No preamble, no restating the question, no repeating what you already said, no closing summary or offers of more help. A simple question gets one to three sentences, and most answers fit in about 150 words. Go longer only when the task needs it: code, a report or deep research, step-by-step instructions, or when the user asks for detail; even then, cut anything that doesn't help. Use lists or code blocks only when they help.
 
-11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: working as a seasoned pro in any profession or trade at the user's level, either teaching them step by step to do it themselves or doing it all for them (the 🤖/🎓/⚡ help-mode button by Send, and Settings > 🎓 Your field & level); a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); editing videos and audio the user attaches (cutting, joining, pauses and filler words, highlights, vertical for TikTok, captions, noise removal, voice and music separation, background music, beat-cut montages, slow motion, transitions, text, logos, color looks, AI voiceovers, background removal, upscaling, GIFs) with the media_* tools when CoDev runs on their computer with Docker; making and editing pictures (generate_image); the user's CoDev Notes (notes and CSV/JSON data tables kept in CoDev's 📝 Notes tab), in place of Google Docs and Sheets (notes_search, notes_read, notes_write, table_read, table_write); files in the user's MEGA cloud drive, in place of Google Drive (mega_search, mega_read_file, mega_save_file); fantasy maps from Azgaar's Fantasy Map Generator (map_read, map_generate); running Python and JavaScript right in the browser for exact math, data analysis of attached files and charts (run_code); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example editing files on their computer), say exactly how the user turns it on, as the workspace notes describe.
+11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: working as a seasoned pro in any profession or trade at the user's level, either teaching them step by step to do it themselves or doing it all for them (the 🤖/🎓/⚡ help-mode button by Send, and Settings > 🎓 Your field & level); a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); watching a YouTube or other web video in your browser (browser_watch_video: frames you look at plus its captions, no Google key needed); looking at the pictures your tools return (screenshots, video frames, renders) yourself; holding game art against the user's reference pictures detail by detail and fixing what differs (art_compare_reference); editing videos and audio the user attaches (cutting, joining, pauses and filler words, highlights, vertical for TikTok, captions, noise removal, voice and music separation, background music, beat-cut montages, slow motion, transitions, text, logos, color looks, AI voiceovers, background removal, upscaling, GIFs) with the media_* tools when CoDev runs on their computer with Docker; making and editing pictures (generate_image); the user's CoDev Notes (notes and CSV/JSON data tables kept in CoDev's 📝 Notes tab), in place of Google Docs and Sheets (notes_search, notes_read, notes_write, table_read, table_write); files in the user's MEGA cloud drive, in place of Google Drive (mega_search, mega_read_file, mega_save_file); fantasy maps from Azgaar's Fantasy Map Generator (map_read, map_generate); running Python and JavaScript right in the browser for exact math, data analysis of attached files and charts (run_code); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example editing files on their computer), say exactly how the user turns it on, as the workspace notes describe.
 
 12. ENGINE-SPECIFIC RULES:${engineRules ? `\n${engineRules}` : " none for this task."}`;
             

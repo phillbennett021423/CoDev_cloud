@@ -64,7 +64,8 @@ jobs:
           run find '{"input":"uploads/clip.mp4","query":"subscribe"}'
           python3 -c "import json; r=json.load(open('/tmp/result.json')); assert r['matches'], r"
           # Round 2: free voices, word-by-word captions, cutting pauses and fillers, highlights.
-          run speak '{"text":"This is Kokoro, a free voice.","voice":"af_sarah","output":"outputs/kokoro"}'
+          run speak '{"text":"This is Kore, the default Kokoro voice.","output":"outputs/kokoro"}'
+          run speak '{"text":"This is Sarah.","voice":"af_sarah","output":"outputs/kokoro_sarah"}'
           run speak '{"text":"This is Piper, a quicker free voice.","engine":"piper","voice":"amy","output":"outputs/piper"}'
           run edit '{"input":"uploads/clip.mp4","steps":[{"op":"remove_fillers"},{"op":"remove_silence"},{"op":"captions","style":"highlight"},{"op":"voiceover","text":"Welcome back.","voice":"am_michael","start":1}],"output":"outputs/talk"}'
           run highlights '{"input":"uploads/clip.mp4","length":5,"count":2}'

@@ -711,6 +711,53 @@
             return PE.toolResult(result, { name: args.name });
         }
 
+        // The video on the page, watched: frames as pictures and its captions, via video-watch.js.
+        const videoWatch = () => (typeof CodevVideoWatch !== "undefined" ? CodevVideoWatch : (typeof require === "function" ? require("./video-watch.js") : null));
+
+        // The tab's picture cut down to the video (rect is in the tab's dp), where the page can draw.
+        async function cropShot(shot, rect) {
+            if (!rect || !(rect.width > 0) || typeof document === "undefined" || typeof Image === "undefined") return { data: shot.data, mimeType: "image/jpeg" };
+            const img = await new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = () => reject(new Error("bad picture")); i.src = `data:image/jpeg;base64,${shot.data}`; });
+            const scale = img.naturalWidth / (shot.width || img.naturalWidth);
+            const x = Math.max(0, Math.round(rect.x * scale));
+            const y = Math.max(0, Math.round(rect.y * scale));
+            const w = Math.min(img.naturalWidth - x, Math.round(rect.width * scale));
+            const h = Math.min(img.naturalHeight - y, Math.round(rect.height * scale));
+            if (w < 20 || h < 20) return { data: shot.data, mimeType: "image/jpeg" };
+            const canvas = document.createElement("canvas");
+            canvas.width = w;
+            canvas.height = h;
+            canvas.getContext("2d").drawImage(img, x, y, w, h, 0, 0, w, h);
+            return { data: canvas.toDataURL("image/jpeg", 0.82).split(",")[1], mimeType: "image/jpeg" };
+        }
+
+        async function watchVideo(args, ctx) {
+            const VW = videoWatch();
+            if (!VW) throw new ToolError("browser_watch_video is not available in this copy of CoDev.");
+            if (!sessions.has(ctx.agentId)) throw new ToolError("Your browser is not open. Open the video's page with browser_navigate first.");
+            const tab = await workTab(ctx.agentId);
+            const adapter = {
+                evaluate: async (source, arg) => {
+                    const reply = await native.eval({ tab, script: `JSON.stringify((${source})(${JSON.stringify(arg)}))` });
+                    let value = reply && reply.value;
+                    for (let i = 0; i < 2 && typeof value === "string"; i++) { try { value = JSON.parse(value); } catch (err) { break; } }
+                    return value && typeof value === "object" ? value : null;
+                },
+                capture: async rect => {
+                    const shot = await native.capture({ tab, quality: 82, maxWidth: 1280 });
+                    try { return await cropShot(shot, rect); } catch (err) { return { data: shot.data, mimeType: "image/jpeg" }; }
+                },
+                sleep, now
+            };
+            let watched;
+            try { watched = await VW.watchVideo(adapter, args); } catch (err) {
+                if (err instanceof VW.WatchError) throw new ToolError(err.message);
+                throw err;
+            }
+            log(`[Phone browser] ${ctx.agentName} watched ${watched.frames.length} frame(s) of ${watched.info.url}.`);
+            return VW.toolResult(watched, args);
+        }
+
         async function closeBrowser(_args, ctx) {
             const session = sessions.get(ctx.agentId);
             if (session && session.paused) return failure("Your browser is paused for the user in the live view. Leave it open; the user hands it back when they're done.");
@@ -821,6 +868,7 @@
                   selector: { ...selectorProp, description: "Element to scroll into view first; omit for the page as it is." },
                   full_page: { type: "boolean", description: "Not available on the phone: the visible part is taken, so leave it out." },
                   save_as: { type: "string", description: "Not available on the phone (the picture isn't saved to a file), so leave it out." } } } },
+            ...(videoWatch() ? [{ ...videoWatch().TOOL, run: watchVideo, annotations: { readOnlyHint: true, openWorldHint: true } }] : []),
             { name: "browser_close", run: closeBrowser, annotations: { readOnlyHint: false },
               description: "Close your browser when a web task is finished. Use it once at the end; don't close it between steps of the same task. A browser the user has opened or used in the live view stays open for them.",
               inputSchema: { type: "object", properties: {} } },

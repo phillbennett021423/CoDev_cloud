@@ -1193,6 +1193,71 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
         return result;
     }
 
+    // Reference vs render, detail by detail: each reference picture beside the render of
+    // the same angle (rendered from the model with art_mesh op "review" when a model is
+    // given), compared in a grid for shape, colours and fine detail. The worst places are
+    // boxed and shown close up, so the agent sees what doesn't match and fixes it, then
+    // compares again. The numbers point; the pictures go to the agent to judge.
+    async function artCompareReference(args = {}) {
+        const r = rules();
+        const q = r.skin_quality || R.DEFAULT_RULES.skin_quality;
+        const refs = [].concat(args.references || []).map(x => (typeof x === 'string' ? { image: x } : x)).filter(x => x && x.image).slice(0, 6);
+        if (!refs.length) return text('art_compare_reference needs references: the reference pictures in the project (e.g. ["refs/helmet_front.png"]), or [{image, view}] to say which angle each shows.', true);
+        const views = refs.map((x, i) => String(x.view || [].concat(args.views || [])[i] || '').toLowerCase());
+        const name = slug(args.name || path.basename(String(refs[0].image)).replace(/\.\w+$/, ''), 40);
+        const target = Math.min(1, Math.max(0, Number(args.target) || Number(q.reference_match) || 0.8));
+        const mode = args.mode === 'shape' || args.clay ? 'shape' : 'full';
+        let renders = [].concat(args.renders || args.render || []).filter(Boolean);
+        const lines = [];
+        if (!renders.length && args.model) {
+            const wanted = [...new Set(views.map(v => v || 'front'))];
+            const rev = await artMesh({ op: 'review', input: args.model, name: `${name} match`, views: wanted, clay: mode === 'shape', category: args.category, no_preview: true });
+            if (rev.isError) return rev;
+            const got = (rev.structuredContent || {}).views || {};
+            renders = views.map(v => got[v || 'front'] || Object.values(got)[0]).filter(Boolean);
+            lines.push(`Rendered ${relOf(inProject(args.model))} from ${wanted.join(', ')} to match the references.`);
+        }
+        if (!renders.length) return text('art_compare_reference needs the render to check: renders (pictures of it, one per reference, same angle) or model (a .glb/.fbx that art_mesh renders from each reference\'s view).', true);
+        let pairs;
+        try {
+            pairs = refs.map((x, i) => ({ reference: inProject(x.image, { mustExist: true, label: 'references' }), render: inProject(renders[Math.min(i, renders.length - 1)], { mustExist: true, label: 'renders' }),
+                label: String(x.label || views[i] || `reference ${i + 1}`).slice(0, 40) }));
+        } catch (err) { return text(err.message, true); }
+        const outDir = folder('reviews', `${name}-match`);
+        let res;
+        try { res = await py('compare', { pairs, output_dir: outDir, grid: Number(args.grid) || 3, mode, closeups: 3 }); } catch (err) { return text(`Couldn't compare: ${err.message}`, true); }
+        const pct = x => `${Math.round(Number(x) * 100)}%`;
+        const images = [];
+        let passed = true;
+        for (const [i, p] of res.pairs.entries()) {
+            const ok = p.overall >= target;
+            if (!ok) passed = false;
+            lines.push(`${p.label}: ${pct(p.overall)} match${ok ? '' : ` (below the ${pct(target)} target)`}; shape ${pct(p.shape)}${mode === 'shape' ? '' : `, colours ${pct(p.colour)}, fine detail ${pct(p.detail)}`}.`);
+            for (const [k, c] of (p.places || p.worst).entries()) lines.push(`  ${k < p.worst.length ? `${k + 1}.` : '-'} ${c.cell} (${c.where}): ${c.notes.join('; ')}.`);
+            if (p.missing_colours.length) lines.push(`  Colours in the reference the render lacks: ${p.missing_colours.map(c => `${c.hex} (${pct(c.share)} of it)`).join(', ')}.`);
+            if (p.extra_colours.length) lines.push(`  Colours in the render the reference doesn't have: ${p.extra_colours.map(c => `${c.hex} (${pct(c.share)})`).join(', ')}.`);
+            const n = images.length;
+            if (!args.no_preview) {
+                images.push({ type: 'image', data: fs.readFileSync(p.sheet).toString('base64'), mimeType: 'image/jpeg' });
+                if (p.closeups) images.push({ type: 'image', data: fs.readFileSync(p.closeups).toString('base64'), mimeType: 'image/jpeg' });
+                lines.push(`  Pictures ${n + 1}${p.closeups ? ` and ${n + 2}` : ''}: reference | render | differences, then close-ups of boxes 1-${p.worst.length} (reference left, render right).`);
+            }
+            p.sheet = relOf(p.sheet);
+            if (p.closeups) p.closeups = relOf(p.closeups);
+            if (i >= 5) break;
+        }
+        lines.push(passed ? `Every pair is at or above the ${pct(target)} target. Still look at each picture yourself before calling it done.` : `Not a match yet.`);
+        lines.push('Now look at every pair yourself and list each difference a player or the user would notice, detail by detail: outline and proportions, parts missing or added, ' +
+            'colours and where they sit, trims, panel lines, patterns, logos and decals, eyes and face, materials and shine, wear. The numbers only point at places; small things like a logo, a trim colour or the shape of a visor are yours to catch. ' +
+            'Then fix them (art_edit for concept art and textures with the list of changes, art_materials or art_weathering for the material, art_mesh to put it back on the mesh, or a new mesh from Tripo/Meshy for shape), and call art_compare_reference again on the new render. ' +
+            'Repeat until nothing you can see differs; if you stop before that, tell the user exactly what still doesn\'t match.');
+        if (mode === 'full' && args.model && !args.renders) lines.push('A reference is usually lit and posed differently from a render: judge shading and pose differences by eye, and don\'t chase them as colour or shape errors.');
+        const result = text(lines.join('\n'), false, images);
+        result.structuredContent = { passed, target, mode, pairs: res.pairs.map(p => ({ label: p.label, overall: p.overall, shape: p.shape, colour: p.colour, detail: p.detail, worst: (p.places || p.worst).map(c => ({ cell: c.cell, where: c.where, notes: c.notes })),
+            missing_colours: p.missing_colours.map(c => c.hex), extra_colours: p.extra_colours.map(c => c.hex), sheet: p.sheet, closeups: p.closeups })) };
+        return result;
+    }
+
     // A skin from a brief, in passes the user approves: concept art, the mesh, the
     // textures, then effects and sounds; installed in Godot once the last one is approved.
     // Every mesh and texture pass is reviewed from every angle (art_mesh op "review") and
@@ -1259,6 +1324,24 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             return { model, passed: rev.passed !== false, problems: rev.problems || [], views, hidden_tris: (rev.mesh_checks || {}).hidden_tris, rigged };
         };
 
+        // The user's reference pictures, held against what a pass made (the pipeline's
+        // comparison sheets go on the sheet the user sees). Below the target, it's a
+        // problem to fix before the user is shown the pass.
+        const refList = [].concat(state.references || []).filter(Boolean).slice(0, 4);
+        const refViews = [].concat(state.reference_views || []);
+        const matchReferences = async (rendersByView, { label, mode }) => {
+            if (!refList.length) return [];
+            const renders = refList.map((_, i) => rendersByView[String(refViews[i] || 'front').toLowerCase()] || rendersByView.front || Object.values(rendersByView)[0]).filter(Boolean);
+            if (!renders.length) return [];
+            const cmp = await artCompareReference({ references: refList.map((image, i) => ({ image, view: refViews[i] || 'front' })), renders, name: `${label} ${mode === 'shape' ? 'shape' : 'look'}`, mode, no_preview: true });
+            if (cmp.isError) { log.push(`(reference check skipped: ${textOf(cmp)})`); return []; }
+            const sc = cmp.structuredContent;
+            log.push(`✓ ${label}: held against the reference${refList.length > 1 ? 's' : ''} (${sc.pairs.map(p => `${p.label} ${Math.round(p.overall * 100)}%`).join(', ')})`);
+            for (const p of sc.pairs) { sheet.push(inProject(p.sheet)); labels.push(`${label} vs reference ${p.label}`); }
+            return sc.pairs.filter(p => p.overall < sc.target).map(p => ({ code: 'reference', fix: '',
+                message: `${label} doesn't match the reference "${p.label}" yet (${Math.round(p.overall * 100)}%, target ${Math.round(sc.target * 100)}%): ${p.worst.slice(0, 3).map(c => `${c.where}: ${c.notes.join(', ')}`).join('; ') || 'see the comparison sheet'}${p.missing_colours.length ? `; missing colours ${p.missing_colours.join(' ')}` : ''}. Sheet: ${p.sheet}` }));
+        };
+
         const runPass = {
             async concept() {
                 if (state.concepts === false) return { status: 'skipped' };
@@ -1269,7 +1352,9 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
                     files.push(f || '');
                     if (f) { sheet.push(inProject(f)); labels.push(`${vName(vr)} concept`); }
                 }
-                return { status: 'ready', files };
+                const problems = [];
+                for (const [i, f] of files.entries()) if (f) problems.push(...await matchReferences({ front: f }, { label: `${vName(variants[i])} concept`, mode: 'full' }));
+                return { status: problems.length ? 'needs_fix' : 'ready', files, problems };
             },
             async mesh() {
                 const fullBody = /full/.test(String(state.slot)) && state.base;
@@ -1288,7 +1373,9 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
                     if (state.base) model = (await step(`rigged to ${state.base}`, () => artMesh({ op: 'rig', input: model, base: state.base, category, name: state.name, no_preview: true }))).output;
                 }
                 const rev = await reviewAndFix(model, { label: state.name, textured: false, rigged: Boolean(state.base) });
-                return { status: rev.passed ? 'ready' : 'needs_fix', model: rev.model, problems: rev.problems, views: rev.views, hidden_tris: rev.hidden_tris };
+                // The clay render has no colours yet: only its outline is held to the references.
+                const problems = [...rev.problems, ...await matchReferences(rev.views, { label: `${state.name} mesh`, mode: 'shape' })];
+                return { status: rev.passed && !problems.length ? 'ready' : 'needs_fix', model: rev.model, problems, views: rev.views, hidden_tris: rev.hidden_tris };
             },
             async textures() {
                 const model = (state.passes.mesh || {}).model;
@@ -1307,7 +1394,8 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
                     const maps = { albedo: set.albedo, normal: set.normal, roughness: set.roughness, metallic: set.metallic, emission: set.emission };
                     const tex = await step(`material on the mesh for ${vName(vr)}`, () => artMesh({ op: 'texture', input: model, category, name: vName(vr), maps, tile_scale: state.tile_scale || 2, no_preview: true }));
                     const rev = await reviewAndFix(tex.output, { label: vName(vr), textured: true, maps, rigged: Boolean(state.base) });
-                    out.push({ variant: vr, model: rev.model, stage_maps: stageMaps, problems: rev.problems, views: rev.views });
+                    const problems = [...rev.problems, ...await matchReferences(rev.views, { label: vName(vr), mode: 'full' })];
+                    out.push({ variant: vr, model: rev.model, stage_maps: stageMaps, problems, views: rev.views });
                 }
                 const problems = out.flatMap(o => o.problems || []);
                 return { status: problems.length ? 'needs_fix' : 'ready', variants: out, problems };
@@ -1359,9 +1447,11 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             const n = Q.PASSES.indexOf(p) + 1;
             const issues = (res.problems || []).map(x => `- ${x.message}`);
             if (res.status === 'waiting_for_mesh') return `Pass ${n} of 4 (${Q.PASS_NAMES[p]}) for "${state.name}" is waiting for a mesh. ${res.note}`;
-            if (res.status === 'needs_fix') return [`Pass ${n} of 4 (${Q.PASS_NAMES[p]}) for "${state.name}" still has problems after ${q.max_fix_rounds} automatic fix round(s), so don't show it to the user as finished:`, ...issues,
+            const refIssues = (res.problems || []).some(x => x.code === 'reference');
+            if (res.status === 'needs_fix') return [`Pass ${n} of 4 (${Q.PASS_NAMES[p]}) for "${state.name}" still has problems${refIssues ? '' : ` after ${q.max_fix_rounds} automatic fix round(s)`}, so don't show it to the user as finished:`, ...issues,
+                ...(refIssues ? ['It doesn\'t look like the reference yet. Open the comparison sheets on the attached picture, list every detail that differs (shape, colours, trims, patterns, logos, materials), and fix them: call again with pass "' + p + '" and feedback naming each change, or fix the files with art_edit/art_mesh and check with art_compare_reference.'] : []),
                 `Fix them (art_mesh, art_edit, or a cleaner mesh from Tripo/Meshy) and call again with name "${state.name}" and pass "${p}", or with feedback. Only if the user accepts it as it is: approve true with accept_issues true.`].join('\n');
-            return [`Pass ${n} of 4 (${Q.PASS_NAMES[p]}) for "${state.name}" passed its checks and is ready for the user. Show them the sheet${p === 'mesh' || p === 'textures' ? ' (every angle plus the face close-up)' : ''} and ask if they approve.`,
+            return [`Pass ${n} of 4 (${Q.PASS_NAMES[p]}) for "${state.name}" passed its checks and is ready for the user.${refList.length ? ' Before you show it, look at the reference comparison on the sheet yourself: if any detail still differs from the reference, fix it first.' : ''} Show them the sheet${p === 'mesh' || p === 'textures' ? ' (every angle plus the face close-up)' : ''} and ask if they approve.`,
                 `Approved: call art_skin_pipeline with name "${state.name}" and approve true. Changes: call with name "${state.name}" and feedback (their words); the pass is made again.`].join('\n');
         };
 
@@ -1469,9 +1559,16 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             _meta: { 'codev/alwaysAsk': true } },
         { name: 'art_godot_skin', description: 'Install a finished skin in the Godot 4 project as an equippable item: copies the .glb, its textures and an icon into the skins folder, writes one ORMMaterial3D per weathering stage, adds or updates the skin in the skin manifest JSON (id, name, character, slot, tier, rarity, model, materials, icon, stats, triangles), and keeps a SkinRegistry autoload that equips skins by slot (SkinRegistry.equip(character, id, variant)). Folders, slots and tiers come from the godot section of codev-studio.json. Use it when a finished .glb skin should become equippable in the game; to run every step from a brief use art_skin_pipeline instead.',
             inputSchema: { type: 'object', properties: { model: str('.glb from art_mesh'), name: str('Skin name, e.g. AEGIS armour'), display_name: str('Shown in game, if different'), character: str('The character the skin is for, e.g. relay'), slot: str('e.g. helmet, chest, arms, legs, weapon, full_body'), tier: num('1-5 (studio tiers map to rarities)'), rarity: str('Or the rarity itself'), variants: { type: 'object', description: '{stage: {albedo, orm, normal, emission}} from art_weathering' }, maps: { type: 'object', description: 'Or one map set {albedo, orm, normal, emission}' }, icon: str('Picture for the icon (a concept or render)'), rigged: bool('Skinned to the character\'s skeleton (art_mesh op "rig")'), tile_scale: num('Texture tiling used on the mesh'), stats: { type: 'object', description: 'Game stats to store' }, tags: arr('Tags stored with the skin, like ["neon", "season4"]'), description: str('Item description'), tris: num('Triangle count if known'), category: str('Budget category (default skin)'), id: str('A fixed skin id to keep (default: made from the name); pass the old id to update a skin'), godot_dir: str('Folder with project.godot'), registry: bool('Write the SkinRegistry autoload (default true)') }, required: ['model', 'name', 'character', 'slot'] } },
+        { name: 'art_compare_reference', description: 'Check a render against reference pictures detail by detail: puts each reference beside the render from the same angle (renders a model from each reference\'s view with art_mesh op "review" when model is given), compares them in a grid for outline, colours and fine detail (trims, panel lines, patterns), and returns scores, the worst places in words, a reference | render | differences sheet and close-ups of the worst places as pictures you look at. ' +
+            'Use it whenever the user gave reference pictures for a cosmetic, skin, character or asset and you made or changed it: list every difference you see, fix them, and call it again until nothing differs. art_skin_pipeline runs it on every pass by itself when its brief has references. Not for checking a model\'s own problems (holes, stretched UVs: art_mesh op "review") or for finding pictures (web_search).',
+            inputSchema: { type: 'object', properties: { references: { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'object', properties: { image: { type: 'string' }, view: { type: 'string' }, label: { type: 'string' } } }] }, description: 'Reference pictures in the project, as paths, or [{image, view, label}] where view is the angle it shows (front, back, left, right, top, below, face); up to 6' },
+                renders: arr('Pictures of what you made, one per reference from the same angle (paths in the project)'), model: str('Or a .glb/.fbx/.obj to render from each reference\'s view'),
+                views: arr('The angle of each reference, in order, when references are plain paths (default front)'), mode: str('full (outline, colours and detail; default) or shape (outline only, for an untextured clay model)'),
+                target: num('Overall match (0-1) that counts as matching (default skin_quality.reference_match, 0.8)'), grid: num('Grid size for finding differences: 3 (default), 4 or 5 for smaller details'),
+                name: str('Name for the comparison files (in art/reviews)'), category: str('Budget category when rendering a model'), no_preview: bool('Leave out the pictures (numbers and words only)') }, required: ['references'] } },
         { name: 'art_skin_pipeline', description: 'Make a skin from a brief to an equippable item in Godot, held to the visible-first rule: anything the player can see (face, hair, outer armour and clothing, hands, weapon, back and underside) must look perfect, and hidden geometry is low priority. It works in four passes the user approves one at a time: 1 concept art per variant, 2 the mesh (from the user\'s Tripo or Meshy export: cleaned to the poly budget, UV-unwrapped, rigged onto the character\'s base rig), 3 textures (a PBR material per variant, weathering stages, put on the mesh), 4 effects and sounds plus the in-game camera check. Passes 2 and 3 are rendered from every angle (front, back, sides, top, below, face close-up) and checked; what can be fixed is fixed and checked again before the user sees it. Once pass 4 is approved it installs the skin in Godot and saves its settings as a template. Progress is kept in art/skins/<name>/skin.json, so call it again with name to carry on. Use it when the user wants a skin made; for a single step call that step\'s tool instead (art_generate, art_materials, art_mesh, art_godot_skin). Never pass approve true unless the user said they approve what you showed them.',
             inputSchema: { type: 'object', properties: { brief: str('What the skin is, in the user\'s words'), theme: str('The theme or idea, e.g. "winter festival" or "void knight"'), palette: arr('Colours, as names or #hex, e.g. ["deep red", "gold", "#1a1a1a"]'),
-                materials: arr('Materials, e.g. ["carbon fibre", "polished gold", "glowing runes"]'), silhouette: str('What changes on the outline, e.g. "adds swept-back wings and a crown"'), references: arr('Up to 4 reference pictures in the project that show the look'),
+                materials: arr('Materials, e.g. ["carbon fibre", "polished gold", "glowing runes"]'), silhouette: str('What changes on the outline, e.g. "adds swept-back wings and a crown"'), references: arr('Up to 4 reference pictures in the project that show the look; every pass is compared with them detail by detail and must match before the user sees it'), reference_views: arr('The angle each reference shows, in order: front, back, left, right, top, below or face (default front)'),
                 character: str('The character the skin is for, e.g. relay'), slot: str('The equipment slot, e.g. chest, helmet or full_body'), name: str('Skin name, e.g. AEGIS armour (default: from the brief); the same name carries on a skin already started'),
                 pass: str('Which pass to run: next (default: the next one not approved), all (every pass in one go without stopping for approval), concept, mesh, textures or fx (make that pass again)', { enum: ['next', 'all', 'concept', 'mesh', 'textures', 'fx'] }),
                 approve: bool('The user approved the pass they were shown; marks it approved and runs the next one'), feedback: str('The user\'s changes for the pass they were shown, in their words; the pass is made again with them'),
@@ -1505,7 +1602,7 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
         art_style: artStyle, art_captions: artCaptions, art_lora_train: artLoraTrain, art_materials: artMaterials, art_pbr_maps: artPbrMaps,
         art_weathering: artWeathering, art_mesh: artMesh, art_reframe: artReframe, art_cutout: artCutout, art_upscale: artUpscale,
         art_playable_ad: artPlayableAd, art_audio: artAudio, art_voice_clone: artVoiceClone,
-        art_godot_skin: artGodotSkin, art_skin_pipeline: artSkinPipeline, art_lore: artLore
+        art_godot_skin: artGodotSkin, art_skin_pipeline: artSkinPipeline, art_compare_reference: artCompareReference, art_lore: artLore
     };
 
     async function callTool(name, args = {}) {
