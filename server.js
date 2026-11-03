@@ -293,7 +293,7 @@ server.on('error', err => {
 server.listen(PORT, '127.0.0.1', () => {
     const port = server.address().port;
     OWN_ORIGINS = [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
-    console.log(`CoDev Studio is running at http://localhost:${port} (Ctrl+C to stop)`);
+    console.log(`CoDev Studio Beta is running at http://localhost:${port} (Ctrl+C to stop)`);
     describeConfig(config).forEach(line => console.log(`  ${line}`));
     agentServices.then(async router => {
         if (!router) return;

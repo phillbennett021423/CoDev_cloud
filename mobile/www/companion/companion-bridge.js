@@ -1,10 +1,12 @@
 /*
- * CodevCompanion: connects CoDev's real work to the VortexCompanion avatar.
+ * CodevCompanion: connects CoDev's real work to the robot's moves (VortexCompanion).
  *
- * The page calls three things:
+ * The page calls these:
  *   CodevCompanion.inference(promiseFn)              around every model call
  *   CodevCompanion.tool(name, args, promiseFn)       around every agent tool call
- *   CodevCompanion.mount(element)                    once, to draw the floating avatar
+ *   CodevCompanion.finished(usedTools)               when an agent's reply is done
+ *   CodevCompanion.start()                           once, at page load
+ *   CodevCompanion.attach(element, { accent })       to put the live robot in the chat header
  * Everything else (offline/online, sleep after a long quiet spell) runs on its own.
  * The classifiers are pure functions so tests can check them without a browser.
  */
@@ -14,6 +16,7 @@
   var API_PENDING_MS = 8000;        // a model call this slow shows "Waiting / Zoning Out"
   var SIP_EVERY_MS = 90000;         // at most one coffee sip per 90 seconds
   var SLEEP_AFTER_MS = 15 * 60000;  // no work and no input for 15 minutes: sleep mode
+  var REPLY_DANCE_EVERY_MS = 120000; // a plain chat reply gets a little groove at most every 2 minutes
   var STORAGE_KEY = 'codev_companion';
 
   function C() { return root.VortexCompanion; }
@@ -38,8 +41,10 @@
     { kind: 'weigh', test: /^(outlier_|odds_)/ },
     // Pages loading in the agents' browser.
     { kind: 'network', test: /^browser_(navigate|login|load_session|wait_for)$/ },
-    // Running code and writing it.
-    { kind: 'script', test: /^(run_command|run_local_command|blender_run|write_file|write_workspace_file|edit_file|edit_workspace_file|delete_file|submit_changes|gamedev|godot_editor|godot_install_bridge)$/ },
+    // Writing and fixing code.
+    { kind: 'edit', test: /^(write_file|write_workspace_file|edit_file|edit_workspace_file|delete_file)$/ },
+    // Running code.
+    { kind: 'script', test: /^(run_command|run_local_command|blender_run|submit_changes|gamedev|godot_editor|godot_install_bridge)$/ },
     // Checks that pass or fail like a build.
     { kind: 'check', test: /^(godot_check|godot_validate|syntax)$/ },
     // Looking things up.
@@ -54,6 +59,7 @@
     weigh: ['weigh.start', 'weigh.end'],
     network: ['network.loading', 'network.done'],
     script: ['script.run', 'script.end'],
+    edit: ['edit.start', 'edit.end'],
     check: ['script.run', 'script.end'],
     search: ['search.start', 'search.end'],
     log: ['log.stream', 'log.end'],
@@ -87,6 +93,23 @@
     return /^(Error|Tool failed)/.test(text) ? 'build.error' : null;
   }
 
+  // 'changes.submitted', 'merge.done' or null: the milestones worth a party.
+  var MERGE_TOOL = /(^|_)merge(_|$)|^merge/;
+  var MERGE_COMMAND = /(^|[\s;&|])(git merge\b|gh pr merge\b)/;
+  function milestone(toolName, args, resultText) {
+    var n = baseName(toolName);
+    var text = String(resultText == null ? '' : resultText);
+    if (/^(Error|Tool failed|Not run|Unknown tool|The user declined)/.test(text)) return null;
+    if (n === 'submit_changes') return 'changes.submitted';
+    if (MERGE_TOOL.test(n)) return 'merge.done';
+    if (/^(run_command|run_local_command)$/.test(n)) {
+      var command = String((args && args.command) || '');
+      var code = /Exit code:\s*(-?\d+)/.exec(text);
+      if (MERGE_COMMAND.test(command) && code && code[1] === '0' && !/CONFLICT/.test(text)) return 'merge.done';
+    }
+    return null;
+  }
+
   // ---- Wrappers the page calls ---------------------------------------------
   var inFlight = 0;
   var lastSip = -Infinity;
@@ -118,10 +141,24 @@
       if (pair) send(pair[1]);
       var outcome = failed ? null : buildOutcome(name, args, result);
       if (outcome) send(outcome);
+      var party = failed ? null : milestone(name, args, result);
+      if (party) send(party);
     };
     var p;
     try { p = Promise.resolve(fn()); } catch (err) { p = Promise.reject(err); }
     return p.then(function (v) { done(v, false); return v; }, function (err) { done(null, true); throw err; });
+  }
+
+  // An agent's reply is done: a task that used tools gets the Tada pose; a plain chat
+  // reply gets a little groove now and then.
+  var lastReplyDance = -Infinity;
+  function finished(usedTools) {
+    if (usedTools) { send('task.done'); return 'task.done'; }
+    var now = Date.now();
+    if (now - lastReplyDance < REPLY_DANCE_EVERY_MS) return null;
+    lastReplyDance = now;
+    send('reply.done');
+    return 'reply.done';
   }
 
   // ---- Sleep and connectivity -----------------------------------------------
@@ -140,16 +177,17 @@
     armSleep();
   }
 
-  // ---- Which avatar ---------------------------------------------------------
-  // Each avatar is one or more flat pictures moved together by the animations.
-  // shape picks the stage size: tall for one standing figure, duo for two.
-  var AVATARS = [
-    { id: 'duo', name: 'Bear hoodie duo', shape: 'duo', images: ['avatars/bear-wink.png', 'avatars/bear-smile.png'] },
-    { id: 'bear-wink', name: 'Bear hoodie (wink)', shape: 'tall', images: ['avatars/bear-wink.png'] },
-    { id: 'bear-smile', name: 'Bear hoodie (smile)', shape: 'tall', images: ['avatars/bear-smile.png'] },
-    { id: 'robot', name: 'Robot', shape: 'square', images: ['avatar.svg'] }
-  ];
-  var AVATAR_KEY = 'codev_companion_avatar';
+  // ---- The live robot -------------------------------------------------------
+  // The selected agent's avatar in the chat header becomes the live 3D CoDev Bot,
+  // which acts out every move. Every other agent avatar is a still picture of the
+  // same robot (drawn by the page). three.js and robot3d.js load only once the
+  // robot is first shown.
+  var base = 'companion/';
+  var stage = null;
+  var robot = null;
+  var robotToken = 0;
+  var loading = null;
+  var started = false;
 
   function store(key, value) {
     try {
@@ -158,118 +196,112 @@
     } catch (err) { /* private mode: not remembered */ }
     return null;
   }
-  function findAvatar(id) {
-    for (var i = 0; i < AVATARS.length; i++) if (AVATARS[i].id === id) return AVATARS[i];
-    return AVATARS[0];
-  }
-  function avatar() { return findAvatar(store(AVATAR_KEY)).id; }
-
-  // ---- The floating avatar -------------------------------------------------
-  var dock = null;
-  var base = 'companion/';
   function enabled() { return (store(STORAGE_KEY) || '1') === '1'; }
+
+  function reducedMotion() {
+    try { return Boolean(root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (err) { return false; }
+  }
+  // WebGL on a real graphics chip. A software renderer (no GPU, or a GPU-less VM)
+  // would spend a CPU core drawing the robot, so those keep the still pictures.
+  var SOFTWARE_GL = /swiftshader|llvmpipe|softpipe|software|basic render|mesa offscreen/i;
+  function webglOk() {
+    try {
+      var c = root.document.createElement('canvas');
+      var gl = root.WebGLRenderingContext && (c.getContext('webgl2') || c.getContext('webgl'));
+      if (!gl) return false;
+      var info = gl.getExtension('WEBGL_debug_renderer_info');
+      var name = String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER) || '');
+      var lose = gl.getExtension('WEBGL_lose_context');
+      if (lose) lose.loseContext();
+      return !SOFTWARE_GL.test(name);
+    } catch (err) { return false; }
+  }
+
+  function makeStage() {
+    var doc = root.document;
+    stage = doc.createElement('div');
+    stage.className = 'companion-stage live-robot';
+    stage.setAttribute('data-render', '3d');
+    stage.setAttribute('aria-hidden', 'true');
+    stage.innerHTML = '<div class="companion-body"></div><div class="companion-fx"></div>';
+    C().init({ stage: stage, body: stage.firstChild, fx: stage.lastChild });
+    C().subscribe(function (anim) { if (robot) robot.setState(anim ? anim.key : null); });
+  }
+
+  function loadRobot(accent) {
+    if (loading) return loading;
+    var token = robotToken;
+    var url = function (p) { return new root.URL(base + p, root.document.baseURI).href; };
+    loading = Promise.all([import(url('../vendor/three/three.module.min.js')), import(url('robot3d.js'))]).then(function (mods) {
+      if (token !== robotToken) return null;
+      robot = mods[1].createRobot(mods[0], stage.firstChild, { reducedMotion: reducedMotion(), accent: accent });
+      robot.setState(C().current());
+      return robot;
+    }).catch(function (err) {
+      if (root.console) root.console.warn('CoDev Bot could not start; keeping the still pictures', err);
+      return null;
+    });
+    return loading;
+  }
+
+  var host = null;
+  var hostAccent = null;
+  var glOk = null; // checked once
+  // Puts the live robot in host (the chat header's avatar slot) in the given colour.
+  // The page re-renders that slot when the agent changes, so it calls this each time;
+  // the same robot moves over and changes colour. Returns false when the robot
+  // can't run here (turned off, no WebGL, or software WebGL), so the picture stays.
+  function attach(el, options) {
+    host = el || null;
+    hostAccent = (options && options.accent) || hostAccent;
+    if (!host || !enabled() || !C() || !root.document) return false;
+    if (glOk === null) glOk = webglOk();
+    if (!glOk) return false;
+    if (!stage) makeStage();
+    host.appendChild(stage);
+    host.classList.add('has-live-robot');
+    if (robot) robot.setAccent(hostAccent);
+    else loadRobot(hostAccent).then(function (r) {
+      if (r) r.setAccent(hostAccent);
+      else if (host) host.classList.remove('has-live-robot');
+    });
+    return true;
+  }
+
   function setEnabled(on) {
     store(STORAGE_KEY, on ? '1' : '0');
-    if (dock) { dock.hidden = !on; place(); }
+    if (on) { attach(host); return; }
+    if (robot) { try { robot.dispose(); } catch (err) { /* already gone */ } }
+    robot = null; loading = null; robotToken++;
+    if (stage && stage.parentNode) stage.parentNode.classList.remove('has-live-robot');
+    if (stage) stage.remove();
   }
 
-  function drawAvatar(id) {
-    if (!dock) return;
-    var a = findAvatar(id);
-    var body = dock.querySelector('#codevCompanionBody');
-    body.innerHTML = '';
-    a.images.forEach(function (src) {
-      var img = root.document.createElement('img');
-      img.className = 'companion-img';
-      img.alt = '';
-      img.draggable = false;
-      // A missing picture falls back to the bundled placeholder rather than a broken image.
-      img.addEventListener('error', function onError() { img.removeEventListener('error', onError); img.src = base + 'avatar.svg'; });
-      img.src = base + src;
-      body.appendChild(img);
-    });
-    dock.setAttribute('data-shape', a.shape);
-    place();
-  }
-
-  function setAvatar(id) {
-    var a = findAvatar(id);
-    store(AVATAR_KEY, a.id);
-    drawAvatar(a.id);
-    return a.id;
-  }
-
-  // The avatar stands next to the chat box: beside it when there's room (wide screens),
-  // otherwise just above its right edge, so it never covers the text field or its buttons.
-  // On the other tabs (Story Studio, Outlier, ...) the chat box is hidden and so is the
-  // avatar, so it can't sit on top of their controls.
-  var anchor = null;
-  function place() {
-    if (!dock) return;
-    var rect = anchor && anchor.getBoundingClientRect();
-    if (!anchor) return;
-    var away = !rect || rect.height === 0;
-    dock.classList.toggle('off-view', away);
-    if (away) return;
-    var w = dock.offsetWidth;
-    var right = root.innerWidth - rect.right;
-    var beside = right >= w + 24;
-    // Above the chat box it overlaps the bottom of the conversation, so taps go through it
-    // to the messages' buttons; beside the box it's in free space and a tap shrinks it.
-    dock.classList.toggle('pass-through', !beside);
-    if (beside) {
-      dock.style.right = Math.round((right - w) / 2) + 'px';
-      dock.style.bottom = Math.round(root.innerHeight - rect.bottom) + 'px';
-    } else {
-      dock.style.right = Math.round(Math.max(4, right + 4)) + 'px';
-      dock.style.bottom = Math.round(root.innerHeight - rect.top + 6) + 'px';
-    }
-  }
-
-  function mount(container, options) {
-    options = options || {};
+  // Once, at page load: wake on input, react to going offline, say hello.
+  function start(options) {
+    if (started || !root.document) return;
+    started = true;
+    base = (options && options.base) || base;
     var doc = root.document;
-    if (!doc || !C() || dock) return dock;
-    base = options.base || base;
-    dock = doc.createElement('div');
-    dock.className = 'codev-companion-dock';
-    dock.id = 'codevCompanion';
-    dock.hidden = !enabled();
-    dock.innerHTML =
-      '<div class="companion-stage" id="codevCompanionStage" role="img" aria-label="Companion: Resting">' +
-        '<div class="companion-body" id="codevCompanionBody"></div>' +
-        '<div class="companion-fx" id="codevCompanionFx"></div>' +
-      '</div>' +
-      '<div class="codev-companion-label" id="codevCompanionLabel" aria-live="polite">Resting</div>';
-    (container || doc.body).appendChild(dock);
-    anchor = options.anchor || null;
-    drawAvatar(avatar());
-    var stage = dock.querySelector('#codevCompanionStage');
-    C().init({ stage: stage, body: dock.querySelector('#codevCompanionBody'), fx: dock.querySelector('#codevCompanionFx'), label: dock.querySelector('#codevCompanionLabel') });
-    C().subscribe(function (anim) { stage.setAttribute('aria-label', 'Companion: ' + (anim ? anim.name : 'Resting')); });
-    // Tap to tuck it into a small bubble and back.
-    stage.addEventListener('click', function () { dock.classList.toggle('collapsed'); place(); });
     ['pointerdown', 'keydown'].forEach(function (type) { doc.addEventListener(type, wake, { capture: true, passive: true }); });
     root.addEventListener('offline', function () { send('network.loading'); });
     root.addEventListener('online', function () { send('network.done'); });
-    root.addEventListener('resize', place);
-    if (anchor && root.ResizeObserver) new root.ResizeObserver(place).observe(anchor);
     if (root.navigator && root.navigator.onLine === false) send('network.loading');
+    else setTimeout(function () { send('hello'); }, 1200);
     armSleep();
-    return dock;
   }
 
   root.CodevCompanion = {
-    mount: mount,
+    start: start,
+    attach: attach,
     inference: inference,
     tool: tool,
+    finished: finished,
     notify: send,
     enabled: enabled,
     setEnabled: setEnabled,
-    avatar: avatar,
-    setAvatar: setAvatar,
-    avatars: AVATARS.map(function (a) { return { id: a.id, name: a.name }; }),
     classifyTool: classifyTool,
-    buildOutcome: buildOutcome
+    buildOutcome: buildOutcome,
+    milestone: milestone
   };
 })(typeof window !== 'undefined' ? window : this);

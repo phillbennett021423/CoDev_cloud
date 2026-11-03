@@ -2,7 +2,8 @@
  * VortexCompanion: state machine for the workspace companion avatar.
  * Plays one of 20 animations at a time. Higher priority wins; ties go to the
  * most recent request. Idle loops only run when nothing else is active.
- * Animations are CSS transforms on the single avatar image plus overlay props.
+ * The 3D robot (robot3d.js) acts each one out; flat avatars get CSS transforms
+ * on the picture plus overlay props.
  *
  * Start/end events are counted per source, so two agents searching at once keep
  * the search animation until both have sent search.end.
@@ -17,55 +18,73 @@
   // is dropped after this long, so the avatar can't get stuck on one state.
   var MAX_HOLD_MS = 10 * 60 * 1000;
 
+  // The baby robot's 20 actions, in four groups. cls = the whole-figure move for flat
+  // avatars; fx = overlay props shown for every avatar; prop = an emoji stand-in for
+  // the hologram the 3D robot draws itself (flat avatars only).
   var ANIMATIONS = [
-    { id: 1, key: 'coding-frenzy', name: 'The Coding Frenzy', cat: 'active', prio: 50, cls: 'a-frenzy', fx: 'sparks', ms: null },
-    { id: 2, key: 'blueprint-draft', name: 'The Blueprint Draft', cat: 'active', prio: 50, cls: 'a-blueprint', fx: 'stylus', ms: null },
-    { id: 3, key: 'deep-search', name: 'Deep Database Search', cat: 'active', prio: 50, cls: 'a-search', fx: 'magnifier', ms: null },
-    { id: 4, key: 'data-analyzer', name: 'Data Stream Analyzer', cat: 'active', prio: 50, cls: 'a-analyze', fx: 'matrix', ms: null },
-    { id: 5, key: 'gears', name: 'Gears Turning', cat: 'processing', prio: 40, cls: 'a-gears', fx: 'gear', ms: null },
-    { id: 6, key: 'weighing', name: 'Weighing the Variables', cat: 'processing', prio: 40, cls: 'a-weigh', fx: 'scale', ms: null },
-    { id: 7, key: 'quick-sip', name: 'The Quick Sip', cat: 'processing', prio: 40, cls: 'a-sip', fx: 'mug', ms: 1800 },
-    { id: 8, key: 'waiting', name: 'Waiting / Zoning Out', cat: 'processing', prio: 40, cls: 'a-wait', fx: 'dots', ms: null },
-    { id: 9, key: 'build-success', name: 'Build Success Celebration', cat: 'system', prio: 70, cls: 'a-success', fx: 'confetti', ms: 2500 },
-    { id: 10, key: 'compile-error', name: 'Compilation Error Panic', cat: 'system', prio: 100, cls: 'a-error', fx: 'warning', ms: 6000 },
-    { id: 11, key: 'network-spin', name: 'Network Loading Spin', cat: 'system', prio: 80, cls: 'a-network', fx: 'ring', ms: null },
-    { id: 12, key: 'timeout-sleep', name: 'Timeout / Sleep Mode', cat: 'system', prio: 85, cls: 'a-timeout', fx: 'zzz', ms: null },
-    { id: 13, key: 'stretch', name: 'The Stretch Routine', cat: 'idle', prio: 10, cls: 'a-stretch', fx: 'lines', ms: 2200 },
-    { id: 14, key: 'foot-tap', name: 'Impatient Foot-Tap', cat: 'idle', prio: 10, cls: 'a-foottap', fx: 'watch', ms: 4000 },
-    { id: 15, key: 'sneaky-glance', name: 'The Sneaky Glance', cat: 'idle', prio: 10, cls: 'a-glance', fx: 'eyes', ms: 3000 },
-    { id: 16, key: 'object-toss', name: 'Fidget Spinner / Object Toss', cat: 'idle', prio: 10, cls: 'a-toss', fx: 'orb', ms: 4000 },
-    { id: 17, key: 'double-take', name: 'The Double-Take', cat: 'idle', prio: 10, cls: 'a-doubletake', fx: 'question', ms: 1600 },
-    { id: 18, key: 'casual-shrug', name: 'The Casual Shrug', cat: 'idle', prio: 10, cls: 'a-shrug', fx: 'shrug', ms: 1500 },
-    { id: 19, key: 'headphone-vibe', name: 'Headphone Vibe', cat: 'idle', prio: 10, cls: 'a-vibe', fx: 'notes', ms: 5000 },
-    { id: 20, key: 'superhero-flex', name: 'The Superhero Flex', cat: 'idle', prio: 10, cls: 'a-flex', fx: 'flex', ms: 2000 }
+    // Celebration and dancing
+    { id: 1, key: 'groove', name: 'The Little Groove Dance', cat: 'celebrate', prio: 60, cls: 'a-vibe', fx: 'notes', ms: 4000, idle: true },
+    { id: 2, key: 'victory-spin', name: 'Victory Spin & Hover', cat: 'celebrate', prio: 75, cls: 'a-spin', fx: 'sparks', ms: 3400 },
+    { id: 3, key: 'confetti', name: 'Confetti Celebration', cat: 'celebrate', prio: 72, cls: 'a-success', fx: 'confetti', prop: 'popper', ms: 3200 },
+    { id: 4, key: 'happy-bounce', name: 'Happy Bounce', cat: 'celebrate', prio: 70, cls: 'a-success', fx: 'sparks', ms: 2600 },
+    { id: 5, key: 'tada', name: 'The "Tada!" Pose', cat: 'celebrate', prio: 74, cls: 'a-flex', fx: 'sparks', prop: 'check', ms: 3200 },
+    // Curious and playful
+    { id: 6, key: 'tap-peek', name: 'Screen Tap & Peek', cat: 'curious', prio: 50, cls: 'a-search', prop: 'eyes', ms: null },
+    { id: 7, key: 'butterfly-chase', name: 'Hologram Butterfly Chase', cat: 'curious', prio: 10, cls: 'a-toss', prop: 'butterfly', ms: 4600, idle: true },
+    { id: 8, key: 'head-tilt', name: 'Head Tilt Curiosity', cat: 'curious', prio: 40, cls: 'a-gears', prop: 'question', ms: null },
+    { id: 9, key: 'magnify', name: 'Magnifying Glass Inspection', cat: 'curious', prio: 50, cls: 'a-search', prop: 'magnifier', ms: null },
+    { id: 10, key: 'peekaboo', name: 'Peek-a-Boo Shield', cat: 'curious', prio: 100, cls: 'a-error', fx: 'warning', ms: 5000 },
+    // Work and task-running
+    { id: 11, key: 'typing', name: 'Furious Tiny Typing', cat: 'work', prio: 50, cls: 'a-frenzy', fx: 'matrix', prop: 'keyboard', ms: null },
+    { id: 12, key: 'heavy-lift', name: 'Heavy Lifting Struggle', cat: 'work', prio: 50, cls: 'a-weigh', prop: 'file', ms: null },
+    { id: 13, key: 'bug-zap', name: 'Laser Bug Zap', cat: 'work', prio: 50, cls: 'a-blueprint', prop: 'bug', ms: null },
+    { id: 14, key: 'drink-sip', name: 'Data Drink Sip', cat: 'work', prio: 40, cls: 'a-sip', prop: 'bottle', ms: 2800 },
+    { id: 15, key: 'wrench', name: 'Wrench Tightening', cat: 'work', prio: 80, cls: 'a-frenzy', prop: 'wrench', ms: null },
+    // Idle, sleep and funny
+    { id: 16, key: 'power-nap', name: 'Power Nap Zzz', cat: 'idle', prio: 85, cls: 'a-timeout', fx: 'zzz', ms: null },
+    { id: 17, key: 'yawn-stretch', name: 'Yawn & Stretch', cat: 'idle', prio: 30, cls: 'a-stretch', fx: 'lines', ms: 2800, idle: true },
+    { id: 18, key: 'headphone-jam', name: 'Headphone Jam', cat: 'idle', prio: 10, cls: 'a-vibe', fx: 'notes', prop: 'headphones', ms: 5000, idle: true },
+    { id: 19, key: 'surprise-jump', name: 'Surprise Jump', cat: 'idle', prio: 90, cls: 'a-doubletake', prop: 'alert', ms: 1800 },
+    { id: 20, key: 'cheer-wave', name: 'Cheering Wave', cat: 'idle', prio: 30, cls: 'a-shrug', fx: 'sparks', ms: 2800, idle: true }
   ];
 
   // Event name -> what to play (anim id + source) or what to clear (source).
-  // `also` clears another source at the same time: a passing build ends the
-  // error panic, and waking up ends sleep.
+  // `also` clears another source at the same time: a passing build or a finished task
+  // ends the error panic, and waking up ends the nap.
   var EVENT_MAP = {
-    'design.start': { anim: 2, source: 'design' },
-    'design.end': { clear: 'design' },
-    'search.start': { anim: 3, source: 'search' },
-    'search.end': { clear: 'search' },
-    'script.run': { anim: 1, source: 'script' },
+    // Work in progress (held until the matching end event)
+    'script.run': { anim: 11, source: 'script' },        // running commands: tiny typing
     'script.end': { clear: 'script' },
-    'log.stream': { anim: 4, source: 'log' },
+    'edit.start': { anim: 13, source: 'edit' },          // editing code: zapping bugs
+    'edit.end': { clear: 'edit' },
+    'search.start': { anim: 9, source: 'search' },       // web and code search: magnifier
+    'search.end': { clear: 'search' },
+    'log.stream': { anim: 6, source: 'log' },            // reading files and logs: taps the glass to look
     'log.end': { clear: 'log' },
-    'inference.start': { anim: 5, source: 'inference' },
-    'inference.end': { clear: 'inference' },
-    'weigh.start': { anim: 6, source: 'weigh' },
+    'design.start': { anim: 12, source: 'design' },      // images and big designs: hauling a data file
+    'design.end': { clear: 'design' },
+    'weigh.start': { anim: 12, source: 'weigh' },        // big Odds/Outlier reads: same heavy lifting
     'weigh.end': { clear: 'weigh' },
-    'inference.sip': { anim: 7, source: 'sip' },
-    'api.pending': { anim: 8, source: 'api' },
+    'inference.start': { anim: 8, source: 'inference' }, // the model thinking: head tilt with ? eyes
+    'inference.end': { clear: 'inference' },
+    'inference.sip': { anim: 14, source: 'sip' },        // a reply landed mid-task: a sip from the CodeDev bottle
+    'api.pending': { anim: 15, source: 'api' },          // a slow API: tightening the connection
     'api.done': { clear: 'api' },
-    'network.loading': { anim: 11, source: 'network' },
+    'network.loading': { anim: 15, source: 'network' },  // offline or a page loading
     'network.done': { clear: 'network' },
-    'build.success': { anim: 9, source: 'build', also: 'error' },
-    'build.error': { anim: 10, source: 'error' },
+    // Results
+    'build.success': { anim: 4, source: 'build', also: 'error' },      // tests pass / compile OK: happy bounce
+    'build.error': { anim: 10, source: 'error' },                      // failure: peek-a-boo
     'build.clear': { clear: 'error' },
-    'session.timeout': { anim: 12, source: 'timeout' },
-    'session.resume': { clear: 'timeout' }
+    'task.done': { anim: 5, source: 'task', also: 'error' },           // an agent finished its task: Tada!
+    'changes.submitted': { anim: 3, source: 'task', also: 'error' },   // changes handed in for review: confetti
+    'merge.done': { anim: 2, source: 'task', also: 'error' },          // a merge landed: victory spin
+    'reply.done': { anim: 1, source: 'reply' },                        // a chat reply arrived: little groove
+    'alert.ping': { anim: 19, source: 'alert' },                       // an approval or alert popped up
+    'hello': { anim: 20, source: 'hello' },                            // the app opened: cheering wave
+    // Sleep
+    'session.timeout': { anim: 16, source: 'timeout' },
+    'session.resume': { anim: 17, source: 'wake', also: 'timeout' }
   };
 
   var sources = new Map(); // source name -> { anim, timer, count }; insertion order = recency
@@ -113,7 +132,9 @@
       if (anim) {
         els.body.classList.add(anim.cls);
         if (FX[anim.fx]) FX[anim.fx](els.fx);
-        if (anim.key === 'compile-error') els.stage.classList.add('stage-alert');
+        // The 3D robot holds its own props; flat pictures get an emoji stand-in.
+        if (anim.prop && FX[anim.prop] && els.stage.getAttribute('data-render') !== '3d') FX[anim.prop](els.fx);
+        if (anim.key === 'peekaboo') els.stage.classList.add('stage-alert');
       }
       if (els.label) els.label.textContent = anim ? anim.name : 'Resting';
     }
@@ -164,7 +185,7 @@
       idleTimer = setTimeout(startIdle, IDLE_MIN_MS);
       return;
     }
-    var pool = ANIMATIONS.filter(function (a) { return a.cat === 'idle'; });
+    var pool = ANIMATIONS.filter(function (a) { return a.idle; });
     var pick = pool[Math.floor(Math.random() * pool.length)];
     setSource('idle', pick);
     var wait = IDLE_MIN_MS + Math.random() * (IDLE_MAX_MS - IDLE_MIN_MS);
@@ -332,6 +353,36 @@
     },
     flex: function (c) {
       make(c, 'fx-flex', '💪', { left: '40%', top: '-10%' });
+    },
+    popper: function (c) {
+      make(c, 'fx-flex', '🎉', { left: '8%', top: '-6%' });
+    },
+    check: function (c) {
+      make(c, 'fx-check', '✅', { left: '6%', top: '-10%' });
+    },
+    butterfly: function (c) {
+      make(c, 'fx-butterfly', '🦋', { left: '70%', top: '0%' });
+    },
+    keyboard: function (c) {
+      make(c, 'fx-mug', '⌨️', { left: '34%', top: '58%' });
+    },
+    file: function (c) {
+      make(c, 'fx-orb-file', '📁', { left: '38%', top: '-8%' });
+    },
+    bug: function (c) {
+      make(c, 'fx-bug', '🐞', { left: '10%', bottom: '2%' });
+    },
+    bottle: function (c) {
+      make(c, 'fx-mug', '🧃', { right: '-4%', top: '44%' });
+    },
+    wrench: function (c) {
+      make(c, 'fx-gear', '🔧', { left: '40%', top: '-8%' });
+    },
+    headphones: function (c) {
+      make(c, 'fx-flex', '🎧', { left: '38%', top: '-8%' });
+    },
+    alert: function (c) {
+      make(c, 'fx-q', '❗', { left: '60%', top: '-8%' });
     }
   };
 
@@ -343,7 +394,7 @@
     current: function () { var a = current(); return a ? a.key : null; },
     subscribe: subscribe,
     animations: ANIMATIONS.map(function (a) {
-      return { id: a.id, key: a.key, name: a.name, category: a.cat };
+      return { id: a.id, key: a.key, name: a.name, category: a.cat, idle: Boolean(a.idle) };
     }),
     events: Object.keys(EVENT_MAP)
   };

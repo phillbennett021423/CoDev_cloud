@@ -19,6 +19,10 @@ const { createAzgaarMaps } = require('./azgaar-map');
 const { pathToFileURL } = require('url');
 // Copied into www/ by `npm run copy-www`, like the rest of the page.
 
+// The app is now called CoDev Studio Beta, but its saved chats, keys and settings stay
+// in the folder the earlier "CoDev Studio" builds used, so an update keeps them.
+app.setPath('userData', path.join(app.getPath('appData'), 'CoDev Studio'));
+
 const WWW = path.join(__dirname, 'www');
 // Served from app://codev/ so the page has a fixed origin (its saved settings
 // and chats survive restarts) and ES modules like three.js load normally.
@@ -86,7 +90,7 @@ function createWindow() {
         width: 1280,
         height: 860,
         minWidth: 380,
-        title: 'CoDev Studio',
+        title: 'CoDev Studio Beta',
         icon: path.join(__dirname, 'build', 'icon.png'),
         autoHideMenuBar: true,
         webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true }
