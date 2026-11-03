@@ -30,7 +30,9 @@ Last, the teal paint with a soft brush.
 
 function makeClip(dir) {
     const file = path.join(dir, 'clip.webm');
-    const r = spawnSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=10:duration=12', '-c:v', 'libvpx', '-b:v', '200k', '-y', file]);
+    // A counting picture and a tone, so there is something to see and something to hear.
+    const r = spawnSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=10:duration=12', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=12',
+        '-c:v', 'libvpx', '-b:v', '200k', '-c:a', 'libopus', '-b:a', '32k', '-shortest', '-y', file]);
     if (r.status !== 0) throw new Error(String(r.stderr));
     return file;
 }
@@ -52,6 +54,10 @@ async function startSite(t, clip) {
         if (req.url === '/watch') {
             res.writeHead(200, { 'Content-Type': 'text/html' });
             return res.end('<!doctype html><title>Painting a helmet</title><h1>How to paint a helmet</h1><video controls width="640" src="/clip.webm"><track kind="captions" srclang="en" src="/caps.vtt" default></video>');
+        }
+        if (req.url === '/nocaps') {
+            res.writeHead(200, { 'Content-Type': 'text/html' });
+            return res.end('<!doctype html><title>Talking head</title><video width="640" src="/clip.webm"></video>');
         }
         if (req.url === '/embed') {
             res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -255,5 +261,60 @@ test("Claude sees the pictures a tool returns; other providers don't get them in
     assert.equal(out.result.content[2].source.media_type, 'image/jpeg');
     assert.equal(out.kept, 48);
     assert.match(out.dropped, /pictures from this step were dropped/);
+    assert.deepEqual(errors, []);
+});
+
+test('a video with no captions is listened to: its sound recorded in the browser, its speech written out by Whisper', async t => {
+    if (!hasFfmpeg) return t.skip('ffmpeg is not installed, so there is no test video');
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-video-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const base = await startSite(t, makeClip(dir));
+    const service = createBrowserService({ dataDir: path.join(dir, 'data'), profileRoot: path.join(dir, 'profiles'), passphrase: 'test', keepSignIns: false, log: () => {} });
+    t.after(() => service.close());
+    const ctx = service.context({ 'codev/agentId': 'listener' });
+    await service.callTool('browser_navigate', { url: `${base}/nocaps` }, ctx);
+    const watched = await service.callTool('browser_watch_video', { frames: 2, start: '0:02', max_listen_seconds: 3 }, ctx);
+    assert.equal(watched.isError, false, JSON.stringify(watched.content.filter(c => c.type === 'text')));
+    const all = watched.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+    assert.match(all, /Words: no captions, so the sound from 0:02 to 0:0[45] was recorded/);
+    assert.match(all, /Listened to 0:02-0:05 .*call again with start 0:05/);
+    const audio = watched.structuredContent.audio;
+    assert.ok(audio && audio.data.length > 1000, 'the sound was recorded');
+    assert.equal(audio.mimeType, 'audio/webm');
+    assert.equal(audio.start, 2);
+    assert.ok(audio.heard > 0.5, `the tone was heard (${audio.heard})`);
+    // Captions there: no listening unless asked; listen false never.
+    await service.callTool('browser_navigate', { url: `${base}/watch` }, ctx);
+    const captioned = await service.callTool('browser_watch_video', { frames: 1 }, ctx);
+    assert.equal(captioned.structuredContent.audio, undefined);
+    await service.callTool('browser_navigate', { url: `${base}/nocaps` }, ctx);
+    const quiet = await service.callTool('browser_watch_video', { frames: 1, listen: false }, ctx);
+    assert.equal(quiet.structuredContent.audio, undefined);
+
+    // The page writes the speech out with Groq Whisper, times counted from where listening began.
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-video-page-'));
+    const backend = createMockBackend({ workspace });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const { page, errors } = await openPage(launched.browser, url, {});
+    const sent = [];
+    await page.route('https://api.groq.com/openai/v1/audio/transcriptions', route => {
+        sent.push(route.request().postDataBuffer().toString('latin1'));
+        route.fulfill({ contentType: 'application/json', body: JSON.stringify({ text: 'hello there', segments: [{ start: 0.4, text: ' Hello there.' }, { start: 61, text: ' Second part.' }] }) });
+    });
+    const out = await page.evaluate(async audio => {
+        groqKey = '';
+        const before = await transcribeVideoSound(audio);
+        groqKey = 'gsk_test';
+        return { before, after: await transcribeVideoSound(audio) };
+    }, audio);
+    assert.match(out.before, /needs a free Groq key/);
+    assert.match(out.after, /\[What is said in the video, from its sound \(Groq Whisper, speech only\)/);
+    assert.match(out.after, /\[0:02\] Hello there\.\n\[1:03\] Second part\./);
+    assert.match(sent[0], /name="response_format"\r\n\r\nverbose_json/);
+    assert.match(sent[0], /filename="video-sound\.webm"/);
     assert.deepEqual(errors, []);
 });

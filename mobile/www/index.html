@@ -4671,6 +4671,12 @@
                 const kept = await keepToolImages(result.content, shownName, ctx);
                 if (kept) text = text.replace(/\[image content, image\/\w+\]/g, "[picture shown to the user under your reply]");
             }
+            // browser_watch_video's recorded sound (a video with no captions): its speech as text.
+            const sound = result.structuredContent && result.structuredContent.audio;
+            if (sound && sound.data && typeof transcribeVideoSound === "function") {
+                text += await transcribeVideoSound(sound);
+                delete result.structuredContent.audio;
+            }
             // browser_extract sends every row here and only a preview as text: the rows
             // become a dataset for create_spreadsheet / create_csv.
             const dataset = result.structuredContent && result.structuredContent.dataset;
