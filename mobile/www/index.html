@@ -1430,6 +1430,8 @@
                     tray.setAttribute("aria-live", "polite");
                     document.body.appendChild(tray);
                 }
+                // The companion jumps in surprise so a waiting question isn't missed.
+                CodevCompanion.notify("alert.ping");
                 const card = document.createElement("div");
                 card.className = "approval-card";
                 card.setAttribute("role", "group");
@@ -5519,6 +5521,8 @@
                 }
                 if (!calls.length) {
                     logTaskSpend(ctx);
+                    // The companion celebrates: the Tada pose after real work, a little groove for a chat reply.
+                    CodevCompanion.finished(done.length > 0);
                     return message.content || "";
                 }
                 messages.push({ role: "assistant", content: message.content || "", tool_calls: calls, anthropic_content: message.anthropic_content });
@@ -5588,6 +5592,7 @@
             const final = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "none" }, { sources: ctx.sources || [], wrapUp: Boolean(spendStop), model: pickClaudeModel(ctx) });
             ctx.cost += final.cost || 0;
             logTaskSpend(ctx);
+            if (!spendStop) CodevCompanion.finished(true);
             return final.content || "";
         }
 

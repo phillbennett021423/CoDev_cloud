@@ -1,126 +1,181 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Companion Preview</title>
-  <link rel="stylesheet" href="companion.css">
-  <style>
-    body { font-family: system-ui, sans-serif; background: #161a22; color: #e6e9ef; margin: 0; padding: 24px 16px; }
-    h2 { font-size: 15px; margin: 18px 0 8px; color: #9fb3c8; }
-    .wrap { max-width: 760px; margin: 0 auto; }
-    .stage-box { background: #0f131a; border-radius: 16px; padding: 12px; }
-    #label { text-align: center; margin-top: 10px; font-weight: 600; }
-    .grid { display: flex; flex-wrap: wrap; gap: 6px; }
-    button { background: #222a36; color: #e6e9ef; border: 1px solid #334055; border-radius: 8px; padding: 6px 9px; cursor: pointer; font-size: 12px; }
-    button:hover { background: #2c3749; }
-    .cat-active { border-left: 3px solid #4cc9f0; padding-left: 6px; }
-    .cat-processing { border-left: 3px solid #b388ff; padding-left: 6px; }
-    .cat-system { border-left: 3px solid #ff6b6b; padding-left: 6px; }
-    .cat-idle { border-left: 3px solid #06d6a0; padding-left: 6px; }
-    .note { color: #8a97a8; font-size: 12px; line-height: 1.5; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CoDev Bot Moves</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Nunito+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="companion.css">
+<style>
+  /* Layout: a lit robot stage on the left, the 20 moves as a playable cue sheet on the right; stacks on phones.
+     One deliberate dark look: the robot's LED face and holograms read best on a dim workshop floor. */
+  :root {
+    --floor: #0d1118;      /* page */
+    --panel: #151b25;      /* cue sheet */
+    --line: #263142;
+    --ink: #e7edf5;
+    --muted: #8d9bb0;
+    --cyan: #4fe8ff;       /* the robot's LED colour */
+    --pink: #ff5fd2;       /* the CD logo's other half */
+    --celebrate: #ffd166; --curious: #b69cff; --work: #4fe8ff; --idle: #5dffa8;
+    --display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+    --body: "Nunito Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  html, body { background: var(--floor); color: var(--ink); }
+  body { margin: 0; font: 15px/1.5 var(--body); }
+  .wrap { max-width: 1180px; margin: 0 auto; padding-block: 28px 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 28px; align-items: start; }
+  @media (max-width: 860px) { .wrap { grid-template-columns: minmax(0, 1fr); } }
+  h1 { font: 800 clamp(30px, 5vw, 46px)/1.02 var(--display); letter-spacing: -0.02em; margin: 0 0 8px; text-wrap: balance; }
+  h1 em { font-style: normal; color: var(--cyan); text-shadow: 0 0 18px rgba(79, 232, 255, 0.45); }
+  .lede { color: var(--muted); margin: 0 0 18px; max-width: 46ch; }
+  .stage-col { position: sticky; top: calc(16px + env(safe-area-inset-top, 0px)); display: grid; gap: 14px; }
+  @media (max-width: 860px) { .stage-col { position: static; } }
+  .studio { position: relative; border-radius: 22px; overflow: hidden; background: radial-gradient(120% 80% at 50% 10%, #1f2a3a 0%, #121822 55%, #0b0f15 100%); border: 1px solid var(--line); }
+  .studio::after { content: ""; position: absolute; left: 10%; right: 10%; bottom: 7%; height: 18%; border-radius: 50%; background: radial-gradient(closest-side, rgba(79, 232, 255, 0.12), transparent); pointer-events: none; }
+  .studio .companion-stage { --companion-w: 100%; --companion-h: min(62vh, 520px); --companion-fx: 1.6; border-radius: 0; }
+  @media (max-width: 860px) { .studio .companion-stage { --companion-h: 400px; } }
+  .now { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; font: 500 13px/1.3 var(--mono); color: var(--muted); }
+  .now b { font: 700 16px/1.3 var(--display); color: var(--ink); letter-spacing: 0.01em; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; }
+  button { font: 600 13px/1.2 var(--body); color: var(--ink); background: #1b2330; border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; cursor: pointer; }
+  button:hover { border-color: #3a4a62; background: #212b3a; }
+  button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .primary { background: linear-gradient(90deg, rgba(255, 95, 210, 0.22), rgba(79, 232, 255, 0.22)); border-color: #4b5d78; }
+  .sheet { display: grid; gap: 22px; min-width: 0; }
+  .group h2 { display: flex; align-items: center; gap: 10px; font: 700 12px/1 var(--mono); text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); margin: 0 0 10px; }
+  .group h2::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--dot); box-shadow: 0 0 10px var(--dot); }
+  .cues { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .cue:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  @media (max-width: 520px) { .cues { grid-template-columns: minmax(0, 1fr); } }
+  .cue { text-align: left; display: grid; gap: 4px; padding: 11px 12px 12px; background: var(--panel); border-radius: 12px; }
+  .cue .name { font: 700 14px/1.25 var(--body); }
+  .cue .when { font: 400 12px/1.35 var(--body); color: var(--muted); }
+  .cue .ev { font: 500 11px/1 var(--mono); color: var(--dot); opacity: 0.9; }
+  .cue[aria-pressed="true"] { border-color: var(--dot); box-shadow: inset 0 0 0 1px var(--dot); }
+  .note { color: var(--muted); font-size: 13px; margin: 0; max-width: 60ch; }
+  .err { color: #ff9aa9; font: 500 13px/1.4 var(--mono); }
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="stage-box">
-      <div class="companion-stage" id="stage">
-        <div class="companion-body" id="body">
-        </div>
+<div class="wrap">
+  <div class="stage-col">
+    <div>
+      <h1>CoDev Bot, <em>dancing</em></h1>
+      <p class="lede">The little silver robot that rides next to CoDev's chat box. Tap any move to watch it, or run a pretend work session to see how it reacts to real agent events.</p>
+    </div>
+    <div class="studio">
+      <div class="companion-stage" id="stage" data-render="3d" role="img" aria-label="CoDev Bot">
+        <div class="companion-body" id="body"></div>
         <div class="companion-fx" id="fx"></div>
       </div>
-      <div id="label" aria-live="polite">Resting</div>
     </div>
-
-    <h2>Avatar</h2>
-    <div class="grid" id="avatars"></div>
-
-    <h2>Play each animation (preview)</h2>
-    <div id="anims"></div>
-
-    <h2>Simulate system events</h2>
-    <div class="grid" id="events"></div>
-
-    <h2>Controls</h2>
-    <div class="grid">
-      <button type="button" id="stop">Stop and return to idle timer</button>
+    <div class="now"><span>Now playing</span><b id="label">Resting</b></div>
+    <div class="bar">
+      <button type="button" class="primary" id="session">▶ Run a pretend work session</button>
+      <button type="button" id="stop">Stop</button>
     </div>
-    <p class="note">Manual play overrides everything. Idle loops start after 2 minutes with no events and only run when nothing else is active. Start and end events are counted, so two <code>search.start</code> clicks need two <code>search.end</code> clicks.</p>
+    <p class="err" id="err" hidden></p>
   </div>
 
-  <script src="companion.js"></script>
-  <script>
-    (function () {
-      var C = window.VortexCompanion;
-      C.init({
-        stage: document.getElementById('stage'),
-        body: document.getElementById('body'),
-        fx: document.getElementById('fx'),
-        label: document.getElementById('label')
-      });
+  <div class="sheet" id="sheet"></div>
+</div>
 
-      // The same pictures the app offers (companion-bridge.js), shown at preview size.
-      var AVATARS = [
-        { name: 'Bear hoodie duo', images: ['avatars/bear-wink.png', 'avatars/bear-smile.png'] },
-        { name: 'Bear hoodie (wink)', images: ['avatars/bear-wink.png'] },
-        { name: 'Bear hoodie (smile)', images: ['avatars/bear-smile.png'] },
-        { name: 'Robot', images: ['avatar.svg'] }
-      ];
-      function show(a) {
-        var body = document.getElementById('body');
-        body.innerHTML = '';
-        a.images.forEach(function (src) {
-          var img = document.createElement('img');
-          img.className = 'companion-img';
-          img.alt = a.name;
-          img.src = src;
-          body.appendChild(img);
-        });
-      }
-      var avBox = document.getElementById('avatars');
-      AVATARS.forEach(function (a) {
-        var b = document.createElement('button');
-        b.type = 'button';
-        b.textContent = a.name;
-        b.addEventListener('click', function () { show(a); });
-        avBox.appendChild(b);
-      });
-      show(AVATARS[0]);
+<script src="companion.js"></script>
+<script type="module">
+  import * as THREE from '../vendor/three/three.module.min.js';
+  import { createRobot } from './robot3d.js';
 
-      var groups = { active: 'Active work', processing: 'Processing', system: 'System states', idle: 'Personality idles' };
-      var animBox = document.getElementById('anims');
-      Object.keys(groups).forEach(function (cat) {
-        var wrap = document.createElement('div');
-        wrap.className = 'cat-' + cat;
-        wrap.style.marginBottom = '8px';
-        var title = document.createElement('div');
-        title.className = 'note';
-        title.textContent = groups[cat];
-        wrap.appendChild(title);
-        var row = document.createElement('div');
-        row.className = 'grid';
-        C.animations.filter(function (a) { return a.category === cat; }).forEach(function (a) {
-          var b = document.createElement('button');
-          b.type = 'button';
-          b.textContent = a.id + '. ' + a.name;
-          b.addEventListener('click', function () { C.play(a.id); });
-          row.appendChild(b);
-        });
-        wrap.appendChild(row);
-        animBox.appendChild(wrap);
-      });
+  const C = window.VortexCompanion;
+  // What sets off each move in the app (companion-bridge.js and the agent loop).
+  const WHEN = {
+    'groove': ['A chat reply arrives (and now and then when idle)', 'reply.done'],
+    'victory-spin': ['A merge lands', 'merge.done'],
+    'confetti': ['An agent hands in its changes for review', 'changes.submitted'],
+    'happy-bounce': ['Tests pass or the build compiles', 'build.success'],
+    'tada': ['An agent finishes a task', 'task.done'],
+    'tap-peek': ['Reading files, logs and attachments', 'log.stream'],
+    'butterfly-chase': ['Idle: plays on its own after 2 quiet minutes', null],
+    'head-tilt': ['The model is thinking', 'inference.start'],
+    'magnify': ['Searching the web or the code', 'search.start'],
+    'peekaboo': ['A build or test fails', 'build.error'],
+    'typing': ['Running commands and scripts', 'script.run'],
+    'heavy-lift': ['Big data reads and image or design work', 'design.start'],
+    'bug-zap': ['Writing and fixing code', 'edit.start'],
+    'drink-sip': ['A model reply lands mid-task', 'inference.sip'],
+    'wrench': ['A slow API or the connection drops', 'api.pending'],
+    'power-nap': ['15 minutes with nothing happening', 'session.timeout'],
+    'yawn-stretch': ['Waking up from a nap', 'session.resume'],
+    'headphone-jam': ['Idle: plays on its own after 2 quiet minutes', null],
+    'surprise-jump': ['An agent pops up a question for you', 'alert.ping'],
+    'cheer-wave': ['CoDev opens (and now and then when idle)', 'hello']
+  };
+  const LOOPING = new Set(['tap-peek', 'head-tilt', 'magnify', 'typing', 'heavy-lift', 'bug-zap', 'wrench', 'power-nap']);
+  const GROUPS = { celebrate: ['Celebration & dancing', '--celebrate'], curious: ['Curious & playful', '--curious'], work: ['Work & task-running', '--work'], idle: ['Idle, sleep & funny', '--idle'] };
 
-      var evBox = document.getElementById('events');
-      C.events.forEach(function (name) {
-        var b = document.createElement('button');
-        b.type = 'button';
-        b.textContent = name;
-        b.addEventListener('click', function () { C.notify(name); });
-        evBox.appendChild(b);
-      });
+  const sheet = document.getElementById('sheet');
+  const cueButtons = {};
+  for (const [cat, [title, color]] of Object.entries(GROUPS)) {
+    const g = document.createElement('section');
+    g.className = 'group';
+    g.style.setProperty('--dot', `var(${color})`);
+    g.innerHTML = `<h2>${title}</h2>`;
+    const cues = document.createElement('div');
+    cues.className = 'cues';
+    for (const a of C.animations.filter(x => x.category === cat)) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'cue'; b.id = `cue-${a.key}`;
+      b.setAttribute('aria-pressed', 'false');
+      const [when, ev] = WHEN[a.key] || ['', null];
+      b.innerHTML = `<span class="name"></span><span class="when"></span>${ev ? '<span class="ev"></span>' : ''}`;
+      b.querySelector('.name').textContent = a.name;
+      b.querySelector('.when').textContent = when;
+      if (ev) b.querySelector('.ev').textContent = ev;
+      // Moves that hold while work runs get 6 seconds here; the rest play their own length.
+      b.addEventListener('click', () => { stopSession(); C.play(a.id, LOOPING.has(a.key) ? 6000 : undefined); });
+      cueButtons[a.key] = b;
+      cues.appendChild(b);
+    }
+    g.appendChild(cues);
+    sheet.appendChild(g);
+  }
+  const foot = document.createElement('p');
+  foot.className = 'note';
+  foot.textContent = 'In the app the moves follow what the agents are really doing: higher-priority moves win (a failing build beats typing), long jobs hold their move until they finish, and the idle moves only start after two quiet minutes. You can switch back to the old flat avatars in Settings.';
+  sheet.appendChild(foot);
 
-      document.getElementById('stop').addEventListener('click', function () { C.stop(); });
-    })();
-  </script>
+  const stage = document.getElementById('stage');
+  C.init({ stage, body: document.getElementById('body'), fx: document.getElementById('fx'), label: document.getElementById('label') });
+  let robot = null;
+  try {
+    robot = createRobot(THREE, document.getElementById('body'), { reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches });
+  } catch (err) {
+    const e = document.getElementById('err'); e.hidden = false; e.textContent = `The 3D robot needs WebGL, which this browser has turned off (${err.message}).`;
+  }
+  C.subscribe(anim => {
+    if (robot) robot.setState(anim ? anim.key : null);
+    for (const [k, b] of Object.entries(cueButtons)) b.setAttribute('aria-pressed', String(Boolean(anim && anim.key === k)));
+  });
+
+  // A pretend session: the same events the agent loop sends, in a realistic order.
+  const SCRIPT = [
+    [0, 'hello'], [2600, 'inference.start'], [5200, 'inference.end'], [5200, 'search.start'], [8800, 'search.end'],
+    [8800, 'log.stream'], [11800, 'log.end'], [11800, 'edit.start'], [15200, 'edit.end'], [15200, 'script.run'],
+    [18200, 'script.end'], [18200, 'build.error'], [22400, 'edit.start'], [25000, 'edit.end'], [25000, 'script.run'],
+    [27400, 'script.end'], [27400, 'build.success'], [30000, 'inference.sip'], [32800, 'changes.submitted'],
+    [36000, 'task.done'], [39400, 'merge.done']
+  ];
+  let timers = [];
+  function stopSession() { timers.forEach(clearTimeout); timers = []; }
+  document.getElementById('session').addEventListener('click', () => {
+    stopSession(); C.stop();
+    for (const [at, ev] of SCRIPT) timers.push(setTimeout(() => C.notify(ev), at));
+  });
+  document.getElementById('stop').addEventListener('click', () => { stopSession(); C.stop(); });
+  setTimeout(() => C.notify('hello'), 600);
+</script>
 </body>
 </html>

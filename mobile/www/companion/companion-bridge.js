@@ -1,9 +1,10 @@
 /*
  * CodevCompanion: connects CoDev's real work to the VortexCompanion avatar.
  *
- * The page calls three things:
+ * The page calls these:
  *   CodevCompanion.inference(promiseFn)              around every model call
  *   CodevCompanion.tool(name, args, promiseFn)       around every agent tool call
+ *   CodevCompanion.finished(usedTools)               when an agent's reply is done
  *   CodevCompanion.mount(element)                    once, to draw the floating avatar
  * Everything else (offline/online, sleep after a long quiet spell) runs on its own.
  * The classifiers are pure functions so tests can check them without a browser.
@@ -14,6 +15,7 @@
   var API_PENDING_MS = 8000;        // a model call this slow shows "Waiting / Zoning Out"
   var SIP_EVERY_MS = 90000;         // at most one coffee sip per 90 seconds
   var SLEEP_AFTER_MS = 15 * 60000;  // no work and no input for 15 minutes: sleep mode
+  var REPLY_DANCE_EVERY_MS = 120000; // a plain chat reply gets a little groove at most every 2 minutes
   var STORAGE_KEY = 'codev_companion';
 
   function C() { return root.VortexCompanion; }
@@ -38,8 +40,10 @@
     { kind: 'weigh', test: /^(outlier_|odds_)/ },
     // Pages loading in the agents' browser.
     { kind: 'network', test: /^browser_(navigate|login|load_session|wait_for)$/ },
-    // Running code and writing it.
-    { kind: 'script', test: /^(run_command|run_local_command|blender_run|write_file|write_workspace_file|edit_file|edit_workspace_file|delete_file|submit_changes|gamedev|godot_editor|godot_install_bridge)$/ },
+    // Writing and fixing code.
+    { kind: 'edit', test: /^(write_file|write_workspace_file|edit_file|edit_workspace_file|delete_file)$/ },
+    // Running code.
+    { kind: 'script', test: /^(run_command|run_local_command|blender_run|submit_changes|gamedev|godot_editor|godot_install_bridge)$/ },
     // Checks that pass or fail like a build.
     { kind: 'check', test: /^(godot_check|godot_validate|syntax)$/ },
     // Looking things up.
@@ -54,6 +58,7 @@
     weigh: ['weigh.start', 'weigh.end'],
     network: ['network.loading', 'network.done'],
     script: ['script.run', 'script.end'],
+    edit: ['edit.start', 'edit.end'],
     check: ['script.run', 'script.end'],
     search: ['search.start', 'search.end'],
     log: ['log.stream', 'log.end'],
@@ -87,6 +92,23 @@
     return /^(Error|Tool failed)/.test(text) ? 'build.error' : null;
   }
 
+  // 'changes.submitted', 'merge.done' or null: the milestones worth a party.
+  var MERGE_TOOL = /(^|_)merge(_|$)|^merge/;
+  var MERGE_COMMAND = /(^|[\s;&|])(git merge\b|gh pr merge\b)/;
+  function milestone(toolName, args, resultText) {
+    var n = baseName(toolName);
+    var text = String(resultText == null ? '' : resultText);
+    if (/^(Error|Tool failed|Not run|Unknown tool|The user declined)/.test(text)) return null;
+    if (n === 'submit_changes') return 'changes.submitted';
+    if (MERGE_TOOL.test(n)) return 'merge.done';
+    if (/^(run_command|run_local_command)$/.test(n)) {
+      var command = String((args && args.command) || '');
+      var code = /Exit code:\s*(-?\d+)/.exec(text);
+      if (MERGE_COMMAND.test(command) && code && code[1] === '0' && !/CONFLICT/.test(text)) return 'merge.done';
+    }
+    return null;
+  }
+
   // ---- Wrappers the page calls ---------------------------------------------
   var inFlight = 0;
   var lastSip = -Infinity;
@@ -118,10 +140,24 @@
       if (pair) send(pair[1]);
       var outcome = failed ? null : buildOutcome(name, args, result);
       if (outcome) send(outcome);
+      var party = failed ? null : milestone(name, args, result);
+      if (party) send(party);
     };
     var p;
     try { p = Promise.resolve(fn()); } catch (err) { p = Promise.reject(err); }
     return p.then(function (v) { done(v, false); return v; }, function (err) { done(null, true); throw err; });
+  }
+
+  // An agent's reply is done: a task that used tools gets the Tada pose; a plain chat
+  // reply gets a little groove now and then.
+  var lastReplyDance = -Infinity;
+  function finished(usedTools) {
+    if (usedTools) { send('task.done'); return 'task.done'; }
+    var now = Date.now();
+    if (now - lastReplyDance < REPLY_DANCE_EVERY_MS) return null;
+    lastReplyDance = now;
+    send('reply.done');
+    return 'reply.done';
   }
 
   // ---- Sleep and connectivity -----------------------------------------------
@@ -141,15 +177,18 @@
   }
 
   // ---- Which avatar ---------------------------------------------------------
-  // Each avatar is one or more flat pictures moved together by the animations.
-  // shape picks the stage size: tall for one standing figure, duo for two.
+  // The CoDev robot is drawn live in 3D (robot3d.js, with the vendored three.js).
+  // The others are one or more flat pictures moved together by the animations.
+  // shape picks the stage size: bot for the robot, tall for one standing figure, duo for two.
   var AVATARS = [
+    { id: 'codev-bot', name: 'CoDev Bot (3D, dances)', shape: 'bot', kind: '3d' },
     { id: 'duo', name: 'Bear hoodie duo', shape: 'duo', images: ['avatars/bear-wink.png', 'avatars/bear-smile.png'] },
     { id: 'bear-wink', name: 'Bear hoodie (wink)', shape: 'tall', images: ['avatars/bear-wink.png'] },
     { id: 'bear-smile', name: 'Bear hoodie (smile)', shape: 'tall', images: ['avatars/bear-smile.png'] },
     { id: 'robot', name: 'Robot', shape: 'square', images: ['avatar.svg'] }
   ];
-  var AVATAR_KEY = 'codev_companion_avatar';
+  // A new key, so everyone meets the robot once; picking another avatar is remembered.
+  var AVATAR_KEY = 'codev_companion_avatar_v2';
 
   function store(key, value) {
     try {
@@ -173,12 +212,60 @@
     if (dock) { dock.hidden = !on; place(); }
   }
 
+  // ---- The 3D robot --------------------------------------------------------
+  var robot = null;
+  var robotToken = 0;
+  function reducedMotion() {
+    try { return Boolean(root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (err) { return false; }
+  }
+  function webglOk() {
+    try {
+      var c = root.document.createElement('canvas');
+      return Boolean(root.WebGLRenderingContext && (c.getContext('webgl2') || c.getContext('webgl')));
+    } catch (err) { return false; }
+  }
+  function dropRobot() {
+    robotToken++;
+    if (robot) { try { robot.dispose(); } catch (err) { /* already gone */ } robot = null; }
+  }
+  // Loads three.js and the robot only when the robot is picked, so the flat avatars cost nothing.
+  function mountRobot(body, stage, onFail) {
+    var token = ++robotToken;
+    if (!webglOk()) { onFail(); return; }
+    var url = function (p) { return new root.URL(base + p, root.document.baseURI).href; };
+    Promise.all([import(url('../vendor/three/three.module.min.js')), import(url('robot3d.js'))]).then(function (mods) {
+      if (token !== robotToken) return;
+      robot = mods[1].createRobot(mods[0], body, { reducedMotion: reducedMotion() });
+      robot.setState(C() ? C().current() : null);
+    }).catch(function (err) {
+      if (token !== robotToken) return;
+      if (root.console) root.console.warn('CoDev Bot could not start; showing the flat robot instead', err);
+      stage.removeAttribute('data-render');
+      onFail();
+    });
+  }
+
   function drawAvatar(id) {
     if (!dock) return;
     var a = findAvatar(id);
     var body = dock.querySelector('#codevCompanionBody');
+    var stage = dock.querySelector('#codevCompanionStage');
+    dropRobot();
     body.innerHTML = '';
-    a.images.forEach(function (src) {
+    dock.setAttribute('data-shape', a.shape);
+    if (a.kind === '3d') {
+      stage.setAttribute('data-render', '3d');
+      mountRobot(body, stage, function () { drawImages(body, ['avatar.svg']); dock.setAttribute('data-shape', 'square'); place(); });
+      place();
+      return;
+    }
+    stage.removeAttribute('data-render');
+    drawImages(body, a.images);
+    place();
+  }
+
+  function drawImages(body, images) {
+    images.forEach(function (src) {
       var img = root.document.createElement('img');
       img.className = 'companion-img';
       img.alt = '';
@@ -188,8 +275,6 @@
       img.src = base + src;
       body.appendChild(img);
     });
-    dock.setAttribute('data-shape', a.shape);
-    place();
   }
 
   function setAvatar(id) {
@@ -243,10 +328,13 @@
       '<div class="codev-companion-label" id="codevCompanionLabel" aria-live="polite">Resting</div>';
     (container || doc.body).appendChild(dock);
     anchor = options.anchor || null;
-    drawAvatar(avatar());
     var stage = dock.querySelector('#codevCompanionStage');
+    drawAvatar(avatar());
     C().init({ stage: stage, body: dock.querySelector('#codevCompanionBody'), fx: dock.querySelector('#codevCompanionFx'), label: dock.querySelector('#codevCompanionLabel') });
-    C().subscribe(function (anim) { stage.setAttribute('aria-label', 'Companion: ' + (anim ? anim.name : 'Resting')); });
+    C().subscribe(function (anim) {
+      stage.setAttribute('aria-label', 'Companion: ' + (anim ? anim.name : 'Resting'));
+      if (robot) robot.setState(anim ? anim.key : null);
+    });
     // Tap to tuck it into a small bubble and back.
     stage.addEventListener('click', function () { dock.classList.toggle('collapsed'); place(); });
     ['pointerdown', 'keydown'].forEach(function (type) { doc.addEventListener(type, wake, { capture: true, passive: true }); });
@@ -255,6 +343,7 @@
     root.addEventListener('resize', place);
     if (anchor && root.ResizeObserver) new root.ResizeObserver(place).observe(anchor);
     if (root.navigator && root.navigator.onLine === false) send('network.loading');
+    else setTimeout(function () { send('hello'); }, 1200);
     armSleep();
     return dock;
   }
@@ -263,6 +352,7 @@
     mount: mount,
     inference: inference,
     tool: tool,
+    finished: finished,
     notify: send,
     enabled: enabled,
     setEnabled: setEnabled,
@@ -270,6 +360,7 @@
     setAvatar: setAvatar,
     avatars: AVATARS.map(function (a) { return { id: a.id, name: a.name }; }),
     classifyTool: classifyTool,
-    buildOutcome: buildOutcome
+    buildOutcome: buildOutcome,
+    milestone: milestone
   };
 })(typeof window !== 'undefined' ? window : this);
