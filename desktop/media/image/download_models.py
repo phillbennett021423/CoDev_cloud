@@ -15,8 +15,8 @@ WHISPER_MODEL = os.environ.get("CODEV_WHISPER_MODEL", "small")
 PIPER_VOICES = ["en_US-lessac-medium", "en_US-ryan-medium", "en_US-amy-medium", "en_GB-alan-medium"]
 
 MODEL_FILES = {
-    "kokoro/kokoro-v0_19.onnx": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files/kokoro-v0_19.onnx",
-    "kokoro/voices.json": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files/voices.json",
+    "kokoro/kokoro-v1.0.onnx": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
+    "kokoro/voices-v1.0.bin": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
     "rvm/rvm_mobilenetv3_fp32.torchscript": "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.torchscript",
     "esrgan/realesr-general-x4v3.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth",
 }
