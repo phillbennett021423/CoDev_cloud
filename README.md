@@ -261,6 +261,15 @@ folder), in **Settings > Notes & tables**. Agent editing is off until you turn i
 there, and CoDev asks before every change an agent makes. Story lore (characters,
 factions, places) goes in a Chronicler vault instead: see Story Studio's 🧭 World tools. Details in [docs/notes-and-tables.md](docs/notes-and-tables.md).
 
+## Any profession, any level: teach me or do it for me
+
+CoDev's agents work like a seasoned pro in whatever field you're in, at your level.
+
+- **Your field and level.** Set them in ⚙️ Settings > 🎓 Your field & level, or just tell an agent ("I'm a new real estate agent", "I've been an electrician for 20 years"). CoDev has built-in playbooks for 32 professions and trades (coding, game dev, data, writing, content creation, marketing, sales, small business, bookkeeping, insurance, real estate, teaching, design, art, video, photography, music, the skilled trades, mechanics, healthcare, fitness, food, legal, finance, HR, project management and more): the field's real work, its quality bar, the mistakes beginners make, its key terms, the CoDev tools that fit and a learning path from beginner to pro. Any other field works too: the agent looks up its standards on the web before doing real work.
+- **Your level** changes how agents talk: plain words and the why for someone just starting, the non-obvious choices for someone with some experience, peer-to-peer for a pro.
+- **Teach me or do it for me.** The button by Send switches how agents help: 🤖 the agent decides (does the work, and explains briefly when you're new), 🎓 teach me (step by step, you do each step and the agent checks your work against the pro standard), ⚡ do it for me (the whole job, finished, with its tools). Saying "show me how" or "just do it" in a message switches it for that message only.
+- **Safety first** in licensed or high-stakes fields (electrical, medical, legal, money, insurance): agents give the safety, legal or money check first and say when a licensed pro must do or sign off on the work.
+
 ## Memory, web reading and self-checks
 
 - **Memory across chats.** Say "remember that I use Windows 11" (or any fact or preference) and the agent saves it. Saved notes go with every chat, even after **New task**; see, add or delete them in ⚙️ Settings > 🧠 Memory, or turn them off there. Ask "forget that I use Windows 11" to remove one. Keys and passwords are never saved.

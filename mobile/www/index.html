@@ -326,7 +326,7 @@
         .project-editor-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
         .chat-input-row { display: flex; flex-wrap: wrap; width: 100%; gap: 10px; align-items: center; }
         /* When the chat column is narrow (sidebars open), keep the text box readable and let the buttons wrap below it */
-        .chat-input-row #userInput { min-width: 0; flex: 1 1 260px; }
+        .chat-input-row #userInput { min-width: 0; flex: 1 1 200px; }
         .chat-input-row .send-btn { flex: 0 0 auto; white-space: nowrap; }
         .mic-btn { background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 12px 14px; border-radius: 8px; cursor: pointer; }
         .resume-btn { background: var(--accent, #3b82f6); color: #fff; border: none; cursor: pointer; font-size: 0.85rem; font-weight: 600; padding: 5px 12px; border-radius: 6px; }
@@ -890,6 +890,7 @@
                             <button id="screenshotFolderBtn" class="tool-btn" onclick="pickScreenshotFolder()" title="Pick a folder of screenshots (like Dabble slips) for the agents to read">📸</button>
                             <button id="deepResearchBtn" class="tool-btn" onclick="toggleDeepResearch()" title="Deep research: read many sources and write a cited report (for your next message)" aria-pressed="false">🔬</button>
                             <button id="webSearchBtn" class="tool-btn" onclick="toggleWebSearch()" title="Search the web for every message: off (technical questions are searched automatically)" aria-pressed="false">🔎</button>
+                            <button id="helpModeBtn" class="tool-btn" type="button" title="How agents help: teach you to do it, or do it for you" aria-label="Help mode">🤖</button>
                             <select id="responseLengthSelect" class="tool-btn" onchange="setResponseLength(this.value)" title="Reply length" aria-label="Reply length">
                                 <option value="short">Short</option>
                                 <option value="medium">Medium</option>
@@ -1243,6 +1244,8 @@
                 <button class="btn-secondary" id="videoEditPrepare" onclick="prepareVideoTools()" style="display: none;">⬇ Download the video tools now</button>
             </details>
 
+            <details class="settings-extra" id="expertSettings"></details>
+
             <details class="settings-extra" id="memorySettings">
                 <summary>🧠 Memory (kept across all chats)</summary>
                 <label class="checkbox-group">
@@ -1395,6 +1398,7 @@
     <script src="agent-ui/task-runner.js"></script>
     <script src="agent-ui/cloud-queue.js"></script>
     <script src="agent-ui/tool-guide.js"></script>
+    <script src="agent-ui/expert-coach.js"></script>
     <script src="agent-ui/sketch-pad.js"></script>
     <script src="companion/companion.js"></script>
     <script src="companion/companion-bridge.js"></script>
@@ -4784,6 +4788,22 @@
             if (el) CodevNotesTables.mountSettings(el, { storage: localStorage, tools: notesTables, hasProject: notesHasProject, onChange: () => { if (notesView) notesView.refresh(); } });
         });
 
+        // EXPERT COACH: the user's profession, their level in it and how they want help
+        // (teach me, or do it for me), so every agent works like a pro in that field at that
+        // level (agent-ui/expert-coach.js). Set in Settings, with the button by Send, or by
+        // telling an agent ("I'm a new real estate agent").
+        let expertViews = [];
+        const expertise = window.CodevExpertise ? CodevExpertise.createExpertise({
+            storage: localStorage,
+            onChange: () => expertViews.forEach(v => { try { v.refresh(); } catch (err) { /* gone */ } })
+        }) : null;
+        document.addEventListener("DOMContentLoaded", () => {
+            if (!expertise) return;
+            const settings = document.getElementById("expertSettings");
+            const button = document.getElementById("helpModeBtn");
+            expertViews = [expertise.mountSettings(settings), expertise.mountModeButton(button)].filter(Boolean);
+        });
+
         // THE ODDS API: every sportsbook's lines and props, saved as snapshots for line
         // movement, and the list of props worth looking up on Outlier (agent-ui/odds-api.js).
         // The user's free key is kept in this page; without it agents read odds on Outlier.
@@ -5140,6 +5160,8 @@
                     onSaved: () => { if (insuranceView && currentViewName === "insurance") insuranceView.refresh(); }
                 }));
             }
+            // The user's field, level and help mode (agent-ui/expert-coach.js), on every version.
+            if (expertise) for (const tool of expertise.buildTools()) if (!tools.some(t => t.name === tool.name)) tools.push(tool);
             // Video and audio editing in Docker on this computer.
             try { tools.push(...await mediaStudio.buildTools(ctx)); } catch (err) { logConsoleActivity(`[Media] ${err.message}`); }
             try {
@@ -5477,6 +5499,8 @@
             const baseSystem = messages[0]?.role === "system" ? messages[0].content : null;
             const checkpoint = () => { if (ctx.checkpoint) ctx.checkpoint(baseSystem === null ? messages : [{ ...messages[0], content: baseSystem }, ...messages.slice(1)]); };
             const tools = await buildLocalTools(ctx);
+            // What this agent has, for tools that say what fits and what isn't set up (expert_playbook).
+            ctx.toolNames = tools.map(t => t.name);
             const toolDefs = tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
             // Tell the model what "MCP" means here, so a request like "use MCP to..." lands on these tools.
             const mcpNames = (await fetchAllMcpTools()).map(t => t.qualifiedName || t.name);
@@ -5496,6 +5520,10 @@
             // more specific (Outlier, odds, files) and win where they say more.
             const toolGuide = window.CodevToolGuide ? CodevToolGuide.toolGuideNote(tools) : "";
             if (toolGuide && messages[0]?.role === "system") messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + toolGuide };
+            // The tools that fit the user's field (agent-ui/expert-coach.js), from those it has.
+            const lastAsked = [...messages].reverse().find(m => m.role === "user");
+            const fieldNote = expertise ? expertise.toolNote(tools, lastAsked ? (typeof lastAsked.content === "string" ? lastAsked.content : JSON.stringify(lastAsked.content)) : "") : "";
+            if (fieldNote && messages[0]?.role === "system") messages[0] = { ...messages[0], content: messages[0].content + "\n\n" + fieldNote };
             let outlierNote = outlierToolNote(tools, messages);
             // An Outlier request gets the whole Outlier guide up front, so the agent knows
             // every section and what it's for before its first call.
@@ -8326,7 +8354,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 10. BE BRIEF: Say what the user needs and stop. Lead with the answer in plain words. No preamble, no restating the question, no repeating what you already said, no closing summary or offers of more help. A simple question gets one to three sentences, and most answers fit in about 150 words. Go longer only when the task needs it: code, a report or deep research, step-by-step instructions, or when the user asks for detail; even then, cut anything that doesn't help. Use lists or code blocks only when they help.
 
-11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); watching a YouTube or other web video in your browser (browser_watch_video: frames you look at plus its captions, no Google key needed); looking at the pictures your tools return (screenshots, video frames, renders) yourself; holding game art against the user's reference pictures detail by detail and fixing what differs (art_compare_reference); editing videos and audio the user attaches (cutting, joining, pauses and filler words, highlights, vertical for TikTok, captions, noise removal, voice and music separation, background music, beat-cut montages, slow motion, transitions, text, logos, color looks, AI voiceovers, background removal, upscaling, GIFs) with the media_* tools when CoDev runs on their computer with Docker; making and editing pictures (generate_image); the user's CoDev Notes (notes and CSV/JSON data tables kept in CoDev's 📝 Notes tab), in place of Google Docs and Sheets (notes_search, notes_read, notes_write, table_read, table_write); files in the user's MEGA cloud drive, in place of Google Drive (mega_search, mega_read_file, mega_save_file); fantasy maps from Azgaar's Fantasy Map Generator (map_read, map_generate); running Python and JavaScript right in the browser for exact math, data analysis of attached files and charts (run_code); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example editing files on their computer), say exactly how the user turns it on, as the workspace notes describe.
+11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: working as a seasoned pro in any profession or trade at the user's level, either teaching them step by step to do it themselves or doing it all for them (the 🤖/🎓/⚡ help-mode button by Send, and Settings > 🎓 Your field & level); a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); watching a YouTube or other web video in your browser (browser_watch_video: frames you look at plus its captions, no Google key needed); looking at the pictures your tools return (screenshots, video frames, renders) yourself; holding game art against the user's reference pictures detail by detail and fixing what differs (art_compare_reference); editing videos and audio the user attaches (cutting, joining, pauses and filler words, highlights, vertical for TikTok, captions, noise removal, voice and music separation, background music, beat-cut montages, slow motion, transitions, text, logos, color looks, AI voiceovers, background removal, upscaling, GIFs) with the media_* tools when CoDev runs on their computer with Docker; making and editing pictures (generate_image); the user's CoDev Notes (notes and CSV/JSON data tables kept in CoDev's 📝 Notes tab), in place of Google Docs and Sheets (notes_search, notes_read, notes_write, table_read, table_write); files in the user's MEGA cloud drive, in place of Google Drive (mega_search, mega_read_file, mega_save_file); fantasy maps from Azgaar's Fantasy Map Generator (map_read, map_generate); running Python and JavaScript right in the browser for exact math, data analysis of attached files and charts (run_code); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example editing files on their computer), say exactly how the user turns it on, as the workspace notes describe.
 
 12. ENGINE-SPECIFIC RULES:${engineRules ? `\n${engineRules}` : " none for this task."}`;
             
@@ -8494,7 +8522,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             return kind;
         }
 
-        const CODEV_IDENTITY = "[CoDev] You are CoDev, a capable general assistant and agent: you write and fix code, answer any question, research on the web and read pages, analyze sports props on Outlier, read screenshots, images and documents, drive a browser, remember what the user asks you to keep, and help with writing, planning and anything else the user needs. "
+        const CODEV_IDENTITY = "[CoDev] You are CoDev, a capable general assistant and agent: you write and fix code, answer any question, research on the web and read pages, analyze sports props on Outlier, read screenshots, images and documents, drive a browser, remember what the user asks you to keep, and help with writing, planning and anything else the user needs, in any profession or trade, at the user's level: teaching them to do it or doing it for them. "
             + "Before acting, work out what kind of request this is and use only the tools it needs. Touch the user's project files only when the task is about them or the user asks.";
         const REQUEST_KIND_NOTES = {
             props: "[Request type] Sports props and betting research, not a coding task. Start with CoDev's free sports tools before web_search: sports_schedule for which games are on (by team or start time, e.g. 6:30pm CT), sports_injuries for the injury report, and props_hit_rates for how often each leg cleared its line in the last 5, 10 and 20 games (all legs in one call). Underdog's Higher means Over and Lower means Under. Use the Odds API tools (when offered) to find what to look up and odds_steam for steam and sharp moves, model_prop_edge for CoDev's own model and market check on the legs (game logs from ESPN, the market's no-vig price, EV, trap check), stats_player_log for a player's game log, model_backtest for how the model did on past slates, the Outlier tools, read_screenshots for slip screenshots, and web_search. Don't list, search or read the project files unless the user asks about a file.",
@@ -8514,7 +8542,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             else if (!coding && workspaceNote) workspaceNote = "[Workspace status] A project folder is connected; its files only matter if the user asks about them.";
             return [CODEV_IDENTITY, DEV_ROLES[role].prompt, general ? null : AUTONOMY_RULES, coding && codeAutopilot ? AUTOPILOT_RULES : null, coding ? null : REQUEST_KIND_NOTES[kind], workspaceNote,
                 agent.instructions && `[Agent instructions] ${agent.instructions}`, savedMemoryForPrompt(task), storyStudio && CodevStoryStudio.studioPromptBlock(storyStudio, task),
-                insuranceDesk && CodevInsuranceDesk.deskPromptBlock(insuranceDesk, task), memory].filter(Boolean).join("\n\n");
+                insuranceDesk && CodevInsuranceDesk.deskPromptBlock(insuranceDesk, task), expertise && expertise.promptBlock(task), memory].filter(Boolean).join("\n\n");
         }
 
         // WORKSPACE AUTO-INJECTION

@@ -105,6 +105,7 @@
         { when: "Files in the user's MEGA cloud drive", tools: ["mega_status", "mega_search", "mega_read_file", "mega_save_file"] },
         { when: "Gmail, YouTube and Maps", tools: ["google_apps_status", "gmail_search", "gmail_read", "gmail_send", "youtube_search", "youtube_video", "maps_search_places", "maps_directions"] },
         { when: "Something from an earlier chat, or a lasting fact about the user", tools: ["search_past_chats", "save_memory", "forget_memory"] },
+        { when: "The user's profession, their level in it, and teaching a field or doing its work to a pro standard", tools: ["expert_playbook", "set_expertise"], how: "expert_playbook for a field's standards and learning path; set_expertise when the user says what they do or how they want help" },
         { when: "Resources an MCP server exposes", tools: ["mcp_list_resources", "mcp_read_resource"] },
         { when: "A pre-approved build or test command (no sandbox)", tools: ["run_local_command"] }
     ];
