@@ -1,4 +1,4 @@
-# CoDev Studio
+# CoDev Studio Beta
 
 The app is a single page, `mobile/www/index.html`. It talks to Groq directly from the browser, so there's no backend server to run. The Android app is in `mobile/` (see `mobile/README.md`).
 

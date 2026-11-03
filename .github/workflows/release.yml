@@ -75,7 +75,7 @@ jobs:
           gh release create "release-${{ github.run_number }}" \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
-            --title "CoDev Studio release ${{ github.run_number }}" \
+            --title "CoDev Studio Beta release ${{ github.run_number }}" \
             --notes "Debug APK built from commit ${{ github.sha }}." \
             --draft
 

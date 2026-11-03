@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CoDev Studio Pro - Multi-Agent Workstation</title>
+    <title>CoDev Studio Beta</title>
     <style>
         :root {
             --bg-dark: #090d16;
@@ -664,7 +664,7 @@
     <header>
         <div class="header-left">
             <button class="sidebar-toggle-btn" onclick="toggleMenuSidebar()" title="Toggle Menu">☰</button>
-            <div class="logo-area"><span class="brand-mark"></span><span class="brand-name">CoDev Studio Pro</span></div>
+            <div class="logo-area"><span class="brand-mark"></span><span class="brand-name">CoDev Studio Beta</span></div>
         </div>
         <div class="nav-tabs">
             <span id="tab-chat" class="active" onclick="switchView('chat')">Chat & Swarm</span>
@@ -1021,7 +1021,7 @@
             <div id="view-console" class="alt-view-content">
                 <h3>Runtime & API Telemetry Logs</h3>
                 <div class="console-output" id="consoleOutput">
-                    [06:40:00] CoDev Studio Pro initialized.<br>
+                    [06:40:00] CoDev Studio Beta initialized.<br>
                     [06:40:02] Browser File System Access ready.
                 </div>
             </div>
@@ -1111,7 +1111,7 @@
 
     <div class="modal-overlay" id="settingsModal">
         <div class="modal" style="width: 520px;">
-            <h3 style="display: flex; align-items: center; gap: 8px;">⚡ Welcome to CoDev Studio Pro</h3>
+            <h3 style="display: flex; align-items: center; gap: 8px;">⚡ Welcome to CoDev Studio Beta</h3>
             <button class="btn-secondary" type="button" id="openWelcomeBtn" onclick="closeSettingsModal(); if (testerWelcome) testerWelcome.open();" style="padding: 10px; border-radius: 8px; font-weight: bold; cursor: pointer;">👋 Easy setup guide (pick your job, connect the AI)</button>
             <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;">
                 CoDev's agents run on <strong>Claude</strong> (Anthropic): Claude Haiku 5.5 for quick asks and Claude Sonnet 5.5 for bigger multi-step tasks, kept inside the spending limits below. Groq's free tier is still there as a fallback, but its small limits run out on real agent tasks.
@@ -1375,7 +1375,7 @@
 
             <div class="modal-buttons">
                 <button class="btn-secondary" id="modalCancelBtn" style="display: none;" onclick="closeSettingsModal()">Cancel</button>
-                <button class="btn-primary" id="modalLaunchBtn" style="flex: 1; padding: 12px;" onclick="saveSettings()">🚀 Launch CoDev Studio Workspace</button>
+                <button class="btn-primary" id="modalLaunchBtn" style="flex: 1; padding: 12px;" onclick="saveSettings()">🚀 Launch CoDev Studio Beta</button>
             </div>
         </div>
     </div>
@@ -2050,7 +2050,7 @@
 
         const savedChats = loadSavedChats();
         let chatSessions = savedChats ? savedChats.sessions : [
-            newChatSession("chat_1", "New Session #1", false, "Welcome to CoDev Studio Pro. Tell the agents what you're working on, in any domain. To work on files, click '📁 Connect Local Folder' at the top right." + (isHostedWebPage() ? WEB_VERSION_WELCOME : ""))
+            newChatSession("chat_1", "New Session #1", false, "Welcome to CoDev Studio Beta. Tell the agents what you're working on, in any domain. To work on files, click '📁 Connect Local Folder' at the top right." + (isHostedWebPage() ? WEB_VERSION_WELCOME : ""))
         ];
         let activeChatId = savedChats ? savedChats.activeChatId : "chat_1";
         window.addEventListener("pagehide", saveChatsNow);
@@ -2561,7 +2561,7 @@
         // Studio branding. This is the one place to set the logo: point logoSrc at an image
         // (e.g. "brand/logo.svg" next to index.html, or a data: URL) and it replaces the
         // monogram in the header, tabs, chat list and every agent message header.
-        const BRAND = { name: "CoDev Studio Pro", monogram: "VF", logoSrc: null };
+        const BRAND = { name: "CoDev Studio Beta", monogram: "VF", logoSrc: null };
 
         function brandMarkHtml() {
             const inner = BRAND.logoSrc ? `<img src="${escapeHtml(BRAND.logoSrc)}" alt="">` : escapeHtml(BRAND.monogram);
@@ -5470,7 +5470,7 @@
             if (!OUTLIER_TASK.test(asked)) return "";
             const outlier = agentInfra.status?.services?.outlier;
             const why = window.codevDesktop
-                ? "The user's copy of the CoDev Windows app doesn't have the Outlier scan. Tell them to install the latest CoDev Studio (github.com/phillbennett021423/CoDev_cloud/releases/latest), or double-click start-codev.bat in their CoDev folder and use the Edge tab it opens at http://localhost:3000, sign in once from the 📈 Outlier tab, and ask again."
+                ? "The user's copy of the CoDev Windows app doesn't have the Outlier scan. Tell them to install the latest CoDev Studio Beta (github.com/phillbennett021423/CoDev_cloud/releases/latest), or double-click start-codev.bat in their CoDev folder and use the Edge tab it opens at http://localhost:3000, sign in once from the 📈 Outlier tab, and ask again."
                 : outlier && outlier.available === false
                     ? `CoDev's server couldn't start the Outlier service (${String(outlier.detail || "no reason given").slice(0, 200)}). Tell the user that, and to run npm install in their CoDev folder, restart start-codev.bat and ask again.`
                     : "This page isn't connected to CoDev's server, which runs the Outlier scan. Tell the user to start CoDev with start-codev.bat and use the tab it opens at http://localhost:3000, sign in once from the 📈 Outlier tab, and ask again.";
@@ -6563,7 +6563,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                     permission = await plugin.requestPermissions();
                 }
                 if (permission.speechRecognition !== "granted") {
-                    alert("Microphone permission is needed for voice input. You can allow it in Android Settings > Apps > CoDev Studio > Permissions.");
+                    alert("Microphone permission is needed for voice input. You can allow it in Android Settings > Apps > CoDev Studio Beta > Permissions.");
                     return;
                 }
 
@@ -7274,7 +7274,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             chosenVoiceName = select && !select.disabled ? select.value : saved;
             lockedWebVoice = null;
             if (isSpeaking) stopSpeaking();
-            speakText("Hi, this is the voice CoDev Studio will use to read answers aloud. For example, version 4.2 of the file main.py is ready.")
+            speakText("Hi, this is the voice CoDev Studio Beta will use to read answers aloud. For example, version 4.2 of the file main.py is ready.")
                 .finally(() => { chosenVoiceName = saved; lockedWebVoice = null; });
         }
 
@@ -8044,7 +8044,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const openRouter = currentBackend === "openrouter";
             const provider = openRouter
                 ? { name: "OpenRouter", host: "openrouter.ai", url: "https://openrouter.ai/api/v1/chat/completions", key: openRouterKey,
-                    headers: { "HTTP-Referer": "https://github.com/phillbennett021423/CoDev_cloud", "X-Title": "CoDev Studio" } }
+                    headers: { "HTTP-Referer": "https://github.com/phillbennett021423/CoDev_cloud", "X-Title": "CoDev Studio Beta" } }
                 : { name: "Groq", host: "api.groq.com", url: "https://api.groq.com/openai/v1/chat/completions", key: groqKey, headers: {} };
             // OpenRouter adds what the call cost to usage, for the spending limits.
             if (openRouter) body = { ...body, model: openRouterModel, usage: { include: true } };

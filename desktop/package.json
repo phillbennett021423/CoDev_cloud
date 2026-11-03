@@ -1,8 +1,8 @@
 {
   "name": "codev-studio-desktop",
-  "productName": "CoDev Studio",
+  "productName": "CoDev Studio Beta",
   "version": "1.0.0",
-  "description": "CoDev Studio desktop app for Windows",
+  "description": "CoDev Studio Beta desktop app for Windows",
   "main": "main.js",
   "private": true,
   "scripts": {
@@ -22,12 +22,12 @@
   },
   "build": {
     "appId": "com.codev.studio",
-    "productName": "CoDev Studio",
+    "productName": "CoDev Studio Beta",
     "artifactName": "CoDev-Studio-Setup.${ext}",
     "files": ["main.js", "preload.js", "mcp-tools.js", "image-folder.js", "mcp-hub.js", "outlier-bridge.js", "google-connect.js", "mega-connect.js", "azgaar-map.js", "gamedev/**/*", "creative/**/*", "sandbox/**/*", "!sandbox/test/**", "media/**/*", "!media/test/**", "browser/**/*", "www/**/*", "bundle/**/*"],
     "asarUnpack": ["node_modules/playwright-core/**", "bundle/tools/**", "sandbox/**", "gamedev/**", "creative/**", "media/image/**"],
     "directories": { "output": "dist", "buildResources": "build" },
     "win": { "icon": "build/icon.png", "target": "nsis" },
-    "nsis": { "oneClick": true, "perMachine": false, "createDesktopShortcut": true, "createStartMenuShortcut": true, "shortcutName": "CoDev Studio" }
+    "nsis": { "oneClick": true, "perMachine": false, "createDesktopShortcut": true, "createStartMenuShortcut": true, "shortcutName": "CoDev Studio Beta" }
   }
 }

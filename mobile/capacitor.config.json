@@ -1,6 +1,6 @@
 {
   "appId": "com.codev.studio",
-  "appName": "CoDev Studio",
+  "appName": "CoDev Studio Beta",
   "webDir": "www",
   "android": {
     "allowMixedContent": false

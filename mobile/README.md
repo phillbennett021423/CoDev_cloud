@@ -1,4 +1,4 @@
-# CoDev Studio for Android
+# CoDev Studio Beta for Android
 
 CoDev Studio (`www/index.html`) wrapped as an Android app with Capacitor 8.
 
