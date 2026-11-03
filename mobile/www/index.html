@@ -985,7 +985,7 @@
                         <h4>☁️ Cloud Daemon Status</h4>
                         <span class="codev-badge" id="cloudDaemonStatus">Active 24/7</span>
                         <div style="font-size: 1.5rem; font-weight: bold; color: var(--text-main); margin-top: 5px;" id="cloudTaskCount">14 Routines Executed</div>
-                        <p style="font-size: 0.8rem; color: var(--text-muted);">Connected to Groq Cloud or OpenRouter, whichever is picked in Settings.</p>
+                        <p style="font-size: 0.8rem; color: var(--text-muted);">Connected to Claude (Anthropic), OpenRouter or Groq, whichever is picked in Settings.</p>
                     </div>
                     <div class="codev-hub-card">
                         <h4>🔗 Workspace Integrations</h4>
@@ -1152,28 +1152,28 @@
         <div class="modal" style="width: 520px;">
             <h3 style="display: flex; align-items: center; gap: 8px;">⚡ Welcome to CoDev Studio Pro</h3>
             <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;">
-                To power your autonomous agents, multi-agent swarms, and file code loops for free, CoDev connects to <strong>Groq's high-speed AI engine</strong>. 
+                CoDev's agents run on <strong>Claude</strong> (Anthropic): Claude Haiku 5.5 for quick asks and Claude Sonnet 5.5 for bigger multi-step tasks, kept inside the spending limits below. Groq's free tier is still there as a fallback, but its small limits run out on real agent tasks.
             </p>
 
             <!-- Step-by-Step Guidance Box -->
             <div style="background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 0.85rem;">
                 <div style="font-weight: bold; color: var(--accent);">Quick Setup (Takes 30 Seconds):</div>
-                <div>1. Click the button below to open Groq (No credit card needed).</div>
-                <a href="https://console.groq.com/keys" target="_blank" style="background: var(--codev-blue); color: white; text-align: center; padding: 8px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 0.85rem;">🔑 Get Your Free Groq API Key</a>
-                <div style="margin-top: 4px;">2. Create a key, copy it (starts with <code style="color:var(--success);">gsk_</code>), and paste it below:</div>
+                <div>1. Click the button below to open the Anthropic Console.</div>
+                <a href="https://console.anthropic.com/settings/keys" target="_blank" style="background: var(--codev-blue); color: white; text-align: center; padding: 8px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 0.85rem;">🔑 Get Your Anthropic API Key</a>
+                <div style="margin-top: 4px;">2. Create a key, copy it (starts with <code style="color:var(--success);">sk-ant-</code>), and paste it below:</div>
             </div>
 
             <div class="form-group" style="margin-top: 5px;">
                 <label>AI provider</label>
                 <select id="modalProvider" onchange="toggleProviderFields()" style="width: 100%;">
-                    <option value="groq">Groq (free, fastest)</option>
+                    <option value="anthropic">Claude by Anthropic (recommended, paid)</option>
                     <option value="openrouter">OpenRouter (free multi-model pool, or any model)</option>
-                    <option value="anthropic">Anthropic (Claude Haiku 5.5, paid)</option>
+                    <option value="groq">Groq (free fallback, small limits)</option>
                 </select>
             </div>
 
             <div class="form-group" id="groupGroqKey">
-                <label>Paste Your Groq API Key Here <span id="groqKeyOptional" style="color: var(--text-muted);">(optional with OpenRouter or Anthropic: used for voice input)</span></label>
+                <label>Paste Your Groq API Key Here <span id="groqKeyOptional" style="color: var(--text-muted);">(optional with Claude or OpenRouter: used for voice input)</span></label>
                 <input type="text" id="modalGroqKey" placeholder="gsk_..." style="font-family: monospace;">
             </div>
 
@@ -1194,6 +1194,14 @@
                 <div class="form-group">
                     <label>Anthropic API Key <span id="anthropicServerNote" style="display: none; color: var(--text-muted);">(optional here: CoDev's server has ANTHROPIC_API_KEY)</span></label>
                     <input type="text" id="modalAnthropicKey" placeholder="sk-ant-..." style="font-family: monospace;" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label>Claude model</label>
+                    <select id="modalClaudeModel" style="width: 100%;">
+                        <option value="auto">Automatic: Haiku 5.5 for quick asks, Sonnet 5.5 for big tasks</option>
+                        <option value="haiku">Always Claude Haiku 5.5 (cheapest)</option>
+                        <option value="sonnet">Always Claude Sonnet 5.5 (most capable)</option>
+                    </select>
                 </div>
             </div>
 
@@ -1489,11 +1497,13 @@
             });
         }
 
-        // The AI provider: "groq", "openrouter" or "anthropic". Groq and OpenRouter speak
-        // the OpenAI chat API; Anthropic requests are translated in groqChatMessage.
-        const BACKENDS = ["groq", "openrouter", "anthropic"];
+        // The AI provider: "anthropic" (Claude, the default), "openrouter" or "groq". Groq and
+        // OpenRouter speak the OpenAI chat API; Anthropic requests are translated in groqChatMessage.
+        // Groq's free tier has small per-minute token limits that real agent tasks run past,
+        // so it is only an optional fallback picked in Settings.
+        const BACKENDS = ["anthropic", "openrouter", "groq"];
         const BACKEND_NAMES = { groq: "Groq", openrouter: "OpenRouter", anthropic: "Anthropic" };
-        let currentBackend = BACKENDS.includes(localStorage.getItem("codev_backend")) ? localStorage.getItem("codev_backend") : "groq";
+        let currentBackend = BACKENDS.includes(localStorage.getItem("codev_backend")) ? localStorage.getItem("codev_backend") : "anthropic";
         let groqKey = String(localStorage.getItem("codev_groq_key") || "").replace(/[\s\u200B-\u200D\uFEFF"'`]+/g, "");
         // Keys saved by older versions weren't cleaned of pasted spaces or quotes.
         let openRouterKey = String(localStorage.getItem("codev_openrouter_key") || "").replace(/[\s\u200B-\u200D\uFEFF"'`]+/g, "");
@@ -1511,7 +1521,15 @@
         groqKey ||= codevSharedKey("groq");
         openRouterKey ||= codevSharedKey("openrouter");
         anthropicKey ||= codevSharedKey("anthropic");
-        const ANTHROPIC_MODEL = "claude-haiku-5-5";
+        // CLAUDE MODELS: quick requests go to Claude Haiku 5.5; bigger multi-step agent tasks
+        // (building, fixing, research, reports) go to Claude Sonnet 5.5. "auto" picks per task
+        // (see pickClaudeModel); Settings > Claude model can pin either one.
+        const CLAUDE_HAIKU = "claude-haiku-5-5";
+        const CLAUDE_SONNET = "claude-sonnet-5-5";
+        const ANTHROPIC_MODEL = CLAUDE_HAIKU;
+        const CLAUDE_MODEL_CHOICES = ["auto", "haiku", "sonnet"];
+        let claudeModelChoice = CLAUDE_MODEL_CHOICES.includes(localStorage.getItem("codev_claude_model")) ? localStorage.getItem("codev_claude_model") : "auto";
+        const CLAUDE_MODEL_LABELS = { auto: "Haiku 5.5 for quick asks, Sonnet 5.5 for big tasks", haiku: "Claude Haiku 5.5", sonnet: "Claude Sonnet 5.5" };
         // True when server.js (npm start) has ANTHROPIC_API_KEY and relays requests,
         // so the page itself needs no Anthropic key. Set by checkServerAnthropic().
         let anthropicViaServer = false;
@@ -1522,9 +1540,11 @@
         // limit is raised in Settings > Spending limits); past the per-task limit an agent
         // stops using tools and answers with what it has. 0 turns a limit off. Groq's
         // free tier counts as $0; OpenRouter reports what each call cost.
-        // Claude Haiku 5.5, $ per million tokens. A prompt over 100K tokens is billed at
-        // the higher rates; cache writes cost 1.25x input and cache reads a tenth.
+        // $ per million tokens. A Haiku prompt over 100K tokens is billed at the higher
+        // rates (Sonnet has one rate); cache writes cost 1.25x input and cache reads a tenth.
         const HAIKU_PRICES = { input: 0.10, output: 0.50, longInput: 0.50, longOutput: 2.50, longAfter: 100000, perSearch: 0.01 };
+        const SONNET_PRICES = { input: 2, output: 10, longInput: 2, longOutput: 10, longAfter: Infinity, perSearch: 0.01 };
+        const CLAUDE_PRICES = { [CLAUDE_HAIKU]: HAIKU_PRICES, [CLAUDE_SONNET]: SONNET_PRICES };
         const DEFAULT_DAILY_SPEND_LIMIT = 1;
         const DEFAULT_TASK_SPEND_LIMIT = 0.25;
         const readSpendLimit = (name, fallback) => {
@@ -1556,13 +1576,48 @@
             return today;
         }
 
-        function anthropicCost(usage = {}) {
+        function anthropicCost(usage = {}, model = CLAUDE_HAIKU) {
+            const prices = CLAUDE_PRICES[model] || SONNET_PRICES;
             const fresh = usage.input_tokens || 0, written = usage.cache_creation_input_tokens || 0, read = usage.cache_read_input_tokens || 0;
-            const long = fresh + written + read > HAIKU_PRICES.longAfter;
-            const inRate = (long ? HAIKU_PRICES.longInput : HAIKU_PRICES.input) / 1e6;
-            const outRate = (long ? HAIKU_PRICES.longOutput : HAIKU_PRICES.output) / 1e6;
+            const long = fresh + written + read > prices.longAfter;
+            const inRate = (long ? prices.longInput : prices.input) / 1e6;
+            const outRate = (long ? prices.longOutput : prices.output) / 1e6;
             return fresh * inRate + written * inRate * 1.25 + read * inRate * 0.1 + (usage.output_tokens || 0) * outRate
-                + (usage.server_tool_use?.web_search_requests || 0) * HAIKU_PRICES.perSearch;
+                + (usage.server_tool_use?.web_search_requests || 0) * prices.perSearch;
+        }
+
+        // Words that mark a task as real multi-step work rather than a quick question.
+        const BIG_TASK = /\b(?:build|create|make|write|implement|refactor|fix|debug|add|update|change|migrate|convert|port|rewrite|redesign|set ?up|automate|research|investigate|analy[sz]e|compare|plan|design|generate|draft|report|spreadsheet|presentation|deck|deploy|optimi[sz]e|review|audit|organi[sz]e|scrape|continue|keep going|finish|step[- ]by[- ]step)\b/i;
+        // After this many tool rounds a task on Haiku has shown it is a big one and moves to Sonnet.
+        const CLAUDE_ESCALATE_ROUND = 8;
+
+        // Which Claude model a task's requests use. ctx is the run's tool context
+        // (ctx.task, ctx.kind); round is the tool round about to run.
+        function pickClaudeModel(ctx, round = 0) {
+            if (claudeModelChoice === "haiku") return CLAUDE_HAIKU;
+            if (claudeModelChoice === "sonnet") return CLAUDE_SONNET;
+            if (!ctx) return CLAUDE_HAIKU;
+            if (!ctx.claudeModel) {
+                const task = String(ctx.task || "");
+                ctx.claudeModel = task.length > 400 || BIG_TASK.test(task) ? CLAUDE_SONNET : CLAUDE_HAIKU;
+            }
+            if (ctx.claudeModel === CLAUDE_HAIKU && round >= CLAUDE_ESCALATE_ROUND) {
+                ctx.claudeModel = CLAUDE_SONNET;
+                logConsoleActivity(`[Anthropic] This task is taking many steps, so it moves from Claude Haiku to Claude Sonnet.`);
+            }
+            return ctx.claudeModel;
+        }
+
+        // One-time move for people set up before Claude was the default: a saved Groq choice
+        // switches to Claude when an Anthropic key is there. Picking Groq again in Settings sticks.
+        function preferClaudeOverGroq() {
+            if (localStorage.getItem("codev_claude_default") === "1") return;
+            if (currentBackend === "groq" && (anthropicKey || anthropicViaServer)) {
+                currentBackend = "anthropic";
+                localStorage.setItem("codev_backend", "anthropic");
+                logConsoleActivity("Agents now use Claude (Anthropic) by default: Groq's free tier runs out on bigger tasks. You can pick Groq again in ⚙️ Settings.");
+            }
+            try { localStorage.setItem("codev_claude_default", "1"); } catch (err) { /* storage full: asks again next time */ }
         }
 
         const formatUsd = usd => `$${usd < 0.01 && usd > 0 ? usd.toFixed(4) : usd.toFixed(2)}`;
@@ -1591,6 +1646,7 @@
         function pickProviderWithKey() {
             if (activeProviderKey()) return true;
             const keys = { groq: groqKey, openrouter: openRouterKey, anthropic: anthropicKey || (anthropicViaServer ? "server" : "") };
+            // BACKENDS is in order of preference: Claude first, Groq last.
             const backend = BACKENDS.find(b => keys[b]);
             if (!backend) return false;
             currentBackend = backend;
@@ -2180,7 +2236,7 @@
         }
 
         function updateStatusDisplay() {
-            const labels = { groq: "Provider: Groq Cloud (Temp 0.0)", openrouter: `Provider: OpenRouter · ${openRouterModel} (Temp 0.0)`, anthropic: `Provider: Anthropic · ${ANTHROPIC_MODEL}` };
+            const labels = { groq: "Provider: Groq Cloud (Temp 0.0)", openrouter: `Provider: OpenRouter · ${openRouterModel} (Temp 0.0)`, anthropic: `Provider: Anthropic · ${CLAUDE_MODEL_LABELS[claudeModelChoice]}` };
             document.getElementById("activeProviderLabel").innerText = labels[currentBackend];
             document.getElementById("statusText").innerText = activeProviderKey() ? `${BACKEND_NAMES[currentBackend]} Live` : "Awaiting API Key";
         }
@@ -5429,7 +5485,7 @@
                 if (round > 0 && taskSpendLimit > 0 && ctx.cost >= taskSpendLimit) spendStop = `this task reached its spending limit of ${formatUsd(taskSpendLimit)}`;
                 else if (round > 0 && dailySpendReached()) spendStop = `CoDev reached today's spending limit of ${formatUsd(dailySpendLimit)}`;
                 if (spendStop) break;
-                const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" }, { sources: ctx.sources || [] });
+                const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" }, { sources: ctx.sources || [], model: pickClaudeModel(ctx, round) });
                 ctx.cost += message.cost || 0;
                 // Searches Claude ran itself (its own web search) are steps too.
                 for (const search of message.web_searches || []) {
@@ -5517,7 +5573,7 @@
                 logConsoleActivity(`[Spend] Stopped the tool steps: ${spendStop}.`);
                 messages.push({ role: "user", content: `[CoDev] Stop here: ${spendStop}, so no more tools can run. Answer now with what you found, say in one line what is left undone, and tell the user they can raise the limit in Settings > Spending limits or say "continue".` });
             }
-            const final = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "none" }, { sources: ctx.sources || [], wrapUp: Boolean(spendStop) });
+            const final = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "none" }, { sources: ctx.sources || [], wrapUp: Boolean(spendStop), model: pickClaudeModel(ctx) });
             ctx.cost += final.cost || 0;
             logTaskSpend(ctx);
             return final.content || "";
@@ -7305,6 +7361,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             document.getElementById("modalOpenRouterKey").value = codevOwnKey("openrouter", openRouterKey);
             document.getElementById("modalOpenRouterModel").value = openRouterModel;
             document.getElementById("modalAnthropicKey").value = codevOwnKey("anthropic", anthropicKey);
+            document.getElementById("modalClaudeModel").value = claudeModelChoice;
             document.getElementById("anthropicServerNote").style.display = anthropicViaServer ? "inline" : "none";
             toggleProviderFields();
             document.getElementById("modalAutoGround").checked = autoGroundingEnabled;
@@ -7437,7 +7494,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         }
 
         async function saveSettings() {
-            let backend = BACKENDS.includes(document.getElementById("modalProvider").value) ? document.getElementById("modalProvider").value : "groq";
+            let backend = BACKENDS.includes(document.getElementById("modalProvider").value) ? document.getElementById("modalProvider").value : "anthropic";
+            const pickedClaudeModel = document.getElementById("modalClaudeModel").value;
             let newGroqKey = cleanApiKey(document.getElementById("modalGroqKey").value);
             let newOpenRouterKey = cleanApiKey(document.getElementById("modalOpenRouterKey").value);
             let newAnthropicKey = cleanApiKey(document.getElementById("modalAnthropicKey").value);
@@ -7522,6 +7580,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             localStorage.setItem("codev_openrouter_model", openRouterModel);
             anthropicKey = newAnthropicKey;
             localStorage.setItem("codev_anthropic_key", codevOwnKey("anthropic", anthropicKey));
+            claudeModelChoice = CLAUDE_MODEL_CHOICES.includes(pickedClaudeModel) ? pickedClaudeModel : "auto";
+            localStorage.setItem("codev_claude_model", claudeModelChoice);
 
             savedMemoryEnabled = document.getElementById("modalMemoryOn").checked;
             localStorage.setItem("codev_memory_on", savedMemoryEnabled ? "1" : "0");
@@ -7571,7 +7631,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
             localStorage.setItem("codev_groq_key", codevOwnKey("groq", groqKey));
             updateStatusDisplay();
-            const modelNote = { groq: "", openrouter: ` (${openRouterModel})`, anthropic: ` (${ANTHROPIC_MODEL}${anthropicKey ? "" : " via CoDev's server"})` }[currentBackend];
+            const modelNote = { groq: "", openrouter: ` (${openRouterModel})`, anthropic: ` (${CLAUDE_MODEL_LABELS[claudeModelChoice]}${anthropicKey ? "" : " via CoDev's server"})` }[currentBackend];
             logConsoleActivity(`Settings saved. Provider: ${BACKEND_NAMES[currentBackend]}${modelNote}.`);
             document.getElementById("settingsModal").style.display = "none";
         }
@@ -8147,7 +8207,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // Converts the OpenAI chat body CoDev builds into an Anthropic Messages request.
         // Assistant turns from an earlier tool round carry the original Anthropic content
         // (thinking and tool_use blocks), which goes back unchanged.
-        function toAnthropicRequest(body) {
+        function toAnthropicRequest(body, model = CLAUDE_HAIKU) {
             const system = [];
             const messages = [];
             const push = (role, blocks) => {
@@ -8181,7 +8241,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             // Prompt caching: a tool loop resends the same tools, instructions and earlier
             // steps every round. Cached, that prefix costs a tenth of the input price, and the
             // cache point moves forward on its own as the conversation grows.
-            const request = { model: ANTHROPIC_MODEL, max_tokens: body.max_tokens || 16000, cache_control: { type: "ephemeral" }, messages };
+            const request = { model, max_tokens: body.max_tokens || 16000, cache_control: { type: "ephemeral" }, messages };
+            // Sonnet's default effort is high; medium suits multi-step tool work and costs less.
+            if (model === CLAUDE_SONNET) request.output_config = { effort: "medium" };
             if (system.length) request.system = system.join("\n\n");
             if (body.tools?.length) {
                 request.tools = body.tools.map(t => t.function.name === "web_search" && claudeSearchesForAgents()
@@ -8197,7 +8259,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // on the local server page, server.js adds ANTHROPIC_API_KEY and relays it.
         async function anthropicChatMessage(body, extras = {}) {
             const { url, headers, viaServer } = anthropicEndpoint();
-            const request = toAnthropicRequest(body);
+            const request = toAnthropicRequest(body, extras.model || CLAUDE_HAIKU);
             let cost = 0;
             const send = async () => {
                 let response;
@@ -8210,7 +8272,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 }
                 const data = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } }));
                 if (data.usage) {
-                    const spent = anthropicCost(data.usage);
+                    const spent = anthropicCost(data.usage, request.model);
                     cost += spent;
                     const u = data.usage;
                     recordSpend(spent, { input: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), output: u.output_tokens });
@@ -9631,7 +9693,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             // The mode toggles start folded away too, to leave room for the chat.
             toggleChatControls();
             await checkServerAnthropic();
-            if (!pickProviderWithKey()) logConsoleActivity("No API key saved yet. Add a Groq, OpenRouter or Anthropic key under ⚙️ Settings to chat with the agents.");
+            preferClaudeOverGroq();
+            if (!pickProviderWithKey()) logConsoleActivity("No API key saved yet. Add an Anthropic (Claude) key under ⚙️ Settings to chat with the agents. OpenRouter and Groq work too.");
             updateStatusDisplay();
             renderChatList();
             renderAgentList();
