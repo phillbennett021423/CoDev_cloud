@@ -1110,7 +1110,7 @@
                 CoDev's agents run on <strong>Claude</strong> (Anthropic): Claude Haiku 5.5 for quick asks and Claude Sonnet 5.5 for bigger multi-step tasks, kept inside the spending limits below. Groq's free tier is still there as a fallback, but its small limits run out on real agent tasks.
             </p>
             <p id="webVersionNotice" style="display: none; font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px;">
-                🌐 <strong>This is CoDev's web version.</strong> Your keys and chats are saved only in this browser on this device, never on the website. Chat, agents, web search (Claude's own search, or Google with a Gemini key), voice and notes work here. Reading whole web pages, the agent browser, sandboxes, Outlier, MEGA, Google apps, MCP servers on your computer and the 3D/art tools need the Windows app, the Android app or start-codev.bat.
+                🌐 <strong>This is CoDev's web version.</strong> Your keys and chats are saved only in this browser on this device, never on the website. Chat, agents, running Python and JavaScript, web search (Claude's own search, or Google with a Gemini key), voice and notes work here. Reading whole web pages, the agent browser, sandboxes, Outlier, MEGA, Google apps, MCP servers on your computer and the 3D/art tools need the Windows app, the Android app or start-codev.bat.
             </p>
 
             <!-- Step-by-Step Guidance Box -->
@@ -1389,6 +1389,7 @@
     <script src="agent-ui/project-brain.js"></script>
     <script src="agent-ui/qa-loop.js"></script>
     <script src="agent-ui/file-builder.js"></script>
+    <script src="agent-ui/code-runner.js"></script>
     <script src="agent-ui/task-runner.js"></script>
     <script src="agent-ui/cloud-queue.js"></script>
     <script src="agent-ui/tool-guide.js"></script>
@@ -4972,6 +4973,14 @@
             });
         }
 
+        let sharedCodeRunner = null;
+        function codeRunner() {
+            if (!sharedCodeRunner) sharedCodeRunner = CodevCodeRunner.createCodeRunner({
+                createWorker: source => new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })))
+            });
+            return sharedCodeRunner;
+        }
+
         async function buildLocalTools(ctx) {
             const tools = [
                 {
@@ -5046,6 +5055,13 @@
             });
             // Long attached files and image making (media-tools.js).
             tools.push(...await buildMediaTools(ctx));
+            // Python and JavaScript in this browser (code-runner.js), on every version of CoDev.
+            if (window.CodevCodeRunner && typeof Worker === "function") tools.push(...CodevCodeRunner.buildCodeTools({
+                runner: codeRunner(),
+                attachments: c => (c && c.sessionId ? chatAttachments(c.sessionId) : []),
+                keepImages: keepToolImages,
+                saveFile: saveMadeFile
+            }));
             // The story bible's tools, only for a task about a game's story (they cost tokens on every call).
             if (storyStudio && CodevStoryStudio.isStudioTask(storyStudio, ctx?.task)) {
                 tools.push(...CodevStoryStudio.buildStudioTools(storyStudio, { writeFile: (path, content) => writeWorkspaceFile(path, content), writeFiles: files => writeWorkspaceFiles(files), readFolder: readWorkspaceFolder, confirm: async text => confirm(text) }));
@@ -5282,6 +5298,7 @@
             if (name === "mcp_list_resources") return "📚 Listing MCP resources";
             if (name === "read_attachment") return `📄 Reading ${args.name || "the attached file"}${args.pages ? `, pages ${args.pages}` : args.query ? ` for "${args.query}"` : ""}`;
             if (name === "query_table") return `📊 ${{ stats: "Measuring", group: "Totaling", search: "Searching", columns: "Looking over" }[args.action] || "Reading rows of"} ${args.name || "the spreadsheet"}${args.group_by ? ` by ${args.group_by}` : ""}`;
+            if (name === "run_code") return args.language === "javascript" ? "⚙️ Running JavaScript" : "🐍 Running Python";
             if (name === "generate_image") return `🎨 Making a picture: ${String(args.prompt || "").slice(0, 80)}`;
             if (name === "mcp_read_resource") return `📄 Reading ${args.uri}`;
             if (name === "web_search") return `🔎 Searching: ${args.query}`;
@@ -8228,7 +8245,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 10. BE BRIEF: Say what the user needs and stop. Lead with the answer in plain words. No preamble, no restating the question, no repeating what you already said, no closing summary or offers of more help. A simple question gets one to three sentences, and most answers fit in about 150 words. Go longer only when the task needs it: code, a report or deep research, step-by-step instructions, or when the user asks for detail; even then, cut anything that doesn't help. Use lists or code blocks only when they help.
 
-11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); editing videos and audio the user attaches (cutting, joining, pauses and filler words, highlights, vertical for TikTok, captions, noise removal, voice and music separation, background music, beat-cut montages, slow motion, transitions, text, logos, color looks, AI voiceovers, background removal, upscaling, GIFs) with the media_* tools when CoDev runs on their computer with Docker; making and editing pictures (generate_image); the user's CoDev Notes (notes and CSV/JSON data tables kept in CoDev's 📝 Notes tab), in place of Google Docs and Sheets (notes_search, notes_read, notes_write, table_read, table_write); files in the user's MEGA cloud drive, in place of Google Drive (mega_search, mega_read_file, mega_save_file); fantasy maps from Azgaar's Fantasy Map Generator (map_read, map_generate); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example running code or editing files), say exactly how the user turns it on, as the workspace notes describe.
+11. WHEN ASKED WHAT YOU CAN DO: Describe the tools you actually have in this conversation, grouped plainly, and these built-in abilities: a live view of each step while you work plus a "What CoDev did" step list under every reply; checking your own results and stopping with a clear reason instead of retrying blindly; live web search (Google through a Gemini key, Claude's own search with Anthropic, otherwise DuckDuckGo plus dated news) and reading full web pages; deep research (the 🔬 button, or a message starting "deep research"), which plans searches, reads many sources and writes a cited report; saved memory across chats and searching earlier chats; Resume after CoDev closes mid-task; reading screenshots and images; reading long PDFs, text files and spreadsheets in full (read_attachment, query_table); watching videos and transcribing audio (whole videos with sound when a Gemini key is set); editing videos and audio the user attaches (cutting, joining, pauses and filler words, highlights, vertical for TikTok, captions, noise removal, voice and music separation, background music, beat-cut montages, slow motion, transitions, text, logos, color looks, AI voiceovers, background removal, upscaling, GIFs) with the media_* tools when CoDev runs on their computer with Docker; making and editing pictures (generate_image); the user's CoDev Notes (notes and CSV/JSON data tables kept in CoDev's 📝 Notes tab), in place of Google Docs and Sheets (notes_search, notes_read, notes_write, table_read, table_write); files in the user's MEGA cloud drive, in place of Google Drive (mega_search, mega_read_file, mega_save_file); fantasy maps from Azgaar's Fantasy Map Generator (map_read, map_generate); running Python and JavaScript right in the browser for exact math, data analysis of attached files and charts (run_code); real downloadable files: Excel workbooks with working formulas, PowerPoint decks, Word documents, CSV files and web apps with a live preview (create_spreadsheet, create_slides, create_document, create_csv, create_web_app); turning web pages into tables, across pages (browser_extract, where the browser tools are on); parallel worker agents for big multi-part jobs (delegate_tasks); and wide research that fills the same facts for dozens of items at once (wide_research). When CoDev runs on a computer, also the game-art pipeline (art_* tools): concept art across every installed model, inpainting, try-on and sketch-to-image, style cloning and LoRA training on the studio's own art, material concepts with PBR maps and weathering, Blender remesh/UV/bake/rig/retarget, reframing, cutouts, upscaling, playable ads, voice lines and sound effects, all following the studio rules in codev-studio.json. For anything that isn't available right now (for example editing files on their computer), say exactly how the user turns it on, as the workspace notes describe.
 
 12. ENGINE-SPECIFIC RULES:${engineRules ? `\n${engineRules}` : " none for this task."}`;
             
