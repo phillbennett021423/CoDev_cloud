@@ -116,7 +116,7 @@ async function until(what, fn, seconds) {
 
         // Engine docs from this Godot build.
         const docs = await editor('class_docs', { type: 'CharacterBody2D' });
-        check('class_docs lists properties and methods', !docs.error && docs.data.properties.some(p => p.startsWith('velocity: Vector2')) && docs.data.methods.some(m => m.startsWith('move_and_slide(')), docs.text);
+        check('class_docs lists properties and methods', !docs.error && docs.data.properties.some(p => p.startsWith('velocity: Vector2')) && docs.data.methods.some(m => m.startsWith('move_and_slide(')), JSON.stringify(docs.data && docs.data.properties));
         const inherited = await editor('class_docs', { type: 'Timer', filter: 'wait' });
         check('class_docs filters', !inherited.error && inherited.data.properties.some(p => p.startsWith('wait_time: float')), inherited.text);
         const scriptDocs = await editor('class_docs', { node: 'Player' });

@@ -575,7 +575,8 @@ func _properties(list: Array, filter: String) -> Array:
 		var usage := int(p.get("usage", 0))
 		if usage & (PROPERTY_USAGE_GROUP | PROPERTY_USAGE_SUBGROUP | PROPERTY_USAGE_CATEGORY):
 			continue
-		if not (usage & (PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_SCRIPT_VARIABLE)):
+		# Stored but hidden ones too: CharacterBody2D.velocity is not shown in the inspector.
+		if not (usage & (PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_STORAGE | PROPERTY_USAGE_SCRIPT_VARIABLE)):
 			continue
 		var name := str(p.get("name", ""))
 		if not _matches(name, filter):

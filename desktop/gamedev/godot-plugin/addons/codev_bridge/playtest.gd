@@ -10,7 +10,54 @@ extends Node
 const MAX_SHOT_WIDTH := 1280
 const MAX_INPUT_SECONDS := 30.0
 const MAX_STATE_NODES := 300
-const LOGGER_PATH := "res://addons/codev_bridge/playtest_logger.gd"
+# The log collector, compiled at run time only on Godot 4.5 and newer: as a .gd file
+# in the project, older editors would report "Could not find base class Logger".
+const LOGGER_SOURCE := """extends Logger
+## Collects the running game's errors, warnings and prints for CoDev's game_log.
+## Loaded by playtest.gd only on Godot 4.5 and newer, where Logger exists. Godot can
+## call it from any thread, so the list is guarded by a mutex.
+
+const MAX_LINES := 500
+const KINDS := ["error", "warning", "script error", "shader error"]
+
+var _mutex := Mutex.new()
+var _lines: Array = []
+var _total := 0
+
+
+func _log_error(function: String, file: String, line: int, code: String, rationale: String, _editor_notify: bool, error_type: int, _script_backtraces: Array[ScriptBacktrace]) -> void:
+	var kind: String = KINDS[error_type] if error_type >= 0 and error_type < KINDS.size() else "error"
+	var text := rationale if rationale != "" else code
+	_add(kind, "%s (at %s:%d in %s)" % [text, file, line, function])
+
+
+func _log_message(message: String, error: bool) -> void:
+	_add("stderr" if error else "print", message.strip_edges(false, true))
+
+
+func _add(kind: String, text: String) -> void:
+	_mutex.lock()
+	_lines.append({"n": _total, "kind": kind, "text": text, "ms": Time.get_ticks_msec()})
+	_total += 1
+	if _lines.size() > MAX_LINES:
+		_lines.pop_front()
+	_mutex.unlock()
+
+
+# Lines numbered since or later.
+func lines_since(since: int) -> Array:
+	_mutex.lock()
+	var out := []
+	for entry in _lines:
+		if int(entry["n"]) >= since:
+			out.append(entry.duplicate())
+	_mutex.unlock()
+	return out
+
+
+func total() -> int:
+	return _total
+"""
 
 var _logger = null
 var _active := false
@@ -26,8 +73,9 @@ func _ready() -> void:
 		EngineDebugger.register_message_capture("codev", _on_message)
 	# Logger and OS.add_logger arrived in Godot 4.5; older versions fall back to the log file.
 	if ClassDB.class_exists("Logger") and OS.has_method("add_logger"):
-		var script = load(LOGGER_PATH)
-		if script:
+		var script := GDScript.new()
+		script.source_code = LOGGER_SOURCE
+		if script.reload() == OK:
 			_logger = script.new()
 			OS.call("add_logger", _logger)
 	EngineDebugger.send_message("codev:hello", [Engine.get_version_info().string])

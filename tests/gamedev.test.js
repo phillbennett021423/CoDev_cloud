@@ -143,10 +143,10 @@ test('the playtest helper joins project.godot\'s autoloads once, first, keeping 
     assert.equal(mixed, `[autoload]\n\n${line}\nGame="*res://game.gd"\n\n[rendering]\nx=1\n`);
     assert.equal(enableAutoload(mixed), mixed);
     assert.equal(pluginVersion('[plugin]\nversion="2.0"\n'), '2.0');
-    for (const f of ['plugin.gd', 'playtest.gd', 'playtest_logger.gd']) assert.ok(fs.existsSync(path.join(PLUGIN_DIR, f)), f);
+    for (const f of ['plugin.gd', 'playtest.gd']) assert.ok(fs.existsSync(path.join(PLUGIN_DIR, f)), f);
     // The helper must stay asleep outside an editor run, so exported games never answer.
     assert.match(fs.readFileSync(path.join(PLUGIN_DIR, 'playtest.gd'), 'utf8'), /if not EngineDebugger\.is_active\(\) or not OS\.has_feature\("editor"\):/);
-    // Logger only exists from Godot 4.5; the helper must load it by path, after checking.
+    // Logger only exists from Godot 4.5; the helper compiles it only after checking, never as a file older editors would parse.
     assert.doesNotMatch(fs.readFileSync(path.join(PLUGIN_DIR, 'playtest.gd'), 'utf8'), /preload\(|^extends Logger/m);
 });
 
