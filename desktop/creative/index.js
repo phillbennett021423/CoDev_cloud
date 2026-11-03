@@ -39,6 +39,7 @@ const L = require('./lore');
 const T = require('./training');
 const { buildPlayable, TEMPLATES } = require('./playable');
 const Q = require('./skin-quality');
+const { createCloudWorker } = require('./cloud-worker');
 
 const ART_TOOLS = path.join(__dirname, 'python', 'art_tools.py');
 const BPY_PIPELINE = path.join(__dirname, 'bpy', 'asset_pipeline.py');
@@ -106,7 +107,7 @@ function exec(file, args, { cwd, env, timeoutMs = 300000, input } = {}) {
     });
 }
 
-function createCreativeService({ getProjectDir = () => '', log = () => {}, env = process.env, fetchImpl = globalThis.fetch, comfy: comfyClient, findBlender } = {}) {
+function createCreativeService({ getProjectDir = () => '', log = () => {}, env = process.env, fetchImpl = globalThis.fetch, comfy: comfyClient, findBlender, cloud } = {}) {
     // ComfyUI on this computer, or a remote one (a RunPod pod): comfyui.url in the studio
     // rules wins, then CODEV_COMFYUI_URL. The token only ever comes from the environment.
     const comfyClients = new Map();
@@ -122,6 +123,16 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
     const isRemote = () => !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/i.test(String(comfy.url));
     const jobs = T.createJobs({ log });
     findBlender = findBlender || (() => require('../gamedev').findBlender(env));
+    cloud = cloud || createCloudWorker({ env, fetchImpl });
+    // Where art_mesh runs Blender: 'local', 'cloud' (GitHub Actions), or '' when neither is there.
+    function meshWhere(asked) {
+        const want = String(asked || '').toLowerCase();
+        const local = (() => { try { return findBlender(); } catch { return ''; } })();
+        if (want === 'local') return local ? 'local' : '';
+        if (want === 'cloud') return cloud.configured() ? 'cloud' : '';
+        if (cloud.configured() && cloud.mode() === 'always') return 'cloud';
+        return local ? 'local' : cloud.configured() ? 'cloud' : '';
+    }
     let pythonCmd = null;
 
     // ---------- folders and files ----------
@@ -307,7 +318,8 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             lines.push(`  LoRAs ${models.loras.length}, ControlNets ${models.controlnets.length}, upscalers ${models.upscalers.length}, IP-Adapter ${models.ipadapter ? 'yes' : 'no (ComfyUI_IPAdapter_plus adds style references and try-on references)'}.`);
         }
         try { const info = await py('info', {}, 60000); lines.push(`Python: ${await python()} with numpy and Pillow${info.have.rembg ? ' and rembg' : '; cutouts need: pip install rembg'}.`); } catch (err) { lines.push(`Python tools: ${err.message}`); }
-        lines.push(`Blender: ${t.blender || 'not found (free from blender.org; set CODEV_BLENDER_PATH)'}; art_mesh needs it.`);
+        lines.push(`Blender: ${t.blender || `not found on this computer (free from blender.org; set CODEV_BLENDER_PATH)${cloud.configured() ? '; art_mesh runs in the cloud instead' : ''}`}; art_mesh needs it or the cloud worker.`);
+        lines.push(cloud.describe());
         lines.push(`LoRA training: kohya sd-scripts ${t.kohya || 'not set (CODEV_KOHYA_DIR = the sd-scripts folder, github.com/kohya-ss/sd-scripts)'}; ai-toolkit ${t.aitk || 'not set (CODEV_AITOOLKIT_DIR, github.com/ostris/ai-toolkit) for FLUX and edit LoRAs'}.`);
         lines.push(`Upscaling: ${t.realesrgan ? `Real-ESRGAN at ${t.realesrgan}` : models && models.upscalers.length ? 'ComfyUI upscale models' : 'basic resize only (Real-ESRGAN ncnn is free: github.com/xinntao/Real-ESRGAN/releases; set CODEV_REALESRGAN_PATH)'}.`);
         lines.push(`Voice: Piper ${t.piper || 'not found (free: github.com/rhasspy/piper; set CODEV_PIPER_PATH and CODEV_PIPER_VOICES)'}; FFmpeg ${t.ffmpeg || 'not found (voice filters need it)'}; Coqui TTS for consented cloning ${t.tts || 'not found (pip install coqui-tts)'}.`);
@@ -809,8 +821,12 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
     async function artMesh(args = {}) {
         const op = args.op;
         if (!['inspect', 'cleanup', 'uv', 'bake', 'texture', 'rig', 'retarget', 'review'].includes(op)) return text('op is inspect, cleanup, uv, bake, texture, rig, retarget or review.', true);
-        const blender = findBlender();
-        if (!blender) return text('Blender isn\'t installed where CoDev can find it. It\'s free from blender.org; or set CODEV_BLENDER_PATH.', true);
+        const where = meshWhere(args.where);
+        if (!where) {
+            if (args.where === 'cloud') return text(cloud.describe(), true);
+            return text(`Blender isn't installed where CoDev can find it. It's free from blender.org; or set CODEV_BLENDER_PATH.${cloud.configured() ? '' : ' Or set up the free cloud 3D worker (GitHub Actions): CODEV_CLOUD_REPO and CODEV_CLOUD_TOKEN.'}`, true);
+        }
+        const blender = where === 'local' ? findBlender() : '';
         const r = rules();
         const input = inProject(args.input, { mustExist: true, label: 'input' });
         const category = args.category || 'skin';
@@ -849,11 +865,17 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
             if (!args.animations) { fs.rmSync(work, { recursive: true, force: true }); return text('Retargeting needs animations: a .glb/.fbx whose skeleton has the motions (e.g. Mixamo clips).', true); }
             Object.assign(job, { animations: inProject(args.animations, { mustExist: true, label: 'animations' }), bone_map: args.bone_map, actions: args.actions });
         }
+        const timeoutSeconds = Math.min(Number(args.timeout_seconds) || 900, 3600);
+        let report;
+        if (where === 'cloud') {
+            fs.rmSync(work, { recursive: true, force: true });
+            try { report = await cloud.run(job, { timeoutSeconds, log, label: `${op} ${slug(args.name || stem, 30)}` }); } catch (err) { return text(`The cloud 3D worker couldn't run ${op}: ${err.message}`, true); }
+            if (!report.ok) return text(`Blender ${op} failed in the cloud: ${report.error}\n${report.trace || ''}${report.cloud_run ? `\nRun: ${report.cloud_run}` : ''}`, true);
+        } else {
         const jobFile = path.join(work, 'job.json');
         fs.writeFileSync(jobFile, JSON.stringify(job));
-        const blend = () => exec(blender, ['--background', '--factory-startup', '--python-exit-code', '1', '--python', BPY_PIPELINE, '--', jobFile], { cwd: work, env: childEnv(env), timeoutMs: Math.min(Number(args.timeout_seconds) || 900, 3600) * 1000 });
+        const blend = () => exec(blender, ['--background', '--factory-startup', '--python-exit-code', '1', '--python', BPY_PIPELINE, '--', jobFile], { cwd: work, env: childEnv(env), timeoutMs: timeoutSeconds * 1000 });
         let run = await blend();
-        let report;
         try { report = JSON.parse(fs.readFileSync(job.result, 'utf8')); } catch { report = { ok: false, error: `Blender stopped before finishing (exit ${run.code}).`, trace: run.output.slice(-2000) }; }
         // EEVEE needs a graphics card Blender can use; without one, render the review with Cycles on the CPU.
         if (op === 'review' && !report.ok && job.engine !== 'cycles') {
@@ -864,10 +886,12 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
         }
         fs.rmSync(work, { recursive: true, force: true });
         if (!report.ok) return text(`Blender ${op} failed: ${report.error}\n${report.trace || ''}`, true);
+        }
+        const ranIn = where === 'cloud' ? ` Ran on the cloud 3D worker in ${report.cloud_seconds}s.` : '';
         if (op === 'review') {
             const problems = Q.problemsFrom(report, q, { textured: !args.clay, budget });
             const views = Object.entries(report.views || {});
-            const result = text([`Reviewed ${relOf(input)} from ${views.length} angle(s) (${views.map(v => v[0]).join(', ') || 'none rendered'}), ${report.triangles} triangles:`, Q.reviewSummary(report, problems),
+            const result = text([`Reviewed ${relOf(input)} from ${views.length} angle(s) (${views.map(v => v[0]).join(', ') || 'none rendered'}), ${report.triangles} triangles:`, Q.reviewSummary(report, problems), ranIn.trim(),
                 views.length ? `Renders in ${relOf(job.out_dir)}. Look at the sheet too: the face, hair, hands, outer layer, back and underside must look finished. Melted or smeared details, stretched textures and gaps the numbers can't catch are yours to spot.` : ''].filter(Boolean).join('\n'),
                 false, args.no_preview || !views.length ? [] : await preview(views.map(v => v[1]), views.map(v => v[0])));
             result.structuredContent = { passed: !problems.length, problems, mesh_checks: report.mesh_checks, image_checks: report.image_checks, triangles: report.triangles, budget,
@@ -886,6 +910,7 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
         if (report.maps) lines.push(`Baked maps: ${Object.entries(report.maps).map(([k, f]) => `${k} ${relOf(f)}`).join(', ')}.`, 'art_weathering on the baked albedo ages it (it uses the baked curvature and ao for edge wear and grime).');
         if (report.method) lines.push(`Rigged by ${report.method === 'transfer' ? 'copying skin weights from the base body' : 'Blender\'s automatic weights'}: ${JSON.stringify(report.weighted_groups)}.`);
         if (report.animations_made) lines.push(`Retargeted ${report.animations_made.length} animation(s) (${report.bones_matched} bones matched): ${report.animations_made.map(a => a.name).join(', ')}.${report.bones_unmatched.length ? ` Unmatched bones: ${report.bones_unmatched.join(', ')} (bone_map fixes them).` : ''}`);
+        if (ranIn) lines.push(ranIn.trim());
         if (op === 'inspect') lines.push(JSON.stringify(report, null, 2));
         if (report.output) { const c = R.checkName(r, report.output); if (!c.ok) lines.push(`Naming: ${path.basename(report.output)} doesn't follow ${r.naming.pattern}; ${c.suggestion} would.`); }
         if (report.output && /\.glb$/i.test(report.output)) lines.push('For Godot: art_godot_skin installs it as an equippable skin, or godot_editor action "rescan" imports it.');
@@ -1425,7 +1450,7 @@ function createCreativeService({ getProjectDir = () => '', log = () => {}, env =
         { name: 'art_weathering', description: 'Surface weathering and age variations: turns a texture set into stages from factory-fresh to light wear, worn, battle-damaged and ruined (edge wear and chipped paint on convex edges, scratches, rust in cavities, scorch marks, grime, dust), each with albedo, roughness, metallic and ORM. Uses the curvature and AO maps next to the albedo when present. Use it after a PBR set exists (art_pbr_maps or art_materials); don\'t use it on concept art.',
             inputSchema: { type: 'object', properties: { albedo: str('Albedo/base colour picture'), roughness: str('Optional matching map from the same texture set; read from next to the albedo when left out'), metallic: str('Optional matching map from the same texture set; read from next to the albedo when left out'), ao: str('Optional matching map from the same texture set; read from next to the albedo when left out'), curvature: str('Optional matching map from the same texture set; read from next to the albedo when left out'), stages: arr('Any of factory, light, worn, battle, ruined'), overrides: { type: 'object', description: '{"battle": {"rust": 0.6}}: edge, scratch, rust, scorch, grime, dust 0-1' }, name: str('Short name used in the output file names'), out_dir: str('Output folder in the project; default: the studio rules\' folder for this kind of file'), seed: num('Seed for repeatable results; leave it out for a new random one') }, required: ['albedo'] } },
         { name: 'art_mesh', description: 'Game-ready 3D in Blender (runs in the background): "inspect" counts triangles, materials, bones; "cleanup" fixes raw AI meshes (merge, loose parts, normals, optional voxel remesh) and decimates to the studio\'s triangle budget for the category; "uv" unwraps and packs; "bake" bakes PBR maps (albedo, normal, roughness, metallic, emission, AO, curvature), from a high-poly when given, into one material; "texture" puts a tileable PBR set (maps) on the mesh, tiled by tile_scale; "rig" puts a cosmetic mesh on a base character\'s skeleton (copies the body\'s skin weights); "retarget" moves animations from another skeleton (Mixamo, Rigify, UE names matched); "review" is the visible-first check: renders front, back, left, right, top, below, a face close-up and the in-game camera into one sheet, and checks what a player can see (holes, flipped faces, stretched UVs, missing textures, empty views) and counts triangles nobody can see. Exports .glb for Godot and checks budgets and naming. Use it for any step on a 3D asset; for a custom Blender script use blender_run instead. Run op inspect first when you don\'t know the mesh.',
-            inputSchema: { type: 'object', properties: { op: str('inspect, cleanup, uv, bake, texture, rig, retarget or review', { enum: ['inspect', 'cleanup', 'uv', 'bake', 'texture', 'rig', 'retarget', 'review'] }), maps: { type: 'object', description: 'texture: {albedo, normal, roughness, metallic, ao, emission} paths' }, tile_scale: num('texture: how many times the material repeats across the UVs'), input: str('.glb/.gltf/.fbx/.obj/.stl/.blend in the project'), output: str('Where to save (.glb by default)'), category: str('Budget category: character, skin, weapon, vehicle, prop, environment'), name: str('Asset name for file names'), target_tris: num('cleanup: triangle target (default: the budget)'), remesh: bool('cleanup: voxel remesh first'), remesh_resolution: num('cleanup: voxels across the longest side'), high_poly: str('bake: high-poly source'), maps: arr('bake: which maps'), size: num('bake: map size'), samples: num('bake: Cycles samples'), base: str('rig: base character with skeleton'), method: str('rig: transfer or auto'), keep_body: bool('rig: keep the base body in the file'), animations: str('retarget: file with the animations'), bone_map: { type: 'object', description: 'retarget: {target_bone: source_bone}' }, actions: arr('retarget: only these animations'), timeout_seconds: num('Stop Blender after this many seconds (default 900)'),
+            inputSchema: { type: 'object', properties: { op: str('inspect, cleanup, uv, bake, texture, rig, retarget or review', { enum: ['inspect', 'cleanup', 'uv', 'bake', 'texture', 'rig', 'retarget', 'review'] }), maps: { type: 'object', description: 'texture: {albedo, normal, roughness, metallic, ao, emission} paths' }, tile_scale: num('texture: how many times the material repeats across the UVs'), input: str('.glb/.gltf/.fbx/.obj/.stl/.blend in the project'), output: str('Where to save (.glb by default)'), category: str('Budget category: character, skin, weapon, vehicle, prop, environment'), name: str('Asset name for file names'), target_tris: num('cleanup: triangle target (default: the budget)'), remesh: bool('cleanup: voxel remesh first'), remesh_resolution: num('cleanup: voxels across the longest side'), high_poly: str('bake: high-poly source'), maps: arr('bake: which maps'), size: num('bake: map size'), samples: num('bake: Cycles samples'), base: str('rig: base character with skeleton'), method: str('rig: transfer or auto'), keep_body: bool('rig: keep the base body in the file'), animations: str('retarget: file with the animations'), bone_map: { type: 'object', description: 'retarget: {target_bone: source_bone}' }, actions: arr('retarget: only these animations'), timeout_seconds: num('Stop Blender after this many seconds (default 900)'), where: str('local (Blender on this computer) or cloud (the free GitHub Actions worker, CPU only, a few minutes slower to start). Default: this computer when Blender is here, otherwise the cloud', { enum: ['local', 'cloud'] }),
                 merge_distance: num('cleanup: weld vertices closer than this (default 0.0001); larger closes seams and gaps'), drop_hidden: bool('cleanup: delete faces no camera angle can see, so the budget goes where players look (default: studio rules skin_quality.drop_hidden)'),
                 angle_limit: num('uv: Smart UV angle in degrees (default 66; lower cuts more seams but stretches less)'), views: arr('review: which views (front, back, left, right, top, below, face, game); default all of them'),
                 clay: bool('review: plain grey material to judge the shape (default false: the real textures)'), engine: str('review: eevee (default, needs a graphics card) or cycles (works anywhere, slower)') }, required: ['op', 'input'] } },

@@ -394,6 +394,17 @@ claude mcp add codev -- node C:\path\to\CoDev_cloud\codev-mcp.js --workspace C:\
 
 Tests: `node --test tests/creative.test.js` (stand-in ComfyUI, Blender and trainer; the Python tests run when numpy and Pillow are installed).
 
+### Cloud 3D worker (no server to rent)
+
+The 3D steps can run on GitHub's computers instead of yours, through `.github/workflows/cloud-3d.yml`. It's free on the GitHub account you already have (public repos have no limit; private repos get 2,000 free minutes a month), so skins keep getting made with your PC and phone off.
+
+- **What runs there (CPU):** every `art_mesh` op: cleanup to the poly budget, UVs, PBR baking, texturing, rigging, retargeting and the all-angles review. Reviews render with Cycles on the CPU. A job takes a few minutes longer to start than local Blender, because the runner downloads Blender first (it's cached after the first run).
+- **How CoDev uses it:** set `CODEV_CLOUD_REPO` and `CODEV_CLOUD_TOKEN` in `.env` (a fine-grained token for that repo with Contents and Actions set to Read and write). `art_mesh` then runs in the cloud when Blender isn't on the computer, or every time with `CODEV_CLOUD_3D=always`, or for one call with `where: "cloud"`. `art_skin_pipeline` goes through `art_mesh`, so its mesh and review passes use the cloud too. The mesh and its maps travel in a temporary draft release that CoDev deletes once the results are back in the project.
+- **By hand, from the GitHub phone app:** Actions → Cloud 3D worker → Run workflow, paste a link to a `.glb`/`.fbx`/`.obj` (a Tripo or Meshy export) in `mesh_url`, pick the steps (`cleanup,uv,review` by default) and the budget category. The cleaned model and review renders are attached to the run as `3d-results`.
+- **What needs a GPU:** concept art in ComfyUI (FLUX, SDXL, inpainting, try-on) and LoRA training. GitHub has no free GPUs, so those need a pay-as-you-go GPU server such as a RunPod ComfyUI pod: point `CODEV_COMFYUI_URL` (or `comfyui.url` in `codev-studio.json`) at it. Without one, concepts use the free Pollinations service.
+
+Tests: `node --test tests/cloud-worker.test.js` (stand-in GitHub). Every push that changes the pipeline runs the workflow's self-test, which cleans up, unwraps and reviews a test mesh in real Blender.
+
 ## Agent sandboxes and change review
 
 On a computer (the Windows app, or `server.js`), agents can work in a sandbox instead of on the project folder itself. The code is in `desktop/sandbox/`.
