@@ -370,6 +370,28 @@ The CoDev Bridge plugin now reports world positions; run `godot_install_bridge` 
 
 CoDev looks for Godot and Blender on the PATH, in their usual install folders, and for Godot also in Downloads and Desktop (`Godot_v4...exe`). Set `CODEV_GODOT_PATH` or `CODEV_BLENDER_PATH` in `.env` (or Windows' environment variables) to point at a specific one. Tasks that mention Blender, bpy or glTF also get a short bpy reference with the game engine guide. Tests: `node --test tests/gamedev.test.js` (it uses stand-in Godot and Blender, so neither has to be installed).
 
+### Roblox games
+
+Agents build Roblox games in the place you have open in Roblox Studio, in the Windows app and with `npm start`. CoDev talks to **Roblox Studio's own MCP server**, which is free and built into Studio, so there is no plugin to install. To turn it on, open Studio, then in the Assistant panel choose **…** > **Manage MCP Servers** > **Enable Studio as MCP server**. CoDev starts it the way any MCP client does: `%LOCALAPPDATA%\Roblox\mcp.bat` on Windows and `StudioMCP` inside `RobloxStudio.app` on a Mac. To use another Studio MCP server, such as Roblox's older open-source `rbx-studio-mcp`, set `CODEV_ROBLOX_MCP` to its path and `CODEV_ROBLOX_MCP_ARGS` to its arguments (for example `["--stdio"]`).
+
+The game's code lives as files in your project folder, in the Rojo layout, so you can check it, undo it and keep it in git:
+
+- **`roblox_init_project`** makes `default.project.json` and `src/shared`, `src/server` and `src/client`, with a starter config, leaderstats and a client script. `Name.server.luau` becomes a Script, `Name.client.luau` a LocalScript, `Name.luau` a ModuleScript, and a folder with an `init` script becomes that script.
+- **`roblox_check`** compiles every script with the real Luau compiler (luau-web, Luau built for WebAssembly, so nothing extra has to be installed). It then applies CoDev's Roblox rules and catches:
+  - remotes that use the client's arguments without checking them
+  - DataStore calls outside `pcall`
+  - developer products prompted with no `ProcessReceipt` in a server script, so players would pay and get nothing
+  - server-only services in LocalScripts, and `LocalPlayer` on the server
+  - loops that never yield, `FindFirstChild(...).X` without a nil check, `loadstring`, and the deprecated `wait`/`spawn`/`delay`
+
+  It needs no Studio, and it can check a snippet before the agent writes it.
+- **`roblox_sync`** puts the scripts into the open place at the paths the project maps them to. It refuses if anything fails to compile. The whole sync is one ChangeHistoryService recording, so one Ctrl+Z in Studio undoes it, and a sync that fails partway is rolled back.
+- **`roblox_playtest`** presses Play, waits, reads the output, takes a picture of the game view and stops. It returns the error lines with their script and line number.
+- **`roblox_studio`** calls any of Studio's own tools by name (`list` shows them). Agents use it to build the world with `execute_luau`, look around the place, insert Creator Store assets, generate meshes and materials, and capture the screen.
+- **`roblox_guide`** is the Roblox studio pack. It covers the workflow, the Luau house style, anti-exploit rules, saving player data, publishing and performance, plus monetization: game passes, developer products and `ProcessReceipt`, subscriptions, private servers, Creator Rewards, ads and DevEx, with fair pricing rules. Requests about Roblox also get a **Roblox game developer** playbook.
+
+Tests: `node --test tests/roblox.test.js`. It uses a stand-in Studio (`tests/fixtures/fake-roblox-studio.js`) that speaks MCP like Studio's own server and runs the Luau it gets in the real Luau VM over a mock DataModel. End to end: `node scripts/roblox-bridge-e2e.js` builds a small coin game with a shop, catches a planted runtime error in a playtest, fixes it and plays it clean. Add `--real` to run the same check against Roblox Studio on your computer, with an empty Baseplate open.
+
 ## Game art pipeline (skins, textures, 3D, marketing)
 
 CoDev covers what an AI creative platform like Layer does for cosmetics and skins, with free, open-source tools that run on your own computer. Agents get the `art_*` tools in the Windows app and with `npm start`/`start-codev.bat`, and Claude Code or Cursor can drive the same tools through `codev-mcp.js`. Ask in plain words ("pitch 4 directions for a mech knight skin", "weather these plates from new to battle-damaged", "rig this armour on our base character") and the agent picks the tools. `art_status` says what is installed and what each missing piece unlocks.

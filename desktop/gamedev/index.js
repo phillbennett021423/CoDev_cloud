@@ -3,8 +3,9 @@
 // Blender run in the background with bpy scripts. Assets go from Blender to Godot as
 // .glb files saved into the project folder, which the editor imports.
 //
-// Also here: godot_screenshot (run a scene with Movie Maker and return the last frame)
-// and the project checkpoints (checkpoints.js).
+// Also here: godot_screenshot (run a scene with Movie Maker and return the last frame),
+// the project checkpoints (checkpoints.js) and the Roblox tools (roblox.js: Luau checks,
+// sync into Roblox Studio and playtests through Studio's own MCP server).
 //
 //   createGameDevService({ getProjectDir, log, env }) ->
 //     { name, tools, callTool(name, args), status(), handleMcp(message, next), close() }
@@ -26,6 +27,7 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { createSceneDressing } = require('./scene-dressing');
 const { createCheckpoints } = require('./checkpoints');
+const { createRoblox } = require('./roblox');
 
 const PLUGIN_DIR = path.join(__dirname, 'godot-plugin', 'addons', 'codev_bridge');
 const BRIDGE_FILE = '.codev_bridge.json';
@@ -370,6 +372,8 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
     const dressing = createSceneDressing({ getRoot: () => godotRoot() || getProjectDir(), bridge, log });
     // Checkpoints of the whole project folder, with one-step rollback (checkpoints.js).
     const checkpoints = createCheckpoints({ getRoot: () => getProjectDir() || godotRoot(), env });
+    // Roblox: the project's Luau checked, synced into Studio and playtested (roblox.js).
+    const roblox = createRoblox({ getProjectDir, env, log });
 
     const tools = [
         {
@@ -427,7 +431,8 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
             _meta: { 'codev/alwaysAsk': true }
         },
         ...dressing.tools,
-        ...checkpoints.tools
+        ...checkpoints.tools,
+        ...roblox.tools
     ];
 
     async function callTool(name, args = {}) {
@@ -448,6 +453,7 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
             if (name === 'blender_run') return await blenderRun(args);
             if (dressing.names.includes(name)) return await dressing.callTool(name, args);
             if (checkpoints.names.includes(name)) return await checkpoints.callTool(name, args);
+            if (roblox.names.includes(name)) return await roblox.callTool(name, args);
             return text(`Unknown tool: ${name}`, true);
         } catch (err) {
             return text(err.message || String(err), true);
@@ -473,7 +479,7 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
             const s = await status();
             return { available: true, detail: `Godot ${s.godot ? 'found' : 'not found'}, Blender ${s.blender ? 'found' : 'not found'}${s.root ? `, Godot project at ${s.root}` : ''}` };
         },
-        close: () => {}
+        close: () => roblox.close()
     };
 }
 
