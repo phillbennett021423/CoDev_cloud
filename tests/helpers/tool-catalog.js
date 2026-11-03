@@ -72,6 +72,7 @@ async function moduleTools() {
     const Desk = require(path.join(UI, 'insurance-desk.js'));
     const Google = require(path.join(UI, 'google-apps.js'));
     const Odds = require(path.join(UI, 'odds-api.js'));
+    const Model = require(path.join(UI, 'prop-model.js'));
     const Phone = require(path.join(UI, 'phone-browser.js'));
     const Mega = require(path.join(UI, 'mega-cloud.js'));
     const Notes = require(path.join(UI, 'notes-tables.js'));
@@ -100,6 +101,7 @@ async function moduleTools() {
         ...strip('page', deskTools),
         ...strip('page', Object.entries(google.TOOLS).map(([name, t]) => ({ name, ...t }))),
         ...strip('page', Object.entries(odds.TOOLS).map(([name, t]) => ({ name, ...t }))),
+        ...strip('page', Model.createPropModel({ storage: memoryStorage(), http: async () => ({ status: 404, body: {} }), tracker: odds, odds: Odds }).buildTools()),
         ...strip('page', Object.entries(mega.TOOLS).map(([name, t]) => ({ name, ...t }))),
         ...strip('page', Object.entries(notes.TOOLS).map(([name, t]) => ({ name, ...t }))),
         ...strip('page', Object.entries(maps.TOOLS).map(([name, t]) => ({ name, ...t }))),
