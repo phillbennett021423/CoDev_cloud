@@ -238,13 +238,17 @@ test('15 quiet minutes put it to sleep, and the next event wakes it with a stret
     assert.equal(C.current(), null, 'awake, not back to sleep');
 });
 
-test('there are several avatars to pick from, the 3D robot first, and an unknown pick falls back to it', t => {
+test('every agent colour has a robot picture for every mood, and the live robot is attachable', t => {
     const { B } = load(t);
-    assert.deepEqual([...B.avatars].map(a => a.id), ['codev-bot', 'duo', 'bear-wink', 'bear-smile', 'robot']);
-    assert.equal(B.avatar(), 'codev-bot');
-    assert.equal(B.setAvatar('bear-smile'), 'bear-smile');
-    assert.equal(B.setAvatar('nope'), 'codev-bot');
-    for (const file of ['avatars/bear-wink.png', 'avatars/bear-smile.png', 'avatar.svg', 'robot3d.js', '../vendor/three/three.module.min.js']) {
-        assert.ok(fs.existsSync(path.join(DIR, file)), file);
+    assert.equal(typeof B.attach, 'function');
+    assert.equal(B.attach(null), false, 'no slot, no robot');
+    const page = fs.readFileSync(path.join(DIR, '..', 'index.html'), 'utf8');
+    const colors = /const ROBOT_COLORS = (\{[^}]*\})/.exec(page);
+    assert.ok(colors, 'index.html defines ROBOT_COLORS');
+    const shapes = Object.keys(JSON.parse(colors[1].replace(/(\w+):/g, '"$1":')));
+    assert.deepEqual(shapes, ['circle', 'triangle', 'square', 'hexagon']);
+    for (const shape of shapes) for (const mood of ['idle', 'thinking', 'active', 'success']) {
+        assert.ok(fs.existsSync(path.join(DIR, 'avatars', `robot-${shape}-${mood}.png`)), `${shape} ${mood}`);
     }
+    for (const file of ['robot3d.js', '../vendor/three/three.module.min.js']) assert.ok(fs.existsSync(path.join(DIR, file)), file);
 });

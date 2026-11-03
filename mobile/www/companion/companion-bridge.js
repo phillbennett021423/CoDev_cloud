@@ -1,11 +1,12 @@
 /*
- * CodevCompanion: connects CoDev's real work to the VortexCompanion avatar.
+ * CodevCompanion: connects CoDev's real work to the robot's moves (VortexCompanion).
  *
  * The page calls these:
  *   CodevCompanion.inference(promiseFn)              around every model call
  *   CodevCompanion.tool(name, args, promiseFn)       around every agent tool call
  *   CodevCompanion.finished(usedTools)               when an agent's reply is done
- *   CodevCompanion.mount(element)                    once, to draw the floating avatar
+ *   CodevCompanion.start()                           once, at page load
+ *   CodevCompanion.attach(element, { accent })       to put the live robot in the chat header
  * Everything else (offline/online, sleep after a long quiet spell) runs on its own.
  * The classifiers are pure functions so tests can check them without a browser.
  */
@@ -176,19 +177,17 @@
     armSleep();
   }
 
-  // ---- Which avatar ---------------------------------------------------------
-  // The CoDev robot is drawn live in 3D (robot3d.js, with the vendored three.js).
-  // The others are one or more flat pictures moved together by the animations.
-  // shape picks the stage size: bot for the robot, tall for one standing figure, duo for two.
-  var AVATARS = [
-    { id: 'codev-bot', name: 'CoDev Bot (3D, dances)', shape: 'bot', kind: '3d' },
-    { id: 'duo', name: 'Bear hoodie duo', shape: 'duo', images: ['avatars/bear-wink.png', 'avatars/bear-smile.png'] },
-    { id: 'bear-wink', name: 'Bear hoodie (wink)', shape: 'tall', images: ['avatars/bear-wink.png'] },
-    { id: 'bear-smile', name: 'Bear hoodie (smile)', shape: 'tall', images: ['avatars/bear-smile.png'] },
-    { id: 'robot', name: 'Robot', shape: 'square', images: ['avatar.svg'] }
-  ];
-  // A new key, so everyone meets the robot once; picking another avatar is remembered.
-  var AVATAR_KEY = 'codev_companion_avatar_v2';
+  // ---- The live robot -------------------------------------------------------
+  // The selected agent's avatar in the chat header becomes the live 3D CoDev Bot,
+  // which acts out every move. Every other agent avatar is a still picture of the
+  // same robot (drawn by the page). three.js and robot3d.js load only once the
+  // robot is first shown.
+  var base = 'companion/';
+  var stage = null;
+  var robot = null;
+  var robotToken = 0;
+  var loading = null;
+  var started = false;
 
   function store(key, value) {
     try {
@@ -197,29 +196,13 @@
     } catch (err) { /* private mode: not remembered */ }
     return null;
   }
-  function findAvatar(id) {
-    for (var i = 0; i < AVATARS.length; i++) if (AVATARS[i].id === id) return AVATARS[i];
-    return AVATARS[0];
-  }
-  function avatar() { return findAvatar(store(AVATAR_KEY)).id; }
-
-  // ---- The floating avatar -------------------------------------------------
-  var dock = null;
-  var base = 'companion/';
   function enabled() { return (store(STORAGE_KEY) || '1') === '1'; }
-  function setEnabled(on) {
-    store(STORAGE_KEY, on ? '1' : '0');
-    if (dock) { dock.hidden = !on; place(); }
-  }
 
-  // ---- The 3D robot --------------------------------------------------------
-  var robot = null;
-  var robotToken = 0;
   function reducedMotion() {
     try { return Boolean(root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (err) { return false; }
   }
   // WebGL on a real graphics chip. A software renderer (no GPU, or a GPU-less VM)
-  // would spend a CPU core drawing the robot, so those get the flat robot instead.
+  // would spend a CPU core drawing the robot, so those keep the still pictures.
   var SOFTWARE_GL = /swiftshader|llvmpipe|softpipe|software|basic render|mesa offscreen/i;
   function webglOk() {
     try {
@@ -233,141 +216,90 @@
       return !SOFTWARE_GL.test(name);
     } catch (err) { return false; }
   }
-  function dropRobot() {
-    robotToken++;
-    if (robot) { try { robot.dispose(); } catch (err) { /* already gone */ } robot = null; }
-  }
-  // Loads three.js and the robot only when the robot is picked, so the flat avatars cost nothing.
-  function mountRobot(body, stage, onFail) {
-    var token = ++robotToken;
-    if (!webglOk()) { onFail(); return; }
-    var url = function (p) { return new root.URL(base + p, root.document.baseURI).href; };
-    Promise.all([import(url('../vendor/three/three.module.min.js')), import(url('robot3d.js'))]).then(function (mods) {
-      if (token !== robotToken) return;
-      robot = mods[1].createRobot(mods[0], body, { reducedMotion: reducedMotion() });
-      robot.setState(C() ? C().current() : null);
-    }).catch(function (err) {
-      if (token !== robotToken) return;
-      if (root.console) root.console.warn('CoDev Bot could not start; showing the flat robot instead', err);
-      stage.removeAttribute('data-render');
-      onFail();
-    });
-  }
 
-  function drawAvatar(id) {
-    if (!dock) return;
-    var a = findAvatar(id);
-    var body = dock.querySelector('#codevCompanionBody');
-    var stage = dock.querySelector('#codevCompanionStage');
-    dropRobot();
-    body.innerHTML = '';
-    dock.setAttribute('data-shape', a.shape);
-    if (a.kind === '3d') {
-      stage.setAttribute('data-render', '3d');
-      mountRobot(body, stage, function () { drawImages(body, ['avatar.svg']); dock.setAttribute('data-shape', 'square'); place(); });
-      place();
-      return;
-    }
-    stage.removeAttribute('data-render');
-    drawImages(body, a.images);
-    place();
-  }
-
-  function drawImages(body, images) {
-    images.forEach(function (src) {
-      var img = root.document.createElement('img');
-      img.className = 'companion-img';
-      img.alt = '';
-      img.draggable = false;
-      // A missing picture falls back to the bundled placeholder rather than a broken image.
-      img.addEventListener('error', function onError() { img.removeEventListener('error', onError); img.src = base + 'avatar.svg'; });
-      img.src = base + src;
-      body.appendChild(img);
-    });
-  }
-
-  function setAvatar(id) {
-    var a = findAvatar(id);
-    store(AVATAR_KEY, a.id);
-    drawAvatar(a.id);
-    return a.id;
-  }
-
-  // The avatar stands next to the chat box: beside it when there's room (wide screens),
-  // otherwise just above its right edge, so it never covers the text field or its buttons.
-  // On the other tabs (Story Studio, Outlier, ...) the chat box is hidden and so is the
-  // avatar, so it can't sit on top of their controls.
-  var anchor = null;
-  function place() {
-    if (!dock) return;
-    var rect = anchor && anchor.getBoundingClientRect();
-    if (!anchor) return;
-    var away = !rect || rect.height === 0;
-    dock.classList.toggle('off-view', away);
-    if (away) return;
-    var w = dock.offsetWidth;
-    var right = root.innerWidth - rect.right;
-    var beside = right >= w + 24;
-    // Above the chat box it overlaps the bottom of the conversation, so taps go through it
-    // to the messages' buttons; beside the box it's in free space and a tap shrinks it.
-    dock.classList.toggle('pass-through', !beside);
-    if (beside) {
-      dock.style.right = Math.round((right - w) / 2) + 'px';
-      dock.style.bottom = Math.round(root.innerHeight - rect.bottom) + 'px';
-    } else {
-      dock.style.right = Math.round(Math.max(4, right + 4)) + 'px';
-      dock.style.bottom = Math.round(root.innerHeight - rect.top + 6) + 'px';
-    }
-  }
-
-  function mount(container, options) {
-    options = options || {};
+  function makeStage() {
     var doc = root.document;
-    if (!doc || !C() || dock) return dock;
-    base = options.base || base;
-    dock = doc.createElement('div');
-    dock.className = 'codev-companion-dock';
-    dock.id = 'codevCompanion';
-    dock.hidden = !enabled();
-    dock.innerHTML =
-      '<div class="companion-stage" id="codevCompanionStage" role="img" aria-label="Companion: Resting">' +
-        '<div class="companion-body" id="codevCompanionBody"></div>' +
-        '<div class="companion-fx" id="codevCompanionFx"></div>' +
-      '</div>' +
-      '<div class="codev-companion-label" id="codevCompanionLabel" aria-live="polite">Resting</div>';
-    (container || doc.body).appendChild(dock);
-    anchor = options.anchor || null;
-    var stage = dock.querySelector('#codevCompanionStage');
-    drawAvatar(avatar());
-    C().init({ stage: stage, body: dock.querySelector('#codevCompanionBody'), fx: dock.querySelector('#codevCompanionFx'), label: dock.querySelector('#codevCompanionLabel') });
-    C().subscribe(function (anim) {
-      stage.setAttribute('aria-label', 'Companion: ' + (anim ? anim.name : 'Resting'));
-      if (robot) robot.setState(anim ? anim.key : null);
+    stage = doc.createElement('div');
+    stage.className = 'companion-stage live-robot';
+    stage.setAttribute('data-render', '3d');
+    stage.setAttribute('aria-hidden', 'true');
+    stage.innerHTML = '<div class="companion-body"></div><div class="companion-fx"></div>';
+    C().init({ stage: stage, body: stage.firstChild, fx: stage.lastChild });
+    C().subscribe(function (anim) { if (robot) robot.setState(anim ? anim.key : null); });
+  }
+
+  function loadRobot(accent) {
+    if (loading) return loading;
+    var token = robotToken;
+    var url = function (p) { return new root.URL(base + p, root.document.baseURI).href; };
+    loading = Promise.all([import(url('../vendor/three/three.module.min.js')), import(url('robot3d.js'))]).then(function (mods) {
+      if (token !== robotToken) return null;
+      robot = mods[1].createRobot(mods[0], stage.firstChild, { reducedMotion: reducedMotion(), accent: accent });
+      robot.setState(C().current());
+      return robot;
+    }).catch(function (err) {
+      if (root.console) root.console.warn('CoDev Bot could not start; keeping the still pictures', err);
+      return null;
     });
-    // Tap to tuck it into a small bubble and back.
-    stage.addEventListener('click', function () { dock.classList.toggle('collapsed'); place(); });
+    return loading;
+  }
+
+  var host = null;
+  var hostAccent = null;
+  var glOk = null; // checked once
+  // Puts the live robot in host (the chat header's avatar slot) in the given colour.
+  // The page re-renders that slot when the agent changes, so it calls this each time;
+  // the same robot moves over and changes colour. Returns false when the robot
+  // can't run here (turned off, no WebGL, or software WebGL), so the picture stays.
+  function attach(el, options) {
+    host = el || null;
+    hostAccent = (options && options.accent) || hostAccent;
+    if (!host || !enabled() || !C() || !root.document) return false;
+    if (glOk === null) glOk = webglOk();
+    if (!glOk) return false;
+    if (!stage) makeStage();
+    host.appendChild(stage);
+    host.classList.add('has-live-robot');
+    if (robot) robot.setAccent(hostAccent);
+    else loadRobot(hostAccent).then(function (r) {
+      if (r) r.setAccent(hostAccent);
+      else if (host) host.classList.remove('has-live-robot');
+    });
+    return true;
+  }
+
+  function setEnabled(on) {
+    store(STORAGE_KEY, on ? '1' : '0');
+    if (on) { attach(host); return; }
+    if (robot) { try { robot.dispose(); } catch (err) { /* already gone */ } }
+    robot = null; loading = null; robotToken++;
+    if (stage && stage.parentNode) stage.parentNode.classList.remove('has-live-robot');
+    if (stage) stage.remove();
+  }
+
+  // Once, at page load: wake on input, react to going offline, say hello.
+  function start(options) {
+    if (started || !root.document) return;
+    started = true;
+    base = (options && options.base) || base;
+    var doc = root.document;
     ['pointerdown', 'keydown'].forEach(function (type) { doc.addEventListener(type, wake, { capture: true, passive: true }); });
     root.addEventListener('offline', function () { send('network.loading'); });
     root.addEventListener('online', function () { send('network.done'); });
-    root.addEventListener('resize', place);
-    if (anchor && root.ResizeObserver) new root.ResizeObserver(place).observe(anchor);
     if (root.navigator && root.navigator.onLine === false) send('network.loading');
     else setTimeout(function () { send('hello'); }, 1200);
     armSleep();
-    return dock;
   }
 
   root.CodevCompanion = {
-    mount: mount,
+    start: start,
+    attach: attach,
     inference: inference,
     tool: tool,
     finished: finished,
     notify: send,
     enabled: enabled,
     setEnabled: setEnabled,
-    avatar: avatar,
-    setAvatar: setAvatar,
-    avatars: AVATARS.map(function (a) { return { id: a.id, name: a.name }; }),
     classifyTool: classifyTool,
     buildOutcome: buildOutcome,
     milestone: milestone

@@ -379,10 +379,10 @@ function rr(ctx, x, y, w, h, r) {
 }
 
 // The LED face: eyes and a mouth in glowing cyan on the black visor.
-function drawFace(ctx, f, blink) {
+function drawFace(ctx, f, blink, base = CYAN) {
   const W = ctx.canvas.width, H = ctx.canvas.height;
   ctx.clearRect(0, 0, W, H);
-  const col = f.color || CYAN;
+  const col = f.color || base;
   ctx.save();
   ctx.globalAlpha = f.dim == null ? 1 : f.dim;
   ctx.fillStyle = col; ctx.strokeStyle = col;
@@ -554,6 +554,16 @@ export function createRobot(THREE, host, options = {}) {
   const visorMat = keep(new THREE.MeshPhysicalMaterial({ color: 0x050608, metalness: 0.1, roughness: 0.08, clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 1.6 }));
   const glow = keep(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.55, 2.2, 2.6), toneMapped: false }));
   const glowSoft = keep(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.9, 1.6, 1.8), toneMapped: false }));
+  // Each agent's robot glows in its own colour: LED face, ear rings, cuffs and belly strips.
+  let accent = CYAN;
+  function setAccent(hex) {
+    accent = /^#[0-9a-f]{6}$/i.test(String(hex)) ? hex : CYAN;
+    const c = new THREE.Color(accent);
+    c.convertSRGBToLinear();
+    glow.color.copy(c).multiplyScalar(2.4);
+    glowSoft.color.copy(c).lerp(new THREE.Color(1, 1, 1), 0.35).multiplyScalar(1.7);
+    faceKey = '';
+  }
   const holo = (color, opacity = 0.5) => keep(new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, toneMapped: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }));
   const geo = g => keep(g);
   const mesh = (g, m, parent, x = 0, y = 0, z = 0) => { const o = new THREE.Mesh(g, m); o.position.set(x, y, z); parent.add(o); return o; };
@@ -883,6 +893,7 @@ export function createRobot(THREE, host, options = {}) {
   let from = null; // the pose on screen when the state changed
   let shown = restPose(0);
   let faceKey = '', nextBlink = 2, blinkUntil = 0;
+  setAccent(options.accent);
   const CELEBRATE = new Set(['groove', 'victory-spin', 'confetti', 'happy-bounce', 'tada', 'cheer-wave']);
 
   function setState(next) {
@@ -943,14 +954,15 @@ export function createRobot(THREE, host, options = {}) {
     shadow.material.opacity = clamp(1 - lift, 0.3, 1);
   }
 
+  let faceOverride = null;
   function drawFaceIfChanged(t) {
-    const f = anim && anim.face ? anim.face(t, bot) : { eyes: 'neutral', mouth: 'smile', lx: shown.hy * 1.2 };
+    const f = faceOverride || (anim && anim.face ? anim.face(t, bot) : { eyes: 'neutral', mouth: 'smile', lx: shown.hy * 1.2 });
     if (now > nextBlink) { blinkUntil = now + 0.12; nextBlink = now + 2.5 + Math.random() * 3; }
     const blink = now < blinkUntil && /^(neutral|happy|focus|wide|big)$/.test(f.eyes || 'neutral');
-    const keyStr = [f.eyes, f.mouth, Math.round((f.lx || 0) * 8), Math.round((f.ly || 0) * 8), blink, f.color, f.dim && f.dim.toFixed(1)].join('|');
+    const keyStr = [accent, f.eyes, f.mouth, Math.round((f.lx || 0) * 8), Math.round((f.ly || 0) * 8), blink, f.color, f.dim && f.dim.toFixed(1)].join('|');
     if (keyStr === faceKey) return;
     faceKey = keyStr;
-    drawFace(faceCtx, f, blink);
+    drawFace(faceCtx, f, blink, accent);
     faceTex.needsUpdate = true;
   }
 
@@ -962,14 +974,17 @@ export function createRobot(THREE, host, options = {}) {
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     // Frame the whole figure with room for jumps and raised arms; wide stages show it larger.
-    const needH = 4.15, needW = 2.95;
+    // Portrait: head and shoulders, for the small agent avatars.
+    const portrait = options.framing === 'portrait';
+    const needH = portrait ? 2.15 : 4.15, needW = portrait ? 2.0 : 2.95;
     const fovV = THREE.MathUtils.degToRad(camera.fov);
     const distH = needH / 2 / Math.tan(fovV / 2);
     const distW = needW / 2 / (Math.tan(fovV / 2) * camera.aspect);
     const d = Math.max(distH, distW);
     const yaw = options.yaw || 0;
-    camera.position.set(Math.sin(yaw) * d, 1.95 + d * 0.08, Math.cos(yaw) * d);
-    camera.lookAt(0, 1.82, 0);
+    const aimY = portrait ? 2.3 : 1.82;
+    camera.position.set(Math.sin(yaw) * d, aimY + 0.13 + d * 0.06, Math.cos(yaw) * d);
+    camera.lookAt(0, aimY, 0);
     camera.updateProjectionMatrix();
   }
 
@@ -1009,8 +1024,10 @@ export function createRobot(THREE, host, options = {}) {
     canvasEl.remove();
   }
 
-  // For the preview page and tests: render one exact moment of an animation.
-  function renderAt(key, t) {
+  // For the preview page and the avatar pictures: render one exact moment of an
+  // animation, optionally with a given face ({ eyes, mouth }).
+  function renderAt(key, t, face) {
+    faceOverride = face || null;
     setState(key); started = 0; now = t; from = null;
     resize();
     shown = pose(t); apply(shown);
@@ -1019,7 +1036,7 @@ export function createRobot(THREE, host, options = {}) {
     renderer.render(scene, camera);
   }
 
-  return { setState, dispose, renderAt, get state() { return state; }, canvas: canvasEl };
+  return { setState, setAccent, dispose, renderAt, get state() { return state; }, canvas: canvasEl };
 }
 
 export const ROBOT_ANIMATIONS = Object.keys(ANIMS);

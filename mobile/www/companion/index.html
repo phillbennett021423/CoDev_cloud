@@ -65,7 +65,7 @@
   <div class="stage-col">
     <div>
       <h1>CoDev Bot, <em>dancing</em></h1>
-      <p class="lede">The little silver robot that rides next to CoDev's chat box. Tap any move to watch it, or run a pretend work session to see how it reacts to real agent events.</p>
+      <p class="lede">The little silver robot that stands in for every CoDev agent and dances in the chat header. Tap any move to watch it, or run a pretend work session to see how it reacts to real agent events.</p>
     </div>
     <div class="studio">
       <div class="companion-stage" id="stage" data-render="3d" role="img" aria-label="CoDev Bot">
@@ -144,7 +144,7 @@
   }
   const foot = document.createElement('p');
   foot.className = 'note';
-  foot.textContent = 'In the app the moves follow what the agents are really doing: higher-priority moves win (a failing build beats typing), long jobs hold their move until they finish, and the idle moves only start after two quiet minutes. You can switch back to the old flat avatars in Settings.';
+  foot.textContent = 'In the app the moves follow what the agents are really doing: higher-priority moves win (a failing build beats typing), long jobs hold their move until they finish, and the idle moves only start after two quiet minutes. You can turn the animation off in Settings; the agents then keep still robot pictures.';
   sheet.appendChild(foot);
 
   const stage = document.getElementById('stage');
