@@ -2,6 +2,14 @@
 
 The app is a single page, `mobile/www/index.html`. It talks to Groq directly from the browser, so there's no backend server to run. The Android app is in `mobile/` (see `mobile/README.md`).
 
+## Use CoDev on the web
+
+CoDev is also a web page you can open on any device: https://phillbennett021423.github.io/codev_cloud/
+
+It's the same page as the apps, published by `.github/workflows/web-pages.yml` whenever `mobile/www` changes on main. Your API keys and chats are saved only in the browser you paste them into, never on the site, and the site never has built-in keys (the workflow refuses to publish if `shared-keys.js` has any). Chat, agents, Claude's web search, Gemini search, voice and notes work there. Reading whole web pages, the agent browser, sandboxes, Outlier, MEGA, Google apps, local MCP servers and the 3D/art tools need the Windows app, the Android app or `start-codev.bat`.
+
+One-time setup: **Settings > Pages > Build and deployment > Source: GitHub Actions**, then run **Actions > Web version (GitHub Pages) > Run workflow** (or push a change to `mobile/www`).
+
 ## Sharing CoDev with your keys built in
 
 To give someone CoDev with your keys already in it, add your keys as repository secrets (Settings > Secrets and variables > Actions): `CODEV_SHARED_GROQ`, `CODEV_SHARED_OPENROUTER`, `CODEV_SHARED_ANTHROPIC`, `CODEV_SHARED_GEMINI`, `CODEV_SHARED_TAVILY`, `CODEV_SHARED_AZURE_SPEECH` (and `CODEV_SHARED_AZURE_SPEECH_REGION`), `CODEV_SHARED_ODDS`, plus a `PRIVATE_BUILD_PASSWORD`. Any you leave out are simply not built in. Then run **Actions > Private build with built-in keys > Run workflow**, download the zips from the run, open them with 7-Zip using the password, and send the APK or installer to the person directly. These builds are never published as releases, and the public downloads have no keys.

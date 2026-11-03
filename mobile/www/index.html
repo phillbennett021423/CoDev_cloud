@@ -1098,6 +1098,9 @@
             <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;">
                 CoDev's agents run on <strong>Claude</strong> (Anthropic): Claude Haiku 5.5 for quick asks and Claude Sonnet 5.5 for bigger multi-step tasks, kept inside the spending limits below. Groq's free tier is still there as a fallback, but its small limits run out on real agent tasks.
             </p>
+            <p id="webVersionNotice" style="display: none; font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px;">
+                🌐 <strong>This is CoDev's web version.</strong> Your keys and chats are saved only in this browser on this device, never on the website. Chat, agents, web search (Claude's own search, or Google with a Gemini key), voice and notes work here. Reading whole web pages, the agent browser, sandboxes, Outlier, MEGA, Google apps, MCP servers on your computer and the 3D/art tools need the Windows app, the Android app or start-codev.bat.
+            </p>
 
             <!-- Step-by-Step Guidance Box -->
             <div style="background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 0.85rem;">
@@ -1984,9 +1987,17 @@
             return { sessions, activeChatId: sessions.some(s => s.id === saved.activeChatId) ? saved.activeChatId : sessions[0].id };
         }
 
+        // CoDev opened from a website (GitHub Pages), not the apps or start-codev.bat's
+        // http://localhost:3000. Keys stay in this browser; server-only tools are off.
+        function isHostedWebPage() {
+            if (window.codevDesktop || (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())) return false;
+            return /^https?:$/.test(location.protocol) && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+        }
+        const WEB_VERSION_WELCOME = " You're on CoDev's web version: your keys stay in this browser, and tools that need your computer (reading whole web pages, the agent browser, sandboxes, Outlier) are in the Windows and Android apps.";
+
         const savedChats = loadSavedChats();
         let chatSessions = savedChats ? savedChats.sessions : [
-            newChatSession("chat_1", "New Session #1", false, "Welcome to CoDev Studio Pro. Tell the agents what you're working on, in any domain. To work on files, click '📁 Connect Local Folder' at the top right.")
+            newChatSession("chat_1", "New Session #1", false, "Welcome to CoDev Studio Pro. Tell the agents what you're working on, in any domain. To work on files, click '📁 Connect Local Folder' at the top right." + (isHostedWebPage() ? WEB_VERSION_WELCOME : ""))
         ];
         let activeChatId = savedChats ? savedChats.activeChatId : "chat_1";
         window.addEventListener("pagehide", saveChatsNow);
@@ -9129,6 +9140,10 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             // The mode toggles start folded away too, to leave room for the chat.
             toggleChatControls();
             await checkServerAnthropic();
+            if (isHostedWebPage()) {
+                document.getElementById("webVersionNotice").style.display = "block";
+                logConsoleActivity("Web version: keys and chats are saved only in this browser. Tools that need your computer are off here; see ⚙️ Settings.");
+            }
             preferClaudeOverGroq();
             if (!pickProviderWithKey()) logConsoleActivity("No API key saved yet. Add an Anthropic (Claude) key under ⚙️ Settings to chat with the agents. OpenRouter and Groq work too.");
             updateStatusDisplay();
