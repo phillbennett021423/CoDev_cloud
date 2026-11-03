@@ -97,7 +97,7 @@
             id: "creator", name: "Content creator", aliases: ["content creator", "youtuber", "streamer", "tiktoker", "influencer", "podcaster", "social media creator", "ugc creator"],
             work: ["Pick a niche and a promise to the viewer", "Plan ideas, titles and thumbnails before filming", "Script or outline, record, edit", "Post on a schedule and read the analytics", "Make money: sponsors, ads, products"],
             standards: ["A hook in the first 3 seconds", "Title and thumbnail that make a clear promise the video keeps", "Clean audio (people forgive video, not sound)", "Consistent posting"],
-            pitfalls: ["No clear niche", "Making the video before the title and thumbnail idea", "Bad audio", "Quitting before 50 videos"],
+            pitfalls: ["No clear niche", "Making the video before the title and thumbnail idea", "Bad audio", "Quitting before enough videos to learn what works"],
             terms: ["hook", "retention", "CTR (click-through rate)", "thumbnail", "niche", "algorithm", "B-roll", "watch time"],
             tools: [["media_edit", "cut and polish videos"], ["media_highlights", "short clips from a long video"], ["media_transcribe", "captions"], ["youtube_search", "what's working in the niche"], ["generate_image", "thumbnail ideas"]],
             learn: { new: ["Pick a niche and post 10 videos", "Learn basic cuts, captions and audio cleanup", "Study 5 top videos in the niche"], some: ["Retention graphs and fixing drop-offs", "Title and thumbnail testing", "Repurpose long videos into shorts"], pro: ["Sponsorship rates and media kits", "A content team and workflow", "Own products and email list"] }
@@ -115,7 +115,7 @@
             id: "sales", name: "Salesperson", aliases: ["sales", "salesperson", "sales rep", "account executive", "business development", "sdr", "bdr", "closer", "retail sales"],
             work: ["Find and qualify prospects", "Reach out and book conversations", "Discover the need, present, handle objections", "Close, then follow up and ask for referrals"],
             standards: ["Listen more than you talk", "Every lead has a next step and a date", "Honest about what the product does", "Track everything in one place"],
-            pitfalls: ["Pitching before understanding the need", "Not following up (most deals need 5+ touches)", "Discounting too early", "No pipeline tracking"],
+            pitfalls: ["Pitching before understanding the need", "Giving up after one or two follow-ups (many deals close only after several)", "Discounting too early", "No pipeline tracking"],
             terms: ["pipeline", "lead", "qualified", "objection", "close rate", "follow-up", "CRM", "quota"],
             tools: [["create_spreadsheet", "a pipeline tracker"], ["gmail_send", "follow-up emails (asks first)"], ["web_search", "research a prospect"], ["create_document", "proposals and scripts"]],
             learn: { new: ["Learn the product and the customer's top 3 problems", "Practice a discovery call script", "Track every lead with a next step"], some: ["Objection handling", "Writing short cold emails", "Forecasting your pipeline"], pro: ["Complex multi-buyer deals", "Negotiation", "Coaching a team"] }
@@ -133,7 +133,7 @@
         {
             id: "accounting", name: "Bookkeeper and accountant", aliases: ["bookkeeper", "bookkeeping", "accountant", "accounting", "cpa", "tax preparer", "payroll", "taxes", "quickbooks"],
             work: ["Record every transaction in the right category", "Reconcile bank and card accounts monthly", "Produce the profit and loss, balance sheet and cash flow", "Prepare for taxes and payroll filings"],
-            standards: ["The books reconcile to the bank to the cent", "Every entry has a receipt or source", "Consistent categories (chart of accounts)", "Deadlines met; records kept for 7 years"],
+            standards: ["The books reconcile to the bank to the cent", "Every entry has a receipt or source", "Consistent categories (chart of accounts)", "Deadlines met; records kept as long as the tax rules require (in the US the IRS says at least 3 years, longer for some records)"],
             pitfalls: ["Waiting until year end", "Mixing personal and business spending", "Not reconciling", "Misclassifying contractors and employees"],
             terms: ["debit / credit", "chart of accounts", "reconciliation", "accrual vs cash", "P&L", "balance sheet", "1099 / W-2", "depreciation"],
             tools: [["create_spreadsheet", "ledgers, P&L and reconciliations with formulas"], ["query_table", "numbers from an attached bank export"], ["run_code", "exact totals and checks"], ["web_search", "current tax rules and deadlines"]],
@@ -185,7 +185,7 @@
             standards: ["Clear hierarchy: the eye knows where to go", "Consistent spacing, type and color", "Readable contrast and accessibility", "Files delivered in the right formats and sizes"],
             pitfalls: ["Too many fonts and colors", "Designing before understanding the goal", "Ignoring accessibility", "Falling in love with the first idea"],
             terms: ["hierarchy", "grid", "kerning", "contrast", "wireframe", "prototype", "vector / raster", "style guide"],
-            tools: [["generate_image", "concepts and mood"], ["create_web_app", "a clickable prototype"], ["create_slides", "presenting work"], ["read_image", "critique a design the user attached"]],
+            tools: [["generate_image", "concepts and mood"], ["create_web_app", "a clickable prototype"], ["create_slides", "presenting work"]],
             learn: { new: ["Learn hierarchy, alignment, contrast and spacing", "Copy 5 designs you admire to learn why they work", "Make a simple logo and poster"], some: ["Type pairing and grids", "User research and wireframes", "A portfolio piece with process"], pro: ["Design systems", "Leading critiques", "Pricing and client management"] }
         },
         {
@@ -212,7 +212,7 @@
             standards: ["Sharp focus where it matters", "Correct exposure and white balance", "Consistent editing style", "Contracts and model releases in place"],
             pitfalls: ["Shooting only in auto", "Over-editing", "No backups", "Underpricing"],
             terms: ["aperture", "shutter speed", "ISO", "white balance", "composition", "RAW", "culling", "golden hour"],
-            tools: [["read_image", "critique a photo"], ["art_upscale", "enlarge an image"], ["art_cutout", "remove a background"], ["create_document", "contracts drafts and price sheets"]],
+            tools: [["art_upscale", "enlarge an image"], ["art_cutout", "remove a background"], ["create_document", "contracts drafts and price sheets"]],
             learn: { new: ["Exposure triangle", "Composition rules", "Shoot in manual for a week"], some: ["Off-camera light", "A consistent editing style", "A portfolio site"], pro: ["Pricing and packages", "Studio lighting setups", "Business systems"] }
         },
         {
@@ -240,7 +240,7 @@
             standards: ["Diagnose before replacing parts", "Torque specs and procedures from the service manual", "Safety: jack stands, eye protection", "Clear explanation to the customer"],
             pitfalls: ["Throwing parts at a problem", "Skipping the test drive", "Guessing torque specs"],
             terms: ["OBD-II code", "diagnostic", "torque spec", "service manual", "labor time", "OEM / aftermarket"],
-            tools: [["web_search", "codes, recalls and procedures"], ["create_spreadsheet", "quotes and maintenance logs"], ["read_image", "a photo of a part or dashboard"]],
+            tools: [["web_search", "codes, recalls and procedures"], ["create_spreadsheet", "quotes and maintenance logs"]],
             caution: "Brakes, steering, airbags, fuel and high-voltage hybrid systems are safety-critical: give the safety steps first and tell a beginner when it's a job for a pro shop.",
             learn: { new: ["Basic maintenance: oil, filters, tires, brakes", "Reading OBD-II codes", "Using a service manual"], some: ["Electrical diagnosis with a multimeter", "Suspension and steering", "ASE certifications"], pro: ["Advanced diagnostics", "Running a shop", "Hybrid and EV systems"] }
         },
@@ -370,6 +370,65 @@
         }
     ];
 
+    // What each tool a playbook names needs before an agent gets it, so an agent can tell
+    // the user honestly what it can't do here yet and how to turn it on. A tool missing
+    // from this list is offered on every version of CoDev.
+    const VIA_COMPUTER = "CoDev on the user's computer via the Windows app or start-codev.bat";
+    const NEEDS = {
+        code_map: { what: "mapping a code project", needs: "a coding request with a project folder connected" },
+        edit_file: { what: "editing files in a project folder", needs: `a project folder chosen in ${VIA_COMPUTER}, or sandbox mode` },
+        run_command: { what: "running commands, tests and builds", needs: `a project folder chosen in ${VIA_COMPUTER}, or sandbox mode` },
+        gamedev_status: { what: "the Godot project tools", needs: `${VIA_COMPUTER} with Godot installed` },
+        godot_validate: { what: "the Godot project tools", needs: `${VIA_COMPUTER} with Godot installed` },
+        godot_screenshot: { what: "the Godot project tools", needs: `${VIA_COMPUTER} with Godot installed` },
+        blender_run: { what: "Blender 3D modeling", needs: `${VIA_COMPUTER} with Blender installed` },
+        art_generate: { what: "the game-art pipeline", needs: `${VIA_COMPUTER} with the art pipeline (ComfyUI) set up` },
+        art_edit: { what: "the game-art pipeline", needs: `${VIA_COMPUTER} with the art pipeline (ComfyUI) set up` },
+        art_skin_pipeline: { what: "the game-art pipeline", needs: `${VIA_COMPUTER} with the art pipeline (ComfyUI) set up` },
+        art_upscale: { what: "upscaling and background removal", needs: `${VIA_COMPUTER} with the art pipeline (ComfyUI) set up` },
+        art_cutout: { what: "upscaling and background removal", needs: `${VIA_COMPUTER} with the art pipeline (ComfyUI) set up` },
+        art_audio: { what: "making sound effects and music", needs: `${VIA_COMPUTER} with the art pipeline set up` },
+        media_edit: { what: "video and audio editing", needs: `${VIA_COMPUTER} with Docker (Settings > Video & audio editing)` },
+        media_highlights: { what: "video and audio editing", needs: `${VIA_COMPUTER} with Docker (Settings > Video & audio editing)` },
+        media_transcribe: { what: "video and audio editing", needs: `${VIA_COMPUTER} with Docker (Settings > Video & audio editing)` },
+        media_separate: { what: "video and audio editing", needs: `${VIA_COMPUTER} with Docker (Settings > Video & audio editing)` },
+        gmail_search: { what: "reading Gmail", needs: "signing in with Google and allowing Gmail (Settings > Google apps)" },
+        gmail_send: { what: "sending email from Gmail", needs: "signing in with Google and allowing Gmail sending (Settings > Google apps)" },
+        youtube_search: { what: "YouTube search", needs: "a Google key or Google sign-in (Settings > Google apps)" },
+        maps_search_places: { what: "Google Maps places and directions", needs: "a Google Maps key (Settings > Google apps) or CoDev's server" },
+        maps_directions: { what: "Google Maps places and directions", needs: "a Google Maps key (Settings > Google apps) or CoDev's server" },
+        insurance_clients: { what: "the user's Insurance Desk book", needs: "an insurance request, with agent access turned on in the Insurance Desk" },
+        insurance_alerts: { what: "the user's Insurance Desk book", needs: "an insurance request, with agent access turned on in the Insurance Desk" },
+        insurance_quote_brief: { what: "the user's Insurance Desk book", needs: "an insurance request, with agent access turned on in the Insurance Desk" },
+        insurance_commissions: { what: "the user's Insurance Desk book", needs: "an insurance request, with agent access turned on in the Insurance Desk" },
+        outlier_research_list: { what: "reading Outlier", needs: `${VIA_COMPUTER}, signed in once from the Outlier tab` },
+        browser_extract: { what: "turning web pages into tables", needs: `the agent browser in ${VIA_COMPUTER}` },
+        studio_save: { what: "the story bible", needs: "a request about a game's story (Story Studio)" },
+        query_table: { what: "reading an attached spreadsheet", needs: "a spreadsheet attached to the chat with 📎" },
+        read_attachment: { what: "reading an attached file", needs: "a file attached to the chat with 📎" },
+        sports_schedule: { what: "the free sports tools", needs: "a sports props or betting request" },
+        sports_injuries: { what: "the free sports tools", needs: "a sports props or betting request" },
+        props_hit_rates: { what: "the free sports tools", needs: "a sports props or betting request" },
+        model_prop_edge: { what: "the free sports tools", needs: "a sports props or betting request" },
+        generate_image: { what: "making pictures", needs: "a picture service (Settings)" },
+        create_spreadsheet: { what: "making Excel, PowerPoint and Word files", needs: "Claude or OpenRouter as the provider, or asking for a file by name on Groq's free tier" },
+        create_document: { what: "making Excel, PowerPoint and Word files", needs: "Claude or OpenRouter as the provider, or asking for a file by name on Groq's free tier" },
+        create_slides: { what: "making Excel, PowerPoint and Word files", needs: "Claude or OpenRouter as the provider, or asking for a file by name on Groq's free tier" },
+        create_web_app: { what: "making Excel, PowerPoint and Word files", needs: "Claude or OpenRouter as the provider, or asking for a file by name on Groq's free tier" }
+    };
+
+    // The playbook's tools split into those this agent has and what's missing (by ability,
+    // never by tool name, so an agent isn't sent looking for a tool it doesn't have).
+    function splitTools(p, have) {
+        const fit = [];
+        const missing = new Map();
+        for (const [name, why] of p.tools || []) {
+            if (!have || have.has(name)) fit.push([name, why]);
+            else if (NEEDS[name] && !missing.has(NEEDS[name].what)) missing.set(NEEDS[name].what, NEEDS[name].needs);
+        }
+        return { fit, missing: [...missing].map(([what, needs]) => `${what} (needs ${needs})`) };
+    }
+
     const SAFETY_DEFAULT = "If the work could hurt someone, cost real money, or has legal or licensing rules, say the safety, money or legal check first, and name when a licensed professional must do or sign off on it.";
 
     // Word-boundary match of a profession's aliases; the longest alias wins so "real estate
@@ -408,17 +467,24 @@
 
     function list(items) { return (items || []).join("; "); }
 
-    // The full playbook as text: what expert_playbook returns.
-    function playbookText(p, level) {
+    // The full playbook as text: what expert_playbook returns. have: the names of the tools
+    // the agent has (a Set), to say which fit and which aren't set up here; without it,
+    // every tool is listed with what it needs.
+    function playbookText(p, level, have) {
         const path = p.learn || {};
         const levels = level && path[level] ? [level] : ["new", "some", "pro"].filter(l => path[l]);
+        const { fit, missing } = splitTools(p, have);
+        const toolLine = have
+            ? [fit.length ? `CoDev tools you have for this: ${fit.map(([n, why]) => `${n} (${why})`).join(", ")}.` : "",
+                missing.length ? `Not set up here yet (tell the user how to turn these on if the task needs them): ${missing.join("; ")}.` : ""]
+            : [(p.tools || []).length ? `CoDev tools that fit: ${p.tools.map(([n, why]) => `${n} (${why})${NEEDS[n] ? ` [needs ${NEEDS[n].needs}]` : ""}`).join(", ")}.` : ""];
         return [
             `# ${p.name} playbook`,
             `Core work: ${list(p.work)}.`,
             `Pro standard: ${list(p.standards)}.`,
             `Beginner mistakes to catch: ${list(p.pitfalls)}.`,
             `Key terms: ${list(p.terms)}.`,
-            p.tools && p.tools.length ? `CoDev tools that fit: ${p.tools.map(([n, why]) => `${n} (${why})`).join(", ")}.` : "",
+            ...toolLine,
             `Learning path:\n${levels.map(l => `- ${LEVELS[l].label}: ${list(path[l])}.`).join("\n")}`,
             `Safety: ${p.caution || SAFETY_DEFAULT}`
         ].filter(Boolean).join("\n");
@@ -484,8 +550,9 @@
             const { fields } = fieldsFor(task);
             const lines = [];
             for (const p of fields) {
-                const fit = (p.tools || []).filter(([n]) => have.has(n));
+                const { fit, missing } = splitTools(p, have);
                 if (fit.length) lines.push(`- ${p.name}: ${fit.map(([n, why]) => `${n} for ${why}`).join("; ")}.`);
+                if (missing.length) lines.push(`- Not set up here yet for ${p.name} work: ${missing.join("; ")}. If the task needs one of these, say so in one line with how to turn it on, then do the rest with what you have; never pretend you did it.`);
             }
             const coach = ["expert_playbook", "set_expertise"].filter(n => have.has(n));
             if (!lines.length && !coach.length) return "";
@@ -504,10 +571,11 @@
                         profession: { type: "string", description: "The profession or trade in plain words, like \"real estate agent\", \"electrician\" or \"nurse\". Leave it out to list every built-in playbook." },
                         level: { type: "string", enum: ["new", "some", "pro"], description: "Optional: only the learning path for this level (new = just starting, some = knows the basics, pro = experienced). Leave it out for all levels." }
                     } },
-                    run: async ({ profession, level } = {}) => {
+                    run: async ({ profession, level } = {}, ctx) => {
+                        const have = ctx && Array.isArray(ctx.toolNames) ? new Set(ctx.toolNames.map(n => String(n).replace(/^.*__/, ""))) : null;
                         if (!cleanText(profession)) return `Built-in playbooks (${PROFESSIONS.length}): ${PROFESSIONS.map(p => p.name).join(", ")}. Any other field works too: look up its standards with web_search.`;
                         const p = findProfession(profession);
-                        return p ? playbookText(p, LEVELS[level] && level ? level : "") : unknownFieldText(cleanText(profession));
+                        return p ? playbookText(p, LEVELS[level] && level ? level : "", have) : unknownFieldText(cleanText(profession));
                     }
                 },
                 {
@@ -588,5 +656,5 @@
         return { profile, save, promptBlock, toolNote, buildTools, mountSettings, mountModeButton, fieldsFor };
     }
 
-    return { KEYS, LEVELS, MODES, PROFESSIONS, findProfession, detectProfessions, modeFromMessage, playbookText, createExpertise };
+    return { KEYS, LEVELS, MODES, PROFESSIONS, NEEDS, findProfession, detectProfessions, modeFromMessage, playbookText, createExpertise };
 });

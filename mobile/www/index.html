@@ -5432,6 +5432,8 @@
             const baseSystem = messages[0]?.role === "system" ? messages[0].content : null;
             const checkpoint = () => { if (ctx.checkpoint) ctx.checkpoint(baseSystem === null ? messages : [{ ...messages[0], content: baseSystem }, ...messages.slice(1)]); };
             const tools = await buildLocalTools(ctx);
+            // What this agent has, for tools that say what fits and what isn't set up (expert_playbook).
+            ctx.toolNames = tools.map(t => t.name);
             const toolDefs = tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
             // Tell the model what "MCP" means here, so a request like "use MCP to..." lands on these tools.
             const mcpNames = (await fetchAllMcpTools()).map(t => t.qualifiedName || t.name);

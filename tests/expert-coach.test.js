@@ -31,6 +31,33 @@ test('every playbook is complete, and its tools are tools CoDev has', () => {
     }
 });
 
+test('every playbook tool that is not on every version says what turns it on', () => {
+    const everywhere = new Set(['run_code', 'web_search', 'notes_write', 'delegate_tasks', 'wide_research']);
+    for (const p of Expert.PROFESSIONS) {
+        for (const [tool] of p.tools) {
+            assert.ok(everywhere.has(tool) || Expert.NEEDS[tool], `${p.name}: ${tool} needs a NEEDS entry saying what turns it on`);
+        }
+    }
+    for (const [tool, need] of Object.entries(Expert.NEEDS)) {
+        assert.ok(need.what && need.needs, `${tool} needs what and needs`);
+        assert.doesNotMatch(need.what + need.needs, /\b[a-z]+_[a-z_]+\b/, `${tool}: describe it in words, not tool names`);
+    }
+});
+
+test('a missing tool is named by what it does and how to turn it on, never by its name', async () => {
+    const ex = Expert.createExpertise({ storage: memoryStorage() });
+    ex.save({ profession: 'video editor' });
+    const note = ex.toolNote([{ name: 'create_document' }], 'cut my wedding film');
+    assert.match(note, /Video editor and filmmaker: create_document for shot lists/);
+    assert.match(note, /Not set up here yet for Video editor and filmmaker work: video and audio editing \(needs CoDev on the user's computer via the Windows app or start-codev.bat with Docker/);
+    assert.doesNotMatch(note, /media_edit|media_transcribe/);
+    const playbook = ex.buildTools().find(t => t.name === 'expert_playbook');
+    const here = await playbook.run({ profession: 'video editor' }, { toolNames: ['create_document'] });
+    assert.match(here, /CoDev tools you have for this: create_document/);
+    assert.match(here, /Not set up here yet[^\n]*video and audio editing/);
+    assert.match(await playbook.run({ profession: 'video editor' }), /media_edit \(cutting[^)]*\) \[needs CoDev on/);
+});
+
 test('a profession name finds its playbook, the longest alias first', () => {
     assert.equal(Expert.findProfession('realtor').id, 'realestate');
     assert.equal(Expert.findProfession('I am a real estate investor').id, 'realestate');
@@ -158,6 +185,8 @@ test('the page gives the model the expertise block, the field tools and the coac
     assert.match(call.system, /\[User level\] The user is new to this field/);
     assert.match(call.system, /\[Help mode: Teach me\]/);
     assert.match(call.system, /\[Field tools\][\s\S]*Real estate agent: [^\n]*web_search for market data/);
+    // On Groq's free tier the file tools wait for a request that asks for a file: the agent is told so, in words.
+    assert.match(call.system, /Not set up here yet for Real estate agent work: making Excel, PowerPoint and Word files \(needs Claude or OpenRouter/);
     assert.ok(call.tools.includes('expert_playbook') && call.tools.includes('set_expertise'));
     assert.deepEqual(errors, []);
     await page.close();
