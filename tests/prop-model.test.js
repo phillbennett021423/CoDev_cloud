@@ -208,3 +208,85 @@ test('server.js fetches only ESPN\'s API for the model', async () => {
     assert.ok(Model.ESPN_URL.test('https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard'));
     assert.ok(!Model.ESPN_URL.test('https://evil.com/?https://site.api.espn.com/apis/'));
 });
+
+// ---- Schedule, injuries and batch hit rates (ESPN's site API, no key) ----
+
+const SCOREBOARD = { events: [
+    { id: '1', date: '2026-11-03T00:30Z', name: 'Chicago Bulls at Philadelphia 76ers', status: { type: { state: 'pre', shortDetail: '11/2 - 7:30 PM EST' } },
+        competitions: [{ competitors: [
+            { homeAway: 'home', team: { displayName: 'Philadelphia 76ers', abbreviation: 'PHI', shortDisplayName: '76ers' }, records: [{ type: 'total', summary: '4-2' }] },
+            { homeAway: 'away', team: { displayName: 'Chicago Bulls', abbreviation: 'CHI', shortDisplayName: 'Bulls' }, records: [{ type: 'total', summary: '3-3' }] }],
+        odds: [{ details: 'PHI -4.5', overUnder: 221.5 }] }] },
+    { id: '2', date: '2026-11-03T00:00Z', name: 'Oklahoma City Thunder at Cleveland Cavaliers', status: { type: { state: 'in', shortDetail: 'Q2 5:10' } },
+        competitions: [{ competitors: [
+            { homeAway: 'home', score: '50', team: { displayName: 'Cleveland Cavaliers', abbreviation: 'CLE', shortDisplayName: 'Cavaliers' } },
+            { homeAway: 'away', score: '48', team: { displayName: 'Oklahoma City Thunder', abbreviation: 'OKC', shortDisplayName: 'Thunder' } }] }] }
+] };
+const INJURIES = { injuries: [
+    { displayName: 'Philadelphia 76ers', injuries: [
+        { status: 'Questionable', athlete: { displayName: 'Joel Embiid', position: { abbreviation: 'C' } }, details: { type: 'Foot' } },
+        { status: 'Out', athlete: { displayName: 'Dominick Barlow', position: { abbreviation: 'F' } }, shortComment: 'Barlow (knee) is out.' }] },
+    { displayName: 'Chicago Bulls', injuries: [] }
+] };
+
+function sportsSetup(points = strong) {
+    const storage = memoryStorage();
+    const espn = fakeEspn({ 3112335: gamelog(points, { first: '2026-10-05T01:00Z' }) });
+    const http = async url => {
+        if (/\/scoreboard\?/.test(url)) return { status: 200, body: SCOREBOARD };
+        if (/\/injuries$/.test(url)) return { status: 200, body: INJURIES };
+        return espn.http(url);
+    };
+    const model = Model.createPropModel({ storage, http, odds: Odds, now: () => Date.parse('2026-11-02T20:00:00Z') });
+    return Object.fromEntries(model.buildTools().map(t => [t.name, t]));
+}
+
+test('parses ESPN scoreboards and injury feeds, times and team names', () => {
+    const games = Model.parseScoreboard(SCOREBOARD);
+    assert.deepEqual(games.map(g => g.id), ['2', '1'], 'sorted by start');
+    assert.equal(games[1].spread, 'PHI -4.5');
+    assert.equal(games[1].total, 221.5);
+    assert.equal(games[1].away.record, '3-3');
+    const inj = Model.parseInjuries(INJURIES);
+    assert.equal(inj[0].players[0].note, 'Foot');
+    assert.ok(Model.teamMatches(games[1].home, '76ers') && Model.teamMatches(games[1].home, 'PHI') && Model.teamMatches(games[1].away, 'chicago'));
+    assert.ok(!Model.teamMatches(games[1].home, 'Bulls'));
+    assert.deepEqual(Model.parseClock('6:30pm CT'), { h: 18, m: 30, zone: 'America/Chicago' });
+    assert.deepEqual(Model.parseClock('7:30'), { h: 19, m: 30, zone: null }, 'a bare game time is the evening');
+    assert.equal(Model.parseClock('Bulls'), null);
+    assert.deepEqual(Model.clockOf(Date.parse('2026-11-03T00:30Z'), 'America/Chicago'), { h: 18, m: 30 });
+    assert.equal(Model.espnDate('2026-11-02', 0), '20261102');
+    assert.equal(Model.sideOf('Lower'), 'Under');
+    assert.equal(Model.sideOf('Higher'), 'Over');
+    assert.equal(Model.sideOf('Under'), 'Under');
+});
+
+test('sports_schedule finds the games at a time in another time zone', async () => {
+    const tools = sportsSetup();
+    const text = await tools.sports_schedule.run({ sport: 'NBA', time: '6:30pm CT' });
+    assert.match(text, /6:30 PM CST .*Chicago Bulls \(3-3\) @ Philadelphia 76ers \(4-2\) · PHI -4.5, O\/U 221.5/);
+    assert.doesNotMatch(text, /Thunder/);
+    const all = await tools.sports_schedule.run({ sport: 'NBA' });
+    assert.match(all, /live: Q2 5:10 48-50/);
+    assert.match(await tools.sports_schedule.run({ sport: 'NBA', time: '9pm ET' }), /No NBA game .* at 9pm ET\. Start times that day:/);
+});
+
+test('sports_injuries lists Out first, by team or by the games at a time', async () => {
+    const tools = sportsSetup();
+    const text = await tools.sports_injuries.run({ sport: 'NBA', time: '6:30pm CT' });
+    assert.match(text, /for CHI @ PHI/);
+    assert.match(text, /Philadelphia 76ers: Dominick Barlow \(F\) Out, Barlow \(knee\) is out\.; Joel Embiid \(C\) Questionable, Foot/);
+    assert.match(text, /Chicago Bulls: nobody listed/);
+    assert.match(await tools.sports_injuries.run({ sport: 'NBA', teams: 'PHI' }), /Philadelphia 76ers: Dominick Barlow/);
+});
+
+test('props_hit_rates gives L5/L10/L20 for every leg in one call, Higher/Lower included', async () => {
+    const tools = sportsSetup();
+    const text = await tools.props_hit_rates.run({ sport: 'NBA', legs: [
+        { player: 'Nikola Jokic', stat: 'Points', line: 27.5, side: 'Higher' },
+        { player: 'Nikola Jokic', stat: 'Points', line: 30.5, side: 'Lower' }] });
+    assert.match(text, /Nikola Jokic · Points · Higher 27.5: L5 5\/5 · L10 9\/10 · L20 14\/16 · season avg 30.4 in 16 games · last 5: 28, 34, 29, 30, 33/);
+    assert.match(text, /Nikola Jokic · Points · Lower 30.5: L5 3\/5/);
+    assert.ok(text.indexOf('Higher 27.5') < text.indexOf('Lower 30.5'), 'best L10 first');
+    assert.match(await tools.props_hit_rates.run({ sport: 'NBA' }), /Give the legs/);
+});

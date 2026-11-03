@@ -35,7 +35,7 @@
         kellyFraction: 0.25,
         logHours: 3             // a game log is fetched again after this many hours
     };
-    const MODEL_TOOL_NAMES = ["stats_player_log", "model_prop_edge", "model_backtest"];
+    const MODEL_TOOL_NAMES = ["sports_schedule", "sports_injuries", "props_hit_rates", "stats_player_log", "model_prop_edge", "model_backtest"];
     const MAX_ARCHIVE = 6000;
     const GAME_HOURS = 3.5;     // after the start, when a game is taken to be over
     const LEAGUES = {
@@ -92,7 +92,9 @@
         const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x / 2);
         return x >= 0 ? (1 + y) / 2 : (1 - y) / 2;
     }
-    const sideOf = s => (/^u/i.test(String(s || "")) ? "Under" : "Over");
+    // Over/Under, and the DFS apps' words for them (Underdog's Higher/Lower, "less", "more").
+    const sideOf = s => (/^\s*(u|l|less|below)/i.test(String(s || "")) ? "Under" : "Over");
+    const sideWord = (raw, side) => (/^\s*(h|l)/i.test(String(raw || "")) ? (side === "Over" ? "Higher" : "Lower") : side);
 
     function fieldsFor(market, sport) {
         if (/icehockey/.test(sport || "") && market === "player_points") return HOCKEY_POINTS;
@@ -187,6 +189,107 @@
             value: statValue(g, fields),
             minutes: cell(g.stats.minutes ?? g.stats.timeonice ?? g.stats["l:min"] ?? g.stats["l:toi"], { minutes: true })
         })).filter(g => g.value != null && !(g.minutes === 0));
+    }
+
+    // ---- ESPN schedule and injuries (pure, tested with fixtures) ---------------
+
+    // A scoreboard -> [{ id, start, name, state, detail, home, away, spread, total, venue }],
+    // each side { name, abbr, nick, score, record }.
+    function parseScoreboard(body) {
+        const out = [];
+        for (const ev of (body && Array.isArray(body.events) ? body.events : [])) {
+            const comp = (ev.competitions || [])[0] || {};
+            const side = which => {
+                const c = (comp.competitors || []).find(x => x.homeAway === which) || {};
+                const t = c.team || {};
+                const rec = (c.records || []).find(r => !r.type || r.type === "total" || r.name === "overall") || (c.records || [])[0];
+                return { name: t.displayName || t.name || "", abbr: t.abbreviation || "", nick: t.shortDisplayName || t.name || "", score: c.score != null && c.score !== "" ? String(c.score) : null, record: rec ? rec.summary || "" : "" };
+            };
+            const st = (ev.status || comp.status || {}).type || {};
+            const odds = (comp.odds || [])[0] || {};
+            out.push({ id: String(ev.id || ""), start: ev.date || comp.date || "", name: ev.name || "", home: side("home"), away: side("away"),
+                state: st.state || "", detail: st.shortDetail || st.detail || st.description || "",
+                spread: odds.details || null, total: Number.isFinite(Number(odds.overUnder)) && odds.overUnder != null ? Number(odds.overUnder) : null });
+        }
+        return out.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+    }
+
+    // An injuries feed -> [{ team, abbr, players: [{ name, pos, status, note, date }] }].
+    function parseInjuries(body) {
+        const out = [];
+        for (const t of (body && Array.isArray(body.injuries) ? body.injuries : [])) {
+            const players = [];
+            for (const i of t.injuries || []) {
+                const a = i.athlete || {};
+                const d = i.details || {};
+                const what = [d.type, d.location && d.location !== d.type ? d.location : null, d.detail].filter(Boolean).join(" ");
+                players.push({ name: a.displayName || a.fullName || "", pos: (a.position && a.position.abbreviation) || "",
+                    status: i.status || (i.type && i.type.description) || "", note: what || i.shortComment || "", comment: i.shortComment || "",
+                    ret: d.returnDate || null, date: i.date || "" });
+            }
+            const team = t.displayName || (t.team && t.team.displayName) || "";
+            out.push({ team, abbr: (t.team && t.team.abbreviation) || t.abbreviation || "", players: players.filter(p => p.name) });
+        }
+        return out;
+    }
+
+    // Does a team ({ name, abbr, nick } or a name) match what the user wrote ("Bulls", "CHI", "Chicago")?
+    function teamMatches(team, q) {
+        const want = norm(q);
+        if (!want) return false;
+        const t = typeof team === "string" ? { name: team } : team || {};
+        const name = norm(t.name), abbr = norm(t.abbr), nick = norm(t.nick);
+        if (abbr && want === abbr) return true;
+        if (name && (name === want || name.includes(want) || want.includes(name))) return true;
+        if (nick && (want === nick || want.split(" ").includes(nick))) return true;
+        const words = name.split(" ").filter(w => w.length > 3);
+        return want.split(" ").some(w => w.length > 3 && words.includes(w));
+    }
+
+    const ZONES = { et: "America/New_York", est: "America/New_York", edt: "America/New_York", eastern: "America/New_York",
+        ct: "America/Chicago", cst: "America/Chicago", cdt: "America/Chicago", central: "America/Chicago",
+        mt: "America/Denver", mst: "America/Denver", mdt: "America/Denver", mountain: "America/Denver",
+        pt: "America/Los_Angeles", pst: "America/Los_Angeles", pdt: "America/Los_Angeles", pacific: "America/Los_Angeles" };
+
+    // "6:30pm", "6:30 PM CT", "18:30", "7 ET" -> { h, m, zone } (zone null: the device's own time).
+    function parseClock(text) {
+        const s = String(text || "").toLowerCase();
+        const m = /\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?\s*(et|est|edt|eastern|ct|cst|cdt|central|mt|mst|mdt|mountain|pt|pst|pdt|pacific)?\b/.exec(s);
+        if (!m || (!m[2] && !m[3] && !m[4])) return null;
+        let h = Number(m[1]);
+        const min = Number(m[2] || 0);
+        if (h > 23 || min > 59) return null;
+        if (m[3]) h = h % 12 + (m[3][0] === "p" ? 12 : 0);
+        else if (h < 12 && h >= 1 && h <= 11) h += 12;   // "6:30" for a game means the evening
+        return { h, m: min, zone: m[4] ? ZONES[m[4]] : null };
+    }
+
+    // The hour and minute of a time in a zone (or the device's own).
+    function clockOf(ms, zone) {
+        if (!zone) { const d = new Date(ms); return { h: d.getHours(), m: d.getMinutes() }; }
+        const parts = new Intl.DateTimeFormat("en-US", { timeZone: zone, hour: "numeric", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(ms));
+        const get = t => Number((parts.find(p => p.type === t) || {}).value);
+        return { h: get("hour") % 24, m: get("minute") };
+    }
+
+    function timeText(ms, zone) {
+        try { return new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZoneName: "short", ...(zone ? { timeZone: zone } : {}) }); }
+        catch (err) { return new Date(ms).toISOString().slice(11, 16) + " UTC"; }
+    }
+
+    // A game's date for ESPN's ?dates= (YYYYMMDD) from "today", "tomorrow", "2026-11-02", "11/2".
+    function espnDate(text, nowMs) {
+        const s = String(text || "today").trim().toLowerCase();
+        const d = new Date(nowMs);
+        const ymd = x => `${x.getFullYear()}${String(x.getMonth() + 1).padStart(2, "0")}${String(x.getDate()).padStart(2, "0")}`;
+        if (!s || s === "today" || s === "tonight") return ymd(d);
+        if (s === "tomorrow") { d.setDate(d.getDate() + 1); return ymd(d); }
+        if (s === "yesterday") { d.setDate(d.getDate() - 1); return ymd(d); }
+        let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+        if (m) return `${m[1]}${m[2].padStart(2, "0")}${m[3].padStart(2, "0")}`;
+        m = /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/.exec(s);
+        if (m) return `${m[3] ? (m[3].length === 2 ? `20${m[3]}` : m[3]) : d.getFullYear()}${m[1].padStart(2, "0")}${m[2].padStart(2, "0")}`;
+        return null;
     }
 
     // ---- The model (pure) ------------------------------------------------------
@@ -545,6 +648,46 @@
             };
         }
 
+        // ---- Schedule and injuries (ESPN's free site API, no key) ----
+
+        const ESPN_SITE = "https://site.api.espn.com/apis/site/v2/sports";
+        const memo = new Map();
+        async function cached(key, minutes, load) {
+            const hit = memo.get(key);
+            if (hit && now() - hit.at < minutes * 60000) return hit.value;
+            const value = await load();
+            memo.set(key, { at: now(), value });
+            return value;
+        }
+
+        async function scoreboard(sk, dateText) {
+            const league = LEAGUES[sk];
+            if (!league) throw new Error(`The schedule covers ${Object.keys(LEAGUES).map(k => k.split("_").pop().toUpperCase()).join(", ")}.`);
+            const day = espnDate(dateText, now());
+            if (!day) throw new Error(`Couldn't read the date "${dateText}". Use today, tomorrow, or YYYY-MM-DD.`);
+            const groups = sk === "basketball_ncaab" ? "&groups=50" : sk === "americanfootball_ncaaf" ? "&groups=80" : "";
+            return { day, games: await cached(`sb|${sk}|${day}`, 5, async () => parseScoreboard((await getJson(`${ESPN_SITE}/${league[0]}/${league[1]}/scoreboard?dates=${day}&limit=200${groups}`)) || {})) };
+        }
+
+        async function injuryReport(sk) {
+            const league = LEAGUES[sk];
+            if (!league) throw new Error(`Injury reports cover ${Object.keys(LEAGUES).map(k => k.split("_").pop().toUpperCase()).join(", ")}.`);
+            return cached(`inj|${sk}`, 30, async () => parseInjuries((await getJson(`${ESPN_SITE}/${league[0]}/${league[1]}/injuries`)) || {}));
+        }
+
+        // The games that match a team or a start time ("Bulls", "6:30pm CT"), or all of them.
+        function pickGames(games, { team, time } = {}) {
+            let list = games;
+            if (team) {
+                const qs = String(team).split(/,|\bvs\.?\b|\bat\b|@/i).map(x => x.trim()).filter(Boolean);
+                list = list.filter(g => qs.some(q => teamMatches(g.home, q) || teamMatches(g.away, q)));
+            }
+            const clock = parseClock(time);
+            if (time && !clock) return { error: `Couldn't read the time "${time}". Use a time like 6:30pm, with ET, CT, MT or PT when it isn't the phone's own time zone.` };
+            if (clock) list = list.filter(g => { const c = clockOf(Date.parse(g.start), clock.zone); return c.h === clock.h && c.m === clock.m; });
+            return { games: list, clock };
+        }
+
         // ---- Tools ----
 
         async function playerLogTool(args) {
@@ -659,6 +802,116 @@
             return out.filter(Boolean).join("\n");
         }
 
+        async function scheduleTool(args) {
+            const sk = sportKey(args.sport);
+            if (!sk || !LEAGUES[sk]) return `Unknown or unsupported sport "${args.sport}". The schedule covers NBA, WNBA, NCAAB, NFL, NCAAF, MLB and NHL.`;
+            const { day, games } = await scoreboard(sk, args.date);
+            const label = sk.split("_").pop().toUpperCase();
+            if (!games.length) return `ESPN lists no ${label} games on ${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6)}.`;
+            const got = pickGames(games, { team: args.team, time: args.time });
+            if (got.error) return got.error;
+            const zone = got.clock && got.clock.zone;
+            const when = g => { const t = Date.parse(g.start); return zone ? `${timeText(t, zone)} (${timeText(t)})` : timeText(t); };
+            if (!got.games.length) {
+                const starts = [...new Set(games.map(g => timeText(Date.parse(g.start), zone)))].join(", ");
+                return `No ${label} game on that day matches${args.team ? ` "${args.team}"` : ""}${args.time ? ` at ${args.time}` : ""}. Start times that day: ${starts}.`;
+            }
+            const row = g => {
+                const status = g.state === "pre" ? "" : g.state === "post" ? ` · ${g.detail || "Final"} ${g.away.score}-${g.home.score}` : ` · live: ${g.detail} ${g.away.score}-${g.home.score}`;
+                const odds = [g.spread, g.total != null ? `O/U ${g.total}` : null].filter(Boolean).join(", ");
+                return `- ${when(g)} · ${g.away.name}${g.away.record ? ` (${g.away.record})` : ""} @ ${g.home.name}${g.home.record ? ` (${g.home.record})` : ""}${odds ? ` · ${odds}` : ""}${status}`;
+            };
+            return [`${label} games, ${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6)} (ESPN; times on this device${zone ? ", with the time zone asked for first" : ""}):`, ...got.games.map(row)].join("\n");
+        }
+
+        const STATUS_ORDER = s => (/^out/i.test(s) ? 0 : /doubt/i.test(s) ? 1 : /question/i.test(s) ? 2 : /day/i.test(s) ? 3 : /prob/i.test(s) ? 4 : 5);
+
+        async function injuriesTool(args) {
+            const sk = sportKey(args.sport);
+            if (!sk || !LEAGUES[sk]) return `Unknown or unsupported sport "${args.sport}". Injury reports cover NBA, WNBA, NCAAB, NFL, NCAAF, MLB and NHL.`;
+            let wanted = String(args.teams || "").split(",").map(x => x.trim()).filter(Boolean);
+            let note = "";
+            if (!wanted.length) {
+                const { games } = await scoreboard(sk, args.date);
+                const got = pickGames(games, { time: args.time });
+                if (got.error) return got.error;
+                if (!got.games.length) return `No games match${args.time ? ` ${args.time}` : ""} that day, so there are no teams to check. Pass teams instead.`;
+                wanted = got.games.flatMap(g => [g.away.name, g.home.name]);
+                note = ` for ${got.games.map(g => `${g.away.abbr || g.away.name} @ ${g.home.abbr || g.home.name}`).join(", ")}`;
+            }
+            const report = await injuryReport(sk);
+            const out = [`Injury report${note} (ESPN; check again close to tip-off):`];
+            for (const q of wanted) {
+                const t = report.find(r => teamMatches({ name: r.team, abbr: r.abbr }, q));
+                if (!t) { out.push(`- ${q}: nobody listed.`); continue; }
+                const ps = [...t.players].sort((a, b) => STATUS_ORDER(a.status) - STATUS_ORDER(b.status));
+                const shown = ps.map(p => `${p.name}${p.pos ? ` (${p.pos})` : ""} ${p.status || "listed"}${p.note ? `, ${String(p.note).slice(0, 40)}` : ""}`);
+                out.push(`- ${t.team}: ${shown.length ? shown.join("; ") : "nobody listed"}.`);
+            }
+            return out.join("\n");
+        }
+
+        // The line to test a leg at: the user's, else Underdog's saved line, else the books' consensus.
+        function lineFor(leg, row) {
+            if (Number.isFinite(Number(leg.line)) && leg.line !== "" && leg.line != null) return { line: Number(leg.line), from: "" };
+            const ud = row && row.books.find(b => b.book === "underdog" && Number.isFinite(b.point));
+            if (ud) return { line: ud.point, from: "Underdog's saved line" };
+            if (row && row.lineNow != null) return { line: row.lineNow, from: "the books' line" };
+            return null;
+        }
+
+        const WINDOWS = [5, 10, 20];
+        async function hitRateLeg(leg, sport) {
+            const got = await playerSeries({ ...leg, sport: leg.sport || sport });
+            if (got.error) return { text: `- ${leg.player} ${leg.stat || ""}: ${got.error}` };
+            const { sk, market, who, series } = got;
+            if (!series.length) return { text: `- ${who.name} ${marketLabel(market)}: ESPN has no games logged yet.` };
+            const side = sideOf(leg.side);
+            const row = leg.row || marketRow(sk, who.name, market) || marketRow(sk, leg.player, market);
+            const at = lineFor(leg, row) || { line: Math.round(median(series.map(g => g.value))) - 0.5, from: "no line given: just under the median" };
+            const values = series.map(g => g.value);
+            const rates = WINDOWS.map(n => ({ n, ...windowRate(values, at.line, side, n) }));
+            const season = series.filter(g => g.season === series[series.length - 1].season).map(g => g.value);
+            const mins = series.map(g => g.minutes).filter(Number.isFinite);
+            const m5 = mins.slice(-5), mPrev = mins.slice(-10, -5);
+            const minNote = m5.length && mPrev.length && Math.abs(mean(m5) - mean(mPrev)) >= 4 ? ` · minutes ${round1(mean(m5))} last 5 vs ${round1(mean(mPrev))} before` : "";
+            const l10 = rates[1].of ? rates[1].hits / rates[1].of : 0;
+            const text = `- ${who.name} · ${marketLabel(market)} · ${sideWord(leg.side, side)} ${at.line}${at.from ? ` (${at.from})` : ""}: ${rates.map(r => `L${r.n} ${r.hits}/${r.of}`).join(" · ")} · season avg ${round1(mean(season))} in ${season.length} games · last 5: ${values.slice(-5).join(", ")}${minNote}`;
+            return { text, l10, n: rates[1].of };
+        }
+
+        async function hitRatesTool(args) {
+            const sk = sportKey(args.sport);
+            if (!sk || !LEAGUES[sk]) return `Unknown or unsupported sport "${args.sport}". Game logs cover NBA, WNBA, NCAAB, NFL, NCAAF, MLB and NHL.`;
+            let legs = Array.isArray(args.legs) ? args.legs.filter(l => l && l.player && l.stat) : [];
+            if (args.player && args.stat) legs.unshift({ player: args.player, stat: args.stat, line: args.line, side: args.side });
+            let scan = false;
+            if (!legs.length) {
+                if (!args.game) return "Give the legs (player, stat, line, side), or a game to rank the props already saved for it.";
+                const rows = tracker ? tracker.rows({ sport: sk, team: args.game }).filter(r => r.player && fieldsFor(r.market, sk) && Date.parse(r.start) > now() - GAME_HOURS * 3600000) : [];
+                if (!rows.length) return tracker && tracker.hasKey()
+                    ? `No prop lines saved for ${args.game} yet. Fetch them with odds_player_props for that game (a few credits), then call this again, or pass the legs with their lines.`
+                    : "No prop lines saved, and there is no Odds API key. Pass the legs with the lines from the app, or add a free key in Settings > Odds API.";
+                const players = [...new Set(rows.map(r => r.player))].slice(0, Math.min(12, Number(args.players) || 8));
+                legs = rows.filter(r => players.includes(r.player)).map(r => ({ player: r.player, stat: marketLabel(r.market), row: r }));
+                scan = true;
+            }
+            if (legs.length > 30) legs = legs.slice(0, 30);
+            const results = [];
+            for (const leg of legs) {
+                try {
+                    let r = await hitRateLeg(leg, sk);
+                    // Ranking a game's props: test the side the log leans to.
+                    if (scan && r.l10 != null && r.n && r.l10 < 0.5) r = await hitRateLeg({ ...leg, side: "Under" }, sk);
+                    results.push(r);
+                } catch (err) { results.push({ text: `- ${leg.player}: ${err.message}` }); }
+            }
+            const ranked = results.length > 1 ? [...results].sort((a, b) => (b.l10 ?? -1) - (a.l10 ?? -1)) : results;
+            const top = scan ? ranked.slice(0, Math.min(30, Number(args.top) || 12)) : ranked;
+            return [`Hit rates from ESPN game logs (hits/games at the line, newest games; pushes left out)${results.length > 1 ? ", best L10 first" : ""}:`, ...top.map(r => r.text),
+                "Past games only: check injuries and minutes, and confirm each line in the app before entering."].join("\n");
+        }
+
         const sportParam = { type: "string", description: "The league: NBA, WNBA, NCAAB, NFL, NCAAF, MLB or NHL." };
         const legProps = {
             player: { type: "string", description: "The player's name." },
@@ -670,12 +923,40 @@
             espn_id: { type: "string", description: "Optional: the ESPN athlete id, if the name search picks the wrong player." }
         };
         const TOOLS = {
+            sports_schedule: {
+                description: "A league's games on a day from ESPN's free schedule (no key, no credits): start time on this device (and in ET/CT/MT/PT when the time asked for names one), teams and records, ESPN's spread and total, and the score once a game starts. Filter by a team or a start time (\"6:30pm CT\"). Use it first when the user names games by time or says \"tonight's games\", instead of web_search. Not for injuries (use sports_injuries) or prop lines (use the odds tools).",
+                inputSchema: { type: "object", properties: { sport: sportParam,
+                    date: { type: "string", description: "Optional: today (default), tomorrow, yesterday, or YYYY-MM-DD." },
+                    time: { type: "string", description: "Optional: only games starting at this time, e.g. \"6:30pm\" (this device's time) or \"7:30 PM ET\"." },
+                    team: { type: "string", description: "Optional: only games with this team (\"Bulls\", \"CHI\", \"Bulls vs 76ers\")." } }, required: ["sport"] }, run: scheduleTool
+            },
+            sports_injuries: {
+                description: "The current injury report from ESPN's free feed (no key): each player listed for the teams asked, with status (Out, Doubtful, Questionable, Day-To-Day, Probable) and the injury, Out first. Pass teams, or a start time to check every team in those games. Use it before picking legs, instead of searching the web for injury news. It has no starting lineups and can lag late scratches: say so, and tell the user to check close to tip-off.",
+                inputSchema: { type: "object", properties: { sport: sportParam,
+                    teams: { type: "string", description: "Optional: teams, comma-separated (\"Bulls, 76ers\" or \"CHI, PHI\")." },
+                    time: { type: "string", description: "Optional, when no teams are given: the games' start time (\"6:30pm CT\"); without either, every team playing that day." },
+                    date: { type: "string", description: "Optional, with time: the day of the games (default today)." } }, required: ["sport"] }, run: injuriesTool
+            },
+            props_hit_rates: {
+                description: "How often each player cleared a line in the last 5, 10 and 20 games, with the season average and last 5 values, from ESPN's free game logs (no key): one compact line per leg, ranked by L10, for up to 30 legs in one call. Side takes Over/Under or Underdog's Higher/Lower. Without a line it uses the line saved from the books (Underdog's first). With a game and no legs it ranks every prop already saved for that game by the odds tools. Use it for \"last 5\" or hit-rate questions and to screen a slate, instead of one stats_player_log or web_search per player; use stats_player_log only for one player's full detail and model_prop_edge for the market check and EV.",
+                inputSchema: { type: "object", properties: { sport: sportParam,
+                    legs: { type: "array", description: "The legs: each with player, stat, line and side.", items: { type: "object", properties: {
+                        player: legProps.player, stat: legProps.stat, line: { type: "number", description: "The line, e.g. 16.5. Optional when the books' line is saved." },
+                        side: { type: "string", description: "Over/Under or Higher/Lower (default Over)." } } } },
+                    player: { type: "string", description: "Optional: one player, instead of legs." },
+                    stat: { type: "string", description: "With player: the stat (\"Points\", \"PRA\")." },
+                    line: { type: "number", description: "With player: the line (e.g. 22.5)." },
+                    side: { type: "string", description: "With player: Over/Under or Higher/Lower (default Over)." },
+                    game: { type: "string", description: "Optional, with no legs: a team in the game, to rank the props saved for it (fetch them first with odds_player_props)." },
+                    players: { type: "integer", description: "Optional, with game: how many players to check (default 8, up to 12)." },
+                    top: { type: "integer", description: "Optional, with game: how many props to list (default 12)." } }, required: ["sport"] }, run: hitRatesTool
+            },
             stats_player_log: {
-                description: "A player's game log pulled automatically from ESPN's free stats (no Outlier, no key): hit rate at a line over L5, L10, L20 and the whole log, average, median, spread, the last 10 games, minutes trend, home/away and vs an opponent, and the game-log chance of the side. Early in a season last season's games are added. Free.",
+                description: "A player's game log pulled automatically from ESPN's free stats (no Outlier, no key): hit rate at a line over L5, L10, L20 and the whole log, average, median, spread, the last 10 games, minutes trend, home/away and vs an opponent, and the game-log chance of the side. Early in a season last season's games are added. Free. Use it when the user wants one player's full detail; for several legs' hit rates use props_hit_rates instead (one call).",
                 inputSchema: { type: "object", properties: { sport: sportParam, ...legProps }, required: ["sport", "player", "stat"] }, run: playerLogTool
             },
             model_prop_edge: {
-                description: "CoDev's own model on 1-8 props: the game-log chance (ESPN stats), the market's no-vig chance from the sportsbook lines saved by the odds tools, the blended chance, edge and EV at the price (or the DFS breakeven), a Kelly stake, and a market check: does the market agree, is there steam or a sharp move with or against the pick, or does the log like something the books price well below it (a possible trap). Saves each pick for the backtest and closing line value. Use it after odds_player_props or odds_lookup_list, and before building a slip.",
+                description: "CoDev's own model on 1-8 props: the game-log chance (ESPN stats), the market's no-vig chance from the sportsbook lines saved by the odds tools, the blended chance, edge and EV at the price (or the DFS breakeven), a Kelly stake, and a market check: does the market agree, is there steam or a sharp move with or against the pick, or does the log like something the books price well below it (a possible trap). Saves each pick for the backtest and closing line value. Use it after odds_player_props or odds_lookup_list, and before building a slip. Not for a quick last-5 check: use props_hit_rates instead.",
                 inputSchema: { type: "object", properties: {
                     sport: sportParam, ...legProps,
                     legs: { type: "array", description: "Several legs at once (each with player, stat, line, side, optional price, opponent, sport).", items: { type: "object", properties: legProps } },
@@ -683,7 +964,7 @@
                 }, required: ["sport"] }, run: propEdgeTool
             },
             model_backtest: {
-                description: "Backtests CoDev's model across past slates: every prop line CoDev saved is archived at its close, settled from ESPN box scores after the game, and the model is re-run with only the games before it. Reports bets, hit rate and ROI for a rule (min edge, L10 floor, side, stat), calibration, how the market, the game log and the blend compare (Brier), the best market weight, and the user's own picks' results and closing line value. Settles new results first (free).",
+                description: "Backtests CoDev's model across past slates: every prop line CoDev saved is archived at its close, settled from ESPN box scores after the game, and the model is re-run with only the games before it. Reports bets, hit rate and ROI for a rule (min edge, L10 floor, side, stat), calibration, how the market, the game log and the blend compare (Brier), the best market weight, and the user's own picks' results and closing line value. Settles new results first (free). Use it when the user asks how the model has done; not for picking tonight's legs (use props_hit_rates or model_prop_edge instead).",
                 inputSchema: { type: "object", properties: {
                     sport: { type: "string", description: "Optional: one league." }, stat: { type: "string", description: "Optional: one stat." },
                     side: { type: "string", description: "Optional: only Overs or only Unders." },
@@ -704,6 +985,9 @@
         function describe(name, args) {
             args = args || {};
             switch (name) {
+                case "sports_schedule": return `📅 Checking the ${String(args.sport || "").toUpperCase()} schedule${args.time ? ` (${args.time})` : args.team ? ` (${args.team})` : ""}`;
+                case "sports_injuries": return `🩹 Checking the injury report${args.teams ? `: ${args.teams}` : args.time ? ` (${args.time} games)` : ""}`;
+                case "props_hit_rates": { const n = Array.isArray(args.legs) ? args.legs.length : 0; return `📊 Checking hit rates${n > 1 ? ` for ${n} legs` : args.player ? `: ${args.player}` : args.game ? ` (${args.game})` : ""}`; }
                 case "stats_player_log": return `📊 Pulling ${args.player || "the player"}'s game log${args.stat ? ` (${args.stat})` : ""}`;
                 case "model_prop_edge": { const n = Array.isArray(args.legs) ? args.legs.length : 1; return `🧮 Modeling ${n > 1 ? `${n} props` : `${args.player || "the prop"}${args.stat ? ` ${args.stat}` : ""}`} against the market`; }
                 case "model_backtest": return "🧪 Backtesting the model on past slates";
@@ -716,7 +1000,7 @@
 
     return {
         STORE, DEFAULTS, LEAGUES, FIELDS, MODEL_TOOL_NAMES, ESPN_URL,
-        parseSearch, parseGameLog, seriesFor, statProb, windowRate, blend, value, marketCheck, outcome,
+        parseSearch, parseGameLog, parseScoreboard, parseInjuries, teamMatches, parseClock, clockOf, espnDate, sideOf, seriesFor, statProb, windowRate, blend, value, marketCheck, outcome,
         americanToProb, probToAmerican, detectStatsHttp, createPropModel
     };
 });
