@@ -1,0 +1,45 @@
+name: Godot bridge (real editor)
+
+# Opens a real Godot editor with the CoDev Bridge and drives it the way CoDev's agents
+# do: engine docs, edits with undo, scripts and signals, and a playtest of the running
+# game. Runs on Godot 4.3 (no Logger, so the log file fallback) and 4.5.
+on:
+  pull_request:
+    paths:
+      - desktop/gamedev/**
+      - scripts/godot-bridge-e2e.js
+      - .github/workflows/godot-bridge.yml
+  workflow_dispatch:
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        godot: ['4.3', '4.5.1']
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install a virtual display and software OpenGL
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libglx-mesa0 libegl1 libxcursor1 libxinerama1 libxrandr2 libxi6 libasound2t64 libpulse0
+
+      - name: Download Godot ${{ matrix.godot }}
+        run: |
+          curl -sSLf -o godot.zip "https://github.com/godotengine/godot/releases/download/${{ matrix.godot }}-stable/Godot_v${{ matrix.godot }}-stable_linux.x86_64.zip"
+          unzip -q godot.zip -d godot
+          chmod +x godot/Godot_v${{ matrix.godot }}-stable_linux.x86_64
+
+      - name: Drive the bridge
+        timeout-minutes: 10
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a -s "-screen 0 1280x720x24" node scripts/godot-bridge-e2e.js --godot "$PWD/godot/Godot_v${{ matrix.godot }}-stable_linux.x86_64"
