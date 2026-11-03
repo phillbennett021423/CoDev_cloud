@@ -123,3 +123,35 @@ test('at the daily limit no request is sent, and Settings shows what was spent',
     assert.equal(await page.evaluate(() => dailySpendReached()), false);
     assert.deepEqual(errors, []);
 });
+
+test('quick asks go to Claude Haiku, big tasks to Claude Sonnet, and Sonnet is priced as Sonnet', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { page, errors, bodies } = await openClaudePage(t, () => ({ content: [{ type: 'text', text: 'All set.' }], stop_reason: 'end_turn', usage }));
+    await sendPrompt(page, 'What does app.js do?');
+    await waitForChat(page, /All set\./);
+    assert.equal(bodies[0].model, 'claude-haiku-5-5');
+    assert.equal(bodies[0].output_config, undefined);
+
+    await sendPrompt(page, 'Build a settings page for app.js and add tests for it.');
+    const asked = () => bodies.find(b => /Build a settings page/.test(JSON.stringify(b.messages)));
+    for (let i = 0; i < 100 && !asked(); i++) await new Promise(r => setTimeout(r, 100));
+    const big = asked();
+    assert.ok(big, 'the big task reached Claude');
+    assert.equal(big.model, 'claude-sonnet-5-5');
+    assert.deepEqual(big.output_config, { effort: 'medium' });
+
+    // Sonnet 5.5: $2 in / $10 out per million, one rate at any prompt size.
+    const sonnet = await page.evaluate(() => anthropicCost({ input_tokens: 120000, output_tokens: 1000 }, 'claude-sonnet-5-5'));
+    assert.ok(Math.abs(sonnet - (120000 * 2 + 1000 * 10) / 1e6) < 1e-9);
+    assert.deepEqual(errors, []);
+});
+
+test('Claude is the default provider, and a saved Groq choice moves to Claude once when a Claude key is there', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { page, errors } = await openClaudePage(t, () => ({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage }),
+        { codev_backend: 'groq', codev_groq_key: 'gsk_test' });
+    assert.equal(await page.evaluate(() => currentBackend), 'anthropic');
+    assert.equal(await page.evaluate(() => localStorage.getItem('codev_claude_default')), '1');
+    assert.equal(await page.evaluate(() => document.getElementById('modalProvider').options[0].value), 'anthropic');
+    assert.deepEqual(errors, []);
+});
