@@ -141,6 +141,14 @@ func _event_for(step: Dictionary, pressed: bool) -> InputEvent:
 	return null
 
 
+func _action_event(action: String, pressed: bool, strength: float) -> InputEventAction:
+	var event := InputEventAction.new()
+	event.action = action
+	event.pressed = pressed
+	event.strength = strength
+	return event
+
+
 func _wait(seconds: float) -> void:
 	if seconds > 0.0:
 		await get_tree().create_timer(seconds, true, false, true).timeout
@@ -190,9 +198,10 @@ func _input_steps(id: int, args: Dictionary) -> void:
 	for step in steps:
 		var hold := clampf(float(step.get("hold", 0.1)), 0.0, MAX_INPUT_SECONDS)
 		if step.has("action"):
-			Input.action_press(str(step["action"]), clampf(float(step.get("strength", 1.0)), 0.0, 1.0))
+			# As input events, so is_action_just_pressed sees them on the next frame like a real press.
+			Input.parse_input_event(_action_event(str(step["action"]), true, clampf(float(step.get("strength", 1.0)), 0.0, 1.0)))
 			await _wait(hold)
-			Input.action_release(str(step["action"]))
+			Input.parse_input_event(_action_event(str(step["action"]), false, 0.0))
 		else:
 			Input.parse_input_event(_event_for(step, true))
 			await _wait(hold)

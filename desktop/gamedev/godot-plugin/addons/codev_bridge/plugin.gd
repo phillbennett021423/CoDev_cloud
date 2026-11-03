@@ -496,8 +496,8 @@ func _run(action: String, args: Dictionary) -> Dictionary:
 			var script = load(path)
 			if not (script is Script):
 				return _fail("%s isn't a script." % path)
-			if not script.can_instantiate():
-				return _fail("%s has errors, so Godot can't attach it. Fix it (godot_validate shows the errors) and try again." % path)
+			# can_instantiate() is false in the editor for any script without @tool, so errors
+			# are left to godot_validate.
 			var base: String = script.get_instance_base_type()
 			if base != "" and not ClassDB.is_parent_class(node.get_class(), base):
 				return _fail("%s extends %s, but %s is a %s." % [path, base, node.name, node.get_class()])
