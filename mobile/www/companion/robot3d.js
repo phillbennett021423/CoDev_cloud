@@ -354,6 +354,19 @@ function roundedBox(THREE, w, h, d, r, seg = 6) {
   return g;
 }
 
+// Pushes the front of a shape forward into a gentle dome (the visor's curve).
+function bulge(g, k, w, h) {
+  const pos = g.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const z = pos.getZ(i);
+    if (z < -1e-4) continue;
+    const u = pos.getX(i) / (w / 2), v = pos.getY(i) / (h / 2);
+    pos.setZ(i, z + k * Math.max(0, 1 - 0.75 * u * u) * Math.max(0, 1 - 0.75 * v * v));
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
 function canvas(w, h) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
@@ -411,10 +424,16 @@ function drawFace(ctx, f, blink) {
       case 'x':
         ctx.beginPath(); ctx.moveTo(x - 15, y - 15); ctx.lineTo(x + 15, y + 15); ctx.moveTo(x + 15, y - 15); ctx.lineTo(x - 15, y + 15); ctx.stroke();
         break;
-      default: // neutral: soft rounded LED blocks
-        rr(ctx, x - 19, y - 23 * open, 38, 46 * open + 0.5, 16); ctx.fill();
+      default: // neutral: big soft LED blocks, like the photo
+        ctx.beginPath(); ctx.ellipse(x, y, 22, 26 * open + 0.5, 0, 0, TAU); ctx.fill();
     }
   };
+  // Little brow arcs above the eyes on the friendly faces.
+  if (/^(neutral|happy|big|wink)$/.test(f.eyes || 'neutral')) {
+    ctx.save(); ctx.lineWidth = 6;
+    for (const [x, y] of eyes) { ctx.beginPath(); ctx.arc(x, y + 10, 50, Math.PI * 1.38, Math.PI * 1.62); ctx.stroke(); }
+    ctx.restore();
+  }
   if (f.eyes === 'wink') { drawEye('neutral', eyes[0][0], eyes[0][1], 1); drawEye('joy', eyes[1][0], eyes[1][1], -1); } else {
     drawEye(f.eyes, eyes[0][0], eyes[0][1], 1); drawEye(f.eyes, eyes[1][0], eyes[1][1], -1);
   }
@@ -529,7 +548,7 @@ export function createRobot(THREE, host, options = {}) {
   const rim = new THREE.DirectionalLight(0x6fe6ff, 1.4); rim.position.set(3, 2, -3); scene.add(rim);
 
   // Materials
-  const silver = keep(new THREE.MeshStandardMaterial({ color: 0xd9dde3, metalness: 0.92, roughness: 0.26, envMapIntensity: 1.25 }));
+  const silver = keep(new THREE.MeshStandardMaterial({ color: 0xc9ced6, metalness: 0.95, roughness: 0.3, envMapIntensity: 1.1 }));
   const gunmetal = keep(new THREE.MeshStandardMaterial({ color: 0x3a3f47, metalness: 0.8, roughness: 0.38 }));
   const rubber = keep(new THREE.MeshStandardMaterial({ color: 0x15181d, metalness: 0.3, roughness: 0.55 }));
   const visorMat = keep(new THREE.MeshPhysicalMaterial({ color: 0x050608, metalness: 0.1, roughness: 0.08, clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 1.6 }));
@@ -541,69 +560,95 @@ export function createRobot(THREE, host, options = {}) {
 
   const robot = new THREE.Group(); scene.add(robot);
   const hips = new THREE.Group(); robot.add(hips);
-  mesh(geo(roundedBox(THREE, 0.56, 0.24, 0.42, 0.1)), silver, hips);
+  // Silver "shorts" with a dark belt line, like the photo.
+  mesh(geo(roundedBox(THREE, 0.62, 0.28, 0.46, 0.13, 6)), silver, hips, 0, -0.02, 0);
+  mesh(geo(roundedBox(THREE, 0.6, 0.035, 0.45, 0.015, 2)), gunmetal, hips, 0, 0.1, 0);
 
   // Torso: segmented black abdomen with cyan strips, a chrome chest shell and the logo.
   const spine = new THREE.Group(); spine.position.y = 0.1; hips.add(spine);
-  const ab = geo(new THREE.CylinderGeometry(0.235, 0.21, 0.075, 28));
-  for (let i = 0; i < 3; i++) mesh(ab, rubber, spine, 0, 0.06 + i * 0.085, 0).scale.set(1 - i * 0.02 + 0.06 * i, 1, 0.82);
-  const strip = geo(roundedBox(THREE, 0.03, 0.2, 0.03, 0.012, 2));
-  mesh(strip, glow, spine, 0.15, 0.16, 0.16).rotation.z = -0.1;
-  mesh(strip, glow, spine, -0.15, 0.16, 0.16).rotation.z = 0.1;
-  const chest = mesh(geo(roundedBox(THREE, 0.82, 0.48, 0.54, 0.2, 8)), silver, spine, 0, 0.5, 0);
-  chest.scale.set(1, 1, 1);
+  // Accordion abdomen: dark rubber rings, wider toward the chest.
+  const ab = geo(new THREE.TorusGeometry(0.2, 0.05, 10, 32));
+  for (let i = 0; i < 4; i++) {
+    const r = mesh(ab, rubber, spine, 0, 0.04 + i * 0.075, 0);
+    r.rotation.x = Math.PI / 2; r.scale.set(1 + i * 0.07, 0.82 + i * 0.05, 1);
+  }
+  mesh(geo(new THREE.CylinderGeometry(0.2, 0.18, 0.3, 24)), gunmetal, spine, 0, 0.15, 0).scale.z = 0.85;
+  const strip = geo(roundedBox(THREE, 0.035, 0.24, 0.035, 0.015, 2));
+  mesh(strip, glow, spine, 0.2, 0.17, 0.17).rotation.z = -0.18;
+  mesh(strip, glow, spine, -0.2, 0.17, 0.17).rotation.z = 0.18;
+  // The chest: a rounded shell, wider at the shoulders.
+  const chestGeo = geo(roundedBox(THREE, 0.9, 0.52, 0.6, 0.25, 10));
+  { const pos = chestGeo.attributes.position; for (let i = 0; i < pos.count; i++) { const y = pos.getY(i); pos.setX(i, pos.getX(i) * (0.88 + 0.22 * clamp((y + 0.26) / 0.52, 0, 1))); } chestGeo.computeVertexNormals(); }
+  mesh(chestGeo, silver, spine, 0, 0.5, 0);
+  // Collar ring where the neck meets the chest.
+  mesh(geo(new THREE.TorusGeometry(0.16, 0.035, 8, 28)), gunmetal, spine, 0, 0.76, 0).rotation.x = Math.PI / 2;
   const logoCanvas = canvas(200, 128); drawLogo(logoCanvas.getContext('2d'));
   const logoTex = keep(new THREE.CanvasTexture(logoCanvas)); logoTex.colorSpace = THREE.SRGBColorSpace;
   const logoMat = keep(new THREE.MeshBasicMaterial({ map: logoTex, transparent: true, toneMapped: false, depthWrite: false }));
-  const logo = mesh(geo(new THREE.PlaneGeometry(0.34, 0.22)), logoMat, spine, 0, 0.54, 0.272);
+  const logo = mesh(bulge(geo(new THREE.PlaneGeometry(0.42, 0.27, 8, 6)), 0.012, 0.42, 0.27), logoMat, spine, 0, 0.55, 0.302);
   logo.renderOrder = 2;
   // Shoulder seams like the photo's chest plates.
-  mesh(geo(new THREE.TorusGeometry(0.12, 0.012, 6, 20)), gunmetal, spine, 0.4, 0.62, 0).rotation.y = Math.PI / 2;
-  mesh(geo(new THREE.TorusGeometry(0.12, 0.012, 6, 20)), gunmetal, spine, -0.4, 0.62, 0).rotation.y = Math.PI / 2;
+
 
   // Head
   const neck = new THREE.Group(); neck.position.y = 0.76; spine.add(neck);
-  mesh(geo(new THREE.CylinderGeometry(0.11, 0.13, 0.16, 16)), rubber, neck, 0, 0.06, 0);
-  const head = new THREE.Group(); head.position.y = 0.12; neck.add(head);
-  mesh(geo(roundedBox(THREE, 1.28, 1.08, 1.06, 0.4, 10)), silver, head, 0, 0.52, 0);
-  mesh(geo(roundedBox(THREE, 1.08, 0.84, 0.3, 0.2, 8)), visorMat, head, 0, 0.53, 0.42);
+  mesh(geo(new THREE.CylinderGeometry(0.1, 0.12, 0.16, 16)), rubber, neck, 0, 0.06, 0);
+  mesh(geo(new THREE.TorusGeometry(0.11, 0.025, 8, 20)), gunmetal, neck, 0, 0.08, 0).rotation.x = Math.PI / 2;
+  const head = new THREE.Group(); head.position.y = 0.12; head.scale.setScalar(1.08); neck.add(head);
+  // A big round helmet; the glossy black visor fills most of the front and bulges out.
+  mesh(geo(roundedBox(THREE, 1.42, 1.2, 1.14, 0.5, 12)), silver, head, 0, 0.56, -0.04);
+  mesh(bulge(geo(roundedBox(THREE, 1.2, 0.94, 0.3, 0.24, 10)), 0.07, 1.2, 0.94), visorMat, head, 0, 0.56, 0.42);
+  // A thin dark seam around the visor.
+  mesh(geo(roundedBox(THREE, 1.26, 1.0, 0.24, 0.27, 8)), gunmetal, head, 0, 0.56, 0.4);
   const faceCanvas = canvas(256, 200);
   const faceCtx = faceCanvas.getContext('2d');
   const faceTex = keep(new THREE.CanvasTexture(faceCanvas)); faceTex.colorSpace = THREE.SRGBColorSpace;
   const faceMat = keep(new THREE.MeshBasicMaterial({ map: faceTex, transparent: true, toneMapped: false, depthWrite: false, blending: THREE.AdditiveBlending }));
-  const face = mesh(geo(new THREE.PlaneGeometry(0.92, 0.72)), faceMat, head, 0, 0.53, 0.576);
+  const face = mesh(bulge(geo(new THREE.PlaneGeometry(1.0, 0.78, 16, 12)), 0.06, 1.2, 0.94), faceMat, head, 0, 0.56, 0.585);
   face.renderOrder = 3;
   // Ear pods with glowing rings, and the little antenna fins.
   for (const s of [1, -1]) {
-    const ear = new THREE.Group(); ear.position.set(0.66 * s, 0.5, -0.02); head.add(ear);
-    mesh(geo(new THREE.CylinderGeometry(0.22, 0.22, 0.16, 28)), silver, ear).rotation.z = Math.PI / 2;
-    mesh(geo(new THREE.CylinderGeometry(0.15, 0.15, 0.06, 24)), gunmetal, ear, 0.09 * s, 0, 0).rotation.z = Math.PI / 2;
-    mesh(geo(new THREE.TorusGeometry(0.15, 0.014, 6, 28)), glowSoft, ear, 0.11 * s, 0, 0).rotation.y = Math.PI / 2;
-    const fin = mesh(geo(roundedBox(THREE, 0.06, 0.44, 0.16, 0.03, 3)), silver, ear, 0.02 * s, 0.32, -0.04);
-    fin.rotation.z = -0.38 * s; fin.rotation.x = -0.15;
+    // Headphone-style ear pods: a chrome cup, a dark disc and a soft glowing ring.
+    const ear = new THREE.Group(); ear.position.set(0.72 * s, 0.52, -0.04); head.add(ear);
+    mesh(geo(new THREE.CylinderGeometry(0.28, 0.3, 0.2, 32)), silver, ear).rotation.z = Math.PI / 2;
+    mesh(geo(new THREE.CylinderGeometry(0.2, 0.2, 0.06, 28)), gunmetal, ear, 0.1 * s, 0, 0).rotation.z = Math.PI / 2;
+    mesh(geo(new THREE.CylinderGeometry(0.1, 0.1, 0.07, 20)), rubber, ear, 0.12 * s, 0, 0).rotation.z = Math.PI / 2;
+    mesh(geo(new THREE.TorusGeometry(0.2, 0.016, 6, 32)), glowSoft, ear, 0.135 * s, 0, 0).rotation.y = Math.PI / 2;
+    // The antenna fin: a rounded blade swept up and back from the top of the ear.
+    // Like the photo, only its right ear carries the fin.
+    if (s < 0) {
+      const fin = mesh(geo(roundedBox(THREE, 0.08, 0.56, 0.22, 0.04, 4)), silver, ear, 0.02, 0.42, -0.1);
+      fin.rotation.z = 0.36; fin.rotation.x = -0.45;
+      mesh(geo(roundedBox(THREE, 0.085, 0.34, 0.05, 0.02, 2)), gunmetal, fin, 0, 0.02, 0.09);
+    }
   }
 
   // Arms
   const arm = s => {
     const shoulder = new THREE.Group(); shoulder.position.set(0.47 * s, 0.6, 0); shoulder.rotation.order = 'ZXY'; spine.add(shoulder);
-    mesh(geo(new THREE.SphereGeometry(0.115, 18, 12)), gunmetal, shoulder);
-    mesh(geo(new THREE.CapsuleGeometry(0.085, 0.2, 6, 14)), silver, shoulder, 0, -0.19, 0);
+    mesh(geo(new THREE.SphereGeometry(0.13, 18, 12)), silver, shoulder);
+    mesh(geo(new THREE.TorusGeometry(0.1, 0.03, 8, 20)), gunmetal, shoulder, 0, -0.1, 0).rotation.x = Math.PI / 2;
+    mesh(geo(new THREE.CapsuleGeometry(0.075, 0.18, 6, 14)), silver, shoulder, 0, -0.2, 0);
     const elbow = new THREE.Group(); elbow.position.y = -0.37; shoulder.add(elbow);
-    mesh(geo(new THREE.SphereGeometry(0.075, 14, 10)), rubber, elbow);
-    mesh(geo(new THREE.CapsuleGeometry(0.08, 0.18, 6, 14)), silver, elbow, 0, -0.16, 0);
-    mesh(geo(new THREE.TorusGeometry(0.083, 0.014, 6, 22)), glowSoft, elbow, 0, -0.27, 0).rotation.x = Math.PI / 2;
-    const hand = new THREE.Group(); hand.position.y = -0.33; elbow.add(hand);
-    mesh(geo(roundedBox(THREE, 0.07, 0.13, 0.14, 0.03, 3)), gunmetal, hand, 0, -0.06, 0);
+    mesh(geo(new THREE.SphereGeometry(0.08, 14, 10)), rubber, elbow);
+    // A chunky forearm, wider at the wrist, with a glowing cuff.
+    mesh(geo(new THREE.CylinderGeometry(0.105, 0.075, 0.24, 18)), silver, elbow, 0, -0.16, 0);
+    mesh(geo(new THREE.SphereGeometry(0.105, 18, 10, 0, TAU, Math.PI / 2, Math.PI / 2)), silver, elbow, 0, -0.28, 0);
+    mesh(geo(new THREE.TorusGeometry(0.1, 0.016, 6, 22)), glowSoft, elbow, 0, -0.26, 0).rotation.x = Math.PI / 2;
+    const hand = new THREE.Group(); hand.position.y = -0.33; hand.scale.setScalar(1.25); elbow.add(hand);
+    mesh(geo(roundedBox(THREE, 0.09, 0.15, 0.17, 0.04, 3)), gunmetal, hand, 0, -0.06, 0);
     const fingers = [];
-    const fg = geo(new THREE.CapsuleGeometry(0.019, 0.06, 4, 8));
+    const fg = geo(new THREE.CapsuleGeometry(0.024, 0.08, 4, 8));
+    const knuckle = geo(new THREE.SphereGeometry(0.03, 8, 6));
     for (let i = 0; i < 4; i++) {
-      const f = new THREE.Group(); f.position.set(0, -0.12, -0.05 + i * 0.033); hand.add(f);
-      mesh(fg, rubber, f, 0, -0.04, 0);
+      const f = new THREE.Group(); f.position.set(0, -0.13, -0.06 + i * 0.04); hand.add(f);
+      mesh(knuckle, silver, f);
+      mesh(fg, gunmetal, f, 0, -0.06, 0);
       f.userData.spread = (i - 1.5) * 0.12;
       fingers.push(f);
     }
-    const thumb = new THREE.Group(); thumb.position.set(-0.03 * s, -0.06, 0.07); hand.add(thumb);
-    mesh(fg, rubber, thumb, 0, -0.04, 0); thumb.rotation.x = -0.7;
+    const thumb = new THREE.Group(); thumb.position.set(-0.035 * s, -0.06, 0.08); hand.add(thumb);
+    mesh(fg, gunmetal, thumb, 0, -0.05, 0); thumb.rotation.x = -0.7;
     const grip = new THREE.Group(); grip.position.set(-0.02 * s, -0.11, 0); hand.add(grip);
     return { shoulder, elbow, hand, fingers, thumb, grip, s };
   };
@@ -612,15 +657,20 @@ export function createRobot(THREE, host, options = {}) {
   // Legs
   const leg = s => {
     const hip = new THREE.Group(); hip.position.set(0.16 * s, -0.1, 0); hips.add(hip);
-    mesh(geo(new THREE.SphereGeometry(0.1, 14, 10)), rubber, hip);
-    mesh(geo(new THREE.CapsuleGeometry(0.105, 0.17, 6, 14)), silver, hip, 0, -0.16, 0);
+    mesh(geo(new THREE.SphereGeometry(0.11, 14, 10)), rubber, hip);
+    mesh(geo(new THREE.CapsuleGeometry(0.13, 0.12, 6, 16)), silver, hip, 0, -0.16, 0);
     const knee = new THREE.Group(); knee.position.y = -0.33; hip.add(knee);
-    mesh(geo(new THREE.SphereGeometry(0.09, 14, 10)), gunmetal, knee);
-    mesh(geo(new THREE.SphereGeometry(0.06, 12, 8)), silver, knee, 0, 0, 0.07);
-    mesh(geo(new THREE.CapsuleGeometry(0.1, 0.18, 6, 14)), silver, knee, 0, -0.18, 0);
+    mesh(geo(new THREE.SphereGeometry(0.1, 14, 10)), gunmetal, knee);
+    mesh(geo(new THREE.TorusGeometry(0.1, 0.022, 8, 20)), silver, knee, 0, 0, 0).rotation.y = Math.PI / 2;
+    mesh(geo(new THREE.SphereGeometry(0.065, 12, 8)), silver, knee, 0, 0.01, 0.08);
+    // A chunky shin, widest at the calf.
+    mesh(geo(new THREE.CylinderGeometry(0.115, 0.1, 0.26, 18)), silver, knee, 0, -0.18, 0);
+    mesh(geo(new THREE.TorusGeometry(0.1, 0.02, 6, 18)), gunmetal, knee, 0, -0.31, 0).rotation.x = Math.PI / 2;
     const ankle = new THREE.Group(); ankle.position.y = -0.36; knee.add(ankle);
-    mesh(geo(roundedBox(THREE, 0.22, 0.13, 0.32, 0.06, 4)), silver, ankle, 0, -0.07, 0.04);
-    mesh(geo(roundedBox(THREE, 0.2, 0.04, 0.3, 0.02, 2)), rubber, ankle, 0, -0.13, 0.04);
+    // Big rounded boots.
+    mesh(geo(new THREE.SphereGeometry(0.07, 12, 8)), rubber, ankle);
+    mesh(geo(roundedBox(THREE, 0.26, 0.15, 0.38, 0.07, 5)), silver, ankle, 0, -0.07, 0.05);
+    mesh(geo(roundedBox(THREE, 0.25, 0.04, 0.37, 0.02, 2)), rubber, ankle, 0, -0.14, 0.05);
     return { hip, knee, ankle };
   };
   const LL = leg(1), RL = leg(-1);
@@ -912,14 +962,14 @@ export function createRobot(THREE, host, options = {}) {
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     // Frame the whole figure with room for jumps and raised arms; wide stages show it larger.
-    const needH = 3.85, needW = 2.9;
+    const needH = 4.15, needW = 2.95;
     const fovV = THREE.MathUtils.degToRad(camera.fov);
     const distH = needH / 2 / Math.tan(fovV / 2);
     const distW = needW / 2 / (Math.tan(fovV / 2) * camera.aspect);
     const d = Math.max(distH, distW);
     const yaw = options.yaw || 0;
-    camera.position.set(Math.sin(yaw) * d, 1.8 + d * 0.08, Math.cos(yaw) * d);
-    camera.lookAt(0, 1.68, 0);
+    camera.position.set(Math.sin(yaw) * d, 1.95 + d * 0.08, Math.cos(yaw) * d);
+    camera.lookAt(0, 1.82, 0);
     camera.updateProjectionMatrix();
   }
 
