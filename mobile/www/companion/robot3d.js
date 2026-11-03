@@ -596,21 +596,21 @@ export function createRobot(THREE, host, options = {}) {
   mesh(geo(new THREE.TorusGeometry(0.11, 0.025, 8, 20)), gunmetal, neck, 0, 0.08, 0).rotation.x = Math.PI / 2;
   const head = new THREE.Group(); head.position.y = 0.12; head.scale.setScalar(1.08); neck.add(head);
   // A big round helmet; the glossy black visor fills most of the front and bulges out.
-  mesh(geo(roundedBox(THREE, 1.42, 1.2, 1.14, 0.5, 12)), silver, head, 0, 0.56, -0.04);
-  mesh(bulge(geo(roundedBox(THREE, 1.2, 0.94, 0.3, 0.24, 10)), 0.07, 1.2, 0.94), visorMat, head, 0, 0.56, 0.42);
+  mesh(geo(roundedBox(THREE, 1.2, 1.18, 1.1, 0.5, 12)), silver, head, 0, 0.56, -0.04);
+  mesh(bulge(geo(roundedBox(THREE, 1.0, 0.92, 0.3, 0.26, 10)), 0.07, 1.0, 0.92), visorMat, head, 0, 0.56, 0.42);
   // A thin dark seam around the visor.
-  mesh(geo(roundedBox(THREE, 1.26, 1.0, 0.24, 0.27, 8)), gunmetal, head, 0, 0.56, 0.4);
-  const faceCanvas = canvas(256, 200);
+  mesh(geo(roundedBox(THREE, 1.06, 0.98, 0.24, 0.29, 8)), gunmetal, head, 0, 0.56, 0.4);
+  const faceCanvas = canvas(220, 200);
   const faceCtx = faceCanvas.getContext('2d');
   const faceTex = keep(new THREE.CanvasTexture(faceCanvas)); faceTex.colorSpace = THREE.SRGBColorSpace;
   const faceMat = keep(new THREE.MeshBasicMaterial({ map: faceTex, transparent: true, toneMapped: false, depthWrite: false, blending: THREE.AdditiveBlending }));
-  const face = mesh(bulge(geo(new THREE.PlaneGeometry(1.0, 0.78, 16, 12)), 0.06, 1.2, 0.94), faceMat, head, 0, 0.56, 0.585);
+  const face = mesh(bulge(geo(new THREE.PlaneGeometry(0.86, 0.78, 16, 12)), 0.06, 1.0, 0.92), faceMat, head, 0, 0.56, 0.585);
   face.renderOrder = 3;
   // Ear pods with glowing rings, and the little antenna fins.
   for (const s of [1, -1]) {
     // Headphone-style ear pods: a chrome cup, a dark disc and a soft glowing ring.
-    const ear = new THREE.Group(); ear.position.set(0.72 * s, 0.52, -0.04); head.add(ear);
-    mesh(geo(new THREE.CylinderGeometry(0.28, 0.3, 0.2, 32)), silver, ear).rotation.z = Math.PI / 2;
+    const ear = new THREE.Group(); ear.position.set(0.61 * s, 0.52, -0.06); head.add(ear);
+    mesh(geo(new THREE.CylinderGeometry(0.25, 0.27, 0.18, 32)), silver, ear).rotation.z = Math.PI / 2;
     mesh(geo(new THREE.CylinderGeometry(0.2, 0.2, 0.06, 28)), gunmetal, ear, 0.1 * s, 0, 0).rotation.z = Math.PI / 2;
     mesh(geo(new THREE.CylinderGeometry(0.1, 0.1, 0.07, 20)), rubber, ear, 0.12 * s, 0, 0).rotation.z = Math.PI / 2;
     mesh(geo(new THREE.TorusGeometry(0.2, 0.016, 6, 32)), glowSoft, ear, 0.135 * s, 0, 0).rotation.y = Math.PI / 2;
