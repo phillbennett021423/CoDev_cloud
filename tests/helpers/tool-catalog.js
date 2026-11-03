@@ -79,6 +79,7 @@ async function moduleTools() {
     const Maps = require(path.join(UI, 'azgaar-maps.js'));
     const Brain = require(path.join(UI, 'project-brain.js'));
     const Code = require(path.join(UI, 'code-runner.js'));
+    const Expert = require(path.join(UI, 'expert-coach.js'));
 
     const desk = Desk.createDeskStore(memoryStorage(), { docs: Desk.memoryDocs() });
     desk.saveSettings({ agentAccess: true });
@@ -107,6 +108,7 @@ async function moduleTools() {
         ...strip('page', Object.entries(mega.TOOLS).map(([name, t]) => ({ name, ...t }))),
         ...strip('page', Object.entries(notes.TOOLS).map(([name, t]) => ({ name, ...t }))),
         ...strip('page', Object.entries(maps.TOOLS).map(([name, t]) => ({ name, ...t }))),
+        ...strip('page', Expert.createExpertise({ storage: memoryStorage() }).buildTools()),
         ...strip('phone-browser', phone.tools)
     ];
 }
