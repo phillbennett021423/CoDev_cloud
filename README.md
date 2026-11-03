@@ -41,7 +41,6 @@ Settings are read by `config.js` from the environment or `.env`:
 | --- | --- |
 | `ANTHROPIC_API_KEY` | Anthropic relay (`sk-ant-...`) |
 | `OPENROUTER_API_KEY` | OpenRouter (`sk-or-...`) |
-| `MANUS_API_KEY` | Q tasks |
 | `ODDS_API_KEY` | free-tier market odds in the Outlier tab's scrape (the-odds-api.com); agents' line tracking uses the key in Settings instead (see below) |
 | `CODEV_WORKSPACE` | the project folder agents work in; `start-codev.bat C:\path\to\project` sets it too |
 | `CODEV_DATA_DIR` | where `.codev` goes |
@@ -249,7 +248,7 @@ Every code or file task is treated as a task on your project. You don't type fil
 - **Workspace auto-injection.** Each agent request carries the project's file tree, the file open in the editor, the files agents just changed and the files that best match the task. The amount is capped per provider (about 14k characters on Groq, whose free tier has small per-minute token limits, 30k on OpenRouter, 80k on Anthropic); agents read anything else with their tools.
 - **Autonomous execution.** Agents search the project, edit files and, where a command tool exists, run the code, tests or build themselves. Tools are always on.
 - **Locked developer roles.** Each agent has a role (Agent Configuration → Developer Role): **Architect** plans and implements, **Swarm** builds on the team's changes, **Self-Healing** re-reads changed files, runs what can be run and fixes failures. A role's prompt always applies; an agent's own instructions only add to it. In Group Swarm the agents run Architect → Swarm → Self-Healing, each seeing what the others changed. With 🛡️ Self-Healing on, a solo or background task that changed files gets a verify-and-fix pass afterwards.
-- **🚀 Coding autopilot** (Settings, on by default). On a coding task the agents code it all the way through without stopping you: no approval cards for commands, file writes or tools, and an agent that ends its turn with a question ("Should I…?", "Want me to…?") is told to make the reasonable choice itself and keep going (up to 3 times per agent). It gets up to 150 tool rounds instead of 40, is told to run the project's tests, build or linter and fix every failure before it finishes (trying a different approach after 3 failed fixes), and every coding task gets a verify-and-fix pass afterwards even with 🛡️ Self-Healing off. Commands that could wreck the machine or the repo are refused outright instead of asked about: wiping `/` or the home folder, `mkfs`/`format`/`diskpart`, shutting down, force-pushing or deleting a remote branch, and piping a download into a shell. Browser sign-ins and anything that spends money or sends something outside CoDev (MEGA writes, email, Q task credits) still ask. Turn it off to get the approval cards back.
+- **🚀 Coding autopilot** (Settings, on by default). On a coding task the agents code it all the way through without stopping you: no approval cards for commands, file writes or tools, and an agent that ends its turn with a question ("Should I…?", "Want me to…?") is told to make the reasonable choice itself and keep going (up to 3 times per agent). It gets up to 150 tool rounds instead of 40, is told to run the project's tests, build or linter and fix every failure before it finishes (trying a different approach after 3 failed fixes), and every coding task gets a verify-and-fix pass afterwards even with 🛡️ Self-Healing off. Commands that could wreck the machine or the repo are refused outright instead of asked about: wiping `/` or the home folder, `mkfs`/`format`/`diskpart`, shutting down, force-pushing or deleting a remote branch, and piping a download into a shell. Browser sign-ins and anything that spends money or sends something outside CoDev (MEGA writes, email) still ask. Turn it off to get the approval cards back.
 
 **Files with keys stay hidden.** Agents can't list, search, read or write hidden files and folders (`.env`, `.git`, anything whose name starts with a dot), env files like `production.env`, key and certificate files (`.pem`, `.key`, `.pfx`, `.p12`, `.keystore`, `.jks`) or `secrets.*` and `credentials.*`, whichever folder tools they use: the sandbox, the Windows app's, the Python helper's or the page's own. Commands an agent runs directly on your computer (outside the sandbox) aren't filtered, so leave those off if that matters to you.
 
@@ -475,19 +474,6 @@ Each test that needs Docker, Chromium or a server feature that isn't there is sk
 - set it on Windows with `setx ANTHROPIC_API_KEY "sk-ant-..."` in a Command Prompt, then open a new window before running `start-codev.bat`.
 
 If the key is missing, the server starts with a note saying so; if it's set but doesn't look like an Anthropic key, the server stops and tells you.
-
-## Q tasks (Manus)
-
-Q hands long, autonomous jobs to a [Manus](https://manus.im) agent that runs on its own cloud computer: browsing and operating websites, research across many pages, and creating or reorganizing files. CoDev uses the Manus API v2 (`https://api.manus.ai/v2/`, [docs](https://open.manus.ai/docs/v2/introduction)) to start a task, poll its events, answer its questions or approvals, and show the result and any files it made. Tasks keep running when CoDev is closed; CoDev picks them up again when it opens. Each task uses Manus credits.
-
-Start one from the **🤖 Q Tasks** tab, by ticking **🤖 Q Task (Manus)** in the chat's execution modes (or starting a message with `/q `), or let an agent call the `start_q_task` tool (it always asks you first). Mention loaded project files as `@filename` to hand them to Q.
-
-The API key:
-
-- On a computer, put `MANUS_API_KEY=...` in the `.env` file next to `server.js` (see `.env.example`) or set it in your environment. `server.js` (`POST /manus`) and the Windows app send it to Manus themselves, so the page never sees it.
-- On Android, or if you don't set the variable, add the key under **Settings → Q tasks (Manus)**. The Android app calls api.manus.ai through its native HTTP client.
-
-The connector is `mobile/www/manus/manus-client.js`, shared by the page, `server.js` and the Windows app. It only passes on the task operations CoDev uses (create, detail, list messages, send message, stop, confirm action, list online browsers).
 
 ## Using Anthropic (Claude) as the AI provider
 
