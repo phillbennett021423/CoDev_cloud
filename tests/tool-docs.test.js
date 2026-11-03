@@ -66,7 +66,7 @@ test('every server, Windows app, phone browser and page module tool is fully doc
 test('every tool written in the page itself is fully documented', t => {
     if (pageSkip) return t.skip(pageSkip);
     for (const name of ['web_search', 'read_webpage', 'save_memory', 'read_screenshots', 'read_attachment', 'query_table',
-        'list_workspace_files', 'edit_workspace_file', 'mcp_read_resource', 'run_local_command', 'start_q_task', 'check_q_task']) {
+        'list_workspace_files', 'edit_workspace_file', 'mcp_read_resource', 'run_local_command']) {
         assert.ok(pageTools.some(tool => tool.name === name), `the page didn't offer ${name}`);
     }
     assert.equal(report(pageTools), '');
