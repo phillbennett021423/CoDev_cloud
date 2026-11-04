@@ -39,6 +39,26 @@ The **☁️ Cloud Agents** tab, or **☁️ Run in the Cloud** in the chat's ex
 
 **Remove** a task in the Cloud Agents tab to delete it and its results. A run in progress stops within a minute. Tests: `node --test tests/cloud-agents.test.js` (a stand-in GitHub and a scripted model, so no token or key is needed).
 
+### Run tasks on your own PC (from your phone, free)
+
+Some work needs your computer: Roblox Studio, Godot, Blender, or your real project folder. **🖥️ Run on my PC** in the chat's execution modes (or **🖥️ My PC** in the Cloud Agents tab) sends the task to CoDev on your own PC instead of GitHub's servers. The reply and the files it changed come back to the chat on your phone. It uses the same queue, sealing and results as cloud agents, through a **GitHub self-hosted runner** on your PC. GitHub doesn't charge for self-hosted runners, and there's no server to rent.
+
+**Set it up once on the PC:**
+
+1. Set up cloud agents first (above).
+2. In the repo, open **Settings > Actions > Runners > New self-hosted runner**, pick your system, and follow GitHub's steps to download and configure it. When it asks for labels, add `codev-pc`.
+3. Start it with `run.cmd` (Windows) or `./run.sh`, signed in as yourself. Don't install it as a service under another account, because it has to reach Roblox Studio and your files. To start it with Windows, put a shortcut to `run.cmd` in the Startup folder.
+4. In **Settings > Secrets and variables > Actions > Variables**, add `CODEV_PC_PROJECT_DIR`: the folder the agents should work in, for example `C:\Users\you\Games\MyObby`.
+5. For Roblox, leave Studio open on that place with its MCP server turned on. For uploads, set `CODEV_ROBLOX_API_KEY` and `CODEV_ROBLOX_CREATOR` as Windows environment variables.
+
+**How it works.** The **Cloud agents on my PC** workflow (`.github/workflows/cloud-agent-pc.yml`) checks the queue on GitHub's servers in a few seconds. When a PC task is due, it hands the work to your runner. The runner opens CoDev in a hidden browser on your PC with `CODEV_PC_PROJECT_DIR` as the project folder and runs the task as cloud agents do. Your folder is never emptied, and only the files the run changed are sent back, sealed. When the PC is off, the task waits for it (GitHub keeps a waiting job for up to a day).
+
+**Limits and safety:**
+
+- **The PC must be on**, with the runner running (and Studio open for Roblox work). Roblox has no way to run Studio without a screen.
+- **Nobody to ask.** Questions are answered "no", as in the cloud, so steps that always ask (such as `roblox_upload`) don't happen on their own. Ask for those in a normal chat on the PC.
+- **Keep the runner private.** A self-hosted runner runs workflow code from this repo on your PC. The PC workflow only runs when started by you or by its schedule. Keep **Settings > Actions > General > Require approval for all external contributors** on, and never add pull request triggers to a workflow that uses the `codev-pc` runner. For the most safety, run the queue from a private copy of the repo.
+
 ## Windows desktop app
 
 Download and run the installer: https://github.com/phillbennett021423/CoDev_cloud/releases/latest/download/CoDev-Studio-Setup.exe
@@ -398,6 +418,9 @@ The game's code lives as files in your project folder, in the Rojo layout, so yo
 - **`roblox_diff`** shows what a sync would change before it happens, line by line: which scripts are new, which changed (lines now in Studio marked `-`, lines from the files marked `+`), and a warning on any script someone edited in Studio since CoDev's last sync.
 - **`roblox_sync`** puts the scripts into the open place at the paths the project maps them to, sending only scripts that changed. It refuses if anything fails to compile. It also refuses to overwrite code edited inside Studio (or a script that was already in the place) unless told to, so work done in Studio is never lost silently. The whole sync is one ChangeHistoryService recording, so one Ctrl+Z in Studio undoes it, and a sync that fails partway is rolled back. CoDev remembers what it synced in `.codev/roblox-sync.json` (kept out of git).
 - **`roblox_playtest`** presses Play, waits, reads the output, takes a picture of the game view and stops. It returns the error lines with their script and line number.
+  - With `players` set from 2 to 8, it runs a **multiplayer test** instead: a local server with that many player clients, like Test > Clients and Servers. It returns the output and errors of the server and of each player separately, so bugs that only show up with a second player are caught (a slot two players both claim, a remote that fires to the wrong client, data saved under the wrong key).
+  - It works through Studio's `StudioTestService`. CoDev adds two small test scripts to the place for the test and removes them afterwards.
+  - Roblox has no headless Studio, so playtests need Studio open on a computer. From a phone, use **🖥️ Run on my PC** (see "Run tasks on your own PC").
 - **`roblox_studio`** calls any of Studio's own tools by name (`list` shows them). Agents use it to build the world with `execute_luau`, look around the place, insert Creator Store assets, generate meshes and materials, and capture the screen.
 - **Art, sound and animations into Roblox.**
   - **`roblox_export_model`** makes a Roblox-ready copy of any `.glb`, `.gltf`, `.fbx`, `.obj` or `.blend` in Blender. It applies transforms, decimates each mesh under Roblox's limit of 20,000 triangles (or your own budget) and triangulates it. It also keeps at most 4 bone weights per vertex (Roblox's rule), shrinks textures to 1024, and exports `.fbx` (keeping the rig and animations) or `.glb`.

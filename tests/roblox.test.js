@@ -281,3 +281,46 @@ test('the obby, tycoon and simulator templates pass the checks and play clean, a
         await roblox.close();
     }
 });
+
+test('a multiplayer playtest runs a server and several clients, reports each one, and cleans up after itself', async () => {
+    const dir = folder();
+    const { roblox } = withStudio(dir);
+    try {
+        await roblox.callTool('roblox_init_project', { template: 'obby' });
+        await roblox.callTool('roblox_sync');
+        const clean = await roblox.callTool('roblox_playtest', { players: 3, seconds: 2 });
+        assert.equal(clean.isError, undefined, textOf(clean));
+        assert.match(textOf(clean), /Multiplayer test, 3 players for 2s: 3 players joined\. No errors on the server or any client\./);
+        assert.match(textOf(clean), /\[server\] OUT Obby ready: 10 stages/);
+
+        // A bug only the second player hits: the first player claims a slot, the next one finds it taken.
+        fs.writeFileSync(path.join(dir, 'src', 'server', 'Slots.server.luau'), [
+            'local Players = game:GetService("Players")',
+            'local taken = nil',
+            'Players.PlayerAdded:Connect(function(player)',
+            '\tif taken then',
+            '\t\terror("slot already taken by " .. taken.Name)',
+            '\tend',
+            '\ttaken = player',
+            'end)', ''
+        ].join('\n'));
+        fs.writeFileSync(path.join(dir, 'src', 'client', 'Hello.client.luau', ), 'local me = game:GetService("Players").LocalPlayer\nif me.Name == "Player2" then warn("Infinite yield possible on Player2 HUD") end\nprint("hello from", me.Name)\n');
+        await roblox.callTool('roblox_sync');
+        const buggy = await roblox.callTool('roblox_playtest', { players: 2, seconds: 1 });
+        assert.equal(buggy.isError, true);
+        const out = textOf(buggy);
+        assert.match(out, /2 players joined\. \d+ error line\(s\)\./);
+        assert.match(out, /\[server\] ERROR .*slot already taken by Player1/);
+        assert.match(out, /\[Player2\] WARN Infinite yield possible on Player2 HUD/);
+        assert.match(out, /\[Player1\] OUT hello from Player1/);
+        assert.doesNotMatch(out, /\[Player1\] WARN/);
+
+        // The test scripts are gone, and nothing is still playing.
+        const tree = textOf(await roblox.callTool('roblox_studio', { tool: 'search_game_tree', args: {} }));
+        assert.doesNotMatch(tree, /CodevTest/);
+        const state = textOf(await roblox.callTool('roblox_studio', { tool: 'get_studio_state', args: {} }));
+        assert.match(state, /"mode":"Edit"/);
+    } finally {
+        await roblox.close();
+    }
+});

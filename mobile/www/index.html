@@ -799,7 +799,10 @@
                                     <input type="checkbox" id="isBackgroundWorkerCheckbox"> ⚡ Autonomous Background Task
                                 </label>
                                 <label class="checkbox-group" style="color: var(--codev-purple);" title="Send the message to your agents on GitHub's servers. They keep working with this device off, and the reply comes back to this chat.">
-                                    <input type="checkbox" id="isCloudRunCheckbox"> ☁️ Run in the Cloud
+                                    <input type="checkbox" id="isCloudRunCheckbox" onchange="if (this.checked) document.getElementById('isPcRunCheckbox').checked = false"> ☁️ Run in the Cloud
+                                </label>
+                                <label class="checkbox-group" style="color: var(--codev-purple);" title="Send the message to CoDev on your own PC (a GitHub self-hosted runner), for work that needs it: Roblox Studio, Godot, Blender, your project folder. The reply comes back to this chat.">
+                                    <input type="checkbox" id="isPcRunCheckbox" onchange="if (this.checked) document.getElementById('isCloudRunCheckbox').checked = false"> 🖥️ Run on my PC
                                 </label>
                                 <label class="checkbox-group" style="color: var(--success);">
                                     <input type="checkbox" id="isSelfHealCheckbox" checked> 🛡️ Self-Healing Code Loop
@@ -822,6 +825,7 @@
                             <div class="compact-badge" id="badgeGroup" style="display:none;">🌐 Group</div>
                             <div class="compact-badge" id="badgeBackground" style="color: var(--warning); display:none;">⚡ Background</div>
                             <div class="compact-badge" id="badgeCloudRun" style="color: var(--codev-purple); display:none;">☁️ Cloud</div>
+                            <div class="compact-badge" id="badgePcRun" style="color: var(--codev-purple); display:none;">🖥️ My PC</div>
                             <div class="compact-badge" id="badgeSelfHeal" style="color: var(--success); display:none;">🛡️ Self-Heal</div>
                             <div class="compact-badge" id="badgeReasoning" style="color: var(--codev-blue); display:none;">⚡ Deep Reasoning</div>
                             <div class="compact-badge" id="badgeWebSearch" style="color: var(--codev-blue); display:none;">🔎 Web Search</div>
@@ -934,6 +938,10 @@
                     </div>
                     <div class="cloud-row">
                         <select id="cloudAgent" aria-label="Agent"></select>
+                        <select id="cloudWhere" aria-label="Where it runs" title="My PC runs it on your own computer through a GitHub self-hosted runner (Roblox Studio, Godot, Blender, your project folder). See the README's Run tasks on your own PC.">
+                            <option value="cloud">☁️ GitHub's servers</option>
+                            <option value="pc">🖥️ My PC</option>
+                        </select>
                         <select id="cloudRepeat" aria-label="How often" onchange="updateCloudRepeatFields()">
                             <option value="once">Once, now</option>
                             <option value="hourly">Every hour</option>
@@ -2161,6 +2169,7 @@
                 document.getElementById("badgeGroup").style.display = isGroupChecked ? "flex" : "none";
                 document.getElementById("badgeBackground").style.display = isBgChecked ? "flex" : "none";
                 document.getElementById("badgeCloudRun").style.display = document.getElementById("isCloudRunCheckbox").checked ? "flex" : "none";
+                document.getElementById("badgePcRun").style.display = document.getElementById("isPcRunCheckbox").checked ? "flex" : "none";
                 document.getElementById("badgeSelfHeal").style.display = isHealChecked ? "flex" : "none";
                 document.getElementById("badgeReasoning").style.display = isReasonChecked ? "flex" : "none";
                 document.getElementById("badgeWebSearch").style.display = webSearchEnabled ? "flex" : "none";
@@ -7212,7 +7221,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         }
 
         // Queues a task and starts the workflow. chatId: where the replies go.
-        async function startCloudTask({ prompt, agent, repeat, runNow = true, chatId }) {
+        async function startCloudTask({ prompt, agent, repeat, runNow = true, chatId, where = "cloud" }) {
             if (!cloudConfigured()) throw new Error("Set up cloud agents first: ⚙️ Settings > ☁️ Cloud agents.");
             const { github, queue } = cloudQueue();
             await queue.ensureBranch();
@@ -7223,16 +7232,16 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 limits: { daily: dailySpendLimit, task: taskSpendLimit },
                 settings: cloudSettingsSnapshot()
             };
-            const task = await queue.addTask({ body, repeat, timeZone, runNow });
+            const task = await queue.addTask({ body, repeat, timeZone, runNow, where });
             cloudLocal[task.id] = { title, chatId, seen: [] };
             saveCloudLocal();
             // A task that waits for its time is picked up by the hourly check instead.
             if (task.nextRun <= Date.now() + 60000) {
-                try { await github.dispatch(); } catch (err) {
+                try { await github.dispatch(CodevCloud.workflowFor(where)); } catch (err) {
                     logConsoleActivity(`[Cloud] Queued, but couldn't start the workflow (${err.message}); the hourly check will pick it up.`);
                 }
             }
-            logConsoleActivity(`[Cloud] Queued "${title}" (${CodevCloud.describeRepeat(task.repeat)}).`);
+            logConsoleActivity(`[Cloud] Queued "${title}" (${CodevCloud.describeRepeat(task.repeat)}${where === "pc" ? ", on your PC" : ""}).`);
             scheduleCloudPoll(5000);
             return task;
         }
@@ -7247,7 +7256,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 const every = document.getElementById("cloudRepeat").value;
                 const repeat = { every, at: document.getElementById("cloudAt").value || "08:00", day: Number(document.getElementById("cloudDay").value) };
                 const agent = document.getElementById("cloudAgent").value;
-                await startCloudTask({ prompt, agent, repeat, runNow: every === "once" || document.getElementById("cloudRunNow").checked, chatId: activeChatId });
+                await startCloudTask({ prompt, agent, repeat, runNow: every === "once" || document.getElementById("cloudRunNow").checked, chatId: activeChatId, where: document.getElementById("cloudWhere").value });
                 document.getElementById("cloudPrompt").value = "";
                 await refreshCloudTasks(true);
             } catch (err) {
@@ -7259,15 +7268,18 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         }
 
         // From the chat, with ☁️ Run in the Cloud ticked.
-        async function sendChatToCloud(session, prompt, attachments) {
-            appendMessageToSession(session, "☁️ Cloud", "Sending this to your cloud agents…");
+        async function sendChatToCloud(session, prompt, attachments, where = "cloud") {
+            const pc = where === "pc";
+            appendMessageToSession(session, "☁️ Cloud", pc ? "Sending this to CoDev on your PC…" : "Sending this to your cloud agents…");
             const placeholder = session.messages[session.messages.length - 1];
             if (session.id === activeChatId) renderActiveChatFeed();
             try {
                 if (attachments.length) placeholder.text = "Attachments stay on this device: the cloud agents get the message only.\n";
                 const agent = (agents.find(a => a.id === selectedAgentId) || agents[0] || {}).name || "";
-                const task = await startCloudTask({ prompt, agent, repeat: { every: "once" }, chatId: session.id });
-                placeholder.text = `${placeholder.text.startsWith("Attachments") ? placeholder.text : ""}Queued on GitHub (task ${task.id}). It usually starts within a minute or two and keeps going with this device off. The reply comes back here; follow it in ☁️ Cloud Agents.`;
+                const task = await startCloudTask({ prompt, agent, repeat: { every: "once" }, chatId: session.id, where });
+                placeholder.text = `${placeholder.text.startsWith("Attachments") ? placeholder.text : ""}${pc
+                    ? `Queued for your PC (task ${task.id}). It starts within a minute or two when the PC is on and its CoDev runner is running, and waits for it (up to a day) when it isn't. The reply comes back here; follow it in ☁️ Cloud Agents.`
+                    : `Queued on GitHub (task ${task.id}). It usually starts within a minute or two and keeps going with this device off. The reply comes back here; follow it in ☁️ Cloud Agents.`}`;
             } catch (err) {
                 placeholder.sender = "❌ Cloud Error";
                 placeholder.text = err.message;
@@ -7382,10 +7394,10 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                     delete cloudView.opened[id];
                     saveCloudLocal();
                 } else if (action === "run") {
-                    await queue.runNow(id);
+                    const again = await queue.runNow(id);
                     if (!cloudLocal[id]) cloudLocal[id] = { title: cloudView.opened[id]?.title || id, seen: [] };
                     saveCloudLocal();
-                    await github.dispatch().catch(err => logConsoleActivity(`[Cloud] Couldn't start the workflow: ${err.message}`));
+                    await github.dispatch(CodevCloud.workflowFor(CodevCloud.whereOf(again))).catch(err => logConsoleActivity(`[Cloud] Couldn't start the workflow: ${err.message}`));
                 } else if (action === "pause" || action === "resume") {
                     await queue.updateTask(id, t => ({ ...t, paused: action === "pause", nextRun: action === "resume" && !t.nextRun ? CodevCloud.nextRun(t.repeat, Date.now(), t.timeZone) : t.nextRun }));
                 }
@@ -7422,7 +7434,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                 const id = escapeHtml(task.id);
                 return `<div class="cloud-task">
                     <div class="cloud-task-head"><div class="cloud-task-title">${escapeHtml(opened.title)}</div><span class="cloud-status ${escapeHtml(statusKey)}">${escapeHtml(label)}</span></div>
-                    <div class="cloud-meta">${escapeHtml(CodevCloud.describeRepeat(task.repeat))}${opened.agent ? ` · ${escapeHtml(opened.agent)}` : ""} · next run: ${escapeHtml(next)}${last ? ` · last run: ${escapeHtml(new Date(last.started).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}` : ""}${last?.spentUsd ? ` · ${escapeHtml(formatUsd(last.spentUsd))}` : ""}</div>
+                    <div class="cloud-meta">${task.where === "pc" ? "🖥️ My PC · " : ""}${escapeHtml(CodevCloud.describeRepeat(task.repeat))}${opened.agent ? ` · ${escapeHtml(opened.agent)}` : ""} · next run: ${escapeHtml(next)}${last ? ` · last run: ${escapeHtml(new Date(last.started).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}` : ""}${last?.spentUsd ? ` · ${escapeHtml(formatUsd(last.spentUsd))}` : ""}</div>
                     ${last?.error ? `<div class="cloud-meta" style="color: var(--warning);">${escapeHtml(last.error)}</div>` : ""}
                     ${reply ? `<div class="cloud-reply">${escapeHtml(String(reply.text).slice(0, 3000))}</div>` : ""}
                     ${last?.files?.length ? `<div class="cloud-meta">📎 ${last.files.map(f => escapeHtml(f.name)).join(", ")}</div>` : ""}
@@ -9709,8 +9721,9 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
 
             // ☁️ Run in the Cloud: the message goes to the agents on GitHub's servers.
             const cloudCheckbox = document.getElementById("isCloudRunCheckbox");
-            if (session && cloudCheckbox.checked) {
-                return sendChatToCloud(session, userText, attachments);
+            const pcCheckbox = document.getElementById("isPcRunCheckbox");
+            if (session && (cloudCheckbox.checked || (pcCheckbox && pcCheckbox.checked))) {
+                return sendChatToCloud(session, userText, attachments, pcCheckbox && pcCheckbox.checked ? "pc" : "cloud");
             }
             // 🔬 armed, or a message starting "deep research" or /research: the research pipeline answers it.
             if (session && (deepResearchArmed || DEEP_RESEARCH_REQUEST.test(userText))) {

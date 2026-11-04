@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // End-to-end check of CoDev's Roblox tools, the way an agent uses them: through
 // server.js's agent-tools router, make a project, write a small coin game with a shop,
-// check it, sync it into Studio, playtest, catch a bug, fix it and playtest again.
+// check it, sync it into Studio, playtest, catch a bug, fix it, playtest again, and run a
+// 3-player test (a local server and 3 clients).
 //
 //   node scripts/roblox-bridge-e2e.js           against the stand-in Studio (tests/fixtures)
 //   node scripts/roblox-bridge-e2e.js --real    against Roblox Studio on this computer: open
@@ -126,6 +127,9 @@ async function main() {
         expect(/0 new, 1 changed, 5 already up to date/.test(out), 'only the changed script was updated');
         out = show('roblox_playtest (fixed)', await call('roblox_playtest', { seconds: 2 }));
         expect(/no errors in the output/.test(out) && /Placed\s+3\s+coins near\s+SpawnPad/.test(out) && /Shop ready/.test(out), 'the fixed game plays clean: coins placed, shop ready');
+
+        out = show('roblox_playtest (3 players)', await call('roblox_playtest', { players: 3, seconds: 5 }));
+        expect(/3 players joined\. No errors on the server or any client/.test(out) && /\[server\] OUT .*Shop ready/.test(out), 'a local server with 3 clients plays clean');
 
         console.log('\nAll checks passed.');
     } finally {

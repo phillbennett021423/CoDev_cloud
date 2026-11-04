@@ -226,3 +226,57 @@ test('the runner waits for tomorrow when the cloud spending limit is used up', {
     assert.match(runs[0].error, /spending limit/);
     assert.ok((await queue.getTask(task.id)).nextRun > Date.now());
 });
+
+test('tasks for "My PC" only run on the PC runner, in the real project folder, and only changed files come back', { timeout: 180000 }, async t => {
+    // Which runner picks up which task.
+    assert.ok(Cloud.isDue({ nextRun: 5 }, 10, 'cloud'), 'older tasks have no where and are cloud tasks');
+    assert.ok(!Cloud.isDue({ nextRun: 5 }, 10, 'pc'));
+    assert.ok(Cloud.isDue({ nextRun: 5, where: 'pc' }, 10, 'pc'));
+    assert.ok(!Cloud.isDue({ nextRun: 5, where: 'pc' }, 10, 'cloud'));
+    assert.equal(Cloud.workflowFor('pc'), 'cloud-agent-pc.yml');
+    assert.equal(Cloud.workflowFor('cloud'), 'cloud-agent.yml');
+
+    const { browser, skip } = await launchBrowser();
+    if (skip) return t.skip(skip);
+    t.after(() => browser.close());
+    const mock = createGitHubMock({ repo: 'owner/codev' });
+    const github = Cloud.createGitHub({ repo: 'owner/codev', token: 't', fetch: mock.fetch });
+    const queue = Cloud.createQueue({ github, passphrase: PASS });
+    await queue.ensureBranch();
+    const onPc = await queue.addTask({ body: { prompt: 'write a module', limits: { daily: 1, task: 0.25 }, settings: { codev_backend: 'groq', codev_auto_ground: '0', codev_chime: '0' } }, repeat: { every: 'once' }, timeZone: 'UTC', where: 'pc' });
+    const inCloud = await queue.addTask({ body: { prompt: 'cloud work', limits: { daily: 1, task: 0.25 } }, repeat: { every: 'once' }, timeZone: 'UTC' });
+    assert.equal(onPc.where, 'pc');
+    assert.equal(inCloud.where, 'cloud');
+
+    // The user's project folder, with work already in it.
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-pc-project-'));
+    fs.mkdirSync(path.join(project, 'src'));
+    fs.writeFileSync(path.join(project, 'src', 'Old.luau'), 'return "kept"\n');
+    const past = new Date(Date.now() - 3600 * 1000);
+    fs.utimesSync(path.join(project, 'src', 'Old.luau'), past, past);
+
+    const { runQueue } = require('../scripts/cloud-agent.js');
+    const ran = await runQueue({
+        github, passphrase: PASS, port: await freePort(), budget: 30 * 60 * 1000, browser, where: 'pc', projectDir: project,
+        beforeSend: async cloudPage => {
+            await cloudPage.evaluate(() => {
+                groqKey = 'gsk_test';
+                let calls = 0;
+                window.groqChatMessage = async () => {
+                    calls++;
+                    if (calls === 1) return { role: 'assistant', content: '', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'src/New.luau', content: 'return "made on the PC"\n' }) } }] };
+                    return { role: 'assistant', content: 'Wrote src/New.luau.' };
+                };
+            });
+        }
+    });
+    assert.equal(ran, 1, 'only the PC task ran');
+    assert.ok(Cloud.isDue(await queue.getTask(inCloud.id), Date.now(), 'cloud'), 'the cloud task is still waiting for the cloud runner');
+    assert.equal(fs.readFileSync(path.join(project, 'src', 'Old.luau'), 'utf8'), 'return "kept"\n', 'the project folder is never emptied');
+    const { runs } = await queue.openResult(await queue.getResult(onPc.id));
+    assert.equal(runs[0].status, 'done', JSON.stringify(runs[0]).slice(0, 500));
+    const names = runs[0].files.map(f => f.name);
+    assert.ok(!names.includes('project/src/Old.luau'), `untouched files stay on the PC: ${names}`);
+    assert.equal(fs.readFileSync(path.join(project, 'src', 'New.luau'), 'utf8'), 'return "made on the PC"\n', 'the agent worked in the real folder');
+    assert.ok(names.includes('project/src/New.luau'), `the new file comes back: ${names}`);
+});

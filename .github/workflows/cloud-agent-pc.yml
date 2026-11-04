@@ -1,0 +1,93 @@
+name: Cloud agents on my PC
+
+# Runs CoDev tasks sent to "🖥️ My PC" on the user's own computer, through a GitHub
+# self-hosted runner, so a phone can drive work that needs that computer: Roblox Studio,
+# Godot, Blender and the real project folder. It costs nothing: GitHub doesn't charge for
+# self-hosted runners. The queue, the sealing and the results are the same as the Cloud
+# agents workflow (scripts/cloud-agent.js); see the README's "Run tasks on your own PC".
+#
+# The check runs on GitHub's servers and takes seconds; the work only starts on the PC
+# when a PC task is due. While the PC is off, the job waits for it (GitHub keeps a queued
+# job for up to 24 hours).
+#
+# Setup on the PC (once): add a self-hosted runner with the label "codev-pc" (repo Settings >
+# Actions > Runners > New self-hosted runner), run it as your own Windows user (run.cmd, not
+# a service under another account, so it can reach Roblox Studio), and set the repository
+# variable CODEV_PC_PROJECT_DIR to the project folder the agents should work in.
+#
+# Security: this workflow only runs on workflow_dispatch and its schedule. Never add
+# pull_request triggers to a workflow that uses the self-hosted runner, and keep
+# "Require approval for all external contributors" on in Settings > Actions > General.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "37 * * * *"
+
+concurrency:
+  group: cloud-agents-pc
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      due: ${{ steps.queue.outputs.due }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/cloud-agent.js
+            mobile/www/agent-ui/cloud-queue.js
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: queue
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CODEV_CLOUD_WHERE: pc
+        run: node scripts/cloud-agent.js --check
+
+  run:
+    needs: check
+    if: needs.check.outputs.due == 'true'
+    runs-on: [self-hosted, codev-pc]
+    timeout-minutes: 355
+    env:
+      CODEV_CLOUD_WHERE: pc
+      CODEV_PC_PROJECT_DIR: ${{ vars.CODEV_PC_PROJECT_DIR }}
+      CODEV_SHARED_GROQ: ${{ secrets.CODEV_SHARED_GROQ }}
+      CODEV_SHARED_OPENROUTER: ${{ secrets.CODEV_SHARED_OPENROUTER }}
+      CODEV_SHARED_ANTHROPIC: ${{ secrets.CODEV_SHARED_ANTHROPIC }}
+      CODEV_SHARED_GEMINI: ${{ secrets.CODEV_SHARED_GEMINI }}
+      CODEV_SHARED_TAVILY: ${{ secrets.CODEV_SHARED_TAVILY }}
+      CODEV_SHARED_AZURE_SPEECH: ${{ secrets.CODEV_SHARED_AZURE_SPEECH }}
+      CODEV_SHARED_AZURE_SPEECH_REGION: ${{ secrets.CODEV_SHARED_AZURE_SPEECH_REGION }}
+      CODEV_SHARED_ODDS: ${{ secrets.CODEV_SHARED_ODDS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Chromium only (the PC already has what it needs to run it); cached after the first run.
+      - name: Install CoDev and Chromium
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright-core install chromium
+
+      # Into the runner's copy only; never committed.
+      - name: Build the keys in
+        run: node scripts/write-shared-keys.js
+
+      - name: Run the due tasks
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CODEV_CLOUD_PASSPHRASE: ${{ secrets.CODEV_CLOUD_PASSPHRASE }}
+        run: node scripts/cloud-agent.js
