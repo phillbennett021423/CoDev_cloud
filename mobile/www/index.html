@@ -1360,6 +1360,7 @@
     <script src="agent-ui/work-kit.js"></script>
     <script src="agent-ui/tester-kit.js"></script>
     <script src="agent-ui/agent-intros.js"></script>
+    <script src="agent-ui/natural-voice.js"></script>
     <script src="agent-ui/sketch-pad.js"></script>
     <script src="companion/companion.js"></script>
     <script src="companion/companion-bridge.js"></script>
@@ -6986,12 +6987,109 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             { model: "gemini-2.5-pro-preview-tts", api: "generate" }
         ];
         let geminiTtsModelIndex = 0;
-        let koreVoiceOn = localStorage.getItem("codev_tts_kore") !== "0";
-        const KORE_CHOICE = "__kore__";
+        // The read-aloud voice: a natural voice made on this device (a Kokoro voice id, Kore by
+        // default: no key, no account), "gemini" for Gemini's own Kore (needs a Gemini key), or ""
+        // for this device's built-in voices.
+        let naturalVoice = (() => {
+            const saved = localStorage.getItem("codev_tts_natural");
+            if (saved !== null) return saved;
+            return localStorage.getItem("codev_tts_kore") === "0" ? "" : "af_kore";
+        })();
+        let koreVoiceOn = naturalVoice === "gemini";
+        const NATURAL_PREFIX = "natural:";
+        const KORE_CHOICE = "gemini";
+        function setVoiceChoice(value) {
+            naturalVoice = value === KORE_CHOICE ? "gemini" : String(value || "").startsWith(NATURAL_PREFIX) ? value.slice(NATURAL_PREFIX.length) : "";
+            koreVoiceOn = naturalVoice === "gemini";
+        }
+        function voiceChoiceValue() {
+            return naturalVoice === "gemini" ? KORE_CHOICE : naturalVoice ? NATURAL_PREFIX + naturalVoice : "";
+        }
+        function naturalVoiceOn() {
+            return !!window.CodevNaturalVoice && CodevNaturalVoice.isVoice(naturalVoice) && CodevNaturalVoice.supported(window);
+        }
+
+        // The natural voices run in a worker (agent-ui/kokoro-worker.js). The first use downloads
+        // the model once (about 90 MB), with its progress shown.
+        let naturalVoiceEngine = null;
+        let naturalVoiceFailNoticeShown = false;
+        let naturalProgressShownAt = 0;
+        function getNaturalVoiceEngine() {
+            if (!naturalVoiceEngine) {
+                naturalVoiceEngine = CodevNaturalVoice.create({
+                    workerUrl: new URL("agent-ui/kokoro-worker.js", document.baseURI),
+                    onProgress: p => {
+                        if (Date.now() - naturalProgressShownAt < 1500 || !p.total || p.total < 1000000) return;
+                        naturalProgressShownAt = Date.now();
+                        const mb = n => Math.round(n / 1048576);
+                        showToast(`Getting the natural voice ready (only the first time): ${mb(p.loaded)} of ${mb(p.total)} MB…`);
+                    }
+                });
+            }
+            return naturalVoiceEngine;
+        }
+
+        async function speakWithNatural(text, runId) {
+            const engine = getNaturalVoiceEngine();
+            // A short first piece so the voice starts quickly; the next one is made while this one plays.
+            const first = splitTextForSpeech(text, 220);
+            const chunks = [first[0], ...splitTextForSpeech(first.slice(1).join(" "), 400)].filter(Boolean);
+            let next = engine.speak(chunks[0], naturalVoice);
+            for (let i = 0; i < chunks.length; i++) {
+                const blob = await next;
+                if (runId !== speechRunId) return;
+                next = i + 1 < chunks.length ? engine.speak(chunks[i + 1], naturalVoice) : null;
+                if (next) next.catch(() => {});
+                await playAudioBlob(blob);
+                if (runId !== speechRunId) return;
+            }
+        }
         // Keys stay in each browser, so a phone opening the web page needs its own copy.
         const KORE_NEEDS_KEY = "Kore needs a Gemini key on this device (keys stay in each browser and app): add yours in Settings > Gemini. Until then this device's own voice reads.";
         let koreKeyNoticeShown = false;
         let koreFailNoticeShown = false;
+        // "Use this device's voice" in the Kore key prompt: not asked again until the page reloads.
+        let koreKeyDeclined = false;
+
+        function openKoreKeyPrompt(text) {
+            document.getElementById("koreKeyModal")?.remove();
+            const overlay = document.createElement("div");
+            overlay.className = "modal-overlay";
+            overlay.id = "koreKeyModal";
+            overlay.style.display = "flex";
+            overlay.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="koreKeyTitle">
+                <h3 id="koreKeyTitle" style="margin: 0;">🎙️ Hear it in Kore</h3>
+                <div style="font-size: 0.9rem; line-height: 1.5;">Kore is Gemini's voice, so it needs a Gemini API key on this device. Keys stay in this browser or app and are never shared. A key is free from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color: var(--accent);">Google AI Studio</a>.</div>
+                <input type="text" id="koreKeyInput" placeholder="Paste your Gemini key (AIza...)" autocomplete="off" spellcheck="false" style="font-family: monospace; padding: 10px; border-radius: 8px;">
+                <div id="koreKeyStatus" role="alert" style="font-size: 0.85rem; color: var(--danger); min-height: 1em;"></div>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
+                    <button type="button" class="btn-secondary" id="koreKeySkip" style="padding: 10px 14px; border-radius: 8px;">Use this device's voice</button>
+                    <button type="button" class="btn-save-agent" id="koreKeySave" style="padding: 10px 14px; border-radius: 8px;">Save and play in Kore</button>
+                </div>
+            </div>`;
+            document.body.appendChild(overlay);
+            const input = overlay.querySelector("#koreKeyInput");
+            const close = () => overlay.remove();
+            overlay.addEventListener("click", e => { if (e.target === overlay) close(); });
+            overlay.querySelector("#koreKeySkip").onclick = () => { koreKeyDeclined = true; close(); speakText(text); };
+            const save = () => {
+                const key = input.value.replace(/[\s\u200B-\u200D\uFEFF"'`]+/g, "");
+                if (!GEMINI_KEY_PATTERN.test(key)) {
+                    overlay.querySelector("#koreKeyStatus").textContent = "That doesn't look like a Gemini key (they start with AIza). Copy it again from Google AI Studio.";
+                    return;
+                }
+                geminiKey = key;
+                localStorage.setItem("codev_gemini_key", key);
+                if (typeof updateMediaStatus === "function") updateMediaStatus();
+                logConsoleActivity("Saved a Gemini key for the Kore voice.");
+                close();
+                // This tap is the gesture that lets the phone play Kore's audio.
+                speakText(text);
+            };
+            overlay.querySelector("#koreKeySave").onclick = save;
+            input.addEventListener("keydown", e => { if (e.key === "Enter") save(); });
+            input.focus();
+        }
 
         function koreVoiceReady() { return koreVoiceOn && !!geminiSearchKey(); }
 
@@ -7135,18 +7233,38 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const cleanText = cleanTextForSpeech(text);
             if (!cleanText) return;
 
+            // Kore picked but no Gemini key on this device (the web page has none of its own):
+            // ask for one right here instead of reading in another voice.
+            if (koreVoiceOn && !geminiSearchKey() && !koreKeyDeclined) {
+                openKoreKeyPrompt(text);
+                return;
+            }
+
             stopSpeaking();
             // Still inside the tap: unlock audio for Kore's (or Azure's) speech.
             primeSpeechAudio();
             const runId = speechRunId;
             isSpeaking = true;
             logConsoleActivity("Playing text-to-speech audio for agent response.");
-            if (koreVoiceOn && !geminiSearchKey() && !koreKeyNoticeShown) {
+            if (koreVoiceOn && !geminiSearchKey() && !koreKeyNoticeShown && !koreKeyDeclined) {
                 koreKeyNoticeShown = true;
                 showToast(KORE_NEEDS_KEY);
             }
 
             try {
+                if (naturalVoiceOn()) {
+                    try {
+                        await speakWithNatural(cleanText, runId);
+                        return;
+                    } catch (err) {
+                        if (runId !== speechRunId) return;
+                        logConsoleActivity(`Natural voice failed (${err.message}); using the ${nativeTts ? "phone's" : "computer's"} voice.`);
+                        if (!naturalVoiceFailNoticeShown) {
+                            naturalVoiceFailNoticeShown = true;
+                            showToast(`The natural voice couldn't play (${err.message}). This ${nativeTts ? "phone's" : "computer's"} own voice is reading instead.`);
+                        }
+                    }
+                }
                 if (koreVoiceReady()) {
                     try {
                         await speakWithKore(cleanText, runId);
@@ -7552,12 +7670,15 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const select = document.getElementById("modalVoice");
             const hint = document.getElementById("voiceHint");
             if (!select) return;
-            // Kore is always the first choice, on every device.
-            const koreOption = `<option value="${KORE_CHOICE}">⭐ Kore (Gemini's voice)${geminiSearchKey() ? "" : " · needs a Gemini key"}</option>`;
+            // The natural voices come first, Kore at the top, on every device; then Gemini's Kore.
+            const naturalOk = window.CodevNaturalVoice && CodevNaturalVoice.supported(window);
+            const koreOption = (naturalOk ? `<optgroup label="Natural voices (made on this device, no key)">` + CodevNaturalVoice.VOICES.map((v, i) =>
+                `<option value="${NATURAL_PREFIX}${v.id}">${i === 0 ? "⭐ " : ""}${escapeHtml(v.name)} · ${escapeHtml(v.note)}</option>`).join("") + `</optgroup>` : "")
+                + `<option value="${KORE_CHOICE}">Kore by Gemini${geminiSearchKey() ? "" : " · needs a Gemini key"}</option>`;
             if (getNativeSpeechPlugin("TextToSpeech") || !window.speechSynthesis) {
                 select.innerHTML = koreOption + `<option value="">Phone's text-to-speech voice</option>`;
                 select.disabled = false;
-                select.value = koreVoiceOn ? KORE_CHOICE : "";
+                select.value = voiceChoiceValue();
                 hint.textContent = koreVoiceHint() + "The phone's voice can be changed in Android Settings > Accessibility > Text-to-speech.";
                 return;
             }
@@ -7567,7 +7688,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             select.disabled = false;
             select.innerHTML = koreOption + `<option value="">This device's best voice${auto ? ` (${escapeHtml(auto.name)})` : ""}</option>` +
                 voices.map(v => `<option value="${escapeHtml(v.name)}">${escapeHtml(v.name)} (${escapeHtml(v.lang)})${v.localService ? "" : " · online"}</option>`).join("");
-            select.value = koreVoiceOn ? KORE_CHOICE : voices.some(v => v.name === chosenVoiceName) ? chosenVoiceName : "";
+            select.value = naturalVoice ? voiceChoiceValue() : voices.some(v => v.name === chosenVoiceName) ? chosenVoiceName : "";
+            if (select.selectedIndex < 0) select.value = "";
             const hasAva = voices.some(v => /Microsoft\s+Ava/i.test(v.name));
             document.getElementById("modalAzureKey").value = codevOwnKey("azureSpeech", azureSpeechKey);
             document.getElementById("modalAzureRegion").value = azureSpeechRegion;
@@ -7579,8 +7701,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         }
 
         function koreVoiceHint() {
+            if (naturalVoiceOn()) return "Natural voices are made on this device: no key, nothing sent anywhere. The first time, the voice downloads once (about 90 MB). ";
             if (!koreVoiceOn) return "";
-            return geminiSearchKey() ? "Kore reads answers aloud. " : `${KORE_NEEDS_KEY} `;
+            return geminiSearchKey() ? "Gemini's Kore reads answers aloud. " : `${KORE_NEEDS_KEY} `;
         }
 
         function chooseWebVoiceAuto() {
@@ -7598,20 +7721,20 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         function testVoice() {
             const select = document.getElementById("modalVoice");
             const saved = chosenVoiceName;
-            const savedKore = koreVoiceOn;
+            const savedChoice = voiceChoiceValue();
             const savedGemini = typeof geminiKey === "string" ? geminiKey : "";
             // A Gemini key pasted in Settings but not saved yet still gets to try Kore.
             const typedGemini = String(document.getElementById("modalGeminiKey")?.value || "").trim();
             if (typedGemini && typeof geminiKey === "string" && !geminiKey) geminiKey = typedGemini;
             readAzureSettings();
             if (select) {
-                koreVoiceOn = select.value === KORE_CHOICE;
-                chosenVoiceName = koreVoiceOn ? saved : select.value;
+                setVoiceChoice(select.value);
+                chosenVoiceName = naturalVoice ? saved : select.value;
             }
             lockedWebVoice = null;
             if (isSpeaking) stopSpeaking();
             speakText("Hi, this is the voice CoDev Studio Beta will use to read answers aloud. For example, version 4.2 of the file main.py is ready.")
-                .finally(() => { chosenVoiceName = saved; koreVoiceOn = savedKore; if (typeof geminiKey === "string" && !savedGemini) geminiKey = savedGemini; lockedWebVoice = null; });
+                .finally(() => { chosenVoiceName = saved; setVoiceChoice(savedChoice); if (typeof geminiKey === "string" && !savedGemini) geminiKey = savedGemini; lockedWebVoice = null; });
         }
 
         if (window.speechSynthesis) window.speechSynthesis.addEventListener("voiceschanged", () => {
@@ -7870,10 +7993,10 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             localStorage.setItem("codev_azure_speech_region", azureSpeechRegion);
             const voiceSelect = document.getElementById("modalVoice");
             if (voiceSelect && voiceSelect.options.length) {
-                koreVoiceOn = voiceSelect.value === KORE_CHOICE;
-                localStorage.setItem("codev_tts_kore", koreVoiceOn ? "1" : "0");
+                setVoiceChoice(voiceSelect.value);
+                localStorage.setItem("codev_tts_natural", naturalVoice);
             }
-            if (voiceSelect && voiceSelect.options.length && !koreVoiceOn) {
+            if (voiceSelect && voiceSelect.options.length && !naturalVoice) {
                 chosenVoiceName = voiceSelect.value;
                 localStorage.setItem("codev_tts_voice", chosenVoiceName);
                 lockedWebVoice = null;
