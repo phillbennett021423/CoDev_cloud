@@ -3,7 +3,10 @@
 //
 //   in:  { type: "speak", id, text, voice }   out: { type: "audio", id, wav (ArrayBuffer) }
 //                                                   { type: "error", id, message }
+//   in:  { type: "warm", voice }              load the model and make one short word, so the
+//                                             first real piece starts quickly
 //   out while the model loads the first time: { type: "progress", loaded, total, file }
+//   out once the model is loaded:             { type: "ready" }
 const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
 const CDN = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
 
@@ -26,7 +29,7 @@ function loadTts() {
             progress_callback: p => {
                 if (p && p.status === "progress") self.postMessage({ type: "progress", loaded: p.loaded || 0, total: p.total || 0, file: p.file || "" });
             }
-        })).catch(err => { ttsPromise = null; throw err; });
+        })).then(tts => { self.postMessage({ type: "ready" }); return tts; }, err => { ttsPromise = null; throw err; });
     }
     return ttsPromise;
 }
@@ -52,7 +55,10 @@ let queue = Promise.resolve();
 
 self.onmessage = event => {
     const { type, id, text, voice } = event.data || {};
-    if (type === "warm") { loadTts().catch(() => {}); return; }
+    if (type === "warm") {
+        queue = queue.then(() => loadTts().then(tts => tts.generate("Hi.", { voice: voice || "af_kore" })).catch(() => {}));
+        return;
+    }
     if (type !== "speak") return;
     queue = queue.then(async () => {
         try {
