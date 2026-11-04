@@ -15,7 +15,12 @@
 //   CodevCloud.createGitHub({ repo, token, branch, fetch })      contents API, refs, dispatch
 //   CodevCloud.createQueue({ github, passphrase })               tasks, results, spend
 //   CodevCloud.nextRun(repeat, after, timeZone)                   when a repeating task runs next
-//   CodevCloud.isDue(task, now)
+//   CodevCloud.isDue(task, now, where)
+//   CodevCloud.workflowFor(where)                                 the workflow that runs it
+//
+// Where a task runs: "cloud" (GitHub's servers, the default) or "pc" (the user's own
+// computer, through a GitHub self-hosted runner and the "Cloud agents on my PC" workflow),
+// for work that needs that computer: Roblox Studio, Godot, Blender, local files.
 //
 // The same file runs in the page and in Node (the runner and the tests).
 (function (root, factory) {
@@ -26,6 +31,9 @@
 
     const BRANCH = "agent-queue";
     const WORKFLOW = "cloud-agent.yml";
+    const WORKFLOWS = { cloud: WORKFLOW, pc: "cloud-agent-pc.yml" };
+    const whereOf = task => (task && task.where === "pc" ? "pc" : "cloud");
+    const workflowFor = where => WORKFLOWS[where === "pc" ? "pc" : "cloud"];
     const KDF_ROUNDS = 210000;
     const MAX_RUNS_KEPT = 5;
     // Per run, before sealing. GitHub's contents API takes up to 100 MB; this stays well under.
@@ -202,7 +210,8 @@
         return null;
     }
 
-    const isDue = (task, now = Date.now()) => !!task && !task.paused && typeof task.nextRun === "number" && task.nextRun <= now;
+    // where: only tasks for that runner ("cloud" or "pc"); left out, any task.
+    const isDue = (task, now = Date.now(), where) => !!task && !task.paused && typeof task.nextRun === "number" && task.nextRun <= now && (!where || whereOf(task) === where);
 
     function describeRepeat(repeat) {
         const r = cleanRepeat(repeat);
@@ -247,11 +256,11 @@
                 if (!(await github.branchExists())) await github.createQueueBranch();
             },
             // body: { prompt, agent, limits: { daily, task }, chatId, title } ; repeat: { every, at, day }
-            async addTask({ body, repeat, timeZone = "UTC", runNow = true }) {
+            async addTask({ body, repeat, timeZone = "UTC", runNow = true, where = "cloud" }) {
                 const id = newId();
                 const r = cleanRepeat(repeat);
                 const now = Date.now();
-                const task = { v: 1, id, created: now, repeat: r, timeZone, nextRun: runNow || r.every === "once" ? now : nextRun(r, now, timeZone), sealed: await seal(body, passphrase) };
+                const task = { v: 1, id, created: now, repeat: r, timeZone, where: where === "pc" ? "pc" : "cloud", nextRun: runNow || r.every === "once" ? now : nextRun(r, now, timeZone), sealed: await seal(body, passphrase) };
                 await github.putFile(taskPath(id), JSON.stringify(task, null, 1), `Queue cloud task ${id}`);
                 return task;
             },
@@ -292,5 +301,5 @@
         };
     }
 
-    return { BRANCH, WORKFLOW, REPEATS, MAX_RESULT_FILE_BYTES, seal, open, toBase64, fromBase64, createGitHub, createQueue, nextRun, isDue, describeRepeat, cleanRepeat };
+    return { BRANCH, WORKFLOW, WORKFLOWS, workflowFor, whereOf, REPEATS, MAX_RESULT_FILE_BYTES, seal, open, toBase64, fromBase64, createGitHub, createQueue, nextRun, isDue, describeRepeat, cleanRepeat };
 });

@@ -6,14 +6,34 @@
 -- uses something wrong fails here the way it would in Studio.
 -- The host passes in: jsprint(line), jsload(source, chunkName) -> function | error string.
 
-local function emit(line) jsprint(line) end
+-- The mock runs the server and every client in one data model. Each script's environment
+-- has __side (false on the server, the Player on a client), so output can be told apart
+-- the way each real data model's LogService would keep it.
+local logHistory = {} -- { side, message, messageType } while playing
+local recordLog = false
+local function sideOf()
+	for level = 3, 12 do
+		local ok, env = pcall(getfenv, level)
+		if not ok then break end
+		if type(env) == "table" and rawget(env, "__side") ~= nil then return rawget(env, "__side") end
+	end
+	return false
+end
+local function emit(line, side)
+	jsprint(line)
+	if not recordLog then return end
+	local kind, text = "Enum.MessageType.MessageOutput", line
+	if string.sub(line, 1, 7) == "ERROR: " then kind, text = "Enum.MessageType.MessageError", string.sub(line, 8)
+	elseif string.sub(line, 1, 6) == "WARN: " then kind, text = "Enum.MessageType.MessageWarning", string.sub(line, 7) end
+	table.insert(logHistory, { side = side or false, message = text, messageType = kind })
+end
 local function fmt(...)
 	local t = table.pack(...)
 	for i = 1, t.n do t[i] = tostring(t[i]) end
 	return table.concat(t, " ")
 end
-print = function(...) emit(fmt(...)) end
-warn = function(...) emit("WARN: " .. fmt(...)) end
+print = function(...) emit(fmt(...), sideOf()) end
+warn = function(...) emit("WARN: " .. fmt(...), sideOf()) end
 
 local Enum = setmetatable({}, { __index = function(_, group)
 	return setmetatable({}, { __index = function(_, item) return "Enum." .. group .. "." .. item end })
@@ -290,6 +310,35 @@ local SERVICE_EXTRA = {
 			end,
 		}
 	end,
+	-- Multiplayer tests: the mock runs the server and every client in one data model.
+	LogService = function()
+		return {
+			GetLogHistory = function()
+				local side = sideOf()
+				local out = {}
+				for _, e in logHistory do
+					if e.side == side then table.insert(out, { message = e.message, messageType = e.messageType, timestamp = 0 }) end
+				end
+				return out
+			end,
+		}
+	end,
+	StudioTestService = function()
+		local args, result, ended = nil, nil, false
+		return {
+			GetTestArgs = function() return args end,
+			EndTest = function(_, value) result = value; ended = true end,
+			ExecuteMultiplayerTestAsync = function(_, n, testArgs)
+				if __codev_playing() then error("A test is already running", 2) end
+				args, result, ended = testArgs, nil, false
+				__codev_play(n)
+				local steps = 0
+				while not ended and steps < 5000 do __codev_step(); steps += 1 end
+				__codev_stop()
+				return result
+			end,
+		}
+	end,
 	MarketplaceService = function()
 		return { UserOwnsGamePassAsync = function() return false end, PromptProductPurchase = function() end, PromptGamePassPurchase = function() end }
 	end,
@@ -323,10 +372,10 @@ local task = {
 }
 task.cancel = function() end
 
-local function load(source, chunkName, script)
+local function load(source, chunkName, script, player)
 	local fn = jsload(source, chunkName)
 	if type(fn) == "string" then error(fn, 0) end
-	setfenv(fn, setmetatable({ script = script }, { __index = baseEnv }))
+	setfenv(fn, setmetatable({ script = script, __side = if script then (player or false) else nil }, { __index = baseEnv }))
 	return fn
 end
 
@@ -351,12 +400,12 @@ baseEnv = setmetatable({
 	CFrame = { new = function(...) return { ... } end },
 }, { __index = getfenv(0) })
 
-local function runScript(script)
-	local fn = load(script.Source, script:GetFullName(), script)
+local function runScript(script, player)
+	local fn = load(script.Source, script:GetFullName(), script, player)
 	local co = coroutine.create(fn)
 	local ok, err = coroutine.resume(co)
 	if not ok then
-		emit("ERROR: " .. tostring(err))
+		emit("ERROR: " .. tostring(err), player or false)
 		emit("Stack Begin")
 		emit(("Script '%s'"):format(script:GetFullName()))
 		emit("Stack End")
@@ -374,11 +423,23 @@ local function step()
 	game:GetService("RunService").Heartbeat:Fire(1 / 60)
 end
 
-local playing = false
-local playerOne
+__codev_step = step
 
-function __codev_play()
+local playing = false
+local playersIn = {}
+-- Play runs in a copy of the place in Studio, so what the game makes while playing is gone
+-- when it stops. The mock plays in the edit place itself and removes those things at stop.
+local PLAY_ROOTS = { "Workspace", "ReplicatedStorage", "ServerStorage", "Lighting", "StarterGui" }
+local beforePlay = {}
+
+function __codev_play(count)
 	playing = true
+	logHistory = {}
+	recordLog = true
+	beforePlay = {}
+	for _, name in PLAY_ROOTS do
+		for _, child in game:GetService(name):GetChildren() do beforePlay[child] = true end
+	end
 	modules = {}
 	local players = game:GetService("Players")
 	for _, root in { game:GetService("ServerScriptService"), game:GetService("Workspace") } do
@@ -386,28 +447,40 @@ function __codev_play()
 			if d.ClassName == "Script" and d.Enabled ~= false then runScript(d) end
 		end
 	end
-	playerOne = new("Player")
-	playerOne.Name = "Player1"
-	playerOne.UserId = 1
-	local gui = new("PlayerGui")
-	gui.Parent = playerOne
-	playerOne.Parent = players
-	state[players].extra.LocalPlayer = playerOne
-	players.PlayerAdded:Fire(playerOne)
-	local sps = game:GetService("StarterPlayer"):FindFirstChild("StarterPlayerScripts")
-	if sps then for _, d in sps:GetDescendants() do if d.ClassName == "LocalScript" then runScript(d) end end end
+	-- Each player's LocalScripts start with LocalPlayer set to that player.
+	for n = 1, count or 1 do
+		local player = new("Player")
+		player.Name = "Player" .. n
+		player.UserId = n
+		local gui = new("PlayerGui")
+		gui.Parent = player
+		player.Parent = players
+		table.insert(playersIn, player)
+		state[players].extra.LocalPlayer = player
+		players.PlayerAdded:Fire(player)
+		local sps = game:GetService("StarterPlayer"):FindFirstChild("StarterPlayerScripts")
+		if sps then for _, d in sps:GetDescendants() do if d.ClassName == "LocalScript" then runScript(d, player) end end end
+		state[players].extra.LocalPlayer = playersIn[1]
+	end
 	for _ = 1, 20 do step() end
 end
 
 function __codev_stop()
 	-- Like Roblox: players leave first, then BindToClose runs as the server shuts down.
-	if playerOne then game:GetService("Players").PlayerRemoving:Fire(playerOne) end
+	for _, player in playersIn do game:GetService("Players").PlayerRemoving:Fire(player) end
 	for _ = 1, 5 do step() end
 	for _, fn in closers do resume(coroutine.create(fn)) end
 	for _ = 1, 5 do step() end
 	playing = false
 	threads = {}
-	if playerOne then playerOne:Destroy(); playerOne = nil end
+	recordLog = false
+	for _, name in PLAY_ROOTS do
+		for _, child in game:GetService(name):GetChildren() do
+			if not beforePlay[child] then child:Destroy() end
+		end
+	end
+	for _, player in playersIn do player:Destroy() end
+	playersIn = {}
 	state[game:GetService("Players")].extra.LocalPlayer = nil
 end
 

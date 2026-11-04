@@ -12,7 +12,7 @@ const TOPICS = {
 5. roblox_diff shows what a sync would change, line by line, when the user wants to review first. roblox_sync puts the changed scripts into the open place, as one step the user can undo with Ctrl+Z in Studio. It won't overwrite a script someone edited in Studio; copy that edit into the file, or pass overwrite_studio_edits if it should go.
 6. Art and sound: roblox_export_model fits a model to Roblox's limits (20,000 triangles per mesh, 4 bone weights per vertex, 1024 textures), roblox_asset_check confirms it, roblox_upload puts it on Roblox and writes its id into src/shared/Assets.luau, so scripts use require(ReplicatedStorage.Shared.Assets).Name. Animations upload as .rbxm from Studio's Animation Editor; a .fbx animation goes in through Studio's 3D Importer.
 7. Build the world in Studio with roblox_studio (execute_luau to place parts and models, search_game_tree and inspect_instance to look, insert_asset for Creator Store models, generate_mesh / generate_material where offered).
-8. roblox_playtest: press Play, read every error, look at the screenshot, stop. Fix and repeat until it runs clean and looks right. Never tell the user it works before a clean playtest.
+8. roblox_playtest: press Play, read every error, look at the screenshot, stop. Fix and repeat until it runs clean and looks right. Never tell the user it works before a clean playtest. For anything several players share (remotes, rounds, trading, saving, leaderboards), also run roblox_playtest with players 2 or more: a local server with that many clients, reporting each one's errors.
 
 Plan the core loop first (what the player does every 30 seconds, and why they come back tomorrow), build that, playtest it, then add content and monetization.
 

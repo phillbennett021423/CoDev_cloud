@@ -19,6 +19,7 @@ const path = require('path');
 const { compileLuau, luauAvailable, lintRoblox, scriptKind } = require('./roblox-luau');
 const { guide, TOPICS } = require('./roblox-guide');
 const { createRobloxAssets } = require('./roblox-assets');
+const { multiplayerLuau, parseMultiplayer } = require('./roblox-multiplayer');
 const { readStudioLuau, parseStudioSources, lineDiff, hashSource } = require('./roblox-diff');
 const crypto = require('crypto');
 
@@ -532,7 +533,30 @@ function createRoblox({ getProjectDir = () => '', env = process.env, log = () =>
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-    async function playtest({ seconds = 5, screenshot = true } = {}) {
+    // A local server with several player clients (Test > Clients and Servers).
+    async function multiplayer(players, seconds) {
+        const nonce = `CDVMP${crypto.randomBytes(4).toString('hex')}`;
+        const { output, isError } = await runLuau(multiplayerLuau({ players, seconds, nonce }), (seconds + 240) * 1000);
+        const r = parseMultiplayer(output, nonce);
+        if (isError || !r.ok) {
+            const why = r.error || tail(output, 1500) || 'no output';
+            return text(`The ${players}-player test didn't run: ${why}\nStudio may not allow plugins to start multiplayer tests in this version. Run it by hand from the Test tab (Clients and Servers, ${players} players), or use roblox_playtest without players for a one-player test.`, true);
+        }
+        const lines = [...r.server.map(l => `[server] ${l}`), ...Object.entries(r.clients).sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true })).flatMap(([name, ls]) => ls.map(l => `[${name}] ${l}`))];
+        const problems = lines.filter(l => /\] ERROR /.test(l) || (/\] WARN /.test(l) && /Infinite yield/.test(l)));
+        const silent = Object.keys(r.clients).length < r.joined ? `\n${r.joined - Object.keys(r.clients).length} client(s) didn't report back (a client that froze or errored before its scripts ran).` : '';
+        const missing = r.joined < r.wanted ? `Only ${r.joined} of ${r.wanted} players joined.` : `${r.joined} players joined.`;
+        const summary = [
+            `Multiplayer test, ${r.wanted} players for ${seconds}s: ${missing} ${problems.length ? `${problems.length} error line(s).` : 'No errors on the server or any client.'}${silent}`,
+            problems.length ? `Errors:\n  ${problems.slice(0, 60).join('\n  ')}` : '',
+            `Output:\n${tail(lines.join('\n'), 8000) || '(nothing printed)'}`
+        ].filter(Boolean).join('\n');
+        return { content: [{ type: 'text', text: summary }], ...(problems.length || r.joined < r.wanted || silent ? { isError: true } : {}) };
+    }
+
+    async function playtest({ seconds = 5, screenshot = true, players = 1 } = {}) {
+        const count = Math.round(Number(players) || 1);
+        if (count > 1) return multiplayer(Math.min(count, 8), Math.min(Math.max(Number(seconds) || 5, 1), 60));
         const c = await connect();
         const play = has(c, 'start_stop_play');
         const consoleTool = has(c, 'get_console_output');
@@ -662,10 +686,11 @@ function createRoblox({ getProjectDir = () => '', env = process.env, log = () =>
         },
         {
             name: 'roblox_playtest',
-            description: 'Playtest the place open in Roblox Studio: press Play, let it run, read the output, take a picture of the game view, and stop. Returns the error lines, the output and the picture. Use it after roblox_sync and after every change to the world, and keep fixing until it runs clean and looks right; don\'t tell the user the game works before a clean playtest. Not for checking syntax (roblox_check is faster).',
+            description: 'Playtest the place open in Roblox Studio: press Play, let it run, read the output, take a picture of the game view, and stop. Returns the error lines, the output and the picture. With players 2 to 8 it runs a local server with that many clients and reports the errors of each. Use it after roblox_sync and after every change to the world, and keep fixing until it runs clean and looks right; don\'t tell the user the game works before a clean playtest. Not for checking syntax (roblox_check is faster).',
             inputSchema: { type: 'object', properties: {
                 seconds: { type: 'number', description: 'Optional: how long to run before reading the output (default 5, up to 60).' },
-                screenshot: { type: 'boolean', description: 'Optional: take a picture of the game view at the end (default true).' }
+                screenshot: { type: 'boolean', description: 'Optional: take a picture of the game view at the end (default true; one-player tests only).' },
+                players: { type: 'number', description: 'Optional: 2 to 8 runs a multiplayer test instead: a local server with that many player clients (Test > Clients and Servers), returning the output and errors of the server and of each client. Use it for anything several players touch at once: remotes, shared state, saving, rounds, trading. Default 1.' }
             } }
         },
         {

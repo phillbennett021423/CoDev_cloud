@@ -19,6 +19,11 @@
 //
 // Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, CODEV_CLOUD_PASSPHRASE; optional
 // CODEV_CLOUD_BRANCH, CODEV_CLOUD_BUDGET_MIN (default 330), CODEV_CLOUD_PORT, CODEV_CHROMIUM.
+//
+// On the user's own PC (.github/workflows/cloud-agent-pc.yml on a self-hosted runner),
+// CODEV_CLOUD_WHERE=pc runs only the tasks sent to "My PC", and CODEV_PC_PROJECT_DIR is the
+// user's real project folder: the agents work in it (with Roblox Studio, Godot or Blender
+// open on that PC), it is never emptied, and only the files a run changed come back.
 // Nothing here prints a task's words or a key: the run's log is public.
 const fs = require('fs');
 const os = require('os');
@@ -33,6 +38,7 @@ const budgetMs = Number(process.env.CODEV_CLOUD_BUDGET_MIN || 330) * 60 * 1000;
 const DEFAULT_TASK_MINUTES = 120;
 const MAX_TASK_MINUTES = 300;
 const PORT = Number(process.env.CODEV_CLOUD_PORT || 3311);
+const WHERE = process.env.CODEV_CLOUD_WHERE === 'pc' ? 'pc' : 'cloud';
 const log = (...args) => console.log(`[cloud ${new Date().toISOString().slice(11, 19)}]`, ...args);
 
 function output(name, value) {
@@ -56,7 +62,7 @@ async function check() {
     const gh = github();
     if (!(await gh.branchExists())) return output('due', 'false');
     const queue = Cloud.createQueue({ github: gh, passphrase: '' });
-    const due = (await queue.listTasks()).filter(t => Cloud.isDue(t));
+    const due = (await queue.listTasks()).filter(t => Cloud.isDue(t, Date.now(), WHERE));
     output('due', due.length ? 'true' : 'false');
     output('count', due.length);
 }
@@ -77,15 +83,17 @@ function emptyDir(dir) {
     fs.mkdirSync(dir, { recursive: true });
 }
 
-// Files the agents wrote in the project folder, up to the size cap.
-function workspaceFiles(dir, budget) {
+// Files the agents wrote in the project folder, up to the size cap. since: only files
+// changed after that time (the user's own folder on a PC, which holds much more).
+function workspaceFiles(dir, budget, since = 0) {
     const files = [], skipped = [];
     const walk = rel => {
         for (const entry of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
-            if (entry.name === 'node_modules' || entry.name === '.git') continue;
+            if (entry.name === 'node_modules' || entry.name === '.git' || (since && entry.name === '.codev')) continue;
             const relPath = rel ? `${rel}/${entry.name}` : entry.name;
             if (entry.isDirectory()) walk(relPath);
             else if (entry.isFile()) {
+                if (since && fs.statSync(path.join(dir, relPath)).mtimeMs < since) continue;
                 const bytes = fs.readFileSync(path.join(dir, relPath));
                 if (bytes.length > budget.left || files.length >= 200) { skipped.push(relPath); continue; }
                 budget.left -= bytes.length;
@@ -109,7 +117,7 @@ function seedScript(settings, extra) {
     })();`;
 }
 
-async function runTask({ queue, browser, task, workspace, deadline, port = PORT, beforeSend }) {
+async function runTask({ queue, browser, task, workspace, keepWorkspace = false, deadline, port = PORT, beforeSend }) {
     const startedAt = Date.now();
     let body;
     try {
@@ -137,7 +145,7 @@ async function runTask({ queue, browser, task, workspace, deadline, port = PORT,
     await queue.saveRun(task.id, { started: startedAt, status: 'running', messages: [] });
     log(`task ${task.id}: running (${Cloud.describeRepeat(task.repeat)})`);
 
-    emptyDir(workspace);
+    if (!keepWorkspace) emptyDir(workspace);
     const minutes = Math.min(MAX_TASK_MINUTES, Math.max(5, Number(body.maxMinutes) || DEFAULT_TASK_MINUTES));
     const stopAt = Math.min(deadline, startedAt + minutes * 60 * 1000);
     const context = await browser.newContext({ timezoneId: tz, viewport: { width: 1400, height: 900 }, acceptDownloads: false });
@@ -212,7 +220,8 @@ async function runTask({ queue, browser, task, workspace, deadline, port = PORT,
     }
     await context.close().catch(() => {});
 
-    const fromWorkspace = workspaceFiles(workspace, { left: capture.left ?? Cloud.MAX_RESULT_FILE_BYTES });
+    // A second early, so a file written in the run's first moment still counts (coarse mtimes).
+    const fromWorkspace = workspaceFiles(workspace, { left: capture.left ?? Cloud.MAX_RESULT_FILE_BYTES }, keepWorkspace ? startedAt - 2000 : 0);
     const after = capture.spend && capture.spend.day === day ? capture.spend : spend;
     await queue.setSpend(after);
     const run = {
@@ -230,12 +239,19 @@ async function runTask({ queue, browser, task, workspace, deadline, port = PORT,
 
 // Runs every due task, one after another, until none is due or the time budget is near.
 // The tests pass their own github (an in-memory stand-in), port and beforeSend.
-async function runQueue({ github: gh, passphrase, port = PORT, budget = budgetMs, beforeSend, chromiumPath = process.env.CODEV_CHROMIUM, workspace, browser: givenBrowser }) {
+async function runQueue({ github: gh, passphrase, port = PORT, budget = budgetMs, beforeSend, chromiumPath = process.env.CODEV_CHROMIUM, workspace, browser: givenBrowser, where = WHERE, projectDir = process.env.CODEV_PC_PROJECT_DIR }) {
     const queue = Cloud.createQueue({ github: gh, passphrase });
     await queue.ensureBranch();
     const deadline = Date.now() + budget;
-    workspace = workspace || path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'codev-cloud-workspace');
-    emptyDir(workspace);
+    // On the PC with a project folder set, the agents work in the user's real folder.
+    const keepWorkspace = where === 'pc' && Boolean(projectDir);
+    if (keepWorkspace) {
+        if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory()) throw new Error(`CODEV_PC_PROJECT_DIR (${projectDir}) is not a folder on this PC.`);
+        workspace = path.resolve(projectDir);
+    } else {
+        workspace = workspace || path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'codev-cloud-workspace');
+        emptyDir(workspace);
+    }
     const env = { ...process.env, PORT: String(port), CODEV_WORKSPACE: workspace, GITHUB_TOKEN: '', CODEV_CLOUD_PASSPHRASE: '' };
     const server = spawn(process.execPath, [path.join(ROOT, 'server.js'), workspace], { cwd: ROOT, env, stdio: ['ignore', 'ignore', 'inherit'] });
     let browser = givenBrowser;
@@ -248,16 +264,16 @@ async function runQueue({ github: gh, passphrase, port = PORT, budget = budgetMs
         }
         const tried = new Set();
         for (;;) {
-            const due = (await queue.listTasks()).filter(t => Cloud.isDue(t) && !tried.has(`${t.id}:${t.nextRun}`)).sort((a, b) => a.nextRun - b.nextRun);
+            const due = (await queue.listTasks()).filter(t => Cloud.isDue(t, Date.now(), where) && !tried.has(`${t.id}:${t.nextRun}`)).sort((a, b) => a.nextRun - b.nextRun);
             if (!due.length) break;
             if (deadline - Date.now() < 10 * 60 * 1000) {
                 log(`${due.length} task(s) still due; starting a new run for them`);
-                await gh.dispatch(Cloud.WORKFLOW, process.env.GITHUB_REF_NAME || 'main').catch(err => log(`couldn't start the next run: ${err.message}`));
+                await gh.dispatch(Cloud.workflowFor(where), process.env.GITHUB_REF_NAME || 'main').catch(err => log(`couldn't start the next run: ${err.message}`));
                 break;
             }
             tried.add(`${due[0].id}:${due[0].nextRun}`);
             try {
-                await runTask({ queue, browser, task: due[0], workspace, deadline, port, beforeSend });
+                await runTask({ queue, browser, task: due[0], workspace, keepWorkspace, deadline, port, beforeSend });
             } catch (err) {
                 log(`task ${due[0].id}: ${String(err.message || err).split('\n')[0]}`);
             }
