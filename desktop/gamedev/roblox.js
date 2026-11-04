@@ -18,6 +18,7 @@ const os = require('os');
 const path = require('path');
 const { compileLuau, luauAvailable, lintRoblox, scriptKind } = require('./roblox-luau');
 const { guide, TOPICS } = require('./roblox-guide');
+const { createRobloxAssets } = require('./roblox-assets');
 
 const PROJECT_FILE = 'default.project.json';
 const SKIP_DIRS = new Set(['node_modules', '.git', 'build', 'dist', 'Packages', 'DevPackages', '__pycache__']);
@@ -202,7 +203,22 @@ function contentText(result) {
     return ((result && result.content) || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
 }
 
-function createRoblox({ getProjectDir = () => '', env = process.env, log = () => {} } = {}) {
+// The project folder that maps into ReplicatedStorage (where the Assets module goes).
+function sharedFolder(root) {
+    if (!root) return 'src/shared';
+    try {
+        const project = JSON.parse(fs.readFileSync(path.join(root, PROJECT_FILE), 'utf8'));
+        const find = node => {
+            if (!node || typeof node !== 'object') return '';
+            if (typeof node.$path === 'string' && !SCRIPT_RE.test(node.$path)) return node.$path;
+            for (const [k, v] of Object.entries(node)) if (!k.startsWith('$')) { const hit = find(v); if (hit) return hit; }
+            return '';
+        };
+        return find(project.tree && project.tree.ReplicatedStorage) || 'src/shared';
+    } catch { return 'src/shared'; }
+}
+
+function createRoblox({ getProjectDir = () => '', env = process.env, log = () => {}, runBlender = null, fetchImpl = globalThis.fetch } = {}) {
     const rojoRoot = () => findRojoRoot(getProjectDir());
     let conn = null;
     let connecting = null;
@@ -557,6 +573,9 @@ function createRoblox({ getProjectDir = () => '', env = process.env, log = () =>
             }, required: ['tool'] }
         }
     ];
+    // Art into Roblox: export to Roblox's limits, upload through Open Cloud (roblox-assets.js).
+    const assets = createRobloxAssets({ getProjectDir: () => rojoRoot() || getProjectDir(), env, log, runBlender, fetchImpl, runLuau: code => runLuau(code), sharedDir: () => sharedFolder(rojoRoot()) });
+    tools.push(...assets.tools);
     const names = tools.map(t => t.name);
 
     async function callTool(name, args = {}) {
@@ -568,6 +587,7 @@ function createRoblox({ getProjectDir = () => '', env = process.env, log = () =>
             if (name === 'roblox_sync') return await sync(args);
             if (name === 'roblox_playtest') return await playtest(args);
             if (name === 'roblox_studio') return await passThrough(args);
+            if (assets.names.includes(name)) return await assets.callTool(name, args);
             return text(`Unknown tool: ${name}`, true);
         } catch (err) {
             return text(err.message || String(err), true);
@@ -583,4 +603,4 @@ function createRoblox({ getProjectDir = () => '', env = process.env, log = () =>
     return { tools, names, callTool, close };
 }
 
-module.exports = { createRoblox, findRojoRoot, findStudioMcp, readProject, syncLuau, longString, studioProblems };
+module.exports = { createRoblox, sharedFolder, findRojoRoot, findStudioMcp, readProject, syncLuau, longString, studioProblems };

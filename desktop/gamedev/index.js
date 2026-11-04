@@ -408,7 +408,18 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
     // Checkpoints of the whole project folder, with one-step rollback (checkpoints.js).
     const checkpoints = createCheckpoints({ getRoot: () => getProjectDir() || godotRoot(), env });
     // Roblox: the project's Luau checked, synced into Studio and playtested (roblox.js).
-    const roblox = createRoblox({ getProjectDir, env, log });
+    // A bpy script run in the background for the Roblox export, or null without Blender.
+    async function runBlenderScript(script, extra, timeoutMs) {
+        const blender = findBlender(env);
+        if (!blender) return null;
+        const work = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-blender-'));
+        try {
+            const file = path.join(work, 'codev_script.py');
+            fs.writeFileSync(file, script);
+            return await run(blender, ['--background', '--factory-startup', '--python-exit-code', '1', '--python', file], { cwd: work, timeoutMs, env: childEnv(env, extra) });
+        } finally { fs.rmSync(work, { recursive: true, force: true }); }
+    }
+    const roblox = createRoblox({ getProjectDir, env, log, runBlender: runBlenderScript, fetchImpl });
 
     const tools = [
         {
