@@ -1304,11 +1304,8 @@
 
             <details class="settings-extra" id="voiceSettings">
                 <summary>🔊 Voice</summary>
-                <label class="checkbox-group" style="margin-bottom: 10px;">
-                    <input type="checkbox" id="modalKoreVoice"> 🎙️ Read aloud in Kore (Gemini's voice; uses your Gemini key, on phone and PC)
-                </label>
                 <div class="form-group">
-                    <label>Read-aloud voice when Kore is off or there's no Gemini key</label>
+                    <label>Read-aloud voice</label>
                     <select id="modalVoice" style="width: 100%;"></select>
                 </div>
                 <div class="form-group">
@@ -6826,6 +6823,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         const PREFERRED_VOICE_NAME = "Microsoft Ava (Natural HD)";
         const VOICE_LOAD_TIMEOUT_MS = 3000;
         const NATURAL_VOICE_PATTERN = /\b(natural|neural|wavenet|premium|enhanced)\b/i;
+        const APPLE_NOVELTY_VOICES = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox|Fred|Junior|Kathy|Ralph|Ellen|Grandma|Grandpa|Eddy|Flo|Reed|Rocko|Sandy|Shelley)\b/i;
+        const APPLE_GOOD_VOICES = /^(Samantha|Ava|Allison|Susan|Zoe|Nicky|Evan|Nathan|Joelle|Noelle|Tom|Alex|Karen|Daniel|Moira|Tessa|Serena|Kate|Oliver|Siri)\b/i;
         let lockedWebVoice = null;
         let voicesReadyPromise = null;
         // "" means automatic (Ava first); otherwise the exact name picked in Settings.
@@ -6836,11 +6835,15 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const english = (v.lang || "").toLowerCase().startsWith("en");
             const usEnglish = (v.lang || "").toLowerCase().replace("_", "-") === SPEECH_LANG.toLowerCase();
             if (name === PREFERRED_VOICE_NAME) return 100;
+            // Apple's joke and old-style voices (Bells, Zarvox, Fred...) are never picked on their own.
+            if (APPLE_NOVELTY_VOICES.test(name)) return 1;
             // Same voice under the other names Windows and Edge give it.
             if (/\bMicrosoft\s+Ava\b/i.test(name) && /natural/i.test(name) && /\bHD\b/.test(name)) return 95;
             if (/\bMicrosoft\s+Ava\b/i.test(name) && /natural/i.test(name)) return 90;
             if (/\bMicrosoft\s+Ava/i.test(name)) return 85;
             if (NATURAL_VOICE_PATTERN.test(name)) return (usEnglish ? 70 : english ? 60 : 20) + (v.localService ? 2 : 0);
+            // iPhone and Mac: the better built-in voices, ahead of whatever comes first in the list.
+            if (english && APPLE_GOOD_VOICES.test(name)) return usEnglish ? 50 : 45;
             if (usEnglish) return v.localService ? 40 : 35;
             if (english) return 30;
             return 0;
@@ -6937,10 +6940,27 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             throw new Error("no Ava voice is available in that Azure region");
         }
 
+        // iPhones (and Safari) only let a page play sound that starts from a tap. Kore's audio
+        // arrives after a network call, so one audio element is started, silently, during the
+        // tap and then reused for every piece of speech.
+        const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+        let speechAudio = null;
+        function primeSpeechAudio() {
+            try {
+                if (!speechAudio) { speechAudio = new Audio(); speechAudio.setAttribute("playsinline", ""); }
+                speechAudio.onended = speechAudio.onpause = speechAudio.onerror = null;
+                speechAudio.src = SILENT_WAV;
+                const played = speechAudio.play();
+                if (played && played.catch) played.catch(() => {});
+            } catch (err) { /* no audio element here */ }
+        }
+
         function playAudioBlob(blob) {
             return new Promise((resolve, reject) => {
                 const url = URL.createObjectURL(blob);
-                const audio = new Audio(url);
+                const audio = speechAudio || new Audio();
+                audio.onended = audio.onpause = audio.onerror = null;
+                audio.src = url;
                 currentAudio = audio;
                 const done = (fn) => () => { URL.revokeObjectURL(url); if (currentAudio === audio) currentAudio = null; fn(); };
                 audio.onended = done(resolve);
@@ -6959,6 +6979,10 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         const GEMINI_TTS_MODELS = ["gemini-2.5-flash-tts", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"];
         let geminiTtsModelIndex = 0;
         let koreVoiceOn = localStorage.getItem("codev_tts_kore") !== "0";
+        const KORE_CHOICE = "__kore__";
+        // Keys stay in each browser, so a phone opening the web page needs its own copy.
+        const KORE_NEEDS_KEY = "Kore needs a Gemini key on this device (keys stay in each browser and app): add yours in Settings > Gemini. Until then this device's own voice reads.";
+        let koreKeyNoticeShown = false;
 
         function koreVoiceReady() { return koreVoiceOn && !!geminiSearchKey(); }
 
@@ -7066,9 +7090,15 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (!cleanText) return;
 
             stopSpeaking();
+            // Still inside the tap: unlock audio for Kore's (or Azure's) speech.
+            primeSpeechAudio();
             const runId = speechRunId;
             isSpeaking = true;
             logConsoleActivity("Playing text-to-speech audio for agent response.");
+            if (koreVoiceOn && !geminiSearchKey() && !koreKeyNoticeShown) {
+                koreKeyNoticeShown = true;
+                showToast(KORE_NEEDS_KEY);
+            }
 
             try {
                 if (koreVoiceReady()) {
@@ -7471,32 +7501,35 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const select = document.getElementById("modalVoice");
             const hint = document.getElementById("voiceHint");
             if (!select) return;
-            const koreBox = document.getElementById("modalKoreVoice");
-            if (koreBox) koreBox.checked = koreVoiceOn;
+            // Kore is always the first choice, on every device.
+            const koreOption = `<option value="${KORE_CHOICE}">⭐ Kore (Gemini's voice)${geminiSearchKey() ? "" : " · needs a Gemini key"}</option>`;
             if (getNativeSpeechPlugin("TextToSpeech") || !window.speechSynthesis) {
-                select.innerHTML = `<option value="">Phone's text-to-speech voice</option>`;
-                select.disabled = true;
-                hint.textContent = koreVoiceHint() + "Otherwise the phone's voice reads: change it in Android Settings > Accessibility > Text-to-speech.";
+                select.innerHTML = koreOption + `<option value="">Phone's text-to-speech voice</option>`;
+                select.disabled = false;
+                select.value = koreVoiceOn ? KORE_CHOICE : "";
+                hint.textContent = koreVoiceHint() + "The phone's voice can be changed in Android Settings > Accessibility > Text-to-speech.";
                 return;
             }
             const voices = window.speechSynthesis.getVoices().slice()
                 .sort((a, b) => rankWebVoice(b) - rankWebVoice(a) || a.name.localeCompare(b.name));
             const auto = chooseWebVoiceAuto();
             select.disabled = false;
-            select.innerHTML = `<option value="">Automatic${auto ? ` (${escapeHtml(auto.name)})` : ""}</option>` +
+            select.innerHTML = koreOption + `<option value="">This device's best voice${auto ? ` (${escapeHtml(auto.name)})` : ""}</option>` +
                 voices.map(v => `<option value="${escapeHtml(v.name)}">${escapeHtml(v.name)} (${escapeHtml(v.lang)})${v.localService ? "" : " · online"}</option>`).join("");
-            select.value = voices.some(v => v.name === chosenVoiceName) ? chosenVoiceName : "";
+            select.value = koreVoiceOn ? KORE_CHOICE : voices.some(v => v.name === chosenVoiceName) ? chosenVoiceName : "";
             const hasAva = voices.some(v => /Microsoft\s+Ava/i.test(v.name));
             document.getElementById("modalAzureKey").value = codevOwnKey("azureSpeech", azureSpeechKey);
             document.getElementById("modalAzureRegion").value = azureSpeechRegion;
+            const apple = /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent);
             hint.textContent = koreVoiceHint() + (!voices.length ? "No voices loaded yet. Reopen Settings in a moment."
                 : hasAva ? "Ava is available on this computer and is used automatically."
+                : apple ? "For a better voice without Kore, download an Enhanced or Premium voice in iOS Settings > Accessibility > Spoken Content > Voices; CoDev picks it automatically."
                 : "Windows doesn't share its natural Ava voice with this app, only robotic ones. Add an Azure Speech key above for Ava (HD), or open CoDev in Microsoft Edge, which includes Ava for free.");
         }
 
         function koreVoiceHint() {
             if (!koreVoiceOn) return "";
-            return geminiSearchKey() ? "Kore reads answers aloud. " : "Kore needs a Gemini key (Settings, Gemini section); until then the voice below reads. ";
+            return geminiSearchKey() ? "Kore reads answers aloud. " : `${KORE_NEEDS_KEY} `;
         }
 
         function chooseWebVoiceAuto() {
@@ -7515,14 +7548,19 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const select = document.getElementById("modalVoice");
             const saved = chosenVoiceName;
             const savedKore = koreVoiceOn;
-            const koreBox = document.getElementById("modalKoreVoice");
-            if (koreBox) koreVoiceOn = koreBox.checked;
+            const savedGemini = typeof geminiKey === "string" ? geminiKey : "";
+            // A Gemini key pasted in Settings but not saved yet still gets to try Kore.
+            const typedGemini = String(document.getElementById("modalGeminiKey")?.value || "").trim();
+            if (typedGemini && typeof geminiKey === "string" && !geminiKey) geminiKey = typedGemini;
             readAzureSettings();
-            chosenVoiceName = select && !select.disabled ? select.value : saved;
+            if (select) {
+                koreVoiceOn = select.value === KORE_CHOICE;
+                chosenVoiceName = koreVoiceOn ? saved : select.value;
+            }
             lockedWebVoice = null;
             if (isSpeaking) stopSpeaking();
             speakText("Hi, this is the voice CoDev Studio Beta will use to read answers aloud. For example, version 4.2 of the file main.py is ready.")
-                .finally(() => { chosenVoiceName = saved; koreVoiceOn = savedKore; lockedWebVoice = null; });
+                .finally(() => { chosenVoiceName = saved; koreVoiceOn = savedKore; if (typeof geminiKey === "string" && !savedGemini) geminiKey = savedGemini; lockedWebVoice = null; });
         }
 
         if (window.speechSynthesis) window.speechSynthesis.addEventListener("voiceschanged", () => {
@@ -7779,13 +7817,12 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             readAzureSettings();
             localStorage.setItem("codev_azure_speech_key", codevOwnKey("azureSpeech", azureSpeechKey));
             localStorage.setItem("codev_azure_speech_region", azureSpeechRegion);
-            const koreBox = document.getElementById("modalKoreVoice");
-            if (koreBox) {
-                koreVoiceOn = koreBox.checked;
+            const voiceSelect = document.getElementById("modalVoice");
+            if (voiceSelect && voiceSelect.options.length) {
+                koreVoiceOn = voiceSelect.value === KORE_CHOICE;
                 localStorage.setItem("codev_tts_kore", koreVoiceOn ? "1" : "0");
             }
-            const voiceSelect = document.getElementById("modalVoice");
-            if (voiceSelect && !voiceSelect.disabled) {
+            if (voiceSelect && voiceSelect.options.length && !koreVoiceOn) {
                 chosenVoiceName = voiceSelect.value;
                 localStorage.setItem("codev_tts_voice", chosenVoiceName);
                 lockedWebVoice = null;

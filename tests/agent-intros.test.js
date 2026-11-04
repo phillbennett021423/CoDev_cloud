@@ -157,10 +157,48 @@ test('Kore is the default read-aloud voice when a Gemini key is saved, and the p
     assert.equal(calls[1].body.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName, 'Kore');
     assert.deepEqual(calls[1].body.generationConfig.responseModalities, ['AUDIO']);
     assert.deepEqual(await page.evaluate(() => window.__played), [{ type: 'audio/wav', size: 4844 }]);
+    // The tap started (and so unlocked) the reusable audio element iPhones need.
+    assert.ok(await page.evaluate(() => speechAudio instanceof HTMLAudioElement));
+    // Settings > Voice lists Kore first, picked by default.
+    await page.evaluate(() => { openSettingsModal(); document.getElementById('voiceSettings').open = true; fillVoicePicker(); });
+    assert.equal(await page.evaluate(() => document.getElementById('modalVoice').value), '__kore__');
+    assert.match(await page.evaluate(() => document.getElementById('modalVoice').options[0].textContent), /^⭐ Kore \(Gemini's voice\)$/);
     // Turned off in Settings > Voice: Gemini isn't called.
     await page.evaluate(() => { koreVoiceOn = false; });
     await page.evaluate(() => Promise.race([speakText('Hello again.'), new Promise(r => setTimeout(r, 1500))]).then(() => stopSpeaking()));
     assert.equal(calls.length, 2);
+    assert.deepEqual(errors, []);
+    await page.close();
+});
+
+test('without a Gemini key, the phone says Kore needs one and picks its best own voice, never a joke voice', async t => {
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-kore-nokey-'));
+    const backend = createMockBackend({ workspace });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const page = await launched.browser.newPage({ viewport: { width: 390, height: 844 } });
+    const errors = [];
+    page.on('pageerror', err => errors.push(err.message));
+    await page.addInitScript(() => localStorage.setItem('codev_chime', '0'));
+    let geminiCalls = 0;
+    await page.route('https://generativelanguage.googleapis.com/**', route => { geminiCalls++; return route.abort(); });
+    await page.goto(url, { waitUntil: 'load' });
+    // iPhone's voice list: the joke voices come first, the good ones later.
+    const rank = await page.evaluate(() => [
+        { name: 'Bells', lang: 'en-US' }, { name: 'Zarvox', lang: 'en-US' }, { name: 'Fred', lang: 'en-US' },
+        { name: 'Samantha', lang: 'en-US' }, { name: 'Ava (Premium)', lang: 'en-US' }
+    ].map(v => rankWebVoice(v)));
+    assert.ok(rank[0] < rank[3] && rank[1] < rank[3] && rank[2] < rank[3], 'Samantha beats the joke voices');
+    assert.ok(rank[3] < rank[4], 'a Premium voice beats Samantha');
+    await page.evaluate(() => Promise.race([speakText('Hello.'), new Promise(r => setTimeout(r, 1500))]).then(() => stopSpeaking()));
+    assert.equal(geminiCalls, 0);
+    assert.match(await page.textContent('#codevToast'), /Kore needs a Gemini key on this device/);
+    await page.evaluate(() => { openSettingsModal(); fillVoicePicker(); });
+    assert.match(await page.evaluate(() => document.getElementById('modalVoice').options[0].textContent), /needs a Gemini key/);
+    assert.match(await page.textContent('#voiceHint'), /Kore needs a Gemini key/);
     assert.deepEqual(errors, []);
     await page.close();
 });
