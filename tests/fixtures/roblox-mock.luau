@@ -19,6 +19,13 @@ local Enum = setmetatable({}, { __index = function(_, group)
 	return setmetatable({}, { __index = function(_, item) return "Enum." .. group .. "." .. item end })
 end })
 
+-- Threads that yielded (task.wait, a handler that waits); Play resumes them in steps.
+local threads = {}
+local function resume(co, ...)
+	local ok, err = coroutine.resume(co, ...)
+	if not ok then emit("ERROR: " .. tostring(err)) elseif coroutine.status(co) == "suspended" then table.insert(threads, co) end
+end
+
 -- Signals ---------------------------------------------------------------------------
 local function newSignal()
 	local handlers = {}
@@ -30,11 +37,7 @@ local function newSignal()
 	signal.Once = signal.Connect
 	function signal:Wait() return coroutine.yield() end
 	function signal:Fire(...)
-		for _, fn in handlers do
-			local co = coroutine.create(fn)
-			local ok, err = coroutine.resume(co, ...)
-			if not ok then emit("ERROR: " .. tostring(err)) end
-		end
+		for _, fn in table.clone(handlers) do resume(coroutine.create(fn), ...) end
 	end
 	return signal
 end
@@ -43,16 +46,20 @@ end
 local EVENTS = { PlayerAdded = true, PlayerRemoving = true, Heartbeat = true, Stepped = true, RenderStepped = true,
 	Touched = true, TouchEnded = true, Changed = true, ChildAdded = true, ChildRemoved = true, OnServerEvent = true,
 	OnClientEvent = true, Died = true, Triggered = true, MouseClick = true, CharacterAdded = true, PromptProductPurchaseFinished = true,
-	PromptGamePassPurchaseFinished = true, AncestryChanged = true }
+	PromptGamePassPurchaseFinished = true, AncestryChanged = true, MouseButton1Click = true, Activated = true,
+	Equipped = true, OnInvoke = true }
 local DEFAULTS = {
 	IntValue = { Value = 0 }, NumberValue = { Value = 0 }, StringValue = { Value = "" }, BoolValue = { Value = false }, ObjectValue = {},
 	Script = { Source = "", Enabled = true }, LocalScript = { Source = "", Enabled = true }, ModuleScript = { Source = "" },
 	Part = { Anchored = false, CanCollide = true, Transparency = 0 },
 }
+-- Properties that exist but start out nil.
+local NILABLE = { Parent = true, Character = true, PrimaryPart = true, Adornee = true, Value = true }
 local SCRIPTS = { Script = true, LocalScript = true, ModuleScript = true }
 
 local state = setmetatable({}, { __mode = "k" }) -- instance -> { props, children, signals }
 local Methods = {}
+local game -- set below; remotes reach Players through it
 local Inst = {}
 
 local function fullName(inst)
@@ -66,7 +73,7 @@ Inst.__index = function(inst, key)
 	local s = state[inst]
 	if Methods[key] then return Methods[key] end
 	if s.props[key] ~= nil then return s.props[key] end
-	if key == "Parent" then return nil end
+	if NILABLE[key] then return nil end
 	for _, child in s.children do
 		if state[child].props.Name == key then return child end
 	end
@@ -90,7 +97,12 @@ Inst.__newindex = function(inst, key, value)
 		return
 	end
 	if key == "ClassName" then error("ClassName is read-only", 2) end
+	local before = s.props[key]
 	s.props[key] = value
+	if before ~= value then
+		if s.signals.Changed then s.signals.Changed:Fire(key) end
+		if s.signals["prop:" .. key] then s.signals["prop:" .. key]:Fire() end
+	end
 end
 Inst.__tostring = function(inst) return state[inst].props.Name end
 
@@ -108,7 +120,16 @@ function Methods:FindFirstChild(name)
 	end
 	return nil
 end
-function Methods:WaitForChild(name) return self:FindFirstChild(name) end
+function Methods:WaitForChild(name)
+	for _ = 1, 30 do
+		local found = self:FindFirstChild(name)
+		if found then return found end
+		if not coroutine.isyieldable() then break end
+		coroutine.yield()
+	end
+	emit(("WARN: Infinite yield possible on '%s:WaitForChild(\"%s\")'"):format(fullName(self), name))
+	return nil
+end
 function Methods:FindFirstChildOfClass(className)
 	for _, child in state[self].children do
 		if state[child].props.ClassName == className then return child end
@@ -147,6 +168,39 @@ end
 function Methods:GetScale() return state[self].props._scale or 1 end
 function Methods:ScaleTo(k) state[self].props._scale = k end
 function Methods:GetFullName() return fullName(self) end
+function Methods:SetAttribute(name, value)
+	local s = state[self]
+	s.props._attrs = s.props._attrs or {}
+	s.props._attrs[name] = value
+	local signal = s.signals["attr:" .. name]
+	if signal then signal:Fire() end
+end
+function Methods:GetAttributeChangedSignal(name)
+	local s = state[self]
+	s.signals["attr:" .. name] = s.signals["attr:" .. name] or newSignal()
+	return s.signals["attr:" .. name]
+end
+function Methods:GetPropertyChangedSignal(name)
+	local s = state[self]
+	s.signals["prop:" .. name] = s.signals["prop:" .. name] or newSignal()
+	return s.signals["prop:" .. name]
+end
+function Methods:GetAttribute(name) local a = state[self].props._attrs; return a and a[name] end
+-- Remotes: a client's FireServer reaches OnServerEvent with the local player first.
+function Methods:FireServer(...)
+	local players = game:GetService("Players")
+	self.OnServerEvent:Fire(players.LocalPlayer, ...)
+end
+function Methods:FireClient(player, ...) self.OnClientEvent:Fire(...) end
+function Methods:FireAllClients(...) self.OnClientEvent:Fire(...) end
+function Methods:InvokeServer(...)
+	local fn = state[self].props.OnServerInvoke
+	if not fn then error("OnServerInvoke is not set", 2) end
+	return fn(game:GetService("Players").LocalPlayer, ...)
+end
+function Methods:Kick(message) emit("KICKED: " .. tostring(message)) end
+local closers = {}
+function Methods:BindToClose(fn) table.insert(closers, fn) end
 function Methods:Destroy()
 	for _, child in self:GetChildren() do child:Destroy() end
 	self.Parent = nil
@@ -160,18 +214,47 @@ function Methods:Clone()
 end
 
 -- The DataModel and its services -----------------------------------------------------
-local game = new("DataModel")
+game = new("DataModel")
 game.Name = "Game"
+game.JobId = ""
+game.PlaceId = 0
 local recordings = {}
 
 local SERVICE_EXTRA = {
 	Players = function(service)
 		return {
 			LocalPlayer = nil,
+			GetPlayerFromCharacter = function(self2, character)
+				for _, c in self2:GetChildren() do if c.ClassName == "Player" and c.Character == character then return c end end
+				return nil
+			end,
+			GetPlayerByUserId = function(self2, id)
+				for _, c in self2:GetChildren() do if c.ClassName == "Player" and c.UserId == id then return c end end
+				return nil
+			end,
 			GetPlayers = function(self2)
 				local out = {}
 				for _, c in self2:GetChildren() do if c.ClassName == "Player" then table.insert(out, c) end end
 				return out
+			end,
+		}
+	end,
+	Debris = function()
+		return { AddItem = function(_, item) table.insert(threads, coroutine.create(function() coroutine.yield(); item:Destroy() end)) end }
+	end,
+	DataStoreService = function()
+		local stores = {}
+		return {
+			GetDataStore = function(_, name)
+				if stores[name] then return stores[name] end
+				local data = {}
+				local store = {}
+				function store:GetAsync(key) return data[key] end
+				function store:SetAsync(key, value) data[key] = value end
+				function store:UpdateAsync(key, fn) local v = fn(data[key]); if v ~= nil then data[key] = v end; return v end
+				function store:RemoveAsync(key) local v = data[key]; data[key] = nil; return v end
+				stores[name] = store
+				return store
 			end,
 		}
 	end,
@@ -229,13 +312,12 @@ do
 end
 
 -- Running scripts ---------------------------------------------------------------------
-local threads = {}
 local modules = {}
 local baseEnv
 
 local task = {
 	wait = function(n) coroutine.yield(); return n or 0 end,
-	spawn = function(fn, ...) local co = coroutine.create(fn); local ok, err = coroutine.resume(co, ...); if not ok then emit("ERROR: " .. tostring(err)) elseif coroutine.status(co) == "suspended" then table.insert(threads, co) end; return co end,
+	spawn = function(fn, ...) local co = coroutine.create(fn); resume(co, ...); return co end,
 	defer = function(fn, ...) local co = coroutine.create(fn); table.insert(threads, co); return co end,
 	delay = function(_, fn, ...) local co = coroutine.create(fn); table.insert(threads, co); return co end,
 }
@@ -263,6 +345,8 @@ baseEnv = setmetatable({
 	Enum = Enum, task = task, require = requireModule, print = print, warn = warn,
 	wait = task.wait, spawn = task.spawn, delay = task.delay, tick = os.clock, time = os.clock,
 	Vector3 = { new = function(x, y, z) return { X = x or 0, Y = y or 0, Z = z or 0 } end },
+	UDim2 = { new = function(...) return { ... } end, fromScale = function(...) return { ... } end, fromOffset = function(...) return { ... } end },
+	BrickColor = { new = function(n) return { Name = n } end },
 	Color3 = { fromRGB = function(r, g, b) return { R = r / 255, G = g / 255, B = b / 255 } end, new = function(r, g, b) return { R = r, G = g, B = b } end },
 	CFrame = { new = function(...) return { ... } end },
 }, { __index = getfenv(0) })
@@ -285,11 +369,9 @@ local function step()
 	local now = threads
 	threads = {}
 	for _, co in now do
-		if coroutine.status(co) == "suspended" then
-			local ok, err = coroutine.resume(co)
-			if not ok then emit("ERROR: " .. tostring(err)) elseif coroutine.status(co) == "suspended" then table.insert(threads, co) end
-		end
+		if coroutine.status(co) == "suspended" then resume(co) end
 	end
+	game:GetService("RunService").Heartbeat:Fire(1 / 60)
 end
 
 local playing = false
@@ -307,6 +389,8 @@ function __codev_play()
 	playerOne = new("Player")
 	playerOne.Name = "Player1"
 	playerOne.UserId = 1
+	local gui = new("PlayerGui")
+	gui.Parent = playerOne
 	playerOne.Parent = players
 	state[players].extra.LocalPlayer = playerOne
 	players.PlayerAdded:Fire(playerOne)
@@ -316,6 +400,11 @@ function __codev_play()
 end
 
 function __codev_stop()
+	-- Like Roblox: players leave first, then BindToClose runs as the server shuts down.
+	if playerOne then game:GetService("Players").PlayerRemoving:Fire(playerOne) end
+	for _ = 1, 5 do step() end
+	for _, fn in closers do resume(coroutine.create(fn)) end
+	for _ = 1, 5 do step() end
 	playing = false
 	threads = {}
 	if playerOne then playerOne:Destroy(); playerOne = nil end

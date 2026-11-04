@@ -381,6 +381,12 @@ Agents build Roblox games in the place you have open in Roblox Studio, in the Wi
 The game's code lives as files in your project folder, in the Rojo layout, so you can check it, undo it and keep it in git:
 
 - **`roblox_init_project`** makes `default.project.json` and `src/shared`, `src/server` and `src/client`, with a starter config, leaderstats and a client script. `Name.server.luau` becomes a Script, `Name.client.luau` a LocalScript, `Name.luau` a ModuleScript, and a folder with an `init` script becomes that script.
+- **Starter games.** `roblox_init_project` with `template` set to `obby`, `tycoon` or `simulator` makes a whole working game instead of the empty starter:
+  - **obby:** stages, checkpoints, kill bricks, a "skip stage" product and a speed pass.
+  - **tycoon:** a claim pad, droppers, buy buttons, a 2x cash pass and a cash pack.
+  - **simulator:** training, rebirths, and remotes the server checks (cooldowns and costs on the server, nothing trusted from the client).
+
+  Every template saves player data with a session lock, retries and autosave (so data isn't lost or duplicated across servers), checks game passes on the server, and grants developer products only after the save works, so a purchase is never lost or granted twice. Each one passes `roblox_check` and plays without errors.
 - **`roblox_check`** compiles every script with the real Luau compiler (luau-web, Luau built for WebAssembly, so nothing extra has to be installed). It then applies CoDev's Roblox rules and catches:
   - remotes that use the client's arguments without checking them
   - DataStore calls outside `pcall`
@@ -389,7 +395,8 @@ The game's code lives as files in your project folder, in the Rojo layout, so yo
   - loops that never yield, `FindFirstChild(...).X` without a nil check, `loadstring`, and the deprecated `wait`/`spawn`/`delay`
 
   It needs no Studio, and it can check a snippet before the agent writes it.
-- **`roblox_sync`** puts the scripts into the open place at the paths the project maps them to. It refuses if anything fails to compile. The whole sync is one ChangeHistoryService recording, so one Ctrl+Z in Studio undoes it, and a sync that fails partway is rolled back.
+- **`roblox_diff`** shows what a sync would change before it happens, line by line: which scripts are new, which changed (lines now in Studio marked `-`, lines from the files marked `+`), and a warning on any script someone edited in Studio since CoDev's last sync.
+- **`roblox_sync`** puts the scripts into the open place at the paths the project maps them to, sending only scripts that changed. It refuses if anything fails to compile. It also refuses to overwrite code edited inside Studio (or a script that was already in the place) unless told to, so work done in Studio is never lost silently. The whole sync is one ChangeHistoryService recording, so one Ctrl+Z in Studio undoes it, and a sync that fails partway is rolled back. CoDev remembers what it synced in `.codev/roblox-sync.json` (kept out of git).
 - **`roblox_playtest`** presses Play, waits, reads the output, takes a picture of the game view and stops. It returns the error lines with their script and line number.
 - **`roblox_studio`** calls any of Studio's own tools by name (`list` shows them). Agents use it to build the world with `execute_luau`, look around the place, insert Creator Store assets, generate meshes and materials, and capture the screen.
 - **Art, sound and animations into Roblox.**

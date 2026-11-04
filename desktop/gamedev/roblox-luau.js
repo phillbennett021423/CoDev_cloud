@@ -140,8 +140,9 @@ function lintFile({ file, source, kind }) {
     let depth = 0;
     let pcalls = [];
     for (let i = 0; i < lines.length; i++) {
-        const insidePcall = pcalls.length > 0 || /\bx?pcall\b/.test(bare[i]);
-        if (/\bx?pcall\s*\(\s*function\b/.test(bare[i])) pcalls.push(depth);
+        // pcall, or a retry helper (retry, withRetries...) that wraps the call in one.
+        const insidePcall = pcalls.length > 0 || /\b(x?pcall|\w*[Rr]etr(y|ies)\w*)\s*\(/.test(bare[i]);
+        if (/\b(x?pcall|\w*[Rr]etr(y|ies)\w*)\s*\([^)]*\bfunction\b/.test(bare[i])) pcalls.push(depth);
         depth += blockDelta(bare[i]);
         pcalls = pcalls.filter(d => depth > d);
         for (const r of LINE_RULES) {
