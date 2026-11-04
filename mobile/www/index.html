@@ -6976,13 +6976,22 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // Voice brings back the computer's or phone's own voice.
         const KORE_VOICE = "Kore";
         // Gemini's speech models, newest first; the first one that answers is kept for the session.
-        const GEMINI_TTS_MODELS = ["gemini-2.5-flash-tts", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"];
+        // The 3.x models speak through Gemini's Interactions API; the older 2.5 ones through
+        // generateContent. Retired models answer 404 (or 400 "not found") and are skipped.
+        const GEMINI_TTS_MODELS = [
+            { model: "gemini-3.8-flash-tts", api: "interactions" },
+            { model: "gemini-3.8-flash-lite-tts", api: "interactions" },
+            { model: "gemini-3.1-flash-tts-preview", api: "interactions" },
+            { model: "gemini-2.5-flash-preview-tts", api: "generate" },
+            { model: "gemini-2.5-pro-preview-tts", api: "generate" }
+        ];
         let geminiTtsModelIndex = 0;
         let koreVoiceOn = localStorage.getItem("codev_tts_kore") !== "0";
         const KORE_CHOICE = "__kore__";
         // Keys stay in each browser, so a phone opening the web page needs its own copy.
         const KORE_NEEDS_KEY = "Kore needs a Gemini key on this device (keys stay in each browser and app): add yours in Settings > Gemini. Until then this device's own voice reads.";
         let koreKeyNoticeShown = false;
+        let koreFailNoticeShown = false;
 
         function koreVoiceReady() { return koreVoiceOn && !!geminiSearchKey(); }
 
@@ -6998,32 +7007,69 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             return new Blob([header, bytes], { type: "audio/wav" });
         }
 
+        function geminiTtsRequest({ model, api }, text) {
+            if (api === "interactions") return {
+                url: "https://generativelanguage.googleapis.com/v1beta/interactions",
+                body: { model, input: [{ type: "user_input", content: [{ type: "text", text }] }], response_format: { type: "audio" }, generation_config: { speech_config: [{ voice: KORE_VOICE }] } }
+            };
+            return {
+                url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+                body: { contents: [{ role: "user", parts: [{ text }] }], generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: KORE_VOICE } } } } }
+            };
+        }
+
+        // The audio in either API's answer: generateContent's inlineData, the Interactions API's
+        // output_audio or a step's audio content. Returns { data, mime } or null.
+        function findGeminiAudio(node, depth = 0) {
+            if (!node || typeof node !== "object" || depth > 8) return null;
+            const inline = node.inlineData || node.inline_data;
+            if (inline && typeof inline.data === "string") return { data: inline.data, mime: inline.mimeType || inline.mime_type || "" };
+            const mime = node.mime_type || node.mimeType || "";
+            if (typeof node.data === "string" && node.data.length > 64 && (/audio/.test(mime) || /audio/.test(node.type || "") || depth > 0 && !mime)) return { data: node.data, mime, rate: node.sample_rate || node.sampleRate };
+            for (const value of Array.isArray(node) ? node : Object.values(node)) {
+                const found = findGeminiAudio(value, depth + 1);
+                if (found) return found;
+            }
+            return null;
+        }
+
+        function geminiAudioBlob({ data, mime, rate }) {
+            const raw = atob(data);
+            const bytes = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+            // A WAV file already (the Interactions API's default) plays as it is.
+            if (raw.startsWith("RIFF")) return new Blob([bytes], { type: "audio/wav" });
+            if (/mpeg|mp3|ogg/.test(mime)) return new Blob([bytes], { type: mime });
+            return pcmToWav(bytes, Number(rate) || Number(/rate=(\d+)/.exec(mime)?.[1]) || 24000);
+        }
+
         async function fetchKoreSpeech(text) {
+            const tried = [];
             for (; geminiTtsModelIndex < GEMINI_TTS_MODELS.length; geminiTtsModelIndex++) {
-                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TTS_MODELS[geminiTtsModelIndex]}:generateContent`, {
+                const entry = GEMINI_TTS_MODELS[geminiTtsModelIndex];
+                const { url, body } = geminiTtsRequest(entry, text);
+                const response = await fetch(url, {
                     method: "POST",
                     headers: { "Content-Type": "application/json", "x-goog-api-key": geminiSearchKey() },
                     signal: AbortSignal.timeout(30000),
-                    body: JSON.stringify({
-                        contents: [{ role: "user", parts: [{ text }] }],
-                        generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: KORE_VOICE } } } }
-                    })
+                    body: JSON.stringify(body)
                 });
-                // This model isn't offered to this key: try the next one.
-                if (response.status === 404) continue;
-                if (response.status === 400 || response.status === 401 || response.status === 403) throw new Error(`Gemini rejected the request (HTTP ${response.status}); check the Gemini key`);
-                if (!response.ok) throw new Error(`Gemini speech returned HTTP ${response.status}`);
-                const data = await response.json();
-                const part = (data.candidates?.[0]?.content?.parts || []).find(p => p.inlineData?.data);
-                if (!part) throw new Error("Gemini sent no audio");
-                const raw = atob(part.inlineData.data);
-                const bytes = new Uint8Array(raw.length);
-                for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-                const rate = Number(/rate=(\d+)/.exec(part.inlineData.mimeType || "")?.[1]) || 24000;
-                return /wav|mpeg|mp3|ogg/.test(part.inlineData.mimeType || "") ? new Blob([bytes], { type: part.inlineData.mimeType }) : pcmToWav(bytes, rate);
+                if (response.status === 401 || response.status === 403) throw new Error(`Gemini rejected the key (HTTP ${response.status})`);
+                if (!response.ok) {
+                    const detail = await response.text().catch(() => "");
+                    // This model is retired or not offered to this key: try the next one.
+                    if (response.status === 404 || (response.status === 400 && /not found|not supported|unknown name|invalid json payload|is not available|does not support/i.test(detail))) {
+                        tried.push(`${entry.model} ${response.status}`);
+                        continue;
+                    }
+                    throw new Error(`Gemini speech returned HTTP ${response.status}${detail ? `: ${detail.slice(0, 160)}` : ""}`);
+                }
+                const audio = findGeminiAudio(await response.json());
+                if (!audio) { tried.push(`${entry.model} no audio`); continue; }
+                return geminiAudioBlob(audio);
             }
             geminiTtsModelIndex = 0;
-            throw new Error("none of Gemini's speech models are available to this key");
+            throw new Error(`none of Gemini's speech models answered (${tried.join(", ")})`);
         }
 
         async function speakWithKore(text, runId) {
@@ -7108,6 +7154,11 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                     } catch (err) {
                         if (runId !== speechRunId) return;
                         logConsoleActivity(`Kore voice failed (${err.message}); using the ${nativeTts ? "phone's" : "computer's"} voice.`);
+                        // Never let another voice pass as Kore: say once that Kore didn't play, and why.
+                        if (!koreFailNoticeShown) {
+                            koreFailNoticeShown = true;
+                            showToast(`Kore couldn't play (${err.message}). This ${nativeTts ? "phone's" : "computer's"} own voice is reading instead.`);
+                        }
                     }
                 }
                 const webVoice = nativeTts ? null : await waitForWebVoices();

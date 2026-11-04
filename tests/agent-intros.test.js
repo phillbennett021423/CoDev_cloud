@@ -137,11 +137,17 @@ test('Kore is the default read-aloud voice when a Gemini key is saved, and the p
     page.on('pageerror', err => errors.push(err.message));
     await page.addInitScript(() => { localStorage.setItem('codev_chime', '0'); localStorage.setItem('codev_gemini_key', 'AIza_test_key'); });
     const calls = [];
+    const mode = { allFail: false };
     await page.route('https://generativelanguage.googleapis.com/**', async route => {
         const req = route.request();
         calls.push({ url: req.url(), body: JSON.parse(req.postData()), key: req.headers()['x-goog-api-key'] });
-        // The first model isn't offered to this key; the next one answers.
+        if (mode.allFail) return route.fulfill({ status: 404, body: '{"error":{"message":"models/x is not found"}}' });
+        // The newest model is retired for this key (404); the next one answers with a WAV file.
         if (calls.length === 1) return route.fulfill({ status: 404, body: '{}' });
+        if (/interactions$/.test(req.url())) {
+            const wav = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(996)]).toString('base64');
+            return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'i1', steps: [{ type: 'model_output', content: [{ type: 'audio', mime_type: 'audio/wav', data: wav }] }] }) });
+        }
         const pcm = Buffer.alloc(4800).toString('base64');
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;codec=pcm;rate=24000', data: pcm } }] } }] }) });
     });
@@ -152,11 +158,25 @@ test('Kore is the default read-aloud voice when a Gemini key is saved, and the p
     });
     await page.evaluate(() => speakText("Hi, I'm Architect."));
     assert.equal(calls.length, 2);
-    assert.match(calls[1].url, /gemini-2\.5-flash-preview-tts:generateContent/);
+    assert.match(calls[0].url, /\/v1beta\/interactions$/);
+    assert.equal(calls[0].body.model, 'gemini-3.8-flash-tts');
+    assert.equal(calls[1].body.model, 'gemini-3.8-flash-lite-tts');
     assert.equal(calls[1].key, 'AIza_test_key');
-    assert.equal(calls[1].body.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName, 'Kore');
-    assert.deepEqual(calls[1].body.generationConfig.responseModalities, ['AUDIO']);
+    assert.deepEqual(calls[1].body.generation_config.speech_config, [{ voice: 'Kore' }]);
+    assert.deepEqual(calls[1].body.response_format, { type: 'audio' });
+    assert.deepEqual(calls[1].body.input[0].content[0], { type: 'text', text: "Hi, I'm Architect." });
+    assert.deepEqual(await page.evaluate(() => window.__played), [{ type: 'audio/wav', size: 1000 }]);
+    // The older generateContent models still work, with their raw PCM wrapped as WAV.
+    await page.evaluate(() => { geminiTtsModelIndex = 3; window.__played = []; return speakText('Older model.'); });
+    assert.match(calls[2].url, /gemini-2\.5-flash-preview-tts:generateContent/);
+    assert.equal(calls[2].body.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName, 'Kore');
     assert.deepEqual(await page.evaluate(() => window.__played), [{ type: 'audio/wav', size: 4844 }]);
+    // When no model answers, the page says Kore didn't play instead of passing another voice off as Kore.
+    mode.allFail = true;
+    await page.evaluate(() => { geminiTtsModelIndex = 0; return Promise.race([speakText('Fallback.'), new Promise(r => setTimeout(r, 2500))]).then(() => stopSpeaking()); });
+    assert.match(await page.textContent('#codevToast'), /Kore couldn't play \(none of Gemini's speech models answered/);
+    mode.allFail = false;
+    const callsBefore = calls.length;
     // The tap started (and so unlocked) the reusable audio element iPhones need.
     assert.ok(await page.evaluate(() => speechAudio instanceof HTMLAudioElement));
     // Settings > Voice lists Kore first, picked by default.
@@ -166,7 +186,7 @@ test('Kore is the default read-aloud voice when a Gemini key is saved, and the p
     // Turned off in Settings > Voice: Gemini isn't called.
     await page.evaluate(() => { koreVoiceOn = false; });
     await page.evaluate(() => Promise.race([speakText('Hello again.'), new Promise(r => setTimeout(r, 1500))]).then(() => stopSpeaking()));
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, callsBefore);
     assert.deepEqual(errors, []);
     await page.close();
 });
