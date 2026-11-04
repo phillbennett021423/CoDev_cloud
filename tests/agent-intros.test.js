@@ -266,9 +266,9 @@ test('the default voice is natural Kore made on the device: no key, no Gemini ca
                 if (msg.type !== 'speak') return;
                 window.__workerJobs.push({ text: msg.text, voice: msg.voice });
                 setTimeout(() => this.onmessage({ data: { type: 'progress', loaded: 45 * 1048576, total: 90 * 1048576, file: 'model_quantized.onnx' } }), 5);
-                setTimeout(() => this.onmessage({ data: { type: 'audio', id: msg.id, wav: new Uint8Array(1044).buffer } }), 20);
+                setTimeout(() => this.onmessage({ data: { type: 'audio', id: msg.id, wav: new Uint8Array(1044).buffer } }), window.__workerDelay || 20);
             }
-            terminate() {}
+            terminate() { window.__workerTerminated = (window.__workerTerminated || 0) + 1; }
         };
     });
     let geminiCalls = 0;
@@ -280,11 +280,17 @@ test('the default voice is natural Kore made on the device: no key, no Gemini ca
     const jobs = await page.evaluate(() => window.__workerJobs);
     assert.ok(jobs.length >= 2, 'long text is read in pieces');
     assert.ok(jobs.every(j => j.voice === 'af_kore'));
-    assert.ok(jobs[0].text.length <= 220);
+    assert.ok(jobs[0].text.length <= 140, 'the first piece is short so the voice starts quickly');
+    assert.equal(jobs[0].text, 'This is the first sentence of the answer, read in the natural Kore voice.');
     assert.deepEqual(await page.evaluate(() => window.__workerUrls), [{ url: new URL('agent-ui/kokoro-worker.js', url).href, type: 'module' }]);
     assert.equal((await page.evaluate(() => window.__played)).length, jobs.length);
     assert.ok((await page.evaluate(() => window.__played)).every(p => p.type === 'audio/wav'));
     assert.match(await page.textContent('#codevToast'), /Getting the natural voice ready \(only the first time\): 45 of 90 MB/);
+    // Stopping mid-way throws the busy worker away instead of finishing words nobody hears.
+    await page.evaluate(text => { window.__workerDelay = 1000; speakText(text); }, long);
+    await page.waitForTimeout(100);
+    await page.evaluate(() => stopSpeaking());
+    assert.equal(await page.evaluate(() => window.__workerTerminated), 1, 'stop replaces the busy worker');
     assert.equal(geminiCalls, 0);
     assert.equal(await page.$('#koreKeyModal'), null);
     // Settings: the natural voices come first, Kore picked.
@@ -308,4 +314,42 @@ test('the Kokoro worker module and the vendored bundle are in place', () => {
     const Natural = require('../mobile/www/agent-ui/natural-voice.js');
     assert.equal(Natural.VOICES[0].id, 'af_kore');
     assert.ok(Natural.VOICES.every(v => bundle.includes(`${v.id}:{name`)), 'every offered voice exists in Kokoro');
+});
+
+test('the natural voice engine cancels, restarts a worker that goes quiet, and checks the download', async () => {
+    const Natural = require('../mobile/www/agent-ui/natural-voice.js');
+    const workers = [];
+    const makeWorker = () => {
+        const w = { sent: [], terminated: false, postMessage(m) { this.sent.push(m); }, terminate() { this.terminated = true; } };
+        workers.push(w);
+        return w;
+    };
+    const engine = Natural.create({ makeWorker, stallMs: 50 });
+    const keepAlive = setInterval(() => {}, 10); // the engine's own watchdog doesn't hold Node open
+    // A worker that never answers is restarted and the piece fails instead of hanging.
+    await assert.rejects(engine.speak('Hello.', 'af_kore'), /stopped responding/);
+    assert.ok(workers[0].terminated);
+    // An answer resolves its piece as a WAV and marks the model as loaded.
+    const c = engine.speak('Three.', 'af_heart');
+    workers[1].onmessage({ data: { type: 'audio', id: 2, wav: new ArrayBuffer(8) } });
+    assert.equal((await c).type, 'audio/wav');
+    assert.equal(engine.loaded(), true);
+    // Nothing waiting: cancel leaves the worker alone.
+    engine.cancel();
+    assert.equal(workers.length, 2);
+    // Cancel while busy rejects what's waiting, replaces the worker and warms the new one.
+    const a = engine.speak('One.', 'af_heart');
+    const b = engine.speak('Two.', 'nope');
+    assert.equal(workers[1].sent.at(-1).voice, 'af_kore', 'an unknown voice becomes Kore');
+    engine.cancel();
+    await assert.rejects(a, err => err.stopped === true);
+    await assert.rejects(b, /stopped/);
+    assert.ok(workers[1].terminated);
+    assert.deepEqual(workers[2].sent, [{ type: 'warm', voice: 'af_kore' }]);
+    // downloaded() looks for the model in the browser's cache.
+    const fakeCaches = has => ({ open: async () => ({ match: async url => has && url === Natural.MODEL_URL ? {} : undefined }) });
+    assert.equal(await Natural.downloaded(fakeCaches(true)), true);
+    assert.equal(await Natural.downloaded(fakeCaches(false)), false);
+    assert.equal(await Natural.downloaded(null), false);
+    clearInterval(keepAlive);
 });
