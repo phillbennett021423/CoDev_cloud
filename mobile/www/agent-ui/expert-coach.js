@@ -81,7 +81,7 @@
             standards: ["Every remote checked on the server; nothing the client says about money or damage is trusted", "Player data saved with pcall, retries and BindToClose, so nobody loses progress", "Every developer product granted by one ProcessReceipt that saves before saying PurchaseGranted", "Runs smoothly on low-end phones", "Monetization sells convenience and cosmetics, not wins"],
             pitfalls: ["Trusting the client (exploiters fire remotes with anything)", "DataStore calls without pcall, and no save on shutdown", "Pay-to-win shops and purchase pop-ups that drive players away", "Free models with hidden backdoor scripts", "Deprecated wait() and loops that never yield"],
             terms: ["Luau", "Script / LocalScript / ModuleScript", "RemoteEvent", "DataStore", "game pass", "developer product", "ProcessReceipt", "DevEx", "Rojo", "leaderstats"],
-            tools: [["roblox_status", "check Studio and the project"], ["roblox_guide", "the Roblox studio pack, including monetization"], ["roblox_check", "Luau compile and Roblox rules"], ["roblox_sync", "scripts into Studio"], ["roblox_playtest", "play and read errors"], ["roblox_studio", "build the world in Studio"], ["blender_run", "3D models"]],
+            tools: [["roblox_status", "check Studio and the project"], ["roblox_guide", "the Roblox studio pack, including monetization"], ["roblox_check", "Luau compile and Roblox rules"], ["roblox_sync", "scripts into Studio"], ["roblox_playtest", "play and read errors"], ["roblox_studio", "build the world in Studio"], ["roblox_export_model", "models within Roblox's limits"], ["roblox_upload", "art and sound onto Roblox"]],
             learn: { new: ["Make a short obby: parts, checkpoints and a kill brick", "Learn Script vs LocalScript vs ModuleScript", "Add leaderstats and a coin pickup"], some: ["RemoteEvents done safely", "Save data with DataStores", "A shop with one game pass and one developer product"], pro: ["Session locking and data migration", "Retention and monetization analytics", "Performance on low-end phones and StreamingEnabled"] },
             caution: "Follow Roblox's Terms of Use and Community Standards: purchases only through Roblox's own prompts, odds shown for any paid random item, no pressure on young players, and nothing that asks players for outside payment or personal details."
         },
@@ -406,6 +406,8 @@
         roblox_check: { what: "checking Roblox Luau", needs: VIA_COMPUTER },
         roblox_sync: { what: "putting scripts into Roblox Studio", needs: `${VIA_COMPUTER} with Roblox Studio open and its MCP server turned on` },
         roblox_playtest: { what: "playtesting in Roblox Studio", needs: `${VIA_COMPUTER} with Roblox Studio open and its MCP server turned on` },
+        roblox_export_model: { what: "fitting models to Roblox's limits", needs: `${VIA_COMPUTER} with Blender installed` },
+        roblox_upload: { what: "uploading art and sound to Roblox", needs: `${VIA_COMPUTER} with the user's Roblox Open Cloud key (CODEV_ROBLOX_API_KEY)` },
         roblox_studio: { what: "building inside Roblox Studio", needs: `${VIA_COMPUTER} with Roblox Studio open and its MCP server turned on` },
         blender_run: { what: "Blender 3D modeling", needs: `${VIA_COMPUTER} with Blender installed` },
         art_generate: { what: "the game-art pipeline", needs: `${VIA_COMPUTER} with the art pipeline (ComfyUI) set up` },

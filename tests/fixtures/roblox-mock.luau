@@ -132,6 +132,20 @@ function Methods:IsA(className)
 	if className == "BasePart" then return mine == "Part" or mine == "MeshPart" end
 	return false
 end
+function Methods:FindFirstChildWhichIsA(className, recursive)
+	for _, child in (if recursive then self:GetDescendants() else state[self].children) do
+		if child:IsA(className) then return child end
+	end
+	return nil
+end
+-- Models: a size and a scale, enough for CoDev's insert step.
+function Methods:GetExtentsSize()
+	local s = state[self].props._size or { X = 4, Y = 2, Z = 4 }
+	local k = state[self].props._scale or 1
+	return { X = s.X * k, Y = s.Y * k, Z = s.Z * k }
+end
+function Methods:GetScale() return state[self].props._scale or 1 end
+function Methods:ScaleTo(k) state[self].props._scale = k end
 function Methods:GetFullName() return fullName(self) end
 function Methods:Destroy()
 	for _, child in self:GetChildren() do child:Destroy() end
@@ -173,6 +187,25 @@ local SERVICE_EXTRA = {
 	end,
 	RunService = function()
 		return { IsServer = function() return true end, IsClient = function() return false end, IsStudio = function() return true end }
+	end,
+	-- LoadAsset: a decal (odd ids) holds its image, one id lower; a model (even ids) is 4x10x4.
+	InsertService = function()
+		return {
+			LoadAsset = function(_, id)
+				local holder = new("Model")
+				if id % 2 == 1 then
+					local d = new("Decal")
+					d.Texture = "rbxassetid://" .. tostring(id - 1)
+					d.Parent = holder
+				else
+					local m = new("Model")
+					m.Name = "Asset" .. tostring(id)
+					state[m].props._size = { X = 4, Y = 10, Z = 4 }
+					m.Parent = holder
+				end
+				return holder
+			end,
+		}
 	end,
 	MarketplaceService = function()
 		return { UserOwnsGamePassAsync = function() return false end, PromptProductPurchase = function() end, PromptGamePassPurchase = function() end }
