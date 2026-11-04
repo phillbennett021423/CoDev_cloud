@@ -135,7 +135,7 @@ test('Kore is the default read-aloud voice when a Gemini key is saved, and the p
     const page = await launched.browser.newPage();
     const errors = [];
     page.on('pageerror', err => errors.push(err.message));
-    await page.addInitScript(() => { localStorage.setItem('codev_chime', '0'); localStorage.setItem('codev_gemini_key', 'AIza_test_key'); });
+    await page.addInitScript(() => { localStorage.setItem('codev_chime', '0'); localStorage.setItem('codev_gemini_key', 'AIza_test_key'); localStorage.setItem('codev_tts_natural', 'gemini'); });
     const calls = [];
     const mode = { allFail: false };
     await page.route('https://generativelanguage.googleapis.com/**', async route => {
@@ -181,8 +181,8 @@ test('Kore is the default read-aloud voice when a Gemini key is saved, and the p
     assert.ok(await page.evaluate(() => speechAudio instanceof HTMLAudioElement));
     // Settings > Voice lists Kore first, picked by default.
     await page.evaluate(() => { openSettingsModal(); document.getElementById('voiceSettings').open = true; fillVoicePicker(); });
-    assert.equal(await page.evaluate(() => document.getElementById('modalVoice').value), '__kore__');
-    assert.match(await page.evaluate(() => document.getElementById('modalVoice').options[0].textContent), /^⭐ Kore \(Gemini's voice\)$/);
+    assert.equal(await page.evaluate(() => document.getElementById('modalVoice').value), 'gemini');
+    assert.match(await page.evaluate(() => document.querySelector('#modalVoice option[value="gemini"]').textContent), /^Kore by Gemini$/);
     // Turned off in Settings > Voice: Gemini isn't called.
     await page.evaluate(() => { koreVoiceOn = false; });
     await page.evaluate(() => Promise.race([speakText('Hello again.'), new Promise(r => setTimeout(r, 1500))]).then(() => stopSpeaking()));
@@ -191,7 +191,7 @@ test('Kore is the default read-aloud voice when a Gemini key is saved, and the p
     await page.close();
 });
 
-test('without a Gemini key, the phone says Kore needs one and picks its best own voice, never a joke voice', async t => {
+test('with Kore by Gemini picked and no Gemini key, the phone asks for one and picks its best own voice, never a joke voice', async t => {
     const launched = await launchBrowser();
     if (launched.skip) return t.skip(launched.skip);
     t.after(() => launched.browser.close());
@@ -202,7 +202,7 @@ test('without a Gemini key, the phone says Kore needs one and picks its best own
     const page = await launched.browser.newPage({ viewport: { width: 390, height: 844 } });
     const errors = [];
     page.on('pageerror', err => errors.push(err.message));
-    await page.addInitScript(() => localStorage.setItem('codev_chime', '0'));
+    await page.addInitScript(() => { localStorage.setItem('codev_chime', '0'); localStorage.setItem('codev_tts_natural', 'gemini'); });
     let geminiCalls = 0;
     await page.route('https://generativelanguage.googleapis.com/**', route => { geminiCalls++; return route.abort(); });
     await page.goto(url, { waitUntil: 'load' });
@@ -236,8 +236,76 @@ test('without a Gemini key, the phone says Kore needs one and picks its best own
     assert.ok(geminiCalls > 0);
     await page.evaluate(() => { stopSpeaking(); localStorage.removeItem('codev_gemini_key'); geminiKey = ''; });
     await page.evaluate(() => { openSettingsModal(); fillVoicePicker(); });
-    assert.match(await page.evaluate(() => document.getElementById('modalVoice').options[0].textContent), /needs a Gemini key/);
+    assert.match(await page.evaluate(() => document.querySelector('#modalVoice option[value="gemini"]').textContent), /needs a Gemini key/);
     assert.match(await page.textContent('#voiceHint'), /Kore needs a Gemini key/);
     assert.deepEqual(errors, []);
     await page.close();
+});
+
+test('the default voice is natural Kore made on the device: no key, no Gemini call, and the download is shown', async t => {
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-natural-'));
+    const backend = createMockBackend({ workspace });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const page = await launched.browser.newPage({ viewport: { width: 390, height: 844 } });
+    const errors = [];
+    page.on('pageerror', err => errors.push(err.message));
+    // A stand-in for the Kokoro worker: reports the model download, then answers each piece with a WAV.
+    await page.addInitScript(() => {
+        localStorage.setItem('codev_chime', '0');
+        localStorage.setItem('codev_groq_key', 'gsk_test_key_for_agent_tests');
+        localStorage.setItem('codev_backend', 'groq');
+        window.__workerJobs = [];
+        window.__workerUrls = [];
+        window.Worker = class {
+            constructor(url, opts) { window.__workerUrls.push({ url: String(url), type: opts && opts.type }); }
+            postMessage(msg) {
+                if (msg.type !== 'speak') return;
+                window.__workerJobs.push({ text: msg.text, voice: msg.voice });
+                setTimeout(() => this.onmessage({ data: { type: 'progress', loaded: 45 * 1048576, total: 90 * 1048576, file: 'model_quantized.onnx' } }), 5);
+                setTimeout(() => this.onmessage({ data: { type: 'audio', id: msg.id, wav: new Uint8Array(1044).buffer } }), 20);
+            }
+            terminate() {}
+        };
+    });
+    let geminiCalls = 0;
+    await page.route('https://generativelanguage.googleapis.com/**', route => { geminiCalls++; return route.abort(); });
+    await page.goto(url, { waitUntil: 'load' });
+    await page.evaluate(() => { window.__played = []; window.playAudioBlob = async blob => { window.__played.push({ type: blob.type, size: blob.size }); }; });
+    const long = 'This is the first sentence of the answer, read in the natural Kore voice. ' + 'It keeps going with more words so it needs more than one piece. '.repeat(8);
+    await page.evaluate(text => speakText(text), long);
+    const jobs = await page.evaluate(() => window.__workerJobs);
+    assert.ok(jobs.length >= 2, 'long text is read in pieces');
+    assert.ok(jobs.every(j => j.voice === 'af_kore'));
+    assert.ok(jobs[0].text.length <= 220);
+    assert.deepEqual(await page.evaluate(() => window.__workerUrls), [{ url: new URL('agent-ui/kokoro-worker.js', url).href, type: 'module' }]);
+    assert.equal((await page.evaluate(() => window.__played)).length, jobs.length);
+    assert.ok((await page.evaluate(() => window.__played)).every(p => p.type === 'audio/wav'));
+    assert.match(await page.textContent('#codevToast'), /Getting the natural voice ready \(only the first time\): 45 of 90 MB/);
+    assert.equal(geminiCalls, 0);
+    assert.equal(await page.$('#koreKeyModal'), null);
+    // Settings: the natural voices come first, Kore picked.
+    await page.evaluate(() => { openSettingsModal(); fillVoicePicker(); });
+    assert.equal(await page.evaluate(() => document.getElementById('modalVoice').value), 'natural:af_kore');
+    assert.match(await page.evaluate(() => document.getElementById('modalVoice').options[0].textContent), /^⭐ Kore · /);
+    assert.match(await page.textContent('#voiceHint'), /made on this device: no key/);
+    // Picking another natural voice and saving keeps it.
+    await page.evaluate(async () => { document.getElementById('modalVoice').value = 'natural:am_michael'; await saveSettings(); });
+    assert.equal(await page.evaluate(() => localStorage.getItem('codev_tts_natural')), 'am_michael');
+    assert.deepEqual(errors, []);
+    await page.close();
+});
+
+test('the Kokoro worker module and the vendored bundle are in place', () => {
+    const worker = fs.readFileSync(path.join(__dirname, '../mobile/www/agent-ui/kokoro-worker.js'), 'utf8');
+    assert.match(worker, /import\("\.\.\/vendor\/kokoro\/kokoro\.web\.js"\)/);
+    assert.match(worker, /dtype: "q8"/);
+    const bundle = fs.readFileSync(path.join(__dirname, '../mobile/www/vendor/kokoro/kokoro.web.js'), 'utf8');
+    assert.match(bundle, /af_kore:\{name:"Kore"/);
+    const Natural = require('../mobile/www/agent-ui/natural-voice.js');
+    assert.equal(Natural.VOICES[0].id, 'af_kore');
+    assert.ok(Natural.VOICES.every(v => bundle.includes(`${v.id}:{name`)), 'every offered voice exists in Kokoro');
 });
