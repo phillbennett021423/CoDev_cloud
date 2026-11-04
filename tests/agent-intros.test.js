@@ -213,9 +213,28 @@ test('without a Gemini key, the phone says Kore needs one and picks its best own
     ].map(v => rankWebVoice(v)));
     assert.ok(rank[0] < rank[3] && rank[1] < rank[3] && rank[2] < rank[3], 'Samantha beats the joke voices');
     assert.ok(rank[3] < rank[4], 'a Premium voice beats Samantha');
-    await page.evaluate(() => Promise.race([speakText('Hello.'), new Promise(r => setTimeout(r, 1500))]).then(() => stopSpeaking()));
+    // Tapping 🔊 asks for a Gemini key right there instead of reading in another voice.
+    await page.evaluate(() => speakText('Hello.'));
+    await page.waitForSelector('#koreKeyModal');
+    assert.match(await page.textContent('#koreKeyModal'), /needs a Gemini API key on this device/);
+    assert.ok(await page.evaluate(() => document.querySelector('#koreKeyModal .modal').getBoundingClientRect().right <= window.innerWidth));
+    await page.fill('#koreKeyInput', 'not-a-key');
+    await page.click('#koreKeySave');
+    assert.match(await page.textContent('#koreKeyStatus'), /start with AIza/);
+    // "Use this device's voice" reads without Kore and doesn't ask again this visit.
+    await page.click('#koreKeySkip');
+    assert.equal(await page.$('#koreKeyModal'), null);
+    await page.evaluate(() => Promise.race([speakText('Again.'), new Promise(r => setTimeout(r, 1000))]).then(() => stopSpeaking()));
+    assert.equal(await page.$('#koreKeyModal'), null);
     assert.equal(geminiCalls, 0);
-    assert.match(await page.textContent('#codevToast'), /Kore needs a Gemini key on this device/);
+    // A key saved in the prompt is kept and Kore is tried at once.
+    await page.evaluate(() => { koreKeyDeclined = false; speakText('With a key.'); });
+    await page.fill('#koreKeyInput', ' AIzaSyTestKeyForKore_1234567890 ');
+    await page.click('#koreKeySave');
+    await page.waitForFunction(() => localStorage.getItem('codev_gemini_key') === 'AIzaSyTestKeyForKore_1234567890');
+    await page.waitForTimeout(500);
+    assert.ok(geminiCalls > 0);
+    await page.evaluate(() => { stopSpeaking(); localStorage.removeItem('codev_gemini_key'); geminiKey = ''; });
     await page.evaluate(() => { openSettingsModal(); fillVoicePicker(); });
     assert.match(await page.evaluate(() => document.getElementById('modalVoice').options[0].textContent), /needs a Gemini key/);
     assert.match(await page.textContent('#voiceHint'), /Kore needs a Gemini key/);

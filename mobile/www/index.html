@@ -6992,6 +6992,48 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         const KORE_NEEDS_KEY = "Kore needs a Gemini key on this device (keys stay in each browser and app): add yours in Settings > Gemini. Until then this device's own voice reads.";
         let koreKeyNoticeShown = false;
         let koreFailNoticeShown = false;
+        // "Use this device's voice" in the Kore key prompt: not asked again until the page reloads.
+        let koreKeyDeclined = false;
+
+        function openKoreKeyPrompt(text) {
+            document.getElementById("koreKeyModal")?.remove();
+            const overlay = document.createElement("div");
+            overlay.className = "modal-overlay";
+            overlay.id = "koreKeyModal";
+            overlay.style.display = "flex";
+            overlay.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="koreKeyTitle">
+                <h3 id="koreKeyTitle" style="margin: 0;">🎙️ Hear it in Kore</h3>
+                <div style="font-size: 0.9rem; line-height: 1.5;">Kore is Gemini's voice, so it needs a Gemini API key on this device. Keys stay in this browser or app and are never shared. A key is free from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color: var(--accent);">Google AI Studio</a>.</div>
+                <input type="text" id="koreKeyInput" placeholder="Paste your Gemini key (AIza...)" autocomplete="off" spellcheck="false" style="font-family: monospace; padding: 10px; border-radius: 8px;">
+                <div id="koreKeyStatus" role="alert" style="font-size: 0.85rem; color: var(--danger); min-height: 1em;"></div>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
+                    <button type="button" class="btn-secondary" id="koreKeySkip" style="padding: 10px 14px; border-radius: 8px;">Use this device's voice</button>
+                    <button type="button" class="btn-save-agent" id="koreKeySave" style="padding: 10px 14px; border-radius: 8px;">Save and play in Kore</button>
+                </div>
+            </div>`;
+            document.body.appendChild(overlay);
+            const input = overlay.querySelector("#koreKeyInput");
+            const close = () => overlay.remove();
+            overlay.addEventListener("click", e => { if (e.target === overlay) close(); });
+            overlay.querySelector("#koreKeySkip").onclick = () => { koreKeyDeclined = true; close(); speakText(text); };
+            const save = () => {
+                const key = input.value.replace(/[\s\u200B-\u200D\uFEFF"'`]+/g, "");
+                if (!GEMINI_KEY_PATTERN.test(key)) {
+                    overlay.querySelector("#koreKeyStatus").textContent = "That doesn't look like a Gemini key (they start with AIza). Copy it again from Google AI Studio.";
+                    return;
+                }
+                geminiKey = key;
+                localStorage.setItem("codev_gemini_key", key);
+                if (typeof updateMediaStatus === "function") updateMediaStatus();
+                logConsoleActivity("Saved a Gemini key for the Kore voice.");
+                close();
+                // This tap is the gesture that lets the phone play Kore's audio.
+                speakText(text);
+            };
+            overlay.querySelector("#koreKeySave").onclick = save;
+            input.addEventListener("keydown", e => { if (e.key === "Enter") save(); });
+            input.focus();
+        }
 
         function koreVoiceReady() { return koreVoiceOn && !!geminiSearchKey(); }
 
@@ -7135,13 +7177,20 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const cleanText = cleanTextForSpeech(text);
             if (!cleanText) return;
 
+            // Kore picked but no Gemini key on this device (the web page has none of its own):
+            // ask for one right here instead of reading in another voice.
+            if (koreVoiceOn && !geminiSearchKey() && !koreKeyDeclined) {
+                openKoreKeyPrompt(text);
+                return;
+            }
+
             stopSpeaking();
             // Still inside the tap: unlock audio for Kore's (or Azure's) speech.
             primeSpeechAudio();
             const runId = speechRunId;
             isSpeaking = true;
             logConsoleActivity("Playing text-to-speech audio for agent response.");
-            if (koreVoiceOn && !geminiSearchKey() && !koreKeyNoticeShown) {
+            if (koreVoiceOn && !geminiSearchKey() && !koreKeyNoticeShown && !koreKeyDeclined) {
                 koreKeyNoticeShown = true;
                 showToast(KORE_NEEDS_KEY);
             }
