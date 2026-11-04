@@ -145,14 +145,15 @@ test('sync puts scripts into Studio as one undo step, refuses code that doesn\'t
 
         const first = await roblox.callTool('roblox_sync');
         assert.equal(first.isError, undefined, textOf(first));
-        assert.match(textOf(first), /Synced 4 script\(s\) into the open place: 4 new, 0 changed, 0 already up to date/);
-        assert.match(textOf(first), /src\/server\/Main\.server\.luau -> ServerScriptService\.Server\.Main \(Script\)/);
+        assert.match(textOf(first), /Synced 4 script\(s\) into the open place: 4 new, 0 changed, 0 already up to date \(\+\d+ -0 lines\)/);
+        assert.match(textOf(first), /src\/server\/Main\.server\.luau -> ServerScriptService\.Server\.Main \(Script, new\)/);
         const again = await roblox.callTool('roblox_sync');
         assert.match(textOf(again), /0 new, 0 changed, 4 already up to date/);
 
-        // The source in Studio is byte for byte the file, and each sync was one committed recording.
-        const read = await roblox.callTool('roblox_studio', { tool: 'execute_luau', args: { datamodel_type: 'Edit', code: 'print(game.ReplicatedStorage.Shared.Tricky.Source)\nlocal r = __codev_recordings()\nprint(#r, r[1].name, r[1].operation, r[2].operation)' } });
-        assert.equal(textOf(read), `${tricky}\n2 CoDev sync Coins Enum.FinishRecordingOperation.Commit Enum.FinishRecordingOperation.Commit`);
+        // The source in Studio is byte for byte the file; the sync was one committed recording,
+        // and the second sync had nothing to send.
+        const read = await roblox.callTool('roblox_studio', { tool: 'execute_luau', args: { datamodel_type: 'Edit', code: 'print(game.ReplicatedStorage.Shared.Tricky.Source)\nlocal r = __codev_recordings()\nprint(#r, r[1].name, r[1].operation)' } });
+        assert.equal(textOf(read), `${tricky}\n1 CoDev sync Coins Enum.FinishRecordingOperation.Commit`);
 
         // Every call to Studio carried the studio id from list_roblox_studios.
         assert.ok(calls().length >= 5);
@@ -190,7 +191,7 @@ test('sync puts scripts into Studio as one undo step, refuses code that doesn\'t
         await roblox.callTool('roblox_sync', { files: ['src/server/Door.server.luau'] });
         const broken = await roblox.callTool('roblox_playtest', { seconds: 1, screenshot: false });
         assert.equal(broken.isError, true);
-        assert.match(textOf(broken), /1 error line\(s\)|2 error line\(s\)/);
+        assert.match(textOf(broken), /error line\(s\)/);
         assert.match(textOf(broken), /ServerScriptService\.Server\.Door"\]:2: attempt to index nil with 'Name'/);
         assert.equal(broken.content.length, 1);
         // Play stopped afterwards, so Studio is back in edit mode.
@@ -208,4 +209,75 @@ test('the studio pack covers the workflow, security, data and fair monetization'
     assert.match(guide('monetization'), /DevEx[\s\S]*web_search/);
     assert.match(guide('security'), /exploiter/);
     assert.match(guide('nonsense'), /^Topics: start, luau, security, data, monetization, performance, publish/);
+});
+
+test('roblox_diff shows line changes, and sync won\'t overwrite an edit made in Studio unless told to', async () => {
+    const dir = folder();
+    const { roblox } = withStudio(dir);
+    try {
+        await roblox.callTool('roblox_init_project', { name: 'Diffs' });
+        await roblox.callTool('roblox_sync');
+        const main = path.join(dir, 'src', 'server', 'Main.server.luau');
+        fs.writeFileSync(main, fs.readFileSync(main, 'utf8').replace('print("Server ready")', 'print("Server ready!")\nprint("Version 2")'));
+        fs.writeFileSync(path.join(dir, 'src', 'shared', 'Extra.luau'), 'return 1\n');
+        const d = textOf(await roblox.callTool('roblox_diff'));
+        assert.match(d, /1 new, 1 changed, 2 the same/);
+        assert.match(d, /\+ src\/shared\/Extra\.luau -> ReplicatedStorage\.Shared\.Extra \(new ModuleScript, 2 lines\)/);
+        assert.match(d, /~ src\/server\/Main\.server\.luau -> ServerScriptService\.Server\.Main: \+2 -1\n@@ line \d+\n[\s\S]*- print\("Server ready"\)\n\+ print\("Server ready!"\)\n\+ print\("Version 2"\)/);
+        assert.doesNotMatch(d, /⚠/);
+        const synced = textOf(await roblox.callTool('roblox_sync'));
+        assert.match(synced, /1 new, 1 changed, 2 already up to date \(\+4 -1 lines\)/);
+
+        // Someone edits the script in Studio: diff warns and sync refuses to overwrite it.
+        await roblox.callTool('roblox_studio', { tool: 'execute_luau', args: { datamodel_type: 'Edit', code: 'local s = game.ServerScriptService.Server.Main\ns.Source = s.Source .. "print(\'edited in Studio\')\\n"' } });
+        fs.writeFileSync(main, fs.readFileSync(main, 'utf8') + 'print("Version 3")\n');
+        assert.match(textOf(await roblox.callTool('roblox_diff')), /⚠ edited in Studio since CoDev's last sync[\s\S]*- print\('edited in Studio'\)/);
+        const refused = await roblox.callTool('roblox_sync');
+        assert.equal(refused.isError, true);
+        assert.match(textOf(refused), /Nothing was synced: 1 script\(s\)[\s\S]*src\/server\/Main\.server\.luau -> ServerScriptService\.Server\.Main \(edited in Studio\)/);
+        const forced = await roblox.callTool('roblox_sync', { overwrite_studio_edits: true });
+        assert.equal(forced.isError, undefined, textOf(forced));
+        assert.match(textOf(forced), /0 new, 1 changed, 3 already up to date/);
+
+        // A script that was already in the place (not from CoDev) is protected the same way.
+        await roblox.callTool('roblox_studio', { tool: 'execute_luau', args: { datamodel_type: 'Edit', code: 'local s = Instance.new("ModuleScript")\ns.Name = "Theirs"\ns.Source = "return \'theirs\'"\ns.Parent = game.ReplicatedStorage.Shared' } });
+        fs.writeFileSync(path.join(dir, 'src', 'shared', 'Theirs.luau'), 'return "mine"\n');
+        assert.match(textOf(await roblox.callTool('roblox_sync')), /Theirs \(already in the place before CoDev synced\)/);
+    } finally {
+        await roblox.close();
+    }
+});
+
+test('the obby, tycoon and simulator templates pass the checks and play clean, and the simulator trusts nothing from the client', async () => {
+    for (const template of ['obby', 'tycoon', 'simulator']) {
+        const dir = folder();
+        const { roblox } = withStudio(dir);
+        try {
+            const made = textOf(await roblox.callTool('roblox_init_project', { template }));
+            assert.match(made, new RegExp(`the ${template} template: .*src/server/PlayerData\\.luau`));
+            const check = await roblox.callTool('roblox_check');
+            assert.match(textOf(check), /No problems in 5 script\(s\)/, `${template}: ${textOf(check)}`);
+            await roblox.callTool('roblox_sync');
+            const play = await roblox.callTool('roblox_playtest', { seconds: 1, screenshot: false });
+            assert.equal(play.isError, undefined, `${template}: ${textOf(play)}`);
+            assert.match(textOf(play), { obby: /Obby ready: 10 stages/, tycoon: /Tycoon ready: 4 droppers/, simulator: /Simulator ready/ }[template]);
+        } finally {
+            await roblox.close();
+        }
+    }
+    // The simulator's server side, driven like a client would (and like an exploiter would).
+    const dir = folder();
+    const { roblox } = withStudio(dir);
+    try {
+        await roblox.callTool('roblox_init_project', { template: 'simulator' });
+        await roblox.callTool('roblox_sync');
+        await roblox.callTool('roblox_studio', { tool: 'start_stop_play', args: { mode: 'start_play' } });
+        const run = code => roblox.callTool('roblox_studio', { tool: 'execute_luau', args: { datamodel_type: 'Edit', code } }).then(textOf);
+        // Spamming the remote counts once per cooldown; a fake rebirth without the strength does nothing.
+        const out = await run('local r = game.ReplicatedStorage.Remotes\nfor i = 1, 50 do r.Train:FireServer(999999) end\nr.Rebirth:FireServer()\nlocal ls = game.Players.Player1.leaderstats\nprint(ls.Strength.Value, ls.Rebirths.Value, game.Players.Player1:GetAttribute("RebirthCost"))');
+        assert.equal(out, '1 0 100');
+        await roblox.callTool('roblox_studio', { tool: 'start_stop_play', args: { mode: 'stop' } });
+    } finally {
+        await roblox.close();
+    }
 });

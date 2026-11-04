@@ -6,10 +6,10 @@ const TOPICS = {
     start: `# Making a Roblox game with CoDev
 
 1. roblox_status: is Roblox Studio open with its MCP server on, and is there a project folder?
-2. roblox_init_project once per game: a Rojo-style folder (default.project.json and src/server, src/client, src/shared), so the game's code lives in files CoDev can check, undo (checkpoint_create) and keep in git.
+2. roblox_init_project once per game (template obby, tycoon or simulator gives a whole working starter game with safe saving and purchases): a Rojo-style folder (default.project.json and src/server, src/client, src/shared), so the game's code lives in files CoDev can check, undo (checkpoint_create) and keep in git.
 3. Write scripts as files: Name.server.luau is a Script, Name.client.luau a LocalScript, Name.luau a ModuleScript. Shared code goes in src/shared (ReplicatedStorage.Shared) and is required from both sides.
 4. roblox_check after every change: the real Luau compiler plus CoDev's Roblox rules. Fix every error before going on.
-5. roblox_sync puts the scripts into the open place, as one step the user can undo with Ctrl+Z in Studio.
+5. roblox_diff shows what a sync would change, line by line, when the user wants to review first. roblox_sync puts the changed scripts into the open place, as one step the user can undo with Ctrl+Z in Studio. It won't overwrite a script someone edited in Studio; copy that edit into the file, or pass overwrite_studio_edits if it should go.
 6. Art and sound: roblox_export_model fits a model to Roblox's limits (20,000 triangles per mesh, 4 bone weights per vertex, 1024 textures), roblox_asset_check confirms it, roblox_upload puts it on Roblox and writes its id into src/shared/Assets.luau, so scripts use require(ReplicatedStorage.Shared.Assets).Name. Animations upload as .rbxm from Studio's Animation Editor; a .fbx animation goes in through Studio's 3D Importer.
 7. Build the world in Studio with roblox_studio (execute_luau to place parts and models, search_game_tree and inspect_instance to look, insert_asset for Creator Store models, generate_mesh / generate_material where offered).
 8. roblox_playtest: press Play, read every error, look at the screenshot, stop. Fix and repeat until it runs clean and looks right. Never tell the user it works before a clean playtest.

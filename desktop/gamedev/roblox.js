@@ -19,8 +19,12 @@ const path = require('path');
 const { compileLuau, luauAvailable, lintRoblox, scriptKind } = require('./roblox-luau');
 const { guide, TOPICS } = require('./roblox-guide');
 const { createRobloxAssets } = require('./roblox-assets');
+const { readStudioLuau, parseStudioSources, lineDiff, hashSource } = require('./roblox-diff');
+const crypto = require('crypto');
 
 const PROJECT_FILE = 'default.project.json';
+const TEMPLATE_DIR = path.join(__dirname, 'roblox-templates');
+const TEMPLATES = ['obby', 'tycoon', 'simulator'];
 const SKIP_DIRS = new Set(['node_modules', '.git', 'build', 'dist', 'Packages', 'DevPackages', '__pycache__']);
 const SCRIPT_RE = /\.(luau|lua)$/i;
 const MAX_OUTPUT = 12000;
@@ -361,11 +365,13 @@ function createRoblox({ getProjectDir = () => '', env = process.env, log = () =>
         return text(tail(r.textOut), r.errors > 0);
     }
 
-    async function initProject({ name = '' } = {}) {
+    async function initProject({ name = '', template = 'empty' } = {}) {
         const dir = getProjectDir();
         if (!dir || !fs.existsSync(dir)) return text('No project folder is set, so there is nowhere to make the Roblox project. Ask the user to choose a project folder first.', true);
         const existing = findRojoRoot(dir);
         if (existing) return text(`There is already a Roblox project at ${existing} (${PROJECT_FILE}); keep working in it.`);
+        const kind = String(template || 'empty').toLowerCase();
+        if (kind !== 'empty' && !TEMPLATES.includes(kind)) return text(`template must be empty or one of ${TEMPLATES.join(', ')}.`, true);
         const gameName = String(name || path.basename(dir)).trim().slice(0, 60) || 'MyGame';
         const write = (rel, body) => {
             const file = path.join(dir, rel);
@@ -381,11 +387,25 @@ function createRoblox({ getProjectDir = () => '', env = process.env, log = () =>
                 StarterPlayer: { StarterPlayerScripts: { Client: { $path: 'src/client' } } }
             }
         }, null, 2) + '\n');
-        write('src/shared/Config.luau', '--!strict\n-- Numbers the whole game shares (prices, rewards, timings), in one place.\nlocal Config = {\n\tStartingCoins = 0,\n}\n\nreturn Config\n');
-        write('src/server/Main.server.luau', '--!strict\nlocal Players = game:GetService("Players")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\nlocal Config = require(ReplicatedStorage.Shared.Config)\n\nlocal function onPlayerAdded(player: Player)\n\tlocal leaderstats = Instance.new("Folder")\n\tleaderstats.Name = "leaderstats"\n\tlocal coins = Instance.new("IntValue")\n\tcoins.Name = "Coins"\n\tcoins.Value = Config.StartingCoins\n\tcoins.Parent = leaderstats\n\tleaderstats.Parent = player\nend\n\nPlayers.PlayerAdded:Connect(onPlayerAdded)\nfor _, player in Players:GetPlayers() do\n\tonPlayerAdded(player)\nend\n\nprint("Server ready")\n');
-        write('src/client/Main.client.luau', '--!strict\nlocal Players = game:GetService("Players")\nlocal player = Players.LocalPlayer\n\nprint("Client ready for", player.Name)\n');
+        const made = [];
+        if (kind !== 'empty') {
+            // The template's files, then the shared ones (safe saving, purchases) they all use.
+            for (const from of [path.join(TEMPLATE_DIR, kind), path.join(TEMPLATE_DIR, 'common')]) {
+                const walk = sub => {
+                    for (const e of fs.readdirSync(path.join(from, sub), { withFileTypes: true })) {
+                        const rel = path.posix.join(sub, e.name);
+                        if (e.isDirectory()) walk(rel);
+                        else { write(rel, fs.readFileSync(path.join(from, rel), 'utf8')); made.push(rel); }
+                    }
+                };
+                walk('');
+            }
+        }
+        if (kind === 'empty') write('src/shared/Config.luau', '--!strict\n-- Numbers the whole game shares (prices, rewards, timings), in one place.\nlocal Config = {\n\tStartingCoins = 0,\n}\n\nreturn Config\n');
+        if (kind === 'empty') write('src/server/Main.server.luau', '--!strict\nlocal Players = game:GetService("Players")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\nlocal Config = require(ReplicatedStorage.Shared.Config)\n\nlocal function onPlayerAdded(player: Player)\n\tlocal leaderstats = Instance.new("Folder")\n\tleaderstats.Name = "leaderstats"\n\tlocal coins = Instance.new("IntValue")\n\tcoins.Name = "Coins"\n\tcoins.Value = Config.StartingCoins\n\tcoins.Parent = leaderstats\n\tleaderstats.Parent = player\nend\n\nPlayers.PlayerAdded:Connect(onPlayerAdded)\nfor _, player in Players:GetPlayers() do\n\tonPlayerAdded(player)\nend\n\nprint("Server ready")\n');
+        if (kind === 'empty') write('src/client/Main.client.luau', '--!strict\nlocal Players = game:GetService("Players")\nlocal player = Players.LocalPlayer\n\nprint("Client ready for", player.Name)\n');
         const gitignore = path.join(dir, '.gitignore');
-        const ignore = ['*.rbxl.lock', '*.rbxlx.lock', 'sourcemap.json'];
+        const ignore = ['*.rbxl.lock', '*.rbxlx.lock', 'sourcemap.json', '.codev/'];
         const had = fs.existsSync(gitignore) ? fs.readFileSync(gitignore, 'utf8') : '';
         const missing = ignore.filter(l => !had.split(/\r?\n/).includes(l));
         if (missing.length) fs.writeFileSync(gitignore, `${had}${had && !had.endsWith('\n') ? '\n' : ''}${missing.join('\n')}\n`);
@@ -393,13 +413,62 @@ function createRoblox({ getProjectDir = () => '', env = process.env, log = () =>
         return text([
             `Made the Roblox project "${gameName}" in the project folder:`,
             `  ${PROJECT_FILE}: maps src/shared to ReplicatedStorage.Shared, src/server to ServerScriptService.Server, src/client to StarterPlayer.StarterPlayerScripts.Client (the Rojo layout, so Rojo works on it too)`,
-            '  src/shared/Config.luau, src/server/Main.server.luau (leaderstats with Coins), src/client/Main.client.luau',
+            kind === 'empty'
+                ? '  src/shared/Config.luau, src/server/Main.server.luau (leaderstats with Coins), src/client/Main.client.luau'
+                : `  the ${kind} template: ${made.sort().join(', ')}\n  It builds its own level in code, saves player data safely (PlayerData) and handles purchases (Monetization); put game pass and product ids in src/shared/Config.luau when they exist.`,
             'Next: write the game\'s scripts in src/, roblox_check them, then roblox_sync puts them into the place open in Studio.'
         ].join('\n'));
     }
 
-    async function sync({ files } = {}) {
-        const { project, list } = gather(files);
+    // What CoDev last put into Studio, per script, so an edit made in Studio is noticed.
+    const syncStateFile = root => path.join(root, '.codev', 'roblox-sync.json');
+    function readSyncState(root) { try { return JSON.parse(fs.readFileSync(syncStateFile(root), 'utf8')); } catch { return {}; } }
+    function writeSyncState(root, state) {
+        fs.mkdirSync(path.dirname(syncStateFile(root)), { recursive: true });
+        fs.writeFileSync(syncStateFile(root), JSON.stringify(state, null, 2) + '\n');
+    }
+
+    // Each script on disk against the same script in Studio.
+    async function compare(root, list) {
+        const nonce = `CDV${crypto.randomBytes(4).toString('hex')}`;
+        const studio = [];
+        for (let i = 0; i < list.length; i += 40) {
+            const part = list.slice(i, i + 40);
+            const { output, isError } = await runLuau(readStudioLuau(part, nonce));
+            if (isError) throw new Error(`Studio couldn't read the scripts: ${tail(output, 1000)}`);
+            studio.push(...parseStudioSources(output, nonce, part.length));
+        }
+        const synced = readSyncState(root);
+        return list.map((s, i) => {
+            const there = studio[i];
+            const status = !there.exists ? 'new' : there.source === s.source ? 'same' : 'changed';
+            // Studio's copy differs from what CoDev last synced: someone edited it in Studio.
+            const editedInStudio = status === 'changed' && (synced[s.rel] ? hashSource(there.source) !== synced[s.rel] : true);
+            return { ...s, status, studioSource: there.source, studioClass: there.className, editedInStudio, unknownOrigin: editedInStudio && !synced[s.rel] };
+        });
+    }
+
+    async function diff({ files } = {}) {
+        const { root, list } = gather(files);
+        if (!list.length) return text('The project has no scripts yet.', true);
+        const rows = await compare(root, list);
+        const counts = { new: 0, changed: 0, same: 0 };
+        rows.forEach(r => { counts[r.status]++; });
+        const out = [`Studio vs the project: ${counts.new} new, ${counts.changed} changed, ${counts.same} the same. Lines marked - are in Studio now; + is what roblox_sync would put there.`];
+        for (const r of rows) {
+            if (r.status === 'same') continue;
+            const where = r.instancePath.map(p => p.name).join('.');
+            if (r.status === 'new') { out.push(`\n+ ${r.rel} -> ${where} (new ${r.className}, ${r.source.split('\n').length} lines)`); continue; }
+            const d = lineDiff(r.studioSource, r.source);
+            out.push(`\n~ ${r.rel} -> ${where}: +${d.added} -${d.removed}${r.editedInStudio ? (r.unknownOrigin ? '  ⚠ this script was already in the place with different code; syncing replaces it' : '  ⚠ edited in Studio since CoDev\'s last sync; syncing would overwrite that edit') : ''}`);
+            out.push(...d.hunks);
+        }
+        if (rows.some(r => r.editedInStudio)) out.push('\nroblox_sync won\'t overwrite the ⚠ scripts unless overwrite_studio_edits is true. Copy the Studio edit into the file first if it should be kept.');
+        return text(tail(out.join('\n')));
+    }
+
+    async function sync({ files, overwrite_studio_edits: overwrite = false } = {}) {
+        const { root, project, list } = gather(files);
         if (!list.length) return text('The project has no scripts to sync yet. Write .server.luau, .client.luau or .luau files under src/ first.', true);
         const checked = await checkList(list);
         if (checked.compile.length) {
@@ -407,10 +476,26 @@ function createRoblox({ getProjectDir = () => '', env = process.env, log = () =>
         }
         const bad = list.find(s => !s.instancePath.length || !s.instancePath[0].name);
         if (bad) return text(`${bad.rel} isn't mapped under a service in ${PROJECT_FILE}.`, true);
+        const rows = await compare(root, list);
+        const edited = rows.filter(r => r.editedInStudio);
+        if (edited.length && !overwrite) {
+            return text([
+                `Nothing was synced: ${edited.length} script(s) in Studio have code that isn't from CoDev's last sync, and syncing would overwrite it:`,
+                ...edited.map(r => `  ${r.rel} -> ${r.instancePath.map(p => p.name).join('.')}${r.unknownOrigin ? ' (already in the place before CoDev synced)' : ' (edited in Studio)'}`),
+                'Show the user roblox_diff, then either copy the Studio code into the file, or sync again with overwrite_studio_edits true once they agree.'
+            ].join('\n'), true);
+        }
+        const toSync = rows.filter(r => r.status !== 'same');
+        const state = readSyncState(root);
+        if (!toSync.length) {
+            for (const r of rows) state[r.rel] = hashSource(r.source);
+            writeSyncState(root, state);
+            return text(`Synced ${list.length} script(s) into the open place: 0 new, 0 changed, ${list.length} already up to date.`);
+        }
         // Big projects go in several recordings so each call stays small.
         const batches = [];
         let size = 0;
-        for (const s of list) {
+        for (const s of toSync) {
             if (!batches.length || size + s.source.length > MAX_CHUNK) { batches.push([]); size = 0; }
             batches[batches.length - 1].push(s);
             size += s.source.length;
@@ -422,14 +507,23 @@ function createRoblox({ getProjectDir = () => '', env = process.env, log = () =>
             const m = output.match(/CODEV_SYNC (\d+) (-?\d+) (\d+)/);
             if (isError || !m) return text(`Studio didn't finish the sync${i ? ` (batches 1 to ${i} went in)` : ''}:\n${tail(output, 3000) || 'no output'}`, true);
             made += Number(m[1]); changed += Math.max(0, Number(m[2])); same += Number(m[3]);
+            for (const r of batches[i]) state[r.rel] = hashSource(r.source);
+            writeSyncState(root, state);
         }
+        for (const r of rows) if (r.status === 'same') state[r.rel] = hashSource(r.source);
+        writeSyncState(root, state);
+        same += rows.length - toSync.length;
+        const lines = toSync.reduce((acc, r) => {
+            const d = r.status === 'new' ? { added: r.source.split('\n').length, removed: 0 } : lineDiff(r.studioSource, r.source, 0);
+            return { added: acc.added + d.added, removed: acc.removed + d.removed };
+        }, { added: 0, removed: 0 });
         const warnings = checked.lint.filter(p => p.severity === 'warning').length;
         const lintErrors = checked.lint.filter(p => p.severity === 'error').length;
-        const where = list.slice(0, 12).map(s => `  ${s.rel} -> ${s.instancePath.map(p => p.name).join('.')} (${s.className})`);
+        const where = toSync.slice(0, 12).map(s => `  ${s.rel} -> ${s.instancePath.map(p => p.name).join('.')} (${s.className}, ${s.status})`);
         return text([
-            `Synced ${list.length} script(s) into the open place: ${made} new, ${changed} changed, ${same} already up to date. One Ctrl+Z in Studio undoes the sync.`,
+            `Synced ${list.length} script(s) into the open place: ${made} new, ${changed} changed, ${same} already up to date (+${lines.added} -${lines.removed} lines). One Ctrl+Z in Studio undoes the sync.`,
             ...where,
-            list.length > 12 ? `  ...and ${list.length - 12} more` : '',
+            toSync.length > 12 ? `  ...and ${toSync.length - 12} more` : '',
             lintErrors || warnings ? `roblox_check found ${lintErrors} rule error(s) and ${warnings} warning(s); fix them next.` : '',
             'Scripts deleted from disk aren\'t removed from the place; remove those with roblox_studio if needed.',
             'Next: roblox_playtest.'
@@ -534,9 +628,10 @@ function createRoblox({ getProjectDir = () => '', env = process.env, log = () =>
         },
         {
             name: 'roblox_init_project',
-            description: 'Make a Roblox game project in the user\'s project folder: default.project.json (the Rojo layout) mapping src/shared, src/server and src/client into ReplicatedStorage, ServerScriptService and StarterPlayerScripts, with a starter Config module, server script (leaderstats) and client script. Existing files are never overwritten. Use it once, when roblox_status says there is no Roblox project; don\'t use it when one exists.',
+            description: 'Make a Roblox game project in the user\'s project folder: default.project.json (the Rojo layout) mapping src/shared, src/server and src/client into ReplicatedStorage, ServerScriptService and StarterPlayerScripts, with a starter Config module, server script (leaderstats) and client script, or a whole working starter game (template obby, tycoon or simulator, with safe saving and purchases). Existing files are never overwritten. Use it once, when roblox_status says there is no Roblox project; don\'t use it when one exists.',
             inputSchema: { type: 'object', properties: {
-                name: { type: 'string', description: 'Optional: the game\'s name for the project file (default: the folder\'s name).' }
+                name: { type: 'string', description: 'Optional: the game\'s name for the project file (default: the folder\'s name).' },
+                template: { type: 'string', enum: ['empty', ...TEMPLATES], description: 'Optional: a working starter game: obby (climbing stages, checkpoints, kill bricks), tycoon (claim pad, droppers, buy buttons), simulator (train, rebirth, server-checked remotes), or empty (default). Each saves player data safely and handles game passes and developer products.' }
             } }
         },
         {
@@ -550,10 +645,19 @@ function createRoblox({ getProjectDir = () => '', env = process.env, log = () =>
             annotations: { readOnlyHint: true }
         },
         {
-            name: 'roblox_sync',
-            description: 'Put the project\'s scripts into the place open in Roblox Studio, at the paths default.project.json maps them to (making folders and scripts as needed and updating changed ones). It refuses when a script doesn\'t compile, and the whole sync is one step the user can undo with Ctrl+Z in Studio. Use it after roblox_check passes and before roblox_playtest. It only syncs scripts; to place parts, models or terrain use roblox_studio with execute_luau instead.',
+            name: 'roblox_diff',
+            description: 'Show what roblox_sync would change in the place open in Roblox Studio, line by line: each project script that is new, changed (with - lines now in Studio and + lines from the file) or the same, and a warning on any script someone edited in Studio since CoDev\'s last sync (sync won\'t overwrite those unless told to). Use it before roblox_sync whenever the user wants to review changes, and always when sync refuses because of Studio edits. It changes nothing; use roblox_sync to apply.',
             inputSchema: { type: 'object', properties: {
-                files: { type: 'array', items: { type: 'string' }, description: 'Optional: only these project-relative script paths. Leave out to sync every script.' }
+                files: { type: 'array', items: { type: 'string' }, description: 'Optional: only these project-relative script paths. Leave out to compare every script.' }
+            } },
+            annotations: { readOnlyHint: true }
+        },
+        {
+            name: 'roblox_sync',
+            description: 'Put the project\'s scripts into the place open in Roblox Studio, at the paths default.project.json maps them to (making folders and scripts as needed and updating changed ones). It refuses when a script doesn\'t compile, only sends scripts that changed, won\'t overwrite code someone edited in Studio (roblox_diff shows it), and the whole sync is one step the user can undo with Ctrl+Z in Studio. Use it after roblox_check passes and before roblox_playtest. It only syncs scripts; to place parts, models or terrain use roblox_studio with execute_luau instead.',
+            inputSchema: { type: 'object', properties: {
+                files: { type: 'array', items: { type: 'string' }, description: 'Optional: only these project-relative script paths. Leave out to sync every script.' },
+                overwrite_studio_edits: { type: 'boolean', description: 'Optional: replace scripts that were edited in Studio (or were already in the place) with the project\'s version. Default false; set it only after the user saw roblox_diff and agreed.' }
             } }
         },
         {
@@ -584,6 +688,7 @@ function createRoblox({ getProjectDir = () => '', env = process.env, log = () =>
             if (name === 'roblox_guide') return text(guide(args.topic));
             if (name === 'roblox_init_project') return await initProject(args);
             if (name === 'roblox_check') return await check(args);
+            if (name === 'roblox_diff') return await diff(args);
             if (name === 'roblox_sync') return await sync(args);
             if (name === 'roblox_playtest') return await playtest(args);
             if (name === 'roblox_studio') return await passThrough(args);
