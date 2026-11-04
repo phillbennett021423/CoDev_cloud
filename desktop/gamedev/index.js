@@ -35,7 +35,12 @@ const PLUGIN_CFG = 'res://addons/codev_bridge/plugin.cfg';
 const SKIP_DIRS = new Set(['node_modules', '.git', '.godot', '.import', 'build', 'dist', '.venv', 'venv', '__pycache__']);
 const MAX_OUTPUT = 12000;
 const EDITOR_ACTIONS = ['ping', 'scene_tree', 'open_scene', 'save_scene', 'reload_scene', 'rescan', 'play', 'stop', 'is_playing',
-    'add_node', 'instantiate', 'set_property', 'get_property', 'remove_node', 'select'];
+    'add_node', 'instantiate', 'set_property', 'get_property', 'remove_node', 'select', 'attach_script', 'connect_signal', 'undo', 'redo',
+    'class_docs', 'find_class', 'game_state', 'game_input', 'game_log', 'game_shot'];
+// The playtest helper the bridge adds to the game as an autoload (only active when the
+// game is started from the editor).
+const AUTOLOAD_NAME = 'CoDevPlaytest';
+const AUTOLOAD_PATH = 'res://addons/codev_bridge/playtest.gd';
 
 function text(value, isError = false) {
     return { content: [{ type: 'text', text: String(value) }], ...(isError ? { isError: true } : {}) };
@@ -61,6 +66,7 @@ function findGodotRoot(projectDir) {
     return '';
 }
 
+function readText(file) { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } }
 function isFile(file) { try { return fs.statSync(file).isFile(); } catch { return false; } }
 
 function onPath(names, env) {
@@ -148,6 +154,22 @@ function godotProblems(output) {
     return keep;
 }
 
+// The playtest helper as an autoload in project.godot, keeping any others.
+function enableAutoload(projectText) {
+    const line = `${AUTOLOAD_NAME}="*${AUTOLOAD_PATH}"`;
+    if (new RegExp(`^${AUTOLOAD_NAME}\\s*=`, 'm').test(projectText)) return projectText;
+    const section = /^\[autoload\][ \t]*$/m;
+    if (!section.test(projectText)) return `${projectText.replace(/\s*$/, '\n')}\n[autoload]\n\n${line}\n`;
+    // Added as the section's first entry, so Godot loads it before the game's own autoloads.
+    return projectText.replace(section, m => `${m}\n\n${line}`).replace(`${line}\n\n`, `${line}\n`);
+}
+
+// The plugin version in a plugin.cfg's text ("" when there is none).
+function pluginVersion(cfgText) {
+    const m = String(cfgText || '').match(/^version\s*=\s*"([^"]*)"/m);
+    return m ? m[1] : '';
+}
+
 function enablePlugin(projectText) {
     const section = /^\[editor_plugins\]\s*$/m;
     if (!section.test(projectText)) return `${projectText.replace(/\s*$/, '\n')}\n[editor_plugins]\n\nenabled=PackedStringArray("${PLUGIN_CFG}")\n`;
@@ -220,8 +242,13 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
         if (root) {
             try {
                 const reply = await bridge('ping', {}, 3000);
-                editor = reply.ok ? `connected (Godot ${reply.godot}, scene ${reply.scene || 'none open'})` : `error: ${reply.error}`;
+                editor = reply.ok ? `connected (Godot ${reply.godot}, scene ${reply.scene || 'none open'}${reply.playing ? ', game running' : ''})` : `error: ${reply.error}`;
             } catch (err) { editor = err.message; }
+            const installed = readText(path.join(root, 'addons', 'codev_bridge', 'plugin.cfg'));
+            const bundled = pluginVersion(readText(path.join(PLUGIN_DIR, 'plugin.cfg')));
+            if (installed && pluginVersion(installed) !== bundled) {
+                editor += `. The project has the older CoDev Bridge ${pluginVersion(installed) || '1.0'}; call godot_install_bridge to update it to ${bundled} (undo, engine docs and playtesting), then the user restarts the editor`;
+            }
         }
         return { root, godot, blender, editor };
     }
@@ -284,21 +311,29 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
         for (const name of fs.readdirSync(PLUGIN_DIR)) fs.writeFileSync(path.join(target, name), fs.readFileSync(path.join(PLUGIN_DIR, name)));
         const projectFile = path.join(root, 'project.godot');
         const before = fs.readFileSync(projectFile, 'utf8');
-        const after = enablePlugin(before);
+        const after = enableAutoload(enablePlugin(before));
         if (after !== before) fs.writeFileSync(projectFile, after);
         // The token file changes on every editor start and shouldn't be committed.
         const gitignore = path.join(root, '.gitignore');
         if (fs.existsSync(gitignore) && !fs.readFileSync(gitignore, 'utf8').split(/\r?\n/).includes(BRIDGE_FILE)) fs.appendFileSync(gitignore, `\n${BRIDGE_FILE}\n`);
         log(`Installed the CoDev Bridge plugin in ${target}`);
-        return text(`Installed the CoDev Bridge editor plugin in ${toRes(root, target)} and turned it on in project.godot. `
+        return text(`Installed the CoDev Bridge editor plugin ${pluginVersion(readText(path.join(PLUGIN_DIR, 'plugin.cfg')))} in ${toRes(root, target)}, turned it on in project.godot and added its playtest helper (${AUTOLOAD_NAME}, which only runs when the game is started from the editor). `
             + 'The user now opens (or reopens) the project in the Godot 4 editor; the bridge starts with it. Then godot_editor works, starting with action "ping".');
     }
 
     async function editor({ action, args } = {}) {
         if (!EDITOR_ACTIONS.includes(action)) return text(`Unknown action "${action}". Actions: ${EDITOR_ACTIONS.join(', ')}.`, true);
-        const reply = await bridge(action, args && typeof args === 'object' ? args : {});
+        // game_input waits while it holds keys (up to 30 seconds in the game).
+        const reply = await bridge(action, args && typeof args === 'object' ? args : {}, action === 'game_input' ? 50000 : 30000);
         const { ok, error, ...rest } = reply;
         if (ok === false) return text(`Godot: ${error || 'the command failed.'}`, true);
+        if (action === 'game_shot' && rest.data) {
+            const { data, mime, ...about } = rest;
+            return { content: [
+                { type: 'text', text: `The running game at frame ${about.frame} (${about.width}x${about.height}, the window is ${(about.game_size || []).join('x')}). Clicks in game_input use the window's size.` },
+                { type: 'image', data, mimeType: mime || 'image/jpeg' }
+            ] };
+        }
         return text(JSON.stringify(rest, null, 2).slice(0, MAX_OUTPUT));
     }
 
@@ -404,8 +439,15 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
         {
             name: 'godot_editor',
             description: 'Control the Godot 4 editor the user has open, through the CoDev Bridge plugin: ping, scene_tree (the open scene\'s nodes), open_scene {path}, save_scene, reload_scene {path}, rescan (import new or changed files such as a .glb from Blender), play {scene?: "main" | "current" | res path}, stop, is_playing, '
-                + 'add_node {parent?, type, name, properties?}, instantiate {path (.tscn or .glb), parent?, name?, properties?}, set_property {node, property, value}, get_property {node, property}, remove_node {node}, select {node}. '
-                + 'Node paths are relative to the scene root ("." is the root, "Player/Camera3D"). Vectors and colors are arrays ([1, 2, 3]); res:// strings load resources. Changes show in the editor at once; save_scene writes them to disk. '
+                + 'add_node {parent?, type, name, properties?}, instantiate {path (.tscn or .glb), parent?, name?, properties?}, set_property {node, property, value}, get_property {node, property}, remove_node {node}, select {node}, '
+                + 'attach_script {node, path (a .gd already saved; rescan first)}, connect_signal {from, signal, to, method}, undo / redo (only CoDev\'s own last change, unless force: true because the user asked). '
+                + 'Every edit is one step in the editor\'s undo history ("CoDev: ..."), so the user can Ctrl+Z it. '
+                + 'Engine docs from the user\'s exact Godot version: class_docs {type or node, filter?, inherited?} lists properties, methods, signals and enums (with a node, its script\'s too); find_class {query} finds class names. Check them before using a property or method you aren\'t sure exists in this version. '
+                + 'Playtesting, after play (wait a second or two for the game to start): game_state {node?, properties?} (no node: the running scene tree with positions; with node: its script variables or the properties listed), '
+                + 'game_input {steps: [{action | key ("W", "Space", "Left") | click [x, y], hold?: seconds, wait?: seconds after}], watch?: [node paths]} presses them in the running game and reports the watched nodes\' positions before and after, '
+                + 'game_log {since?, errors_only?} (errors, warnings and prints since the game started; pass the returned next as since to get only new ones), game_shot {max_width?} (a picture of the running game). '
+                + 'A playtest loop: play, game_input, game_state or game_shot to check the result, game_log for errors, stop, fix, play again. '
+                + 'Node paths are relative to the scene root ("." is the root, "Player/Camera3D"); in game_* they are relative to the running scene, or /root/... for autoloads. Vectors and colors are arrays ([1, 2, 3]); res:// strings load resources. Changes show in the editor at once; save_scene writes them to disk. '
                 + 'Use it when the user has the Godot editor open and wants a scene built, changed or played; call gamedev_status first, and godot_install_bridge if it says the bridge is missing. To change .gd or .tscn files on disk, use the file tools instead. If an action fails, read scene_tree to check node paths before trying again.',
             inputSchema: { type: 'object', properties: {
                 action: { type: 'string', enum: EDITOR_ACTIONS, description: 'What to do in the editor, one of the actions above (ping to check the bridge is connected).' },
@@ -483,4 +525,4 @@ function createGameDevService({ getProjectDir = () => '', log = () => {}, env = 
     };
 }
 
-module.exports = { createGameDevService, findGodotRoot, findGodot, findBlender, enablePlugin, godotProblems, EDITOR_ACTIONS, PLUGIN_DIR };
+module.exports = { createGameDevService, findGodotRoot, findGodot, findBlender, enablePlugin, enableAutoload, pluginVersion, godotProblems, EDITOR_ACTIONS, PLUGIN_DIR };

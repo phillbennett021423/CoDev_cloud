@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { createGameDevService, enablePlugin, findGodotRoot, godotProblems, PLUGIN_DIR } = require('../desktop/gamedev');
+const { createGameDevService, enablePlugin, enableAutoload, pluginVersion, findGodotRoot, godotProblems, PLUGIN_DIR } = require('../desktop/gamedev');
 const { loadServices } = require('../agent-services');
 
 const unix = process.platform !== 'win32';
@@ -135,6 +135,71 @@ test('server.js\'s agent-tools router offers the game tools', async () => {
     const status = await router.handle({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'gamedev_status', arguments: {} } });
     assert.match(status.result.content[0].text, /Godot project: .*game/);
     await router.close();
+});
+
+test('the playtest helper joins project.godot\'s autoloads once, first, keeping the game\'s own', () => {
+    const line = 'CoDevPlaytest="*res://addons/codev_bridge/playtest.gd"';
+    assert.equal(enableAutoload('config_version=5\n'), `config_version=5\n\n[autoload]\n\n${line}\n`);
+    const mixed = enableAutoload('[autoload]\n\nGame="*res://game.gd"\n\n[rendering]\nx=1\n');
+    assert.equal(mixed, `[autoload]\n\n${line}\nGame="*res://game.gd"\n\n[rendering]\nx=1\n`);
+    assert.equal(enableAutoload(mixed), mixed);
+    assert.equal(pluginVersion('[plugin]\nversion="2.0"\n'), '2.0');
+    for (const f of ['plugin.gd', 'playtest.gd']) assert.ok(fs.existsSync(path.join(PLUGIN_DIR, f)), f);
+    // The helper must stay asleep outside an editor run, so exported games never answer.
+    assert.match(fs.readFileSync(path.join(PLUGIN_DIR, 'playtest.gd'), 'utf8'), /if not EngineDebugger\.is_active\(\) or not OS\.has_feature\("editor"\):/);
+    // Logger only exists from Godot 4.5; the helper compiles it only after checking, never as a file older editors would parse.
+    assert.doesNotMatch(fs.readFileSync(path.join(PLUGIN_DIR, 'playtest.gd'), 'utf8'), /preload\(|^extends Logger/m);
+});
+
+test('the bridge: an older install is flagged, the playtest helper is installed, frames come back as pictures and game_input may wait', async () => {
+    const dir = project();
+    const root = path.join(dir, 'game');
+    fs.mkdirSync(path.join(root, 'addons', 'codev_bridge'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'addons', 'codev_bridge', 'plugin.cfg'), '[plugin]\nname="CoDev Bridge"\nversion="1.0"\n');
+    const seen = [];
+    const editor = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', c => { body += c; });
+        req.on('end', () => {
+            const { action, args } = JSON.parse(body);
+            seen.push(action);
+            const reply = action === 'ping' ? { ok: true, godot: '4.5.1.stable', scene: 'res://main.tscn', playing: true }
+                : action === 'game_shot' ? { ok: true, width: 960, height: 540, game_size: [1920, 1080], frame: 88, mime: 'image/jpeg', data: Buffer.from('jpg').toString('base64') }
+                : action === 'game_input' ? { ok: true, steps_done: args.steps.length, before: { Player: [0, 0, 0] }, after: { Player: [2, 0, 0] } }
+                : { ok: false, error: 'The game isn\'t running from the editor. Call play, wait a second or two, then try again.' };
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(reply));
+        });
+    });
+    await new Promise(r => editor.listen(0, '127.0.0.1', r));
+    fs.writeFileSync(path.join(root, '.codev_bridge.json'), JSON.stringify({ port: editor.address().port, token: 't' }));
+    const service = createGameDevService({ getProjectDir: () => dir, env: { PATH: '' } });
+    try {
+        const status = textOf(await service.callTool('gamedev_status'));
+        assert.match(status, /connected \(Godot 4\.5\.1\.stable, scene res:\/\/main\.tscn, game running\)/);
+        assert.match(status, /older CoDev Bridge 1\.0; call godot_install_bridge to update it to 2\.0/);
+
+        assert.match(textOf(await service.callTool('godot_install_bridge')), /Installed the CoDev Bridge editor plugin 2\.0 .*playtest helper \(CoDevPlaytest/);
+        assert.ok(fs.existsSync(path.join(root, 'addons', 'codev_bridge', 'playtest.gd')));
+        assert.match(fs.readFileSync(path.join(root, 'project.godot'), 'utf8'), /\[autoload\]\n\nCoDevPlaytest="\*res:\/\/addons\/codev_bridge\/playtest\.gd"/);
+        assert.doesNotMatch(textOf(await service.callTool('gamedev_status')), /older CoDev Bridge/);
+
+        const shot = await service.callTool('godot_editor', { action: 'game_shot' });
+        assert.ok(!shot.isError);
+        assert.equal(shot.content[1].type, 'image');
+        assert.equal(shot.content[1].mimeType, 'image/jpeg');
+        assert.match(shot.content[0].text, /frame 88 \(960x540, the window is 1920x1080\)/);
+
+        const moved = JSON.parse(textOf(await service.callTool('godot_editor', { action: 'game_input', args: { steps: [{ key: 'D', hold: 1 }], watch: ['Player'] } })));
+        assert.deepEqual(moved.after.Player, [2, 0, 0]);
+
+        const notRunning = await service.callTool('godot_editor', { action: 'game_log' });
+        assert.ok(notRunning.isError);
+        assert.match(textOf(notRunning), /Call play/);
+        assert.deepEqual(seen.filter(a => a !== 'ping'), ['game_shot', 'game_input', 'game_log']);
+        const description = service.tools.find(t => t.name === 'godot_editor').description;
+        for (const word of ['class_docs', 'attach_script', 'connect_signal', 'undo', 'game_input', 'Ctrl+Z']) assert.ok(description.includes(word), word);
+    } finally { editor.close(); }
 });
 
 test('godot_screenshot runs the scene with Movie Maker and returns the last frame with the errors it printed', { skip: !unix && 'needs a Unix shell for the stand-in Godot' }, async () => {
