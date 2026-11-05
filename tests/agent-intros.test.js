@@ -346,10 +346,113 @@ test('the natural voice engine cancels, restarts a worker that goes quiet, and c
     await assert.rejects(b, /stopped/);
     assert.ok(workers[1].terminated);
     assert.deepEqual(workers[2].sent, [{ type: 'warm', voice: 'af_kore' }]);
+    // A loaded worker is never cut off by the watchdog: a slow phone just takes its time.
+    const slow = engine.speak('Slow piece.', 'af_kore');
+    workers[2].onmessage({ data: { type: 'ready' } });
+    let settled = false;
+    slow.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise(r => setTimeout(r, 200));
+    assert.equal(settled, false, 'still waiting, not failed');
+    assert.equal(workers[2].terminated, false);
+    workers[2].onmessage({ data: { type: 'audio', id: 5, wav: new ArrayBuffer(8) } });
+    assert.equal((await slow).type, 'audio/wav');
     // downloaded() looks for the model in the browser's cache.
     const fakeCaches = has => ({ open: async () => ({ match: async url => has && url === Natural.MODEL_URL ? {} : undefined }) });
     assert.equal(await Natural.downloaded(fakeCaches(true)), true);
     assert.equal(await Natural.downloaded(fakeCaches(false)), false);
     assert.equal(await Natural.downloaded(null), false);
     clearInterval(keepAlive);
+});
+
+test('once Kore has spoken, a later piece that fails is tried again, and never handed to the robotic voice', async t => {
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const backend = createMockBackend({ workspace: fs.mkdtempSync(path.join(os.tmpdir(), 'codev-partial-')) });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    const page = await launched.browser.newPage({ viewport: { width: 390, height: 844 } });
+    const errors = [];
+    page.on('pageerror', err => errors.push(err.message));
+    await page.addInitScript(() => {
+        localStorage.setItem('codev_chime', '0');
+        window.__jobs = [];
+        window.__failTimes = {};
+        window.__robot = 0;
+        // Fails a piece containing "Glitch" as many times as __failTimes says.
+        window.Worker = class {
+            postMessage(msg) {
+                if (msg.type !== 'speak') return;
+                window.__jobs.push(msg.text);
+                const left = Object.keys(window.__failTimes).find(k => msg.text.includes(k) && window.__failTimes[k] > 0);
+                if (left) { window.__failTimes[left]--; return setTimeout(() => this.onmessage({ data: { type: 'error', id: msg.id, message: 'out of memory' } }), 5); }
+                setTimeout(() => this.onmessage({ data: { type: 'audio', id: msg.id, wav: new Uint8Array(1044).buffer } }), 5);
+            }
+            terminate() {}
+        };
+    });
+    await page.goto(url, { waitUntil: 'load' });
+    await page.evaluate(() => {
+        window.__played = [];
+        window.playAudioBlob = async blob => { window.__played.push(blob.size); };
+        speechSynthesis.speak = () => { window.__robot++; };
+    });
+    const text = 'First sentence is fine. Glitch happens in this one. And the last sentence.';
+    // One failure: tried again, and the whole answer reads in Kore.
+    await page.evaluate(text => { window.__failTimes = { Glitch: 1 }; return speakText(text); }, text);
+    assert.equal(await page.evaluate(() => window.__played.length), 2, 'both pieces play: the first sentence, then the rest');
+    assert.equal(await page.evaluate(() => window.__robot), 0);
+    // Two failures: the reading stops with a note; the robotic voice never takes over.
+    await page.evaluate(text => { window.__played = []; window.__failTimes = { Glitch: 2 }; return speakText(text); }, text);
+    assert.equal(await page.evaluate(() => window.__played.length), 1);
+    assert.equal(await page.evaluate(() => window.__robot), 0);
+    assert.match(await page.textContent('#codevToast'), /Kore stopped partway \(out of memory\)/);
+    assert.deepEqual(errors, []);
+    await page.close();
+});
+
+test('in the Windows app Kore is made natively, and the worker takes over only if that engine cannot run', async t => {
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const backend = createMockBackend({ workspace: fs.mkdtempSync(path.join(os.tmpdir(), 'codev-native-')) });
+    const url = await backend.listen();
+    t.after(() => backend.close());
+    for (const broken of [false, true]) {
+        const page = await launched.browser.newPage();
+        const errors = [];
+        page.on('pageerror', err => errors.push(err.message));
+        await page.addInitScript(broken => {
+            localStorage.setItem('codev_chime', '0');
+            window.__native = [];
+            window.__workers = 0;
+            window.Worker = class {
+                constructor() { window.__workers++; }
+                postMessage(msg) { if (msg.type === 'speak') setTimeout(() => this.onmessage({ data: { type: 'audio', id: msg.id, wav: new Uint8Array(1044).buffer } }), 5); }
+                terminate() {}
+            };
+            window.codevDesktop = {
+                naturalVoice: async req => {
+                    window.__native.push(req.op + (req.voice ? ':' + req.voice : ''));
+                    if (req.op === 'downloaded') return { ok: true, downloaded: false };
+                    if (req.op !== 'speak') return { ok: true };
+                    if (broken) return { ok: false, unavailable: true, message: "Cannot find module 'onnxruntime-node'" };
+                    window.__progress && window.__progress({ loaded: 155 * 1048576, total: 310 * 1048576, file: 'onnx/model.onnx' });
+                    return { ok: true, wav: new Uint8Array(2044) };
+                },
+                onNaturalVoiceProgress: cb => { window.__progress = cb; return () => {}; }
+            };
+        }, broken);
+        await page.goto(url, { waitUntil: 'load' });
+        await page.evaluate(() => { window.__played = []; window.playAudioBlob = async blob => { window.__played.push(blob.size); }; });
+        await page.evaluate(() => speakText('Hello from the desktop. This is the second sentence.'));
+        const native = await page.evaluate(() => window.__native.filter(op => op.startsWith('speak')));
+        assert.equal(native.length, 2, 'both pieces go to the native engine first');
+        assert.ok(native.every(op => op === 'speak:af_kore'));
+        assert.equal(await page.evaluate(() => window.__workers), broken ? 1 : 0);
+        assert.deepEqual(await page.evaluate(() => window.__played), broken ? [1044, 1044] : [2044, 2044]);
+        if (!broken) assert.match(await page.textContent('#codevToast'), /155 of 310 MB/);
+        assert.deepEqual(errors, []);
+        await page.close();
+    }
 });

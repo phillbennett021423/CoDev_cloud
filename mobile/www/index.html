@@ -7078,8 +7078,12 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         let naturalProgressShownAt = 0;
         function getNaturalVoiceEngine() {
             if (!naturalVoiceEngine) {
+                // The Windows app makes the voice natively, on every CPU core; phones and the web page use the worker.
+                const desktop = window.codevDesktop && typeof window.codevDesktop.naturalVoice === "function" ? window.codevDesktop : null;
                 naturalVoiceEngine = CodevNaturalVoice.create({
                     workerUrl: new URL("agent-ui/kokoro-worker.js", document.baseURI),
+                    native: desktop ? { request: desktop.naturalVoice, onProgress: desktop.onNaturalVoiceProgress } : null,
+                    onFallback: message => logConsoleActivity(`The Windows app's natural voice engine couldn't start (${message}); using the slower built-in one.`),
                     onProgress: p => {
                         if (Date.now() - naturalProgressShownAt < 1500 || !p.total || p.total < 1000000) return;
                         naturalProgressShownAt = Date.now();
@@ -7104,43 +7108,60 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const go = () => { naturalWarmed = true; getNaturalVoiceEngine().warm(voice); };
             if (download) return go();
             if (naturalWarmed) return;
-            CodevNaturalVoice.downloaded().then(saved => { if (saved && !naturalWarmed) go(); });
+            getNaturalVoiceEngine().downloaded().then(saved => { if (saved && !naturalWarmed) go(); }, () => {});
         }
 
-        // The first piece is the first sentence, kept short; the rest are whole sentences.
+        // The first piece is the first sentence, kept short; the rest are a sentence or two each,
+        // so on a slow phone each one is ready soon after the one before it ends.
         function naturalSpeechChunks(text) {
             const [head, ...rest] = text.split(/(?<=[.!?])\s+(?=[A-Z0-9"'(])/);
             const first = splitTextForSpeech(head, 140);
-            return [first[0], ...splitTextForSpeech([...first.slice(1), ...rest].join(" "), 260)].filter(Boolean);
+            return [first[0], ...splitTextForSpeech([...first.slice(1), ...rest].join(" "), 180)].filter(Boolean);
         }
 
+        // Once the natural voice has spoken, the answer is never handed to another voice halfway
+        // through: a piece that fails is tried again, and if it fails twice the reading stops
+        // with a note (err.partial) instead of going on in a robotic voice.
         async function speakWithNatural(text, runId) {
             const engine = getNaturalVoiceEngine();
-            const pieces = naturalSpeechChunks(text).map(chunk => engine.speak(chunk, naturalVoice));
+            const chunks = naturalSpeechChunks(text);
+            const pieces = chunks.map(chunk => engine.speak(chunk, naturalVoice));
             pieces.forEach(p => p.catch(() => {}));
-            // Until the first word plays, say what's happening (the download note replaces this).
             const firstTime = !engine.loaded();
-            let waitingNote = setTimeout(() => {
-                waitingNote = null;
+            // While a piece isn't ready, say what's happening (the download note replaces this).
+            const noteWhileWaiting = (i, ms) => setTimeout(() => {
                 if (runId !== speechRunId || Date.now() - naturalProgressShownAt < 3000) return;
-                showToast(firstTime
-                    ? `🔊 ${naturalVoiceName()} is getting ready. The first time can take up to a minute; after that it starts in seconds.`
+                showToast(i > 0 ? `🔊 ${naturalVoiceName()} is still making the next part…`
+                    : firstTime ? `🔊 ${naturalVoiceName()} is getting ready. The first time can take up to a minute; after that it starts in seconds.`
                     : `🔊 ${naturalVoiceName()} is getting ready…`, 60000);
-            }, 1200);
+                shown = true;
+            }, ms);
+            let shown = false;
+            let note = null;
             try {
                 for (let i = 0; i < pieces.length; i++) {
-                    const blob = await pieces[i];
-                    if (runId !== speechRunId) return;
-                    if (i === 0) {
-                        if (waitingNote) clearTimeout(waitingNote);
-                        else hideToast();
-                        waitingNote = null;
+                    note = noteWhileWaiting(i, i === 0 ? 1200 : 2500);
+                    let blob;
+                    try {
+                        blob = await pieces[i];
+                    } catch (err) {
+                        if (err.stopped || runId !== speechRunId || i === 0) throw err;
+                        try { blob = await engine.speak(chunks[i], naturalVoice); }
+                        catch (again) {
+                            if (again.stopped || runId !== speechRunId) throw again;
+                            again.partial = true;
+                            throw again;
+                        }
                     }
+                    clearTimeout(note);
+                    note = null;
+                    if (shown) { hideToast(); shown = false; }
+                    if (runId !== speechRunId) return;
                     await playAudioBlob(blob);
                     if (runId !== speechRunId) return;
                 }
             } finally {
-                if (waitingNote) clearTimeout(waitingNote);
+                if (note) clearTimeout(note);
                 if (runId !== speechRunId) engine.cancel();
             }
         }
@@ -7359,6 +7380,11 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                     } catch (err) {
                         if (runId !== speechRunId || err.stopped) return;
                         naturalVoiceLastError = err.message || String(err);
+                        if (err.partial) {
+                            logConsoleActivity(`Natural voice stopped partway (${naturalVoiceLastError}).`);
+                            showToast(`${naturalVoiceName()} stopped partway (${naturalVoiceLastError}). Tap 🔊 to hear it again.`, 10000);
+                            return;
+                        }
                         logConsoleActivity(`Natural voice failed (${naturalVoiceLastError}); using the ${nativeTts ? "phone's" : "computer's"} voice.`);
                         if (!naturalVoiceFailNoticeShown) {
                             naturalVoiceFailNoticeShown = true;
@@ -7804,7 +7830,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         }
 
         function koreVoiceHint() {
-            if (naturalVoiceOn()) return "Natural voices are made on this device: no key, nothing sent anywhere. The first time, the voice downloads once (about 90 MB) and takes up to a minute to start; after that it starts in seconds. "
+            if (naturalVoiceOn()) return `Natural voices are made on this device: no key, nothing sent anywhere. The first time, the voice downloads once (about ${window.codevDesktop && window.codevDesktop.naturalVoice ? "310 MB for the Windows app's fast engine" : "90 MB"}) and takes up to a minute to start; after that it starts in seconds. `
                 + (naturalVoiceLastError ? `Last time it couldn't play: ${naturalVoiceLastError}. ` : "");
             if (!koreVoiceOn) return "";
             return geminiSearchKey() ? "Gemini's Kore reads answers aloud. " : `${KORE_NEEDS_KEY} `;

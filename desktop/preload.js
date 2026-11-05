@@ -14,6 +14,15 @@ contextBridge.exposeInMainWorld('codevDesktop', {
         tavily: ({ key, body }) => ipcRenderer.invoke('codev:http-tavily', { key, body })
     },
     azureTts: ({ region, key, ssml }) => ipcRenderer.invoke('codev:azure-tts', { region, key, ssml }),
+    // The natural voices (Kokoro) made natively: ({ op: speak | cancel | warm | downloaded, text, voice })
+    // -> { ok, wav?, downloaded?, message?, stopped?, unavailable? }; the model download's progress
+    // comes through onNaturalVoiceProgress.
+    naturalVoice: req => ipcRenderer.invoke('codev:natural-voice', req),
+    onNaturalVoiceProgress: callback => {
+        const listener = (_event, progress) => callback(progress);
+        ipcRenderer.on('codev:natural-voice-progress', listener);
+        return () => ipcRenderer.removeListener('codev:natural-voice-progress', listener);
+    },
     // Writes the page's saved chats and run checkpoints to disk now, so a crash right after loses nothing.
     flushStorage: () => ipcRenderer.send('codev:flush-storage'),
     // Gives keyboard focus back to the page after a native alert or confirm.
