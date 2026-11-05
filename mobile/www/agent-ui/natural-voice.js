@@ -4,9 +4,14 @@
 //   CodevNaturalVoice.VOICES                      the voices offered, Kore first
 //   CodevNaturalVoice.isVoice(id)                 one of them?
 //   CodevNaturalVoice.supported()                 can this browser run it (WebAssembly + module workers)
-//   CodevNaturalVoice.create({ workerUrl, onProgress, makeWorker, stallMs })
-//       { speak(text, voice) -> Promise<Blob (audio/wav)>, cancel(), warm(voice), loaded() }
-//   CodevNaturalVoice.downloaded(caches)          Promise<boolean>: is the model already saved here
+//   CodevNaturalVoice.create({ workerUrl, onProgress, makeWorker, stallMs, native, onFallback })
+//       { speak(text, voice) -> Promise<Blob (audio/wav)>, cancel(), warm(voice), loaded(),
+//         downloaded() -> Promise<boolean> }
+//
+// native is the Windows app's engine (window.codevDesktop.naturalVoice and its progress events):
+// Kokoro on every CPU core, several times faster than the WebAssembly worker, which only phones
+// and the web page use. If it can't run on that computer, the worker takes over (onFallback).
+//   CodevNaturalVoice.downloaded(caches)          Promise<boolean>: is the worker's model saved here
 //
 // The model (about 90 MB) downloads the first time a natural voice is used, with progress
 // reported through onProgress, and stays in the browser's cache after that.
@@ -14,7 +19,8 @@
 // Making speech on a phone's processor can take longer than the speech itself, so the page asks
 // for every piece at once (the worker makes them in order while earlier ones play), and cancel()
 // drops them all when the user stops. A worker that goes quiet for stallMs (the
-// phone ran out of memory, say) is restarted and its pieces fail, so the page never waits forever.
+// phone ran out of memory, say) while loading is restarted and its pieces fail, so the page never
+// waits forever. Once loaded it's never cut off: a slow phone just takes its time.
 (function (root, factory) {
     if (typeof module === "object" && module.exports) module.exports = factory();
     else root.CodevNaturalVoice = factory();
@@ -50,6 +56,42 @@
     }
 
     function create(opts = {}) {
+        return opts.native && typeof opts.native.request === "function" ? createNative(opts) : createWorker(opts);
+    }
+
+    function stoppedError() {
+        const err = new Error("stopped");
+        err.stopped = true;
+        return err;
+    }
+
+    function createNative(opts) {
+        const native = opts.native;
+        let ready = false;
+        let fallback = null;
+        if (typeof native.onProgress === "function" && opts.onProgress) native.onProgress(p => opts.onProgress(p || {}));
+        const ask = req => Promise.resolve().then(() => native.request(req)).catch(err => ({ ok: false, message: String((err && err.message) || err), unavailable: true }));
+        const useWorker = message => {
+            if (!fallback) { fallback = createWorker(opts); if (opts.onFallback) opts.onFallback(message); }
+            return fallback;
+        };
+        return {
+            async speak(text, voice = "af_kore") {
+                if (fallback) return fallback.speak(text, voice);
+                const r = (await ask({ op: "speak", text: String(text || ""), voice: isVoice(voice) ? voice : "af_kore" })) || {};
+                if (r.ok && r.wav) { ready = true; return new Blob([r.wav], { type: "audio/wav" }); }
+                if (r.stopped) throw stoppedError();
+                if (r.unavailable && !ready) return useWorker(r.message).speak(text, voice);
+                throw new Error(r.message || "the natural voice failed");
+            },
+            cancel() { if (fallback) fallback.cancel(); else ask({ op: "cancel" }); },
+            warm(voice = "af_kore") { if (fallback) fallback.warm(voice); else ask({ op: "warm", voice: isVoice(voice) ? voice : "af_kore" }); },
+            loaded: () => (fallback ? fallback.loaded() : ready),
+            downloaded: () => (fallback ? fallback.downloaded() : ask({ op: "downloaded" }).then(r => !!(r && r.downloaded)))
+        };
+    }
+
+    function createWorker(opts) {
         const stallMs = opts.stallMs || 120000;
         let worker = null;
         let seq = 0;
@@ -93,7 +135,7 @@
                 restart(new Error((event && event.message) || "the natural voice couldn't start"));
             };
             watchdog = setInterval(() => {
-                if (pending.size && Date.now() - lastHeard > stallMs) restart(new Error("the natural voice stopped responding"));
+                if (!ready && pending.size && Date.now() - lastHeard > stallMs) restart(new Error("the natural voice stopped responding"));
             }, Math.min(5000, stallMs));
             if (watchdog && watchdog.unref) watchdog.unref();
             return worker;
@@ -118,13 +160,12 @@
             cancel() {
                 if (!worker || !pending.size) return;
                 const wasReady = ready;
-                const err = new Error("stopped");
-                err.stopped = true;
-                restart(err);
+                restart(stoppedError());
                 if (wasReady) { try { start().postMessage({ type: "warm", voice: lastVoice }); } catch (e) { /* not supported */ } }
             },
             warm(voice = "af_kore") { try { start().postMessage({ type: "warm", voice: isVoice(voice) ? voice : "af_kore" }); } catch (err) { /* not supported here */ } },
-            loaded: () => ready
+            loaded: () => ready,
+            downloaded: () => downloaded()
         };
     }
 

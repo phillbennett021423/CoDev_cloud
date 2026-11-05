@@ -1,7 +1,7 @@
 // CoDev Studio desktop app: the same page as the Android app (mobile/www),
 // in its own window. The page talks to Groq directly; the main process only
 // does what a page can't, like fetching DuckDuckGo results without CORS.
-const { app, BrowserWindow, crashReporter, dialog, ipcMain, net, protocol, safeStorage, session, shell } = require('electron');
+const { app, BrowserWindow, crashReporter, dialog, ipcMain, net, protocol, safeStorage, session, shell, utilityProcess } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { createMcpTools } = require('./mcp-tools');
@@ -16,6 +16,7 @@ const { createCreativeService } = require('./creative');
 const { createGoogleConnect } = require('./google-connect');
 const { createMegaConnect } = require('./mega-connect');
 const { createAzgaarMaps } = require('./azgaar-map');
+const { createKokoroHost } = require('./kokoro-voice');
 const { pathToFileURL } = require('url');
 // Copied into www/ by `npm run copy-www`, like the rest of the page.
 
@@ -367,6 +368,22 @@ app.whenReady().then(() => {
         win.focus();
         event.sender.focus();
     });
+
+    // The natural voices (Kokoro), made natively in a utility process: much faster than the
+    // page's WebAssembly worker. { op: speak | cancel | warm | downloaded }. A failure comes back as
+    // { ok: false, message, stopped?, unavailable? } so the page can tell a stop from a problem,
+    // and fall back to its own worker when Kokoro can't run on this computer at all.
+    let kokoroProgressTo = null;
+    const kokoroHost = createKokoroHost({
+        fork: () => utilityProcess.fork(path.join(__dirname, 'kokoro-voice-process.js'), [], { serviceName: 'CoDev natural voice' }),
+        cacheDir: path.join(app.getPath('userData'), 'natural-voices'),
+        onProgress: p => { if (kokoroProgressTo && !kokoroProgressTo.isDestroyed()) kokoroProgressTo.send('codev:natural-voice-progress', p); }
+    });
+    ipcMain.handle('codev:natural-voice', (event, req) => {
+        kokoroProgressTo = event.sender;
+        return kokoroHost.request(req);
+    });
+    app.on('before-quit', () => kokoroHost.stop());
 
     // Azure Speech for the natural Ava voice, from the main process so CORS can't block it.
     ipcMain.handle('codev:azure-tts', async (_event, { region, key, ssml }) => {
