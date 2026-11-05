@@ -11,6 +11,9 @@ const path = require('path');
 const { exec } = require('child_process');
 
 const MAX_READ_CHARS = 100000;
+// A write_file call without its text, usually because the model's reply ran out of room
+// while writing a long file. The error says how to send it so it fits.
+const MISSING_CONTENT = "write_file needs 'content' as a string, and this call had none, so nothing was written. If the file is long, your reply was probably cut off while writing it: send the file in parts of about 150 lines, the first with write_file, each next one with write_file and append: true.";
 const MAX_LISTED_FILES = 500;
 const MAX_OUTPUT_CHARS = 8000;
 const MAX_TIMEOUT_SECONDS = 600;
@@ -119,10 +122,14 @@ function createMcpTools(getProjectDir) {
         return hits.length ? hits.join('\n') : `No matches for "${query}".`;
     }
 
-    async function writeFile({ path: rel, content } = {}) {
-        if (typeof content !== 'string') throw new ToolError("write_file needs 'content' as a string");
+    async function writeFile({ path: rel, content, append } = {}) {
+        if (typeof content !== 'string') throw new ToolError(MISSING_CONTENT);
         const full = projectPath(rel);
         await fsp.mkdir(path.dirname(full), { recursive: true });
+        if (append === true) {
+            await fsp.appendFile(full, content, 'utf8');
+            return `Added ${content.length} characters to the end of ${rel} (now ${(await fsp.stat(full)).size} bytes).`;
+        }
         await fsp.writeFile(full, content, 'utf8');
         return `Wrote ${content.length} characters to ${rel}.`;
     }
@@ -170,7 +177,8 @@ function createMcpTools(getProjectDir) {
               path: { ...pathProp, description: 'Sub-folder to search; omit for the whole project.' } }, required: ['query'] } },
         { name: 'write_file', run: writeFile, annotations: { readOnlyHint: false, destructiveHint: true },
           description: "Create a file, or replace a whole file, in the user's project folder with the given content; folders are created as needed. This writes straight to their disk. Use it for new files; for a change to part of an existing file use edit_file instead, so you don't drop code you didn't read.",
-          inputSchema: { type: 'object', properties: { path: pathProp, content: { type: 'string', description: 'The complete new file content.' } }, required: ['path', 'content'] } },
+          inputSchema: { type: 'object', properties: { path: pathProp, content: { type: 'string', description: 'The new file content (or, with append, the part to add).' },
+              append: { type: 'boolean', description: 'Add content to the end of the file instead of replacing it. Write a long file (more than about 150 lines) in parts: the first part without append, then each next part with append: true, so no single call is cut off.' } }, required: ['path', 'content'] } },
         { name: 'edit_file', run: editFile, annotations: { readOnlyHint: false, destructiveHint: true },
           description: "Replace one exact snippet of a file in the user's project folder (written straight to disk). Use it for every change to an existing file: read_file first, then copy old_text exactly, with its spaces and line breaks. If it says old_text appears 0 or 2+ times, read the file again and pass a longer, unique snippet; don't fall back to rewriting the whole file.",
           inputSchema: { type: 'object', properties: { path: pathProp,

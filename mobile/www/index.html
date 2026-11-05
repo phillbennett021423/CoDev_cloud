@@ -3699,6 +3699,9 @@
         // Settings) are added to the same list.
         // Autonomous tasks scan, edit and run code in many steps, so the loop allows plenty.
         const MAX_TOOL_ROUNDS = 24;
+        // A reply cut off at its length limit while writing a tool call (a long file in
+        // write_file) gets twice the room next round, up to this many output tokens.
+        const MAX_TOOL_REPLY_TOKENS = 32000;
         // Code tasks read, edit and re-check many files, so they get more steps; the spending limits still apply.
         const MAX_CODE_TOOL_ROUNDS = 40;
         const MAX_TOOL_RESULT_CHARS = 12000;
@@ -5374,8 +5377,16 @@
                 {
                     name: "write_workspace_file",
                     description: "Create or overwrite a file in the user's loaded project folder with new content. Use it for new files; to change part of an existing file use edit_workspace_file instead. When you do replace a file, read it first and write the complete file. The user may be asked to allow the write.",
-                    inputSchema: { type: "object", properties: { name: { type: "string", description: "File path as list_workspace_files shows it, or a new path (sub-folders are created)." }, content: { type: "string", description: "The complete new file content." } }, required: ["name", "content"] },
-                    run: async ({ name, content }, ctx) => writeWorkspaceFile(String(name || ""), content, { asked: autopilotOn(ctx) })
+                    inputSchema: { type: "object", properties: { name: { type: "string", description: "File path as list_workspace_files shows it, or a new path (sub-folders are created)." }, content: { type: "string", description: "The new file content (or, with append, the part to add)." }, append: { type: "boolean", description: "Add content to the end of the file instead of replacing it. Write a long file (more than about 150 lines) in parts: the first without append, each next one with append: true, so no single call is cut off." } }, required: ["name", "content"] },
+                    run: async ({ name, content, append }, ctx) => {
+                        if (append === true && typeof content === "string") {
+                            const path = normalizeWorkspacePath(String(name || ""));
+                            const before = loadedProjectFiles[path];
+                            if (typeof before !== "string") return `Can't append: ${name} isn't loaded in CoDev. Write its first part without append.`;
+                            content = before + content;
+                        }
+                        return writeWorkspaceFile(String(name || ""), content, { asked: autopilotOn(ctx) });
+                    }
                 },
                 {
                     name: "edit_workspace_file",
@@ -5464,7 +5475,7 @@
 
         // asked: the caller already showed the user this change and they approved it.
         async function writeWorkspaceFile(rawName, content, { asked = false } = {}) {
-            if (typeof content !== "string") return "write_workspace_file needs content as a string.";
+            if (typeof content !== "string") return "Error: write_workspace_file needs content as a string, and this call had none, so nothing was written. If the file is long, send it in parts of about 150 lines: the first without append, each next one with append: true.";
             const name = normalizeWorkspacePath(rawName);
             if (!name) return "Use a file path inside the project folder, like scripts/player.gd.";
             if (!asked && !toolsAutoRun && !await askPermission(`An agent wants to write ${name} (${content.length} characters) in your project folder.\n\nAllow it?`)) {
@@ -5644,6 +5655,25 @@
                 + "If an odds tool says it couldn't fetch (no credits left today, or an error), say so in one line and read the odds on Outlier in the browser instead. Never present these numbers as picks: they're the market's view, an input to the research.";
         }
 
+        // The result for a tool call the reply's length limit cut off. The call isn't run
+        // (its arguments are incomplete, often the whole file content is missing), and the
+        // agent is told how to send it so it fits: a long file goes in parts with append.
+        function cutToolCallResult(tool, args, limit, raised) {
+            const props = tool.inputSchema?.properties || {};
+            const missing = (tool.inputSchema?.required || []).filter(name => args[name] === undefined);
+            const writes = /(^|__)write(_workspace)?_file$/.test(tool.name);
+            const canAppend = Boolean(props.append);
+            const contentKey = props.content ? "content" : "the file text";
+            return `Not run: your reply reached its length limit (${limit} output tokens) while you were still writing this ${tool.name} call, so its arguments arrived cut off`
+                + (missing.length ? ` ('${missing.join("', '")}' missing)` : "") + ". Nothing was written. "
+                + (raised > limit ? `CoDev raised the limit to ${raised} tokens for your next reply. ` : `That is already the most CoDev allows (${limit} tokens). `)
+                + (writes
+                    ? (canAppend
+                        ? `Don't resend the whole file in one call. Send it in parts of about 150 lines: ${tool.name} with path and the first part as ${contentKey}, then ${tool.name} with the same path, the next part and append: true, until the file is complete. Keep the text before each call short.`
+                        : `Don't resend the whole file in one call. Write a shorter first version with ${tool.name}, then add the rest in pieces with edit_file (replace a short marker line at the end with the next part plus the marker), until the file is complete. Keep the text before each call short.`)
+                    : "Send the call again with shorter arguments, and keep the text before it short.");
+        }
+
         // Runs the model ↔ tool loop until the model answers in plain text.
         async function runToolLoop(messages, ctx) {
             // The prompt before the notes below, which a resumed run adds again fresh.
@@ -5696,6 +5726,13 @@
             // and three failed browser actions stop the tools, so a confused agent can't
             // click around blindly and burn the user's usage.
             const callCounts = new Map();
+            // A call that failed is not run again with the same input: it would fail the
+            // same way and cost another round. Three rounds in a row where every call
+            // failed stop the tools, so the agent answers instead of spending on retries.
+            const failedCalls = new Map();
+            let failedRounds = 0;
+            // The output cap for the next request, raised when a tool call was cut off.
+            let replyTokens = 0;
             let browserFailures = 0;
             // The live view under the agent's name: its plan, the steps done with what each
             // found (⚠️ for a problem), and the step running now.
@@ -5711,11 +5748,11 @@
             let spendStop = "";
             const maxRounds = autopilotOn(ctx) ? AUTOPILOT_CODE_TOOL_ROUNDS : ctx.kind === "code" ? MAX_CODE_TOOL_ROUNDS : MAX_TOOL_ROUNDS;
             let nudges = 0;
-            for (let round = 0; round < maxRounds && outlierFailures < 2 && browserFailures < 3; round++) {
+            for (let round = 0; round < maxRounds && outlierFailures < 2 && browserFailures < 3 && failedRounds < 3; round++) {
                 if (round > 0 && taskSpendLimit > 0 && ctx.cost >= taskSpendLimit) spendStop = `this task reached its spending limit of ${formatUsd(taskSpendLimit)}`;
                 else if (round > 0 && dailySpendReached()) spendStop = `CoDev reached today's spending limit of ${formatUsd(dailySpendLimit)}`;
                 if (spendStop) break;
-                const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto" }, { sources: ctx.sources || [], model: pickClaudeModel(ctx, round) });
+                const message = await groqChatMessage({ model: TEXT_MODEL, temperature: 0.0, messages, tools: toolDefs, tool_choice: "auto", ...(replyTokens ? { max_tokens: replyTokens } : {}) }, { sources: ctx.sources || [], model: pickClaudeModel(ctx, round) });
                 ctx.cost += message.cost || 0;
                 // Searches Claude ran itself (its own web search) are steps too.
                 for (const search of message.web_searches || []) {
@@ -5745,6 +5782,9 @@
                 checkpoint();
                 // The agent's plan, written with its calls, stays on screen above each step.
                 if (message.content && message.content.trim()) ctx.plan = message.content.trim().slice(0, 700);
+                // Only the last call of a reply cut off at its length limit is unfinished.
+                const cutCall = message.truncated ? calls[calls.length - 1] : null;
+                let roundFailed = true;
                 for (const call of calls) {
                     const tool = tools.find(t => t.name === call.function?.name);
                     let args = {};
@@ -5766,7 +5806,15 @@
                             if (progress) show(`${step}\n⏳ ${progress}`);
                         }, 1500) : null;
                         ctx.toolImages = null;
-                        if (callCounts.get(signature) > 2) {
+                        if (call === cutCall) {
+                            const limit = message.maxTokens || RESPONSE_LENGTHS[responseLength].maxTokens;
+                            const raised = Math.min(MAX_TOOL_REPLY_TOKENS, Math.max(limit * 2, replyTokens));
+                            replyTokens = Math.max(replyTokens, raised);
+                            result = cutToolCallResult(tool, args, limit, raised);
+                            logConsoleActivity(`[Tool] ${tool.name} was cut off at the ${limit}-token reply limit, so it didn't run; the next reply may use up to ${raised} tokens.`);
+                        } else if (failedCalls.has(signature)) {
+                            result = `Not run: this exact call already failed in this task with: ${failedCalls.get(signature).replace(/\s+/g, " ").slice(0, 300)}\nSending it again unchanged will fail the same way. Fix what that error says (for example, pass every required argument), try a different approach, or stop and tell the user what is blocking you.`;
+                        } else if (callCounts.get(signature) > 2) {
                             result = "Not run: you already made this exact call twice in this task. Repeating it won't change the result. Check what the earlier results actually show, then try a different approach, or stop and tell the user what is blocking you.";
                         } else {
                             try { result = await CodevCompanion.tool(tool.name, args, () => tool.run(args, ctx)); } catch (err) { result = `Tool failed: ${err.message}`; }
@@ -5774,6 +5822,8 @@
                         if (watch) clearInterval(watch);
                         trackToolEffect(ctx, tool.name, args, String(result));
                         const failed = /^(Error|Tool failed|Unknown tool|Not run)/.test(String(result));
+                        if (failed && call !== cutCall && !failedCalls.has(signature)) failedCalls.set(signature, String(result));
+                        if (!failed) roundFailed = false;
                         if (/(^|__)browser_/.test(tool.name) && failed && ++browserFailures >= 3) {
                             result = `${result}\n\nThat is the third browser action that failed in this task, so CoDev stopped calling tools. Answer now: tell the user what you were trying to do, what the page showed instead, and what they can do.`;
                         } else if (/(^|__)browser_(click|fill|press_key|navigate|select)/.test(tool.name) && !failed) {
@@ -5804,6 +5854,12 @@
                     messages.push(toolMessage);
                     trimToolImages(messages);
                     checkpoint();
+                }
+                // A cut-off call isn't the agent's mistake to stop for: it gets the bigger limit first.
+                failedRounds = roundFailed && !cutCall ? failedRounds + 1 : 0;
+                if (failedRounds >= 3) {
+                    logConsoleActivity(`[Tool] Every tool call failed three rounds in a row, so CoDev stopped calling tools.`);
+                    messages.push({ role: "user", content: "[CoDev] Every tool call failed in the last three rounds, so no more tools can run in this task. Answer now: say what you were trying to do, the exact error each step returned, what is left undone, and what the user can do." });
                 }
             }
             // Out of rounds, or over a spending limit: ask for the answer with what was gathered.
@@ -8531,7 +8587,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             if (data.choices && data.choices.length > 0) {
                 const cost = openRouter ? Number(data.usage?.cost) || 0 : 0;
                 recordSpend(cost, { input: data.usage?.prompt_tokens, output: data.usage?.completion_tokens });
-                return { ...data.choices[0].message, cost };
+                // finish_reason "length": the reply (and any tool call in it) was cut off.
+                return { ...data.choices[0].message, cost, truncated: data.choices[0].finish_reason === "length", maxTokens: body.max_tokens };
             }
             const code = data.error?.code ? ` (${data.error.code})` : "";
             if (response.status === 401) {
@@ -8711,7 +8768,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             const calls = content.filter(b => b.type === "tool_use")
                 .map(b => ({ id: b.id, type: "function", function: { name: b.name, arguments: JSON.stringify(b.input || {}) } }));
             if (data.stop_reason === "max_tokens" && !calls.length) logConsoleActivity("[Anthropic] The reply hit the length limit and was cut short.");
-            const message = { role: "assistant", content: text, anthropic_content: content, cost };
+            const message = { role: "assistant", content: text, anthropic_content: content, cost, maxTokens: request.max_tokens };
+            // Cut off at max_tokens: the last tool call's input stops wherever the reply did.
+            if (data.stop_reason === "max_tokens") message.truncated = true;
             if (calls.length) message.tool_calls = calls;
             if (searched.searches.length) message.web_searches = searched.searches;
             return message;

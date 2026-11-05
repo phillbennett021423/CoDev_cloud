@@ -195,12 +195,15 @@ def tool_write_file(args):
     path = project_path(args.get("path"))
     content = args.get("content")
     if not isinstance(content, str):
-        raise ToolError("write_file needs 'content' as a string")
+        raise ToolError("write_file needs 'content' as a string, and this call had none, so nothing was written. "
+                        "If the file is long, send it in parts of about 150 lines: the first with write_file, "
+                        "each next one with write_file and append: true.")
+    append = args.get("append") is True
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="") as f:
+    with open(path, "a" if append else "w", encoding="utf-8", newline="") as f:
         f.write(content)
-    sys.stderr.write(f"[codev-helper] wrote {path}\n")
-    return f"Wrote {len(content)} characters to {args.get('path')}."
+    sys.stderr.write(f"[codev-helper] {'appended to' if append else 'wrote'} {path}\n")
+    return f"{'Added' if append else 'Wrote'} {len(content)} characters to {args.get('path')}."
 
 
 def tool_edit_file(args):
@@ -281,7 +284,8 @@ def mcp_tools():
         tools += [
             {"name": "write_file", "run": tool_write_file,
              "description": "Create or overwrite a file in the user's project folder with the given content. Folders are created as needed.",
-             "inputSchema": {"type": "object", "properties": {"path": path_prop, "content": {"type": "string", "description": "The complete new file content."}}, "required": ["path", "content"]},
+             "inputSchema": {"type": "object", "properties": {"path": path_prop, "content": {"type": "string", "description": "The new file content (or, with append, the part to add)."},
+                                                            "append": {"type": "boolean", "description": "Add content to the end of the file instead of replacing it. Write a long file in parts of about 150 lines: the first without append, each next one with append: true."}}, "required": ["path", "content"]},
              "annotations": {"readOnlyHint": False, "destructiveHint": True}},
             {"name": "edit_file", "run": tool_edit_file,
              "description": "Replace one exact snippet of a file in the project folder. old_text must appear exactly once; read the file first.",

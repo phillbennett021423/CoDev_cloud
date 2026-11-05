@@ -132,7 +132,12 @@ function createMockBackend({ workspace, docker = false, hubTools = [], agentTool
             for (const [rel, text] of box.files) if (typeof text === 'string') text.split('\n').forEach((l, i) => { if (l.toLowerCase().includes(String(query).toLowerCase())) hits.push(`${rel}:${i + 1}: ${l.trim()}`); });
             return hits.join('\n') || `No matches for "${query}".`;
         },
-        write_file: (box, { path: rel, content }) => { box.files.set(safeRel(rel), String(content)); return `Staged ${rel}.`; },
+        write_file: (box, { path: rel, content, append }) => {
+            if (typeof content !== 'string') throw new Error("write_file needs 'content' as a string");
+            const key = safeRel(rel);
+            box.files.set(key, (append === true && typeof box.files.get(key) === 'string' ? box.files.get(key) : '') + content);
+            return append === true ? `Added to ${rel}.` : `Staged ${rel}.`;
+        },
         edit_file: (box, { path: rel, old_text: oldText, new_text: newText }) => {
             const key = safeRel(rel);
             const text = box.files.get(key);
@@ -146,10 +151,15 @@ function createMockBackend({ workspace, docker = false, hubTools = [], agentTool
         ...agentTools
     };
 
+    // The sandbox's write_file schema, so the page sees which arguments are required.
+    const SCHEMAS = {
+        write_file: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, append: { type: 'boolean' } }, required: ['path', 'content'] }
+    };
+
     function handleMcp(msg) {
         const ok = result => ({ jsonrpc: '2.0', id: msg.id, result });
         if (msg.method === 'initialize') return ok({ protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'mock-agent-tools', version: '1' } });
-        if (msg.method === 'tools/list') return ok({ tools: Object.keys(TOOLS).map(name => ({ name, description: `mock ${name}`, inputSchema: { type: 'object', properties: {} } })) });
+        if (msg.method === 'tools/list') return ok({ tools: Object.keys(TOOLS).map(name => ({ name, description: `mock ${name}`, inputSchema: SCHEMAS[name] || { type: 'object', properties: {} } })) });
         if (msg.method === 'tools/call') {
             const meta = msg.params._meta || {};
             const agentId = meta['codev/agentId'] || meta['codev/agent'];
