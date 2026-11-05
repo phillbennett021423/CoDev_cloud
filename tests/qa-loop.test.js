@@ -93,3 +93,12 @@ test('a Godot coding task: checkpoint, fitting templates, engine gate, clean-con
     assert.equal(await page.isVisible('#undoTaskBtn'), false);
     assert.deepEqual(errors, []);
 });
+
+test('documentsOnly: a change to prose alone skips the QA pass; any code in it keeps the pass', () => {
+    const { documentsOnly } = require('../mobile/www/agent-ui/qa-loop.js');
+    assert.equal(documentsOnly(['continuum_universe_bible.md']), true);
+    assert.equal(documentsOnly(['lore\\notes.txt', 'docs/README.markdown']), true);
+    assert.equal(documentsOnly(['bible.md', 'player.gd']), false);
+    assert.equal(documentsOnly(['package.json']), false);
+    assert.equal(documentsOnly([]), false);
+});

@@ -28,6 +28,14 @@
 
     const clip = (text, n) => (text.length > n ? `${text.slice(0, n)}\n[cut at ${n} characters]` : text);
 
+    // Prose and notes: a story bible, a README, a script. No code runs from them, so the QA
+    // pass (which re-reads every changed file) is skipped when nothing else changed.
+    const DOCUMENT_FILE = /\.(md|markdown|mdx|txt|text|rst|adoc|asciidoc|org|fountain|rtf|tex)$/i;
+    function documentsOnly(paths) {
+        const files = (paths || []).map(p => String(p).replace(/\\/g, "/"));
+        return files.length > 0 && files.every(p => DOCUMENT_FILE.test(p));
+    }
+
     function godotChanges(paths) {
         return [...new Set((paths || []).map(p => String(p).replace(/\\/g, "/")))].filter(p => GODOT_FILE.test(p));
     }
@@ -89,6 +97,7 @@
 - Read every changed file. Look for what is broken: errors the checks report, code that can't run, wrong APIs for the engine version, broken references between scripts and scenes, the task not actually done.
 - Fix each problem with the smallest patch that makes it right. Don't refactor, rename, restyle or add features; don't rewrite a file to fix a line.
 - Run the project's tests, build or checks when a command tool exists; for Godot files, godot_check (and godot_validate when it's available) on what you touched.
+- The task is the user's own decision, above all on their creative work (story, lore, names, canon): check that it was done correctly, never undo it or report it as a problem.
 - If everything is right, change nothing and say so. Finish with: what you checked, each problem found with file:line, the patch for each, and anything still failing.`;
 
     function qaBrief({ task, changes = [], commands = [], gate = null, claims = [], round = 1 }) {
@@ -152,5 +161,5 @@
         return (tools || []).filter(t => (t.annotations && t.annotations.readOnlyHint) || !WRITE_NAME.test(String(t.name).replace(/^.*__/, "")));
     }
 
-    return { GODOT_FILE, GATE_ROUNDS, RUN_LOG_FILE, QA_RULES, godotChanges, staticErrors, validateResult, runEngineGate, qaBrief, runLogEntry, parseRunLog, runLessons, readOnlyTools };
+    return { GODOT_FILE, DOCUMENT_FILE, GATE_ROUNDS, RUN_LOG_FILE, QA_RULES, documentsOnly, godotChanges, staticErrors, validateResult, runEngineGate, qaBrief, runLogEntry, parseRunLog, runLessons, readOnlyTools };
 });

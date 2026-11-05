@@ -186,6 +186,8 @@ test('in CoDev, an agent searches MEGA and the user approves one save and declin
         'Done: found your picks in MEGA and saved a summary.'
     ] });
     await page.uncheck('#isSandboxCheckbox');
+    // Autopilot off: each save asks (with it on, saves go straight through).
+    await page.evaluate(() => { codeAutopilot = false; });
     const dialogs = await answerApprovals(page, () => dialogs.length === 1);
     await sendPrompt(page, 'Find my picks in MEGA and save a summary next to them.');
     await waitForChat(page, /Done: found your picks in MEGA/);
