@@ -287,16 +287,51 @@ test('with automatic saving on, agents\' code reaches the project without the re
             { name: 'write_file', arguments: { path: 'auto/greet.js', content: GREETER_JS } },
             { name: 'write_file', arguments: { path: 'auto/typo.js', content: 'const = 1;\n' } }
         ],
-        [{ name: 'submit_changes', arguments: { summary: 'Greeter script' } }],
         'Wrote auto/greet.js.'
     ];
     const { page, errors } = await openPage(launched.browser, ctx.server.url, { steps, autoSave: true });
     await answerApprovals(page, () => false);
     await sendPrompt(page, 'Write a greeter script in auto/');
     await waitForChat(page, /Saved 1 file to your project: auto\/greet\.js/, 120000);
+    // CoDev saves by itself, so the agent has no hand-off step to spend a round on, and is told so.
+    const first = (await page.evaluate(() => window.__modelCalls))[0];
+    assert.ok(!first.tools.includes('submit_changes'), `tools offered: ${first.tools.join(', ')}`);
+    assert.match(first.system, /saves every staged file[\s\S]*automatically[\s\S]*nothing for the user to approve/);
     assert.equal(await page.evaluate(() => Boolean(document.querySelector('#diffReviewOverlay [data-action="approve"]'))), false, 'no review screen');
     assert.equal(fs.readFileSync(path.join(ctx.workspace, 'auto', 'greet.js'), 'utf8'), GREETER_JS);
     assert.equal(fs.existsSync(path.join(ctx.workspace, 'auto', 'typo.js')), false, 'a file that fails its check still waits for review');
+    assert.deepEqual(errors, []);
+});
+
+test('a document edit gets no QA pass, and "save it" saves the staged change without another agent call', async t => {
+    if (ctx.skip) return t.skip(ctx.skip);
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    const BIBLE = '# Story bible\n\n## Gabe Mercer (Kiln)\nHe held the line and burned out pulling his team clear.\n';
+    const steps = [
+        [{ name: 'write_file', arguments: { path: 'lore/bible.md', content: BIBLE } }],
+        "Filled Gabe's gap in lore/bible.md."
+    ];
+    // Self-healing ticked: a code change would get a reviewer, a document doesn't.
+    const { page, errors } = await openPage(launched.browser, ctx.server.url, { steps, selfHeal: true });
+    await answerApprovals(page, () => false);
+    await sendPrompt(page, "Fill in the gap in Gabe's story in lore/bible.md");
+    await waitForReview(page, 120000);
+    assert.equal((await page.evaluate(() => window.__modelCalls)).length, 2, 'only the writer ran: no QA agent re-read the document');
+    await page.click('#diffReviewOverlay [data-action="defer"]');
+    await waitForChat(page, /Changes kept for review later/, 30000);
+    assert.equal(fs.existsSync(path.join(ctx.workspace, 'lore', 'bible.md')), false, 'nothing on disk yet');
+
+    await sendPrompt(page, 'save it');
+    await waitForChat(page, /💾 Saved\n✅ Saved 1 file to your project: lore\/bible\.md/, 60000);
+    assert.equal(fs.readFileSync(path.join(ctx.workspace, 'lore', 'bible.md'), 'utf8'), BIBLE);
+    assert.equal((await page.evaluate(() => window.__modelCalls)).length, 2, '"save it" cost no model call');
+
+    // Saying it again: already saved, still no agent.
+    await sendPrompt(page, 'save it');
+    await waitForChat(page, /Already saved\. Nothing from this chat is waiting for approval/, 30000);
+    assert.equal((await page.evaluate(() => window.__modelCalls)).length, 2);
     assert.deepEqual(errors, []);
 });
 

@@ -1529,6 +1529,8 @@
             if (claudeModelChoice === "haiku") return CLAUDE_HAIKU;
             if (claudeModelChoice === "sonnet") return CLAUDE_SONNET;
             if (!ctx) return CLAUDE_HAIKU;
+            // A run that was given its model (the QA reviewer runs on Haiku) keeps it.
+            if (ctx.keepModel && ctx.claudeModel) return ctx.claudeModel;
             if (!ctx.claudeModel) {
                 const task = String(ctx.task || "");
                 ctx.claudeModel = task.length > 400 || BIG_TASK.test(task) ? CLAUDE_SONNET : CLAUDE_HAIKU;
@@ -8895,7 +8897,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
 
 2. UNDERSTAND THE ASK: Work out what the user actually wants and what a finished result looks like before acting. Stay on this conversation's task, the blocks it contains and the saved memory; don't bring in projects or subjects the user hasn't mentioned. If a request is truly ambiguous and a wrong guess would waste real work, ask one short question; otherwise pick the most likely reading, say which one, and go.
 
-3. GROUND EVERY CLAIM: Blocks marked [Workspace ...], [Web Search Snippets], [Attached ...] and tool results are your sources of truth; when they conflict with your memory, follow them. Never invent functions, parameters, packages, versions, settings, URLs, stats or quotes. If you can't verify something, say so plainly. When the task gives you data (odds, a board, files, tool results), work through it and compute what was asked from it.
+3. GROUND EVERY CLAIM: Blocks marked [Workspace ...], [Web Search Snippets], [Attached ...] and tool results are your sources of truth; when they conflict with your memory, follow them. Never invent functions, parameters, packages, versions, settings, URLs, stats or quotes. If you can't verify something, say so plainly. This rule is about real-world facts and code, not fiction: writing story, lore or characters the user asks for is not inventing facts (rule 3a). When the task gives you data (odds, a board, files, tool results), work through it and compute what was asked from it.
+
+3a. THE USER IS THE AUTHOR: On the user's own creative work (stories, lore, world or series bibles, characters, scripts, game design, names, canon), the user has the final say. When they tell you to write it, fill a gap, make up lore, rename someone or change canon, do it now and do it fully, in the work's own voice. Don't ask again for source text or permission, don't label it [DRAFT], "unconfirmed" or "authored gap-fill" unless they ask, and don't explain why invented canon is risky. Rules written in their own document (like "don't invent lore") are their rules, and their direct instruction overrides them. If what they ask conflicts with existing canon, do what they asked, update the other places it touches so the work stays consistent, and mention the conflict in one line after doing it. Short orders like "do it", "fill it in", "finish it" or "just write it" mean act on what was just discussed, with no new round of questions. To change part of a long document, edit only the sections that change with the edit tools; don't rewrite the whole file.
 
 4. USE TOOLS ON YOUR OWN INITIATIVE: Search the web (web_search) for facts you aren't sure of, then read_webpage on the best result when the snippets aren't enough. Read the user's real files before talking about their code. When asked to change, create, run or test code and file or command tools exist, do it with the tools, then verify by reading back or running it. Use only the tools the task needs: every call costs the user time and usage. Never claim you searched, read, ran, clicked or verified something unless a tool result in this conversation shows it.
 
@@ -9109,7 +9113,9 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
         // limits; Claude has room for much more). The agents read anything else with tools.
         // The project comes from, in order: the Windows app's project folder, an MCP server
         // with list_files/read_file (the desktop helper), or the folder connected in the page.
-        const WORKSPACE_CONTEXT_CHARS = { groq: 14000, openrouter: 30000, anthropic: 80000 };
+        // Claude's budget is kept moderate: it's resent every tool round, and a file cut short
+        // here is read in full with read_file anyway.
+        const WORKSPACE_CONTEXT_CHARS = { groq: 14000, openrouter: 30000, anthropic: 48000 };
         const MAX_CONTEXT_FILES = 8;
         let recentWorkspaceFiles = [];
 
@@ -9455,6 +9461,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             const schema = tool => tool.inputSchema && tool.inputSchema.type === "object" ? tool.inputSchema : { type: "object", properties: {} };
             for (const tool of await fetchAgentTools()) {
                 if (!CodevAgentClient.SANDBOX_TOOLS.includes(tool.name) || tools.some(t => t.name === tool.name)) continue;
+                // With auto-save on, CoDev saves the staged files itself when the task ends: no hand-off step.
+                if (tool.name === "submit_changes" && sandboxAutoSaveActive()) continue;
                 tools.push({
                     name: tool.name,
                     description: `[Sandbox] ${tool.description || tool.title || tool.name}`,
@@ -9501,8 +9509,11 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                 + "Use list_files, read_file and search_files to read it, and write_file, edit_file and delete_file to change it. "
                 + (canRun && !agentInfra.status?.docker?.available ? "Run code, tests and builds with run_command. Docker isn't running, so commands run on the user's computer in your sandbox copy: plain test and build steps run straight away, anything else asks the user first, so keep commands simple and explain why you need them. "
                     : canRun ? "Run code, tests and builds with run_command (Linux sh, in /workspace). " : `No command tool is available, so you can't run code; never claim you did. ${HOW_TO_RUN_CODE} `)
-                + "Every change is staged: the user reviews the diff before anything is saved to their disk, and files that fail the syntax check can't be saved. "
-                + "Before you finish, check sandbox_diff and fix any failed checks, then call submit_changes with a short summary.";
+                + (sandboxAutoSaveActive()
+                    ? "CoDev saves every staged file that passes its syntax check to the user's project automatically as soon as you finish, so there is nothing for the user to approve and no submit step: never tell them a change is waiting for approval or that you can't save. "
+                        + "Call sandbox_diff only when you changed code and want its syntax check; it isn't needed for documents."
+                    : "Every change is staged: the user reviews the diff before anything is saved to their disk, and files that fail the syntax check can't be saved. "
+                        + "When you changed code, check sandbox_diff once and fix any failed checks (documents don't need it). Call submit_changes once with a short summary, in the same reply as your last edit.");
         }
 
         // The project as seen from the sandbox, for the workspace context injection.
@@ -9548,6 +9559,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                     }
                 }
                 logConsoleActivity(`[Sandbox] ${changeset.files.length} changed file(s) are waiting for your review.`);
+                // Remembered with the chat, so "save it" here saves this change set and not another task's.
+                if (changeset.id) session.stagedChangeIds = [...(session.stagedChangeIds || []).slice(-19), changeset.id];
                 const outcome = await reviewChangeset(changeset);
                 appendMessageToSession(session, "📝 Change Review", CodevAgentClient.describeReviewOutcome(outcome));
             } catch (err) {
@@ -9778,7 +9791,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
         // One agent's turn. The workspace is indexed again for every agent, since the
         // agent before it may have changed files.
         async function runAgentStep(session, agent, task, opts) {
-            const { extraContext = "", aiOptions = {}, webSources = [], memory = "", notes = "", title, dispatch, kind = "code", resume = null } = opts;
+            const { extraContext = "", aiOptions = {}, webSources = [], memory = "", notes = "", title, dispatch, kind = "code", resume = null, model = "" } = opts;
             appendMessageToSession(session, `🤖 ${agent.name} (Working...)`, resume ? "▶ Resuming where it stopped…" : dispatch ? "🧪 Starting a sandbox…" : kind === "code" ? "📁 Indexing the workspace…" : "Working on it…");
             const placeholder = session.messages[session.messages.length - 1];
             placeholder.task = task;
@@ -9791,6 +9804,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             // What the task is about, for the tools that are only offered for some tasks.
             tools.task = task;
             tools.kind = kind;
+            if (model) { tools.claudeModel = model; tools.keepModel = true; }
             if (resume?.toolLog) tools.toolLog.push(...resume.toolLog);
             // The same list as the run's, so a crash mid-run still leaves what was done.
             placeholder.toolLog = tools.toolLog;
@@ -9941,9 +9955,16 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             const healer = agents.find(a => agentDevRole(a) === "self_healing")
                 || { id: lead.id, name: "QA", devRole: "self_healing", instructions: "", memory: "" };
             // The reviewer's clean slate: no chat history, pictures, web snippets or memory.
-            const clean = { dispatch: opts.dispatch, kind: "code", aiOptions: {}, extraContext: "", webSources: [], memory: "" };
+            // It runs on Claude Haiku: checking a patch is a smaller job than writing it.
+            const clean = { dispatch: opts.dispatch, kind: "code", aiOptions: {}, extraContext: "", webSources: [], memory: "", model: CLAUDE_HAIKU };
             const changes = [...new Set(done.flatMap(r => r.changes))];
             const commands = done.flatMap(r => r.commands);
+            // Only documents changed (a story bible, notes, a README): there's no code to break,
+            // so a second agent re-reading the whole file would cost money and check nothing.
+            if (changes.length && CodevQaLoop.documentsOnly(changes)) {
+                logConsoleActivity(`[QA] Skipped: only documents changed (${changes.join(", ")}), so there's no code to check.`);
+                return null;
+            }
             if (changes.length) {
                 logConsoleActivity(`[QA] Checking ${changes.length} changed file(s) from a clean context: ${changes.join(", ")}`);
                 let gate = await runEngineGateFor(changes, Boolean(opts.dispatch));
@@ -10017,6 +10038,49 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
 
         const RESUME_REQUEST = /^\s*(continue|resume|keep going|carry on|pick (it )?(back )?up|go on)\b[\s.!]*$/i;
 
+        // "save it", "apply the changes", "approve": the user's own words are the approval, so
+        // CoDev saves the agents' staged changes itself, with no agent call and no review screen.
+        const SAVE_REQUEST = /^\s*(?:(?:please|ok(?:ay)?|yes|yeah|yep|just|now|go ahead and|go ahead,?)[\s,]+)*(?:save|apply|approve|accept|submit)(?:\s+(?:it|that|this|them|those|these|everything|all|all of it|the (?:changes?|edits?|files?|diff|bible|doc(?:ument)?|update)|my (?:changes?|edits?|files?)|(?:it|them|that) (?:to|on) (?:my )?(?:disk|project|files?)))?(?:\s+(?:now|please|already|for me))*[\s.!]*$/i;
+
+        // Returns true when the message was a save request CoDev handled itself.
+        async function saveStagedChanges(session, userText) {
+            if (!session || !SAVE_REQUEST.test(userText) || !sandboxAvailable() || !agentInfra.client) return false;
+            let pending = [];
+            try { pending = await agentInfra.client.listChanges(); } catch (err) {
+                logConsoleActivity(`[Sandbox] Couldn't list pending changes: ${err.message}`);
+                return false;
+            }
+            // Only this chat's change sets: another task's wait for their own review.
+            const mine = new Set(session.stagedChangeIds || []);
+            const ours = pending.filter(set => mine.has(set.id));
+            const others = pending.length - ours.length;
+            const lastSaved = [...session.messages].reverse().find(m => /^💾 Saved/.test(String(m.sender || "")));
+            // Nothing waiting and nothing saved in this chat: the user may mean something else, so an agent answers.
+            if (!ours.length && !lastSaved) return false;
+            appendMessageToSession(session, "👤 You", userText);
+            const elsewhere = others ? ` ${others} change set${others === 1 ? "" : "s"} from other tasks ${others === 1 ? "is" : "are"} still under 📝 Review changes.` : "";
+            if (!ours.length) {
+                appendMessageToSession(session, "💾 Saved", `Already saved. Nothing from this chat is waiting for approval; the last save was: ${lastSaved.text}${elsewhere}`);
+                return true;
+            }
+            const notes = [];
+            for (const changeset of ours) {
+                try {
+                    const result = await agentInfra.client.approve(changeset.id);
+                    const written = result?.written || [];
+                    const outcome = { decision: "approved", paths: written, result, left: (changeset.files || []).map(f => f.path).filter(p => !written.includes(p)) };
+                    await afterReview(outcome);
+                    notes.push(CodevAgentClient.describeReviewOutcome(outcome));
+                } catch (err) {
+                    notes.push(`Couldn't save one set of changes: ${err.message}. You can still approve it from 📝 Review changes.`);
+                }
+            }
+            session.stagedChangeIds = (session.stagedChangeIds || []).filter(id => !ours.some(set => set.id === id));
+            appendMessageToSession(session, "💾 Saved", notes.join("\n") + elsewhere);
+            refreshPendingChanges();
+            return true;
+        }
+
         // text: a message to send instead of what's in the chat bar (the Work kit's actions,
         // which can hold line breaks the one-line bar would drop).
         async function sendChatMessage(text) {
@@ -10065,6 +10129,12 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                 inputField.value = "";
                 clearAttachments();
                 await resumeInterruptedRun(session.id, cutOff.runId);
+                return;
+            }
+            // "save it" with changes staged: saved here, at no cost, instead of a round trip to an agent.
+            if (!attachments.length && await saveStagedChanges(session, userText)) {
+                inputField.value = "";
+                clearAttachments();
                 return;
             }
             // Earlier turns of this chat, taken before this message joins it.

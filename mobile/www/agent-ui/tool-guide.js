@@ -78,7 +78,7 @@
         { when: "Exact math, statistics, analyzing an attached file's data, a chart, or checking a code snippet works", tools: ["run_code"], how: "print what you need; read the output before answering" },
         { when: "Understanding the user's code", tools: ["code_map", "find_symbol", "file_outline", "read_lines"], how: "code_map first on a big project" },
         { when: "Reading and changing project files, running code", tools: ["list_files", "read_file", "search_files", "edit_file", "write_file", "delete_file", "run_command"], how: "read before you edit; edit_file for changes, write_file for new files" },
-        { when: "Finishing sandboxed work", tools: ["sandbox_diff", "submit_changes"], how: "sandbox_diff, fix failed checks, then submit_changes once" },
+        { when: "Finishing sandboxed work", tools: ["sandbox_diff", "submit_changes"], how: "after code changes, sandbox_diff once and fix failed checks; submit_changes (when offered) once, with the last edit. Documents need neither" },
         { when: "Files loaded in the page (no sandbox)", tools: ["list_workspace_files", "read_workspace_file", "search_workspace", "write_workspace_file", "edit_workspace_file"] },
         { when: "Checking code without running it", tools: ["architecture_review", "godot_check"] },
         { when: "A web page that needs clicking, typing or signing in", tools: ["browser_navigate", "browser_get_text", "browser_click", "browser_fill", "browser_press_key", "browser_wait_for", "browser_screenshot", "browser_list_credentials", "browser_login", "browser_load_session", "browser_save_session", "browser_close"], how: "read the page before acting, check after each action" },

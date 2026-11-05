@@ -155,3 +155,19 @@ test('Claude is the default provider, and a saved Groq choice moves to Claude on
     assert.equal(await page.evaluate(() => document.getElementById('modalProvider').options[0].value), 'anthropic');
     assert.deepEqual(errors, []);
 });
+
+test('the QA reviewer runs on Claude Haiku even after a Sonnet task, and every agent is told the user is the author', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { page, errors, bodies } = await openClaudePage(t, body => /Audit the code in these replies/.test(JSON.stringify(body.messages))
+        ? { content: [{ type: 'text', text: 'The code is clean.' }], stop_reason: 'end_turn', usage }
+        : { content: [{ type: 'text', text: 'Fixed it:\n```js app.js\nconsole.log("hello");\n```' }], stop_reason: 'end_turn', usage });
+    await page.evaluate(() => { document.getElementById('isSelfHealCheckbox').checked = true; });
+    await sendPrompt(page, 'Fix the greeting bug in app.js');
+    await waitForChat(page, /The code is clean\./);
+    const writer = bodies.find(b => !/Audit the code/.test(JSON.stringify(b.messages)));
+    const audit = bodies.find(b => /Audit the code/.test(JSON.stringify(b.messages)));
+    assert.equal(writer.model, 'claude-sonnet-5-5');
+    assert.equal(audit.model, 'claude-haiku-5-5');
+    assert.match(writer.system, /THE USER IS THE AUTHOR[\s\S]*their direct instruction overrides them/);
+    assert.deepEqual(errors, []);
+});
