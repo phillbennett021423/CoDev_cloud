@@ -139,7 +139,7 @@ test('in CoDev, an agent makes a fantasy map and reads it', async t => {
     assert.ok(calls[0].tools.includes('map_generate') && calls[0].tools.includes('map_read'));
     assert.match(calls[1].messages.at(-1).content, /Made the map "Continuum" from seed 424242[\s\S]*studio_import with source "azgaar" and path "maps\/continuum-424242\.json"/);
     assert.match(calls[2].messages.at(-1).content, /\[maps\/continuum-424242\.json\] Tessel → Hollow Gate[\s\S]*Through: Relay Spire/);
-    assert.equal(dialogs.length, 1);
-    assert.match(dialogs[0], /make a new fantasy map with Azgaar's Fantasy Map Generator from the seed "424242"/);
+    // Autopilot is on by default: the user asked for the map, so making it doesn't ask.
+    assert.equal(dialogs.length, 0);
     assert.deepEqual(errors, []);
 });

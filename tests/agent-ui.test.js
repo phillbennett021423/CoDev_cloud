@@ -313,8 +313,8 @@ test('in sandbox mode, MCP servers that write or run on this computer are kept o
         mcpServers: { helper: { url: 'http://127.0.0.1:8787/mcp', type: 'http' } },
         steps: [[{ name: 'helper__lookup' }], [{ name: 'helper__deploy' }], 'Done looking.']
     });
-    // Turn "run without asking" on to show the sandbox asks anyway; decline the card.
-    await page.evaluate(() => { toolsAutoRun = true; });
+    // Turn "run without asking" on to show the sandbox asks anyway (autopilot off); decline the card.
+    await page.evaluate(() => { toolsAutoRun = true; codeAutopilot = false; });
     const dialogs = await answerApprovals(page, () => false);
     await sendPrompt(page, 'Look something up');
     await waitForChat(page, /Done looking\./);

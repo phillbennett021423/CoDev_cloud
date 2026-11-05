@@ -1249,7 +1249,7 @@
                     <input type="checkbox" id="modalToolsAutoRun"> Run file edits and commands without asking me first
                 </label>
                 <label class="checkbox-group" title="On a coding task, agents don't stop to ask you anything: they make the call themselves, run what they need, check their work with the tests and build, fix what fails and keep going until it's done. Only commands that could wreck your computer or your repo (wiping a drive, force-pushing) are refused, and the agent finds another way.">
-                    <input type="checkbox" id="modalCodeAutopilot"> 🚀 Coding autopilot: on a coding task, agents never stop to ask me. They decide, run, test and fix until it's done
+                    <input type="checkbox" id="modalCodeAutopilot"> 🚀 Autopilot: agents do what I ask without approval prompts or stopping to ask, and finish it. Only deleting files asks first
                 </label>
                 <div class="form-group" id="desktopMcpGroup" style="display: none;">
                     <label>Project folder agents can edit and run code in (built-in MCP tools)</label>
@@ -2893,7 +2893,7 @@
                 const formattedText = formatMessageText(msg.text);
                 
                 let speakButtonHtml = "";
-                if (msg.runId && /^⚠️ Interrupted/.test(msg.sender)) {
+                if (msg.runId && (msg.resumable || /^⚠️ Interrupted/.test(msg.sender))) {
                     speakButtonHtml = `<button class="resume-btn" onclick="resumeInterruptedRun('${escapeHtml(session.id)}', '${escapeHtml(msg.runId)}')" title="Carry on from where it stopped">▶ Resume</button>`;
                 } else if (!msg.sender.includes("You")) {
                     // Look the text up by index on click; inlining it broke on newlines and quotes.
@@ -3720,6 +3720,20 @@
         const AUTOPILOT_NUDGES = 3;
         const AUTOPILOT_NUDGE = "[CoDev autopilot] The user is away and wants this finished without being asked anything. Don't ask: make the most reasonable choice yourself (follow the project's existing patterns), keep working with your tools until the task is done and verified, and list the choices you made at the end of your answer.";
         function autopilotOn(ctx) { return codeAutopilot && ctx?.kind === "code"; }
+        // The same setting covers every task, not only code: when the user asks for something,
+        // agents do it without approval prompts and without stopping to ask. Deleting outside
+        // the sandbox review still asks first (destructiveAsk).
+        function handsOff(ctx) { return codeAutopilot && Boolean(ctx); }
+        // Tools named for deleting (delete_file, remove_dir, notes_delete…), not ones like media_remove_noise.
+        const DESTRUCTIVE_TOOL = /^(delete|remove|rm|erase|wipe|trash|purge|drop|uninstall)(_|$)|_(delete|remove|erase|wipe|trash|purge)$/i;
+        function destructiveTool(tool) {
+            return Boolean(tool?.annotations?.destructiveHint === true || DESTRUCTIVE_TOOL.test(String(tool?.name || "").replace(/^.*__/, "")));
+        }
+        // A save or change that removes something asks first even with hands-off on; anything else goes ahead.
+        const DESTRUCTIVE_ASK = /\b(delete|remove|erase|wipe|overwrite all|empty the)\b/i;
+        function confirmUnlessHandsOff(message) {
+            return codeAutopilot && !DESTRUCTIVE_ASK.test(String(message || "").split("\n")[0]) ? Promise.resolve(true) : askPermission(message);
+        }
         // Wiping drives or home folders, formatting, shutting down, rewriting the remote's
         // history, piping a download into a shell, fork bombs, writing over a disk.
         const WRECKING_COMMAND = /(^|[;&|]\s*)(sudo\s+)?rm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)[a-z]*\s+(\/|~|\$HOME|[a-z]:\\?)(\s|$|\*)|\b(mkfs(\.\w+)?|diskpart|shutdown|reboot|halt|poweroff)\b|\bformat\s+[a-z]:|\b(del|erase)\s+\/[sq].*\b[a-z]:\\?(\s|$)|\b(rd|rmdir)\s+\/s\b.*\b[a-z]:\\?(\s|$)|\bgit\s+push\b.*(--force\b|--force-with-lease\b|\s-f\b|--mirror\b|--delete\b)|\b(curl|wget|iwr|invoke-webrequest)\b[^|]*\|\s*(sudo\s+)?(ba|z|da)?sh\b|\|\s*iex\b|:\(\)\s*\{\s*:\|:&\s*\};:|\bdd\s+[^|]*of=\/dev\/(sd|nvme|hd|disk)/i;
@@ -4677,8 +4691,16 @@
             const hostCommand = tool.transport === "desktop" && tool.name === "run_command" && !isSafeHostCommand(args?.command);
             // Tools that run code or change the project outside any review (blender_run, godot_install_bridge) always ask.
             const alwaysAsk = Boolean(tool._meta?.["codev/alwaysAsk"]);
-            if (autopilotOn(ctx) && !tool._meta?.["codev/requiresUserApproval"]) {
+            if (handsOff(ctx) && !tool._meta?.["codev/requiresUserApproval"]) {
                 if (tool.name === "run_command" && wreckingCommand(args?.command)) return AUTOPILOT_REFUSED;
+                // Deleting files (or putting a checkpoint back over them) is the one thing that still asks.
+                if (destructiveTool(tool) && !tool.annotations?.readOnlyHint) {
+                    if (!await askPermission(`An agent wants to use ${shownName}, which deletes or replaces things:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`, ctx?.agentName)) {
+                        logConsoleActivity(`[Tool] You declined: ${shownName}`);
+                        return "The user declined this deletion. Don't do it another way; carry on with the rest of the task.";
+                    }
+                    return callMcpTool(tool, args, ctx);
+                }
                 if (!tool.annotations?.readOnlyHint) logConsoleActivity(`[Autopilot] Running ${shownName} without asking.`);
                 return callMcpTool(tool, args, ctx);
             }
@@ -4830,7 +4852,7 @@
         // MEGA CLOUD: search, read and save files in the user's MEGA cloud drive
         // (agent-ui/mega-cloud.js), with the free megajs SDK. Saves always ask first.
         const megaTransport = CodevMegaCloud.detectTransport(window);
-        const megaCloud = CodevMegaCloud.createMegaCloud({ transport: megaTransport, confirmWrite: message => askPermission(message) });
+        const megaCloud = CodevMegaCloud.createMegaCloud({ transport: megaTransport, confirmWrite: confirmUnlessHandsOff });
         document.addEventListener("DOMContentLoaded", () => {
             const el = document.getElementById("megaSettings");
             if (el) CodevMegaCloud.mountSettings(el, { transport: megaTransport, cloud: megaCloud, storage: localStorage });
@@ -4865,7 +4887,7 @@
         const notesTables = CodevNotesTables.createNotesTables({
             getStore: () => notesStore(),
             canEdit: () => notesSettings().allowEdit,
-            confirmWrite: message => askPermission(message),
+            confirmWrite: confirmUnlessHandsOff,
             runTableQuery: (entry, args) => runTableQuery(entry, args)
         });
         // AZGAAR MAPS: read a fantasy map's JSON export and make new maps with Azgaar's
@@ -4880,7 +4902,7 @@
             listJson: async () => Object.keys(loadedProjectFiles).filter(p => /\.json$/i.test(p)),
             generate: azgaarGenerate,
             saveFile: (path, text) => writeWorkspaceFile(path, text, { asked: true }),
-            confirm: message => askPermission(message)
+            confirm: confirmUnlessHandsOff
         });
 
         document.addEventListener("DOMContentLoaded", () => {
@@ -5387,7 +5409,7 @@
                             if (typeof before !== "string") return `Can't append: ${name} isn't loaded in CoDev. Write its first part without append.`;
                             content = before + content;
                         }
-                        return writeWorkspaceFile(String(name || ""), content, { asked: autopilotOn(ctx) });
+                        return writeWorkspaceFile(String(name || ""), content, { asked: handsOff(ctx) });
                     }
                 },
                 {
@@ -5400,7 +5422,7 @@
                         if (typeof oldText !== "string" || !oldText || typeof newText !== "string") return "edit_workspace_file needs non-empty old_text and a new_text string.";
                         const count = loadedProjectFiles[path].split(oldText).length - 1;
                         if (count !== 1) return `old_text must appear exactly once in ${path}; it appears ${count} times.`;
-                        return writeWorkspaceFile(path, loadedProjectFiles[path].replace(oldText, () => newText), { asked: autopilotOn(ctx) });
+                        return writeWorkspaceFile(path, loadedProjectFiles[path].replace(oldText, () => newText), { asked: handsOff(ctx) });
                     }
                 }
             );
@@ -5505,7 +5527,7 @@
         async function runHelperCommand(command, ctx) {
             if (!command) return "Unknown command. Only the listed commands can run.";
             const shown = (command.argv || []).join(" ");
-            if (!toolsAutoRun && !autopilotOn(ctx) && !await askPermission(`An agent wants to run this command on your computer:\n\n${shown}\n(in ${command.cwd || "the helper's project folder"})\n\nAllow it?`)) {
+            if (!toolsAutoRun && !handsOff(ctx) && !await askPermission(`An agent wants to run this command on your computer:\n\n${shown}\n(in ${command.cwd || "the helper's project folder"})\n\nAllow it?`)) {
                 logConsoleActivity(`[Tool] You declined: ${command.name}`);
                 return "The user declined to run this command.";
             }
@@ -5748,7 +5770,10 @@
             // What this task has cost so far; a spending limit ends the tool steps early.
             ctx.cost = ctx.cost || 0;
             let spendStop = "";
-            const maxRounds = autopilotOn(ctx) ? AUTOPILOT_CODE_TOOL_ROUNDS : ctx.kind === "code" ? MAX_CODE_TOOL_ROUNDS : MAX_TOOL_ROUNDS;
+            // With autopilot on, any task gets room to finish instead of stopping part way.
+            const maxRounds = autopilotOn(ctx) ? AUTOPILOT_CODE_TOOL_ROUNDS : ctx.kind === "code" || handsOff(ctx) ? MAX_CODE_TOOL_ROUNDS : MAX_TOOL_ROUNDS;
+            // A task (not a plain question) that stops to ask goes back with "decide and keep going".
+            const keepGoing = autopilotOn(ctx) || (handsOff(ctx) && BIG_TASK.test(String(ctx.task || "")));
             let nudges = 0;
             for (let round = 0; round < maxRounds && outlierFailures < 2 && browserFailures < 3 && failedRounds < 3; round++) {
                 if (round > 0 && taskSpendLimit > 0 && ctx.cost >= taskSpendLimit) spendStop = `this task reached its spending limit of ${formatUsd(taskSpendLimit)}`;
@@ -5765,7 +5790,7 @@
                 }
                 const calls = message.tool_calls || [];
                 // Autopilot: a reply that stops to ask goes back with "decide and keep going".
-                if (!calls.length && autopilotOn(ctx) && nudges < AUTOPILOT_NUDGES && round < maxRounds - 1 && ASKS_INSTEAD.test(String(message.content || "").trim())) {
+                if (!calls.length && keepGoing && nudges < AUTOPILOT_NUDGES && round < maxRounds - 1 && ASKS_INSTEAD.test(String(message.content || "").trim())) {
                     nudges++;
                     logConsoleActivity(`[Autopilot] ${ctx.agentName || "The agent"} stopped to ask; sent it back to decide and finish.`);
                     done.push({ step: "🚀 Autopilot: decide and keep going", ok: true });
@@ -5866,6 +5891,8 @@
             }
             // Out of rounds, or over a spending limit: ask for the answer with what was gathered.
             if (spendStop) {
+                // The run's checkpoint is kept, so "continue" carries on from here instead of starting over.
+                ctx.spendStopped = spendStop;
                 logConsoleActivity(`[Spend] Stopped the tool steps: ${spendStop}.`);
                 messages.push({ role: "user", content: `[CoDev] Stop here: ${spendStop}, so no more tools can run. Answer now with what you found, say in one line what is left undone, and tell the user they can raise the limit in Settings > Spending limits or say "continue".` });
             }
@@ -8862,7 +8889,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
         // Calls that were still running when CoDev closed get a result saying so, since every
         // call needs one; the model then calls again what it still needs. Outlier keeps the
         // board and the cards it read lately, so a repeated research call starts from those.
-        function completeInterruptedCalls(saved) {
+        function completeInterruptedCalls(saved, reason = "restart") {
             const messages = saved.map(m => ({ ...m }));
             const answered = new Set(messages.filter(m => m.role === "tool").map(m => m.tool_call_id));
             const out = [];
@@ -8876,7 +8903,9 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                     content: "CoDev closed before this call finished, so it has no result. Call it again if you still need it." }));
                 i = at - 1;
             }
-            out.push({ role: "user", content: "[CoDev restarted] CoDev closed in the middle of this task and has just reopened. Carry on from exactly where you stopped: don't redo the steps that have results above, and finish the task." });
+            out.push({ role: "user", content: reason === "spend"
+                ? "[CoDev] A spending limit stopped you part way through this task, and the user said to continue. Carry on from exactly where you stopped: don't redo the steps that have results above (edits already made are still there), and finish the task."
+                : "[CoDev restarted] CoDev closed in the middle of this task and has just reopened. Carry on from exactly where you stopped: don't redo the steps that have results above, and finish the task." });
             return out;
         }
 
@@ -8921,7 +8950,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             
             // A resumed run: the conversation it had saved, from where it stopped.
             if (options.resumeMessages) {
-                const messages = completeInterruptedCalls(options.resumeMessages);
+                const messages = completeInterruptedCalls(options.resumeMessages, options.resumeReason);
                 try { return await runToolLoop(messages, options.tools); } catch (err) {
                     if (!/tool|function/i.test(err.message)) throw err;
                     logConsoleActivity(`[Tool] Tool loop failed (${err.message}); answering without tools.`);
@@ -9049,6 +9078,9 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
 - Make sure it works before you finish: run the project's tests, build, linter or type checker (or godot_check and Godot headless for a Godot project), read every failure, fix it at its root and run again. A fix that fails three times means a different approach, not giving up.
 - Stop only when the task is done and verified, or something outside the project blocks it (a missing credential or a paid service). Then say exactly what's done, what you checked and what's left.`;
 
+        // Added for every other kind of task while autopilot is on (Settings).
+        const TASK_AUTOPILOT_RULES = `AUTOPILOT (the user turned it on): when the user asks you to do something, do all of it now, start to finish, with your tools. Don't ask for permission or confirmation, don't stop part way to check in, and don't end with an offer ("Want me to...?"). If something is unclear, make the most reasonable choice, do it, and say in one line what you chose. Only stop for what you truly can't do yourself (a missing key or sign-in, a payment), or before deleting the user's files. Answer a plain question directly.`;
+
         function agentDevRole(agent) {
             return DEV_ROLES[agent?.devRole] ? agent.devRole : "architect";
         }
@@ -9101,7 +9133,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             // a missing project folder when the task may not need one.
             if (general && /^\[Workspace status\] No project/.test(workspaceNote)) workspaceNote = "[Workspace status] No project folder is connected. That only matters if the task is about project files.";
             else if (!coding && workspaceNote) workspaceNote = "[Workspace status] A project folder is connected; its files only matter if the user asks about them.";
-            return [CODEV_IDENTITY, DEV_ROLES[role].prompt, general ? null : AUTONOMY_RULES, coding && codeAutopilot ? AUTOPILOT_RULES : null, coding ? null : REQUEST_KIND_NOTES[kind], workspaceNote,
+            return [CODEV_IDENTITY, DEV_ROLES[role].prompt, general ? null : AUTONOMY_RULES, coding && codeAutopilot ? AUTOPILOT_RULES : codeAutopilot ? TASK_AUTOPILOT_RULES : null, coding ? null : REQUEST_KIND_NOTES[kind], workspaceNote,
                 agent.instructions && `[Agent instructions] ${agent.instructions}`, savedMemoryForPrompt(task), storyStudio && CodevStoryStudio.studioPromptBlock(storyStudio, task),
                 insuranceDesk && CodevInsuranceDesk.deskPromptBlock(insuranceDesk, task), expertise && expertise.promptBlock(task), memory].filter(Boolean).join("\n\n");
         }
@@ -9439,8 +9471,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
         async function runHostCommand(args, ctx) {
             const command = String(args?.command || "").trim();
             if (!command) return "run_command needs a 'command' string.";
-            if (autopilotOn(ctx) && wreckingCommand(command)) return AUTOPILOT_REFUSED;
-            const auto = autopilotOn(ctx) || (toolsAutoRun && isSafeHostCommand(command));
+            if (handsOff(ctx) && wreckingCommand(command)) return AUTOPILOT_REFUSED;
+            const auto = handsOff(ctx) || (toolsAutoRun && isSafeHostCommand(command));
             if (!auto) {
                 const ok = await askPermission(`${ctx?.agentName || "An agent"} wants to run this command on your computer:\n\n${command.slice(0, 600)}${args.cwd ? `\n\n(in ${args.cwd})` : ""}\n\nIt runs in CoDev's copy of your project, not your real folder, but Docker isn't running, so it isn't walled off from the rest of your computer. Allow it?`, ctx?.agentName);
                 if (!ok) {
@@ -9448,7 +9480,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                     return "The user declined to run this command. Don't run it again; explain what you wanted to check and continue without it, or ask the user.";
                 }
             }
-            logConsoleActivity(`[Sandbox] Running on this computer${autopilotOn(ctx) ? " (coding autopilot)" : auto ? " (a plain test/build step)" : " (you approved it)"}: ${command.slice(0, 120)}`);
+            logConsoleActivity(`[Sandbox] Running on this computer${handsOff(ctx) ? " (autopilot)" : auto ? " (a plain test/build step)" : " (you approved it)"}: ${command.slice(0, 120)}`);
             return callAgentTool("run_command", args, ctx.sandbox, { hostAllowed: true });
         }
 
@@ -9495,7 +9527,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
         // me first" on. The browser's tools keep their own approval prompts.
         async function runOutsideSandbox(tool, name, args, ctx) {
             if (tool.transport === "browser" || tool.annotations?.readOnlyHint) return runMcpTool(tool, args, ctx);
-            if (autopilotOn(ctx)) return runMcpTool(tool, args, ctx);
+            if (handsOff(ctx)) return runMcpTool(tool, args, ctx);
             if (!await askPermission(`An agent wants to use ${name}${tool.server ? ` (MCP server "${tool.server}")` : ""}. It works outside the sandbox, so the change review won't cover it:\n\n${JSON.stringify(args, null, 2).slice(0, 1500)}\n\nAllow it?`, ctx?.agentName)) {
                 logConsoleActivity(`[Tool] You declined: ${name}`);
                 return "The user declined this tool call.";
@@ -9545,7 +9577,10 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                     logConsoleActivity("[Sandbox] The agents made no file changes.");
                     return;
                 }
-                if (sandboxAutoSaveActive() && changeset.id) {
+                // A change set that deletes files is shown for review first, even with auto-save on.
+                const deletes = changeset.files.filter(f => f.status === "deleted").map(f => f.path);
+                if (deletes.length) logConsoleActivity(`[Sandbox] The agents want to delete ${deletes.join(", ")}, so this change waits for your OK.`);
+                if (sandboxAutoSaveActive() && changeset.id && !deletes.length) {
                     let result = null;
                     try { result = await agentInfra.client.approve(changeset.id); } catch (err) {
                         logConsoleActivity(`[Sandbox] Couldn't save the agents' changes automatically (${err.message}), so they wait for your review.`);
@@ -9809,27 +9844,31 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             // The same list as the run's, so a crash mid-run still leaves what was done.
             placeholder.toolLog = tools.toolLog;
             tools.checkpoint = messages => saveRunCheckpoint(runId, { agentId: agent.id, sessionId: session.id, task, kind, title: title ? title(agent) : null, toolLog: tools.toolLog.slice(-MAX_HISTORY_TOOL_STEPS), messages });
-            const finish = (sender, text, sources) => {
-                dropRunCheckpoint(runId);
+            // keep: a run a spending limit stopped part way keeps its checkpoint, and its reply
+            // carries the run, so "continue" or ▶ Resume picks up from the last step.
+            const finish = (sender, text, sources, keep = false) => {
+                if (!keep) dropRunCheckpoint(runId);
                 const at = session.messages.indexOf(placeholder);
                 if (at >= 0) session.messages.splice(at, 1);
                 // Pictures generate_image made go under the reply (previews; full size in IndexedDB).
                 const made = (tools.generatedImages || []).map(({ fullUrl, ...kept }) => kept).concat(tools.generatedFiles || [], mediaStudio.replyAttachments(tools));
                 appendMessageToSession(session, sender, text, made, sources);
                 const reply = session.messages[session.messages.length - 1];
-                if (reply && tools.toolLog.length) {
-                    reply.toolLog = tools.toolLog.slice(-MAX_HISTORY_TOOL_STEPS);
+                if (reply && keep) { reply.runId = runId; reply.resumable = true; }
+                if (reply && (tools.toolLog.length || keep)) {
+                    if (tools.toolLog.length) reply.toolLog = tools.toolLog.slice(-MAX_HISTORY_TOOL_STEPS);
                     if (session.id === activeChatId) renderActiveChatFeed();
                 }
             };
+            const stoppedEarly = () => Boolean(tools.spendStopped && loadRunCheckpoint(runId));
             try {
                 // Sandbox mode: this agent's container on the task's shared staging copy.
                 // If it can't start, the agent doesn't run, rather than writing to disk unreviewed.
                 if (dispatch) tools.sandbox = await openAgentSandbox(dispatch, agent);
                 if (resume) {
                     placeholder.text = "▶ Resuming where it stopped…";
-                    const response = await callAI("", task, { tools, resumeMessages: resume.messages });
-                    finish(resume.title || (title ? title(agent) : `🤖 ${agent.name}`), response, tools.sources);
+                    const response = await callAI("", task, { tools, resumeMessages: resume.messages, resumeReason: resume.reason });
+                    finish(resume.title || (title ? title(agent) : `🤖 ${agent.name}`), response, tools.sources, stoppedEarly());
                     setAgentState(agent.id, "success");
                     return { ok: true, agent, response, changes: tools.changes, commands: tools.commands };
                 }
@@ -9844,12 +9883,14 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                 // The project's decisions, the templates that fit this task, lessons from earlier runs.
                 const brain = kind === "code" && ws ? await projectBrainContext(task, [...context.files, ...recentWorkspaceFiles].filter(p => !p.startsWith(`${CodevProjectBrain.DIR}/`)), tools) : "";
                 const response = await callAI(agentSystemPrompt(agent, workspaceNote(ws), [memory, brain].filter(Boolean).join("\n\n"), kind, task), task + context.text + extraContext + notes, { ...aiOptions, tools });
-                finish(title ? title(agent) : `🤖 ${agent.name}`, response, tools.sources);
+                finish(title ? title(agent) : `🤖 ${agent.name}`, response, tools.sources, stoppedEarly());
                 setAgentState(agent.id, "success");
-                return { ok: true, agent, response, changes: tools.changes, commands: tools.commands };
+                return { ok: true, agent, response, changes: tools.changes, commands: tools.commands, stopped: Boolean(tools.spendStopped) };
             } catch (err) {
                 setAgentState(agent.id, "idle");
-                finish(`❌ Error [${agent.name}]`, err.message);
+                // Today's limit reached in the middle of a run: its progress is kept for "continue".
+                const keep = /spending limit/.test(err.message) && tools.toolLog.length > 0 && Boolean(loadRunCheckpoint(runId));
+                finish(`❌ Error [${agent.name}]`, keep ? `${err.message}\n\nWhat was done so far is kept: say "continue" (or press ▶ Resume) and it carries on from the last step instead of starting over.` : err.message, undefined, keep);
                 return { ok: false, agent, response: "", changes: tools.changes, commands: tools.commands };
             }
         }
@@ -9951,6 +9992,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
         async function runSelfHealingPass(session, results, task, opts) {
             const done = results.filter(r => r.ok);
             if (!done.length || done.every(r => agentDevRole(r.agent) === "self_healing")) return null;
+            // A run a spending limit cut short isn't finished: checking it now would spend more on half the work.
+            if (results.some(r => r.stopped)) { logConsoleActivity("[QA] Skipped: the task stopped at a spending limit; it's checked once it finishes."); return null; }
             const lead = done[0].agent;
             const healer = agents.find(a => agentDevRole(a) === "self_healing")
                 || { id: lead.id, name: "QA", devRole: "self_healing", instructions: "", memory: "" };
@@ -10016,7 +10059,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
         // carries on from its last checkpoint, in the chat it was in.
         async function resumeInterruptedRun(sessionId, runId) {
             const session = chatSessions.find(s => s.id === sessionId);
-            const note = session && session.messages.find(m => m.runId === runId && /^⚠️ Interrupted/.test(m.sender));
+            const note = session && session.messages.find(m => m.runId === runId && (m.resumable || /^⚠️ Interrupted/.test(m.sender)));
             const saved = loadRunCheckpoint(runId);
             if (!note) return false;
             if (!saved || !Array.isArray(saved.messages) || !saved.messages.length) {
@@ -10027,11 +10070,14 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             }
             const agent = agents.find(a => a.id === saved.agentId) || agents.find(a => a.id === selectedAgentId) || agents[0];
             if (!agent) return false;
-            session.messages.splice(session.messages.indexOf(note), 1);
+            // A crash note goes; a reply a spending limit cut short stays, with its run done.
+            const reason = note.resumable ? "spend" : "restart";
+            if (note.resumable) { delete note.runId; delete note.resumable; }
+            else session.messages.splice(session.messages.indexOf(note), 1);
             renderChatList();
             logConsoleActivity(`[Resume] ${agent.name} carries on from its last step (${saved.messages.length} saved message(s)).`);
             const dispatch = sandboxModeActive() ? CodevAgentClient.createSandboxDispatch(agentInfra.client, { task: saved.task }) : null;
-            await runAgentStep(session, agent, saved.task || "", { kind: saved.kind || "code", dispatch, resume: { ...saved, runId } });
+            await runAgentStep(session, agent, saved.task || "", { kind: saved.kind || "code", dispatch, resume: { ...saved, runId, reason } });
             await finishSandboxDispatch(session, dispatch);
             return true;
         }
@@ -10123,7 +10169,7 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
             if (session && attachments.length) await keepAttachmentsForChat(session.id, attachments);
             // "continue" right after a run a crash cut off resumes that run itself.
             const cutOff = session && !attachments.length && RESUME_REQUEST.test(userText)
-                && [...session.messages].reverse().find(m => m.runId && /^⚠️ Interrupted/.test(m.sender));
+                && [...session.messages].reverse().find(m => m.runId && (m.resumable || /^⚠️ Interrupted/.test(m.sender)));
             if (cutOff) {
                 appendMessageToActiveSession("👤 You", userText);
                 inputField.value = "";
@@ -10137,6 +10183,8 @@ ${CodevCodeIntel.BIG_PROJECT_RULES}`;
                 clearAttachments();
                 return;
             }
+            // A new task replaces any run a spending limit left half done, so "continue" never picks up a stale one.
+            for (const m of session?.messages || []) if (m.resumable) { dropRunCheckpoint(m.runId); delete m.runId; delete m.resumable; }
             // Earlier turns of this chat, taken before this message joins it.
             aiOptions.history = chatHistoryForModel(session);
             const lastAsked = [...aiOptions.history].reverse().find(m => m.role === "user");

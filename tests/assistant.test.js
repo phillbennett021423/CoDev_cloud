@@ -136,6 +136,8 @@ test('without Docker, plain test and build steps run straight away and anything 
     assert.deepEqual(safe, [true, true, true, true, true, false, false, false, false]);
     await page.evaluate(() => {
         toolsAutoRun = true;
+        // Autopilot off: the approval path it skips.
+        codeAutopilot = false;
         window.__hostCalls = [];
         window.callAgentTool = async (name, args, sandbox, options) => { window.__hostCalls.push({ name, command: args.command, hostAllowed: options?.hostAllowed }); return 'Exit code: 0'; };
     });
@@ -183,12 +185,12 @@ test('🚀 coding autopilot: a coding agent runs commands and writes without ask
     assert.match(await page.evaluate(ctx => runHostCommand({ command: 'git push --force origin main' }, ctx), code), /autopilot/i);
     assert.equal(dialogs.length, 0, 'autopilot never stops to ask');
     assert.deepEqual(await page.evaluate(() => window.__hostCalls), ['node build.js']);
-    // Outside a coding task, or with autopilot off, the old approval card comes back.
-    await page.evaluate(ctx => runHostCommand({ command: 'node build.js' }, ctx), { ...code, kind: 'question' });
-    assert.equal(dialogs.length, 1);
+    // Any other task runs without asking too; with autopilot off, the approval card comes back.
+    assert.equal(await page.evaluate(ctx => runHostCommand({ command: 'node build.js' }, ctx), { ...code, kind: 'general' }), 'Exit code: 0');
+    assert.equal(dialogs.length, 0);
     await page.evaluate(() => { codeAutopilot = false; });
     await page.evaluate(ctx => runHostCommand({ command: 'node build.js' }, ctx), code);
-    assert.equal(dialogs.length, 2);
+    assert.equal(dialogs.length, 1);
 });
 
 test('🚀 coding autopilot: a coding agent that stops to ask a question is told to decide and keep going', async t => {

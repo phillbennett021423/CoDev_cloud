@@ -223,7 +223,7 @@ test('every notes and tables tool is documented', () => {
 
 // The real page: CoDev Notes in MEGA through server.js's /mega route, and table_read
 // running on the page's own query engine (media-tools.js).
-test('in CoDev, an agent reads a note, totals a table and edits a note with the user\'s approval', async t => {
+test('in CoDev, an agent reads a note, totals a table and edits a note without an approval prompt', async t => {
     const launched = await launchBrowser();
     if (launched.skip) return t.skip(launched.skip);
     t.after(() => launched.browser.close());
@@ -248,8 +248,8 @@ test('in CoDev, an agent reads a note, totals a table and edits a note with the 
     assert.ok(Notes.NOTES_TOOL_NAMES.every(name => calls[0].tools.includes(name)));
     assert.match(calls[1].messages.at(-1).content, /Links to: \[\[Continuum\]\]/);
     assert.match(calls[2].messages.at(-1).content, /Points: count 3, sum 84/);
-    assert.equal(dialogs.length, 1);
-    assert.match(dialogs[0], /Add to Projects\/Game ideas\.md under "Levels"/);
+    // The user asked for the edit, so with autopilot on (the default) it doesn't ask again.
+    assert.equal(dialogs.length, 0);
     assert.match(textOf(mega, 'Game ideas.md'), /- Docks #todo\n- Rooftops/);
     const steps = await page.evaluate(() => [...document.querySelectorAll('.msg-steps li')].map(li => li.textContent));
     assert.ok(steps.some(s => /📝 Reading the note Game ideas/.test(s)));

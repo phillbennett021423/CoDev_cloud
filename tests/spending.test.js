@@ -171,3 +171,55 @@ test('the QA reviewer runs on Claude Haiku even after a Sonnet task, and every a
     assert.match(writer.system, /THE USER IS THE AUTHOR[\s\S]*their direct instruction overrides them/);
     assert.deepEqual(errors, []);
 });
+
+test('a task a spending limit stops keeps its progress, and "continue" picks up from the last step instead of starting over', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const pricey = { input_tokens: 0, output_tokens: 200000 };
+    const { page, errors, bodies } = await openClaudePage(t, (body, n) => {
+        const text = JSON.stringify(body.messages);
+        if (/A spending limit stopped you part way/.test(text)) return { content: [{ type: 'text', text: 'Finished the rest.' }], stop_reason: 'end_turn', usage };
+        if (body.tool_choice?.type === 'none') return { content: [{ type: 'text', text: 'Stopped part way.' }], stop_reason: 'end_turn', usage: pricey };
+        return { content: [{ type: 'tool_use', id: `tu_${n}`, name: 'search_past_chats', input: { query: `godot notes ${n}` } }], stop_reason: 'tool_use', usage: pricey };
+    }, { codev_task_spend_limit: '0.25', codev_daily_spend_limit: '5' });
+    await sendPrompt(page, 'Look through my old chats for anything about Godot.');
+    await waitForChat(page, /Stopped part way\./);
+    assert.equal(bodies.length, 4);
+    assert.equal(await page.evaluate(() => Boolean(document.querySelector('.resume-btn'))), true, 'the cut-short reply offers ▶ Resume');
+
+    await sendPrompt(page, 'continue');
+    await waitForChat(page, /Finished the rest\./);
+    const resumed = bodies[4];
+    const sent = JSON.stringify(resumed.messages);
+    // The earlier tool steps go back as they were: the task isn't started over.
+    assert.equal(resumed.messages.filter(m => (m.content || []).some?.(b => b.type === 'tool_result')).length, 3);
+    assert.match(sent, /Look through my old chats for anything about Godot/);
+    assert.equal(bodies.length, 5);
+    assert.deepEqual(errors, []);
+});
+
+test('with autopilot on, any task runs to the end: a reply that stops to ask is sent back, and only deleting asks first', async t => {
+    if (launched.skip) return t.skip(launched.skip);
+    const { page, errors, bodies } = await openClaudePage(t, (body, n) => n === 1
+        ? { content: [{ type: 'text', text: 'Here is a first verse. Want me to write the rest?' }], stop_reason: 'end_turn', usage }
+        : { content: [{ type: 'text', text: 'Here is the whole poem.' }], stop_reason: 'end_turn', usage });
+    await sendPrompt(page, 'Write a four-verse poem about rain.');
+    await waitForChat(page, /Here is the whole poem\./);
+    assert.equal(bodies.length, 2);
+    assert.match(bodies[0].system, /AUTOPILOT \(the user turned it on\)[\s\S]*Don't ask for permission/);
+    assert.match(JSON.stringify(bodies[1].messages.at(-1)), /CoDev autopilot/);
+
+    const asked = await page.evaluate(async () => {
+        const questions = [];
+        window.askPermission = async message => { questions.push(message); return false; };
+        window.callMcpTool = async tool => `ran ${tool.name}`;
+        const ctx = { kind: 'general', agentName: 'Writer' };
+        const results = [];
+        for (const name of ['write_file', 'media_remove_noise', 'delete_file', 'notes_delete']) results.push(await runMcpTool({ name, transport: 'desktop', annotations: {} }, { path: 'x' }, ctx));
+        return { questions: questions.length, results };
+    });
+    assert.deepEqual(asked.results.slice(0, 2), ['ran write_file', 'ran media_remove_noise']);
+    assert.match(asked.results[2], /declined this deletion/);
+    assert.match(asked.results[3], /declined this deletion/);
+    assert.equal(asked.questions, 2);
+    assert.deepEqual(errors, []);
+});

@@ -303,6 +303,26 @@ test('with automatic saving on, agents\' code reaches the project without the re
     assert.deepEqual(errors, []);
 });
 
+test('with automatic saving on, a change that deletes a file still waits for the user', async t => {
+    if (ctx.skip) return t.skip(ctx.skip);
+    const launched = await launchBrowser();
+    if (launched.skip) return t.skip(launched.skip);
+    t.after(() => launched.browser.close());
+    fs.writeFileSync(path.join(ctx.workspace, 'old-notes.txt'), 'old\n');
+    const steps = [[{ name: 'delete_file', arguments: { path: 'old-notes.txt' } }], 'Deleted old-notes.txt.'];
+    const { page, errors } = await openPage(launched.browser, ctx.server.url, { steps, autoSave: true });
+    await answerApprovals(page, () => false);
+    await sendPrompt(page, 'Delete old-notes.txt from the project');
+    const rows = await waitForReview(page, 120000);
+    assert.deepEqual(rows.map(r => r.path), ['old-notes.txt']);
+    assert.equal(fs.existsSync(path.join(ctx.workspace, 'old-notes.txt')), true, 'not deleted without the OK');
+    await page.click('#diffReviewOverlay [data-action="reject"]');
+    await waitForChat(page, /You rejected these changes/, 30000);
+    assert.equal(fs.existsSync(path.join(ctx.workspace, 'old-notes.txt')), true);
+    fs.rmSync(path.join(ctx.workspace, 'old-notes.txt'));
+    assert.deepEqual(errors, []);
+});
+
 test('a document edit gets no QA pass, and "save it" saves the staged change without another agent call', async t => {
     if (ctx.skip) return t.skip(ctx.skip);
     const launched = await launchBrowser();
