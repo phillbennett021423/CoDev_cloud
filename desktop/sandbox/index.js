@@ -26,6 +26,9 @@ const { validateFile } = require('./validate');
 const { runOnHost } = require('./host-runner');
 
 const MAX_READ_CHARS = 100000;
+// A write_file call without its text, usually because the model's reply ran out of room
+// while writing a long file. The error says how to send it so it fits.
+const MISSING_CONTENT = "write_file needs 'content' as a string, and this call had none, so nothing was written. If the file is long, your reply was probably cut off while writing it: send the file in parts of about 150 lines, the first with write_file, each next one with write_file and append: true.";
 const MAX_LISTED_FILES = 500;
 const MAX_OUTPUT_CHARS = 8000;
 const MAX_SEARCH_MATCHES = 200;
@@ -127,12 +130,16 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
         return hits.length ? hits.join('\n') : `No matches for "${query}".`;
     }
 
-    function writeFile({ path: rel, content } = {}, ctx) {
-        if (typeof content !== 'string') throw new ToolError("write_file needs 'content' as a string");
+    function writeFile({ path: rel, content, append } = {}, ctx) {
+        if (typeof content !== 'string') throw new ToolError(MISSING_CONTENT);
         const ws = workspaceFor(ctx);
         const full = writePath(ws, rel);
         if (fs.existsSync(full) && fs.lstatSync(full).isSymbolicLink()) fs.unlinkSync(full);
         fs.mkdirSync(path.dirname(full), { recursive: true });
+        if (append === true) {
+            fs.appendFileSync(full, content, 'utf8');
+            return `Added ${content.length} characters to the end of ${rel} (now ${fs.statSync(full).size} bytes) in the sandbox, staged for the user's review.`;
+        }
         fs.writeFileSync(full, content, 'utf8');
         return `Staged ${rel} (${content.length} characters) in the sandbox. It reaches the user's disk only after they approve it in the review.`;
     }
@@ -207,6 +214,7 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
     }
 
     const pathProp = { type: 'string', description: 'Path relative to the project, with / separators.' };
+    const appendProp = { type: 'boolean', description: 'Add content to the end of the file instead of replacing it. Write a long file (more than about 150 lines) in parts: the first part without append, then each next part with append: true, so no single call is cut off.' };
     const TOOLS = [
         { name: 'list_files', run: listFiles, annotations: { readOnlyHint: true },
           description: 'List the files in your sandbox copy of the user\'s project, one path per line, recursively (hidden files, .git and node_modules are skipped; stops at 500). Use it first to see what exists before you read or edit. To find where something is used, use search_files instead.',
@@ -220,7 +228,7 @@ function createSandbox({ getProjectDir, stagingRoot, log = () => {}, containerOp
               path: { ...pathProp, description: 'Sub-folder to search; omit for the whole project.' } }, required: ['query'] } },
         { name: 'write_file', run: writeFile, annotations: { readOnlyHint: false, destructiveHint: false },
           description: 'Create a file, or replace a whole file, in your sandbox copy of the project (folders are made as needed). Changes are staged: the user reviews a diff and approves them before anything is written to their disk. Use it for new files; for a change to part of an existing file use edit_file instead, so you don\'t drop code you didn\'t read.',
-          inputSchema: { type: 'object', properties: { path: pathProp, content: { type: 'string', description: 'The complete new file content.' } }, required: ['path', 'content'] } },
+          inputSchema: { type: 'object', properties: { path: pathProp, content: { type: 'string', description: 'The new file content (or, with append, the part to add).' }, append: appendProp }, required: ['path', 'content'] } },
         { name: 'edit_file', run: editFile, annotations: { readOnlyHint: false, destructiveHint: false },
           description: 'Replace one exact snippet of a file in your sandbox copy (staged for review). Use it for every change to an existing file: read_file first, then copy old_text exactly, with its spaces and line breaks. If it says old_text appears 0 or 2+ times, read the file again and pass a longer, unique snippet; don\'t fall back to rewriting the whole file.',
           inputSchema: { type: 'object', properties: { path: pathProp,
