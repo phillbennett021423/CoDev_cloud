@@ -285,7 +285,11 @@ test('the default voice is natural Kore made on the device: no key, no Gemini ca
     assert.deepEqual(await page.evaluate(() => window.__workerUrls), [{ url: new URL('agent-ui/kokoro-worker.js', url).href, type: 'module' }]);
     assert.equal((await page.evaluate(() => window.__played)).length, jobs.length);
     assert.ok((await page.evaluate(() => window.__played)).every(p => p.type === 'audio/wav'));
+    // The download note goes away once Kore starts talking.
     assert.match(await page.textContent('#codevToast'), /Getting the natural voice ready \(only the first time\): 45 of 90 MB/);
+    assert.equal(await page.evaluate(() => document.getElementById('codevToast').classList.contains('show')), false);
+    // Later loads (from this device, after a restart) say "Loading", not "downloading".
+    assert.equal(await page.evaluate(() => localStorage.getItem('codev_natural_voice_saved')), '1');
     // Stopping mid-way throws the busy worker away instead of finishing words nobody hears.
     await page.evaluate(text => { window.__workerDelay = 1000; speakText(text); }, long);
     await page.waitForTimeout(100);

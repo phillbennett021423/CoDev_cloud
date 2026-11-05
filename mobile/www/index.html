@@ -7088,12 +7088,18 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                         if (Date.now() - naturalProgressShownAt < 1500 || !p.total || p.total < 1000000) return;
                         naturalProgressShownAt = Date.now();
                         const mb = n => Math.round(n / 1048576);
-                        showToast(`Getting the natural voice ready (only the first time): ${mb(p.loaded)} of ${mb(p.total)} MB…`, 60000);
+                        // Loading a voice that's already saved here reports progress too: that isn't a download.
+                        showToast(naturalVoiceSaved()
+                            ? `🔊 Loading ${naturalVoiceName()}…`
+                            : `Getting the natural voice ready (only the first time): ${mb(p.loaded)} of ${mb(p.total)} MB…`, 60000);
                     }
                 });
             }
             return naturalVoiceEngine;
         }
+
+        // Set once a natural voice has played on this device, so a later load isn't called a download.
+        function naturalVoiceSaved() { try { return localStorage.getItem("codev_natural_voice_saved") === "1"; } catch (err) { return false; } }
 
         function naturalVoiceName(id = naturalVoice) {
             const voice = window.CodevNaturalVoice && CodevNaturalVoice.VOICES.find(v => v.id === id);
@@ -7138,6 +7144,7 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
             }, ms);
             let shown = false;
             let note = null;
+            const startedAt = Date.now();
             try {
                 for (let i = 0; i < pieces.length; i++) {
                     note = noteWhileWaiting(i, i === 0 ? 1200 : 2500);
@@ -7155,7 +7162,8 @@ Copy names and numbers exactly. Write [unreadable] for anything you can't read; 
                     }
                     clearTimeout(note);
                     note = null;
-                    if (shown) { hideToast(); shown = false; }
+                    if (shown || (i === 0 && naturalProgressShownAt > startedAt)) { hideToast(); shown = false; }
+                    if (i === 0 && !naturalVoiceSaved()) { try { localStorage.setItem("codev_natural_voice_saved", "1"); } catch (err) { /* storage blocked */ } }
                     if (runId !== speechRunId) return;
                     await playAudioBlob(blob);
                     if (runId !== speechRunId) return;
