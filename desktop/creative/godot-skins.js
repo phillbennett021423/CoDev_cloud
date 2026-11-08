@@ -63,7 +63,7 @@ function addAutoload(projectText, name, resPath) {
     return `${before}[autoload]${body.startsWith('\n') ? '' : '\n'}${body}${rest}`;
 }
 
-function registryScript(manifestRes) {
+function registryScript(manifestRes, helpersRes = manifestRes.replace(/[^/]*$/, 'CoDevHelperBones.gd')) {
     return `extends Node
 ## SkinRegistry (made by CoDev): reads the skin manifest and equips skins.
 ##
@@ -77,6 +77,8 @@ function registryScript(manifestRes) {
 
 const MANIFEST := "${manifestRes}"
 const SLOT_META := "codev_skin_slot"
+const HIDDEN_META := "codev_hidden_by_skin"
+const HELPERS := "${helpersRes}"
 
 var skins: Dictionary = {}
 
@@ -135,19 +137,101 @@ func equip(character_node: Node3D, skin_id: String, variant: String = "") -> Nod
 		for mesh in meshes:
 			(mesh as MeshInstance3D).material_override = material
 	if rigged:
-		var skeletons := character_node.find_children("*", "Skeleton3D", true, false)
-		if skeletons.size() > 0:
+		var sk := character_skeleton(character_node, item)
+		if sk != null:
 			for mesh in meshes:
 				var mi := mesh as MeshInstance3D
 				if mi.skin != null:
-					mi.skeleton = mi.get_path_to(skeletons[0])
+					mi.skeleton = mi.get_path_to(sk)
+			ensure_helpers(sk)
+		# an outfit can bring its own body with the covered parts removed, so no skin
+		# shows through the clothes; the character's own body is hidden while it's on
+		var body_model: String = skin.get("body_model", "")
+		if body_model != "" and sk != null:
+			for mi in sk.get_parent().find_children("*", "MeshInstance3D", true, false):
+				if not _in_skin(mi) and mi.visible:
+					mi.visible = false
+					mi.set_meta(HIDDEN_META, slot)
+			var body_scene: PackedScene = load(body_model)
+			if body_scene != null:
+				var body := body_scene.instantiate() as Node3D
+				body.set_meta(SLOT_META, slot)
+				item.add_child(body)
+				for mi in body.find_children("*", "MeshInstance3D", true, false):
+					if (mi as MeshInstance3D).skin != null:
+						(mi as MeshInstance3D).skeleton = (mi as MeshInstance3D).get_path_to(sk)
 	return item
+
+## The character's own Skeleton3D (not the copy that comes inside a rigged skin's file).
+func character_skeleton(character_node: Node3D, item: Node = null) -> Skeleton3D:
+	for s in character_node.find_children("*", "Skeleton3D", true, false):
+		if item == null or not item.is_ancestor_of(s):
+			if not _in_skin(s):
+				return s as Skeleton3D
+	return null
+
+## Shoulder/hip helper bones (named <Bone>Helper) turn half as far as their bone.
+func ensure_helpers(sk: Skeleton3D) -> void:
+	var needed := false
+	for b in sk.get_bone_count():
+		if sk.get_bone_name(b).ends_with("Helper"):
+			needed = true
+			break
+	if not needed or not ResourceLoader.exists(HELPERS):
+		return
+	for c in sk.get_children():
+		if c.has_meta("codev_helpers"):
+			return
+	var mod = load(HELPERS).new()
+	mod.set_meta("codev_helpers", true)
+	sk.add_child(mod)
+
+func _in_skin(n: Node) -> bool:
+	var p := n
+	while p != null:
+		if p.has_meta(SLOT_META):
+			return true
+		p = p.get_parent()
+	return false
 
 func unequip(character_node: Node3D, slot: String) -> void:
 	for node in character_node.find_children("*", "Node3D", true, false):
 		if node.has_meta(SLOT_META) and node.get_meta(SLOT_META) == slot:
 			node.queue_free()
+		elif node.has_meta(HIDDEN_META) and node.get_meta(HIDDEN_META) == slot:
+			node.visible = true
+			node.remove_meta(HIDDEN_META)
 `;
 }
 
-module.exports = { materialTres, upsertManifest, addAutoload, registryScript, res, MANIFEST_VERSION };
+// Drives helper bones: each <Bone>Helper turns `amount` (half) as far as <Bone>, so
+// shoulders and hips stretch instead of folding. Added under the character's Skeleton3D.
+function helperScript() {
+    return `@tool
+extends SkeletonModifier3D
+## CoDevHelperBones (made by CoDev): every bone named <Bone>Helper turns half as far as <Bone>.
+@export_range(0.0, 1.0) var amount := 0.5
+var _pairs: Array = []
+
+func _find_pairs(sk: Skeleton3D) -> void:
+	_pairs.clear()
+	for b in sk.get_bone_count():
+		var n := sk.get_bone_name(b)
+		if n.ends_with("Helper"):
+			var src := sk.find_bone(n.substr(0, n.length() - 6))
+			if src >= 0:
+				_pairs.append([src, b])
+
+func _process_modification_with_delta(_delta: float) -> void:
+	var sk := get_skeleton()
+	if sk == null:
+		return
+	if _pairs.is_empty():
+		_find_pairs(sk)
+	for p in _pairs:
+		var rest := sk.get_bone_rest(p[0]).basis.get_rotation_quaternion()
+		sk.set_bone_pose_rotation(p[1], rest.slerp(sk.get_bone_pose_rotation(p[0]), amount))
+`;
+}
+
+module.exports = { materialTres, upsertManifest, addAutoload, registryScript, helperScript, res, MANIFEST_VERSION };

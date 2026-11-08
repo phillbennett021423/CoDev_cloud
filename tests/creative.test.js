@@ -377,6 +377,55 @@ test('art_mesh runs the Blender pipeline with budgets and naming; voice cloning 
     assert.ok(svc.tools.find(t => t.name === 'art_lora_train')._meta['codev/alwaysAsk']);
 });
 
+test('art_mesh dress fits a whole outfit, checks it in poses and reports what pokes through', { skip: !unix }, async () => {
+    const dir = project();
+    for (const f of ['base.glb', 'jacket.glb', 'boot_L.glb']) fs.writeFileSync(path.join(dir, 'refs', f), 'glb');
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'codev-fakeblender-'));
+    const blender = path.join(bin, 'blender');
+    fs.writeFileSync(blender, `#!${process.execPath}\nconst fs = require('fs'); const path = require('path');\nconst a = process.argv.slice(2);\nconst job = JSON.parse(fs.readFileSync(a[a.indexOf('--') + 1], 'utf8'));\nfs.writeFileSync(process.env.FAKE_JOB, JSON.stringify(job));\nconst out = path.join(job.out_dir || '.', 'x_outfit.glb'); if (job.out_dir) { fs.mkdirSync(job.out_dir, { recursive: true }); fs.writeFileSync(out, 'glb'); }\nfs.writeFileSync(job.result, JSON.stringify({ ok: true, op: job.op, output: job.out_dir ? out : job.output, triangles: 9000, materials: 2, armatures: [{ name: 'Armature', bones: 60 }], layer_order: ['boot_L', 'jacket'], body_faces_hidden: 1200, helpers: ['LeftArmHelper'], pieces: { jacket: { slot: 'torso', main_bones: ['Spine', 'LeftArm'], pushed_verts: 12, faces_hidden: 0 }, boot_L: { slot: 'feet', side: 'left', main_bones: ['LeftFoot'] } }, pose_checks: { arms_up: { 'shirt through jacket': { checked: 40, poking: 3, share: 0.07, worst_mm: 6.5 } }, run: {} }, passed: false, files: { jacket: out, body: out, outfit: out } }));\n`);
+    fs.chmodSync(blender, 0o755);
+    const jobFile = path.join(bin, 'job.json');
+    const svc = createCreativeService({ getProjectDir: () => dir, env: { ...process.env, FAKE_JOB: jobFile, CODEV_COMFYUI_URL: 'http://127.0.0.1:1' }, findBlender: () => blender });
+    const none = await svc.callTool('art_mesh', { op: 'dress', base: 'refs/base.glb' });
+    assert.ok(none.isError);
+    assert.match(textOf(none), /dress needs inputs/);
+    const res = await svc.callTool('art_mesh', { op: 'dress', base: 'refs/base.glb', inputs: ['refs/jacket.glb', 'refs/boot_L.glb'], name: 'Night Shift', slots: { jacket: 'torso' }, rigid: { helmet: 'Head' }, poses: ['arms_up', 'run'] });
+    const out = textOf(res);
+    assert.ok(!res.isError, out);
+    const job = JSON.parse(fs.readFileSync(jobFile, 'utf8'));
+    assert.equal(job.op, 'dress');
+    assert.equal(job.inputs.length, 2);
+    assert.ok(job.inputs.every(p => path.isAbsolute(p)));
+    assert.equal(job.output, undefined);
+    assert.match(job.out_dir, /night_shift/);
+    assert.deepEqual(job.slots, { jacket: 'torso' });
+    assert.deepEqual(job.poses, ['arms_up', 'run']);
+    assert.equal(job.hide_body, true);
+    assert.match(out, /Layer order \(inside to outside\): boot_L → jacket/);
+    assert.match(out, /arms_up: shirt through jacket 3 pts, worst 6\.5 mm/);
+    assert.match(out, /- run: clean/);
+    assert.match(out, /jacket: slot torso, follows Spine, LeftArm, 12 vertices pushed out/);
+    assert.match(out, /Helper bones \(LeftArmHelper\)/);
+    assert.match(out, /body_model/);
+    const rig = await svc.callTool('art_mesh', { op: 'rig', input: 'refs/jacket.glb', base: 'refs/base.glb', slot: 'torso', rigid_bone: 'Spine2', margin: 0.006 });
+    assert.ok(!rig.isError, textOf(rig));
+    const rj = JSON.parse(fs.readFileSync(jobFile, 'utf8'));
+    assert.equal(rj.slot, 'torso');
+    assert.equal(rj.rigid_bone, 'Spine2');
+    assert.equal(rj.margin, 0.006);
+    const rev = await svc.callTool('art_mesh', { op: 'review', input: 'refs/jacket.glb', pose: 'arms_up' });
+    assert.equal(JSON.parse(fs.readFileSync(jobFile, 'utf8')).pose, 'arms_up');
+    assert.ok(rev);
+});
+
+test('the skin-fit core passes its own tests (numpy)', { skip: !unix }, () => {
+    const { spawnSync } = require('child_process');
+    const probe = spawnSync('python3', ['-c', 'import numpy'], { encoding: 'utf8' });
+    if (probe.status !== 0) return;
+    const run = spawnSync('python3', ['-m', 'unittest', path.join(__dirname, '..', 'desktop', 'creative', 'bpy', 'test_skin_fit.py')], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+});
+
 test('studio rules tool and the tools reaching server.js and the MCP server', async () => {
     const dir = project();
     const svc = createCreativeService({ getProjectDir: () => dir, env: { ...process.env, CODEV_COMFYUI_URL: 'http://127.0.0.1:1' } });
@@ -444,6 +493,13 @@ test('Godot skin files: ORM materials, manifest upserts, the autoload entry and 
     assert.match(gd, /const MANIFEST := "res:\/\/data\/skin_manifest.json"/);
     assert.match(gd, /func equip\(character_node: Node3D, skin_id: String, variant: String = ""\) -> Node3D:/);
     assert.ok(!/^ {2,}\S/m.test(gd), 'GDScript indented with tabs only');
+    assert.match(gd, /const HELPERS := "res:\/\/data\/CoDevHelperBones.gd"/);
+    assert.match(gd, /func ensure_helpers\(sk: Skeleton3D\)/);
+    assert.match(gd, /body_model/);
+    const hs = G.helperScript();
+    assert.match(hs, /extends SkeletonModifier3D/);
+    assert.match(hs, /ends_with\("Helper"\)/);
+    assert.ok(!/^ {2,}\S/m.test(hs), 'GDScript indented with tabs only');
 });
 
 function godotProject() {
