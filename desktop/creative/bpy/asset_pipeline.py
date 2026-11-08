@@ -12,9 +12,14 @@ file gets a JSON report (triangle counts, maps written, bones matched...). Ops:
   bake       bakes PBR maps (albedo, normal, roughness, metallic, emission, ao,
              curvature) onto the low-poly, from a high-poly when given; rebuilds
              the material from the maps and exports .glb
-  rig        puts a cosmetic mesh on a base character's skeleton: copies the skin
-             weights from the base body (or Blender's automatic weights) and
-             parents it to the armature; exports .glb with the skeleton
+  rig        puts a cosmetic mesh on a base character's skeleton: robust weight
+             transfer from the body (copied where the cloth sits on the body, filled in
+             smoothly elsewhere), limited to the bones its slot may follow, or one bone
+             for a rigid piece; pushes it out of the body; exports .glb with the skeleton
+  dress      a whole outfit at once: orders the layers, fits each over the ones under
+             it, copies weights layer to layer, hides body and inner-layer faces the
+             outfit covers, checks it in test poses for anything poking through, and
+             exports every piece, the masked body and an outfit preview
   texture    puts a tileable PBR set (albedo, normal, roughness, metallic, ao,
              emission) on the mesh as one material, tiled by tile_scale; exports
              .glb (the tiling travels as KHR_texture_transform)
@@ -28,6 +33,7 @@ file gets a JSON report (triangle counts, maps written, bones matched...). Ops:
 """
 import bpy
 import bmesh
+import numpy as np
 import json
 import math
 import os
@@ -35,6 +41,9 @@ import re
 import sys
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import skin_fit as sf  # noqa: E402
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 JOB = json.load(open(argv[0], encoding="utf-8"))
@@ -505,49 +514,412 @@ def op_texture():
 
 # ---------- rigging ----------
 
-def op_rig():
-    base = import_any(JOB["base"])
-    arm = next((o for o in base if o.type == "ARMATURE"), None)
+# ---------- rigging and dressing ----------
+# Blender is Z-up and glTF characters face +Z, which is Blender's -Y.
+UP, FRONT = (0.0, 0.0, 1.0), (0.0, -1.0, 0.0)
+
+
+def find_rig(objs):
+    arm = next((o for o in objs if o.type == "ARMATURE"), None)
     if not arm:
         raise ValueError("the base character has no skeleton (armature)")
-    body = [o for o in meshes(base) if any(m.type == "ARMATURE" for m in o.modifiers) or o.parent == arm]
+    body = [o for o in meshes(objs) if any(m.type == "ARMATURE" for m in o.modifiers) or o.parent == arm]
+    if not body:
+        raise ValueError("the base character has no skinned body mesh")
+    return arm, max(body, key=lambda o: len(o.data.vertices)), body
+
+
+def triangulate(ob):
+    """Triangulate in place so every face is a triangle (glTF exports triangles anyway)."""
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    bmesh.ops.triangulate(bm, faces=bm.faces[:])
+    bm.to_mesh(ob.data)
+    bm.free()
+    ob.data.update()
+
+
+def mesh_arrays(ob):
+    """World positions and triangles (a triangle per polygon after triangulate)."""
+    me = ob.data
+    V = np.zeros(len(me.vertices) * 3)
+    me.vertices.foreach_get("co", V)
+    V = V.reshape(-1, 3)
+    M = np.array(ob.matrix_world)
+    V = V @ M[:3, :3].T + M[:3, 3]
+    me.calc_loop_triangles()  # triangulate() ran first, so triangle i is polygon i
+    F = np.zeros(len(me.loop_triangles) * 3, np.int32)
+    me.loop_triangles.foreach_get("vertices", F)
+    return V, F.reshape(-1, 3).astype(np.int64)
+
+
+def set_world_positions(ob, V):
+    M = np.array(ob.matrix_world.inverted())
+    local = V @ M[:3, :3].T + M[:3, 3]
+    ob.data.vertices.foreach_set("co", local.astype(np.float32).ravel())
+    ob.data.update()
+
+
+def bone_table(arm):
+    bones = list(arm.data.bones)
+    names = [b.name for b in bones]
+    idx = {n: i for i, n in enumerate(names)}
+    parents = [idx[b.parent.name] if b.parent else -1 for b in bones]
+    M = np.array(arm.matrix_world)
+    heads = np.array([list(b.head_local) for b in bones]) @ M[:3, :3].T + M[:3, 3]
+    tails = np.array([list(b.tail_local) for b in bones]) @ M[:3, :3].T + M[:3, 3]
+    deform = np.array([b.use_deform for b in bones])
+    return names, parents, heads, tails, deform
+
+
+def read_weights(ob, names):
+    col = {n: i for i, n in enumerate(names)}
+    gmap = {g.index: col.get(g.name, -1) for g in ob.vertex_groups}
+    W = np.zeros((len(ob.data.vertices), len(names)))
+    for v in ob.data.vertices:
+        for g in v.groups:
+            c = gmap.get(g.group, -1)
+            if c >= 0:
+                W[v.index, c] += g.weight
+    s = W.sum(1, keepdims=True)
+    return W / np.maximum(s, 1e-12)
+
+
+def write_weights(ob, W, names, arm):
+    for vg in list(ob.vertex_groups):
+        ob.vertex_groups.remove(vg)
+    for b in np.where(W.sum(0) > 0)[0]:
+        vg = ob.vertex_groups.new(name=names[b])
+        rows = np.where(W[:, b] > 0)[0]
+        for r in rows:
+            vg.add([int(r)], float(W[r, b]), "REPLACE")
+    for m in [m for m in ob.modifiers if m.type == "ARMATURE"]:
+        ob.modifiers.remove(m)
+    mw = ob.matrix_world.copy()
+    ob.parent = arm
+    ob.matrix_world = mw
+    am = ob.modifiers.new("Armature", "ARMATURE")
+    am.object = arm
+
+
+class Source:
+    """Blender BVH over stacked surfaces (body + layers already dressed), for nearest-point lookups."""
+
+    def __init__(self, V, F, W=None):
+        self.V, self.F, self.W = V, F, W
+        self.VN = sf.vertex_normals(V, F)
+        self.tree = BVHTree.FromPolygons([Vector(p) for p in V], [tuple(int(i) for i in f) for f in F], all_triangles=True)
+
+    def nearest(self, P, far=10.0):
+        n = len(P)
+        Q = np.zeros((n, 3))
+        face = np.zeros(n, np.int64)
+        dist = np.full(n, far)
+        for i, p in enumerate(P):
+            co, _, idx, d = self.tree.find_nearest(Vector(p), far)
+            if co is not None:
+                Q[i], face[i], dist[i] = tuple(co), idx, d
+        tri = self.F[face]
+        bary = sf.barycentric(Q, self.V[tri[:, 0]], self.V[tri[:, 1]], self.V[tri[:, 2]])
+        return Q, sf.interp_normals(self.VN, self.F, face, bary), face, bary, dist
+
+
+def piece_side(V, heads, names):
+    """'left', 'right' or '' from where the piece sits relative to the skeleton's middle."""
+    mid = heads[:, 0].mean()
+    cx = V[:, 0].mean() - mid
+    if abs(cx) < 0.03 * max(np.ptp(heads[:, 2]), 1e-6):
+        return ""
+    sided = [(h[0] - mid, sf.bone_role(n)[0]) for h, n in zip(heads, names) if sf.bone_role(n)[0]]
+    left_x = np.mean([x for x, sd in sided if sd == "left"]) if any(sd == "left" for _, sd in sided) else 1.0
+    return "left" if np.sign(cx) == np.sign(left_x) else "right"
+
+
+def fit_piece(name, ob, slot, arm, table, under, body_src, opts):
+    """Push the piece out of what's under it, then weight it. Returns (V, F, W, report)."""
+    names, parents, heads, tails, deform = table
+    triangulate(ob)
+    V, F = mesh_arrays(ob)
+    ids = sf.weld(V)
+    slot = sf.slot_for(name, slot)
+    side = opts.get("side") or piece_side(V, heads, names)
+    rep = {"slot": slot, "side": side}
+    # 1) fit: at least `margin` outside the body and the layers under it
+    moved_total = 0
+    if opts.get("push", True):
+        for _ in range(2):
+            q, n, _, _, d = body_src.nearest(V)
+            sd = np.einsum("ij,ij->i", V - q, n)
+            out_dir = n
+            if under is not None:
+                q2, n2, _, _, d2 = under.nearest(V)
+                n2 = n2 * np.sign(np.einsum("ij,ij->i", n2, n) + 1e-9)[:, None]
+                sd2 = np.einsum("ij,ij->i", V - q2, n2)
+                use = (d2 < 0.03) & (sd2 < sd)
+                sd = np.where(use, sd2, sd)
+                out_dir = np.where(use[:, None], n2, out_dir)
+            near = np.abs(sd) < 0.03
+            V, moved = sf.push_out(V, F, np.where(near, sd, 1.0), out_dir, margin=float(opts.get("margin", 0.004)), ids=ids)
+            moved_total += moved
+            if not moved:
+                break
+        set_world_positions(ob, V)
+    rep["pushed_verts"] = moved_total
+    # 2) weights
+    if opts.get("rigid_bone") or slot in opts.get("rigid_slots", []):
+        bone = opts.get("rigid_bone")
+        if bone not in names:
+            ok = sf.allowed(names, slot, side) & deform
+            c = V.mean(0)
+            cand = np.where(ok)[0] if ok.any() else np.where(deform)[0]
+            mids = (heads[cand] + tails[cand]) / 2
+            bone = names[int(cand[np.argmin(np.linalg.norm(mids - c, axis=1))])]
+        W = sf.rigid_weights(len(V), len(names), names.index(bone))
+        rep["rigid_bone"] = bone
+    else:
+        src = under if under is not None else body_src
+        N = sf.vertex_normals(V, F, ids)
+        q, n, f, b, d = src.nearest(V)
+        W, matched = sf.robust_transfer(V, F, N, q, n, f, b, src.F, src.W, max_dist=float(opts.get("max_dist", 0.05)),
+                                        max_angle=float(opts.get("max_angle", 35)), ids=ids)
+        ok = sf.allowed(names, slot, side) & deform
+        okidx = np.where(ok)[0]
+        fb = [int(okidx[np.argmin(np.linalg.norm(heads[okidx] - heads[i], axis=1))]) if len(okidx) else -1 for i in range(len(names))]
+        W, _ = sf.limit_to_allowed(W, parents, ok, fallback=fb)
+        W = sf.top_k(W, 4)
+        rep["matched_share"] = round(float(matched.mean()), 3)
+    o = np.argsort(-W.sum(0))
+    rep["main_bones"] = [names[k] for k in o[:6] if W[:, k].sum() > 1e-6]
+    return V, F, W, rep
+
+
+def add_helper_constraints(arm, amount=0.5):
+    """Bones named <X>Helper turn half as far as <X> (shoulder/hip helpers), so posed
+    checks and renders in Blender match the game (Godot gets CoDevHelperBones.gd)."""
+    made = []
+    for pb in arm.pose.bones:
+        if pb.name.lower().endswith("helper") and pb.name[:-6] in arm.pose.bones:
+            c = pb.constraints.new("COPY_ROTATION")
+            c.target, c.subtarget = arm, pb.name[:-6]
+            c.target_space = c.owner_space = "LOCAL"
+            c.influence = amount
+            made.append(pb.name)
+    return made
+
+
+def apply_test_pose(arm, pose_name):
+    """Pose the armature in one of skin_fit.TEST_POSES (works on any skeleton bone_role knows)."""
+    names, parents, heads, tails, _ = bone_table(arm)
+    D = sf.pose_deltas(names, parents, heads, tails, sf.TEST_POSES[pose_name], UP, FRONT)
+    Mw = np.array(arm.matrix_world)
+    Mi = np.linalg.inv(Mw)
+    from mathutils import Matrix
+    order = sorted(range(len(names)), key=lambda b: sf._depth(b, parents))
+    for b in order:
+        if names[b].lower().endswith("helper"):
+            continue  # the constraint drives it
+        pb = arm.pose.bones[names[b]]
+        rest = np.array(arm.data.bones[names[b]].matrix_local)
+        pb.matrix = Matrix((Mi @ D[b] @ Mw @ rest).tolist())
+        bpy.context.view_layer.update()
+    return D
+
+
+def op_rig():
+    base = import_any(JOB["base"])
+    arm, body, bodies = find_rig(base)
+    for o in bodies:
+        triangulate(o)
+    table = bone_table(arm)
+    BV, BF = mesh_arrays(body)
+    body_src = Source(BV, BF, read_weights(body, table[0]))
     cosmetic = meshes(import_any(JOB["input"]))
     if not cosmetic:
         raise ValueError("no mesh in the cosmetic file")
-    method = JOB.get("method") or ("transfer" if body else "auto")
+    method = JOB.get("method") or "robust"
+    REPORT["method"] = method
+    REPORT["pieces"] = {}
     for ob in cosmetic:
-        for vg in list(ob.vertex_groups):
-            ob.vertex_groups.remove(vg)
-        if method == "transfer" and body:
-            src = max(body, key=lambda o: len(o.data.vertices))
-            activate(ob)
-            mod = ob.modifiers.new("WeightCopy", "DATA_TRANSFER")
-            mod.object = src
-            mod.use_vert_data = True
-            mod.data_types_verts = {"VGROUP_WEIGHTS"}
-            mod.vert_mapping = "POLYINTERP_NEAREST"
-            mod.layers_vgroup_select_src = "ALL"
-            mod.layers_vgroup_select_dst = "NAME"
-            bpy.ops.object.datalayout_transfer(modifier=mod.name)
-            bpy.ops.object.modifier_apply(modifier=mod.name)
-            ob.parent = arm
-            ob.matrix_parent_inverse = arm.matrix_world.inverted()
-            am = ob.modifiers.new("Armature", "ARMATURE")
-            am.object = arm
-        else:
+        if method == "auto":
             bpy.ops.object.select_all(action="DESELECT")
             ob.select_set(True)
             arm.select_set(True)
             bpy.context.view_layer.objects.active = arm
             bpy.ops.object.parent_set(type="ARMATURE_AUTO")
-    keep = [arm] + cosmetic + (body if JOB.get("keep_body") else [])
+            continue
+        if method == "transfer":  # Blender's plain nearest-face copy, kept for comparison
+            body_src = Source(BV, BF, read_weights(body, table[0]))
+            opts = {"push": False, "max_dist": 1e9, "max_angle": 180}
+        else:
+            opts = {k: JOB[k] for k in ("rigid_bone", "margin", "max_dist", "max_angle", "push", "side") if JOB.get(k) is not None}
+        label = f"{os.path.splitext(os.path.basename(JOB['input']))[0]} {ob.name}"
+        V, F, W, rep = fit_piece(label, ob, JOB.get("slot"), arm, table, None, body_src, opts)
+        write_weights(ob, W, table[0], arm)
+        REPORT["pieces"][ob.name] = rep
+    REPORT["helpers"] = add_helper_constraints(arm)
+    keep = [arm] + cosmetic + (bodies if JOB.get("keep_body") else [])
     if not JOB.get("keep_body"):
-        for o in body:
+        for o in bodies:
             bpy.data.objects.remove(o, do_unlink=True)
-    REPORT["method"] = method
     REPORT["weighted_groups"] = {o.name: len(o.vertex_groups) for o in cosmetic}
     REPORT.update(stats(keep))
     export(JOB["output"], keep)
+
+
+def delete_faces(ob, hide):
+    if not np.any(hide):
+        return 0
+    ob.data.calc_loop_triangles()
+    polys = np.zeros(len(ob.data.loop_triangles), np.int32)
+    ob.data.loop_triangles.foreach_get("polygon_index", polys)
+    hide = np.zeros(len(ob.data.polygons), bool) | np.isin(np.arange(len(ob.data.polygons)), polys[np.asarray(hide)[:len(polys)]])
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    bm.faces.ensure_lookup_table()
+    gone = [bm.faces[i] for i in np.where(hide)[0] if i < len(bm.faces)]
+    bmesh.ops.delete(bm, geom=gone, context="FACES_ONLY")
+    bm.to_mesh(ob.data)
+    bm.free()
+    ob.data.update()
+    return len(gone)
+
+
+def op_dress():
+    """A whole outfit on the base character: see the module docstring."""
+    base = import_any(JOB["base"])
+    arm, body, bodies = find_rig(base)
+    for o in bodies:
+        triangulate(o)
+    table = bone_table(arm)
+    names, parents, heads, tails, deform = table
+    BV, BF = mesh_arrays(body)
+    BW = read_weights(body, names)
+    body_src = Source(BV, BF, BW)
+    slots = JOB.get("slots") or {}
+    rigid = JOB.get("rigid") or {}
+    pieces = {}
+    for path in JOB["inputs"]:
+        objs = meshes(import_any(path))
+        if not objs:
+            raise ValueError(f"no mesh in {os.path.basename(path)}")
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if len(objs) > 1:  # one object per piece
+            bpy.ops.object.select_all(action="DESELECT")
+            for o in objs:
+                o.select_set(True)
+            bpy.context.view_layer.objects.active = objs[0]
+            bpy.ops.object.join()
+        ob = objs[0]
+        ob.name = stem
+        triangulate(ob)
+        pieces[stem] = ob
+    # layer order from where pieces overlap (the one farther from the body there is outside)
+    raw = {k: mesh_arrays(o) for k, o in pieces.items()}
+    gaps = {k: float(np.median(body_src.nearest(V)[4])) for k, (V, F) in raw.items()}
+    outer = {}
+    srcs = {k: Source(V, F) for k, (V, F) in raw.items()}
+    for a in raw:
+        Va = raw[a][0][:: max(1, len(raw[a][0]) // 3000)]
+        for b in raw:
+            if a == b:
+                continue
+            q, _, _, _, d = srcs[b].nearest(Va, far=0.03)
+            near = d < 0.015
+            if near.sum() >= 20:
+                outer[(a, b)] = bool(np.median(body_src.nearest(Va[near])[4] - body_src.nearest(q[near])[4]) > 0)
+    order = JOB.get("order") or sf.layer_order(list(raw), [gaps[k] for k in raw], outer)
+    REPORT["layer_order"] = order
+    # fit and weight inner to outer; each piece copies weights from what is right under it
+    done = {}
+    REPORT["pieces"] = {}
+    covered_body = np.zeros(len(BV), bool)
+    BN = sf.vertex_normals(BV, BF)
+    for k in order:
+        ob = pieces[k]
+        stack = sf.stack([(BV, BF, BW)] + [(v[0], v[1], v[2]) for v in done.values()])
+        under = Source(*stack) if done else None
+        if under is None:
+            under = body_src
+        opts = {"rigid_bone": rigid.get(k), "margin": JOB.get("margin", 0.004)}
+        V, F, W, rep = fit_piece(k, ob, slots.get(k), arm, table, under if done else None, body_src, opts)
+        done[k] = (V, F, W)
+        REPORT["pieces"][k] = rep
+        cq, _, _, _, cd = Source(V, F).nearest(BV, far=0.05)
+        covered_body |= (cd < 0.03) & (np.einsum("ij,ij->i", cq - BV, BN) > -0.002)
+    # inner layers: faces fully under an outer layer go, and where layers overlap the
+    # inner one takes the outer one's weights so the two move together
+    cover_pairs = []
+    gap_rest = {k: body_src.nearest(v[0])[4] for k, v in done.items()}
+    hide_piece = {}
+    for i, a in enumerate(order):
+        Va, Fa, Wa = done[a]
+        cov = np.zeros(len(Va), bool)
+        for b in order[i + 1:]:
+            sb = Source(done[b][0], done[b][1])
+            q, _, f, bb, d = sb.nearest(Va, far=0.05)
+            c = sf.covered_by(d, gap_rest[a], body_src.nearest(q)[4], max_dist=0.04)
+            if c.sum() > 30:
+                cover_pairs.append((a, b, c, f, bb, d < 0.05))
+            cov |= c
+        hide_piece[a] = sf.covered_faces(Fa, cov, body_ids=sf.weld(Va), erode=2) if JOB.get("hide_inner", True) else np.zeros(len(Fa), bool)
+    for a, b, c, f, bb, found in sorted(cover_pairs, key=lambda t: -order.index(t[1])):
+        Va, Fa, Wa = done[a]
+        Wo = np.where(found[:, None], sf.interp_rows(done[b][2], done[b][1], f, bb), Wa)
+        done[a] = (Va, Fa, sf.sync_layer(Va, Fa, Wa, c, Wo))
+    hide_body = sf.covered_faces(BF, covered_body, body_ids=sf.weld(BV), erode=2) if JOB.get("hide_body", True) else np.zeros(len(BF), bool)
+    REPORT["body_faces_hidden"] = int(hide_body.sum())
+    # posed checks: inner layers must stay under outer ones; hidden body must stay covered
+    pairs = [(a, b, c & ~np.isin(np.arange(len(done[a][0])), np.unique(done[a][1][hide_piece[a]]))) for a, b, c, _, _, _ in cover_pairs]
+    hidden_v = np.zeros(len(BV), bool)
+    hidden_v[np.unique(BF[hide_body])] = True
+    checks = {}
+    for pname in JOB.get("poses") or list(sf.TEST_POSES):
+        if pname not in sf.TEST_POSES:
+            continue
+        D = sf.pose_deltas(names, parents, heads, tails, sf.TEST_POSES[pname], UP, FRONT)
+        posed = {k: sf.skin(v[0], v[2], D) for k, v in done.items()}
+        bsrc = Source(sf.skin(BV, BW, D), BF)
+        r = {}
+        for a, b, under_mask in pairs:
+            if not under_mask.any():
+                continue
+            q, _, _, _, d = Source(posed[b], done[b][1]).nearest(posed[a][under_mask], far=0.1)
+            sd = sf.poke_through(bsrc.nearest(posed[a][under_mask])[4], bsrc.nearest(q)[4])
+            rep = sf.poke_report(sd, np.ones(len(sd), bool))
+            if rep["poking"]:
+                r[f"{a} through {b}"] = rep
+        if hidden_v.any():
+            allV, allF, _ = sf.stack([(posed[k], done[k][1], np.zeros((len(posed[k]), 1))) for k in order])
+            _, _, _, _, dg = Source(allV, allF).nearest(bsrc.V[hidden_v], far=0.2)
+            if (dg > 0.03).sum():
+                r["body showing"] = {"open": int((dg > 0.03).sum()), "worst_mm": round(float(dg.max() * 1000), 1)}
+        checks[pname] = r
+    REPORT["pose_checks"] = checks
+    REPORT["passed"] = all(not r for r in checks.values())
+    # write everything
+    out_dir = JOB["out_dir"]
+    os.makedirs(out_dir, exist_ok=True)
+    REPORT["helpers"] = add_helper_constraints(arm)
+    files = {}
+    for k in order:
+        ob = pieces[k]
+        V, F, W = done[k]
+        write_weights(ob, W, names, arm)
+        REPORT["pieces"][k]["faces_hidden"] = delete_faces(ob, hide_piece[k])
+    delete_faces(body, hide_body)
+    for k in order:
+        p = os.path.join(out_dir, f"{k}_rigged.glb")
+        export(p, [arm, pieces[k]])
+        files[k] = p
+    p = os.path.join(out_dir, f"{JOB.get('name', 'outfit')}_body.glb")
+    export(p, [arm] + bodies)
+    files["body"] = p
+    p = os.path.join(out_dir, f"{JOB.get('name', 'outfit')}_outfit.glb")
+    export(p, [arm] + bodies + [pieces[k] for k in order])
+    files["outfit"] = p
+    REPORT["files"] = files
+    REPORT.update(stats([arm] + bodies + list(pieces.values())))
+    REPORT["output"] = files["outfit"]
 
 
 # ---------- retargeting ----------
@@ -874,6 +1246,13 @@ def image_checks(path):
 
 def op_review():
     objs = import_any(JOB["input"])
+    if JOB.get("pose"):
+        arm = next((o for o in objs if o.type == "ARMATURE"), None)
+        if not arm:
+            raise ValueError("pose needs a model with a skeleton")
+        REPORT["helpers"] = add_helper_constraints(arm)
+        apply_test_pose(arm, JOB["pose"])
+        REPORT["pose"] = JOB["pose"]
     ms = meshes(objs)
     if not ms:
         raise ValueError("no mesh in the input")
@@ -945,7 +1324,7 @@ def op_inspect():
 
 try:
     clear_scene()
-    {"inspect": op_inspect, "cleanup": op_cleanup, "uv": op_uv, "bake": op_bake, "texture": op_texture, "rig": op_rig, "retarget": op_retarget, "review": op_review}[JOB["op"]]()
+    {"inspect": op_inspect, "cleanup": op_cleanup, "uv": op_uv, "bake": op_bake, "texture": op_texture, "rig": op_rig, "dress": op_dress, "retarget": op_retarget, "review": op_review}[JOB["op"]]()
 except Exception as err:
     import traceback
     REPORT["ok"] = False

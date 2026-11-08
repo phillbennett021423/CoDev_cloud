@@ -76,6 +76,7 @@ function createCloudWorker({ env = process.env, fetchImpl = globalThis.fetch, sl
             return rel;
         };
         for (const k of INPUT_KEYS) if (remote[k]) remote[k] = add(remote[k]);
+        if (Array.isArray(remote.inputs)) remote.inputs = remote.inputs.map(add);
         if (remote.maps && typeof remote.maps === 'object' && !Array.isArray(remote.maps)) for (const k of Object.keys(remote.maps)) remote.maps[k] = add(remote.maps[k]);
         if (job.output) remote.output = `out/output/${path.basename(job.output)}`;
         if (job.out_dir) remote.out_dir = 'out/dir';
