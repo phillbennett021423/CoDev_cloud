@@ -38,11 +38,11 @@ PRESETS = {
                   clump1=dict(guide_distance=0.015, factor=0.7), clump2=dict(guide_distance=0.05, factor=1.0),
                   noise=dict(scale_along=20, scale=5, offset_per_curve=0.2, distance=0.01, ramp_black=0.4)),
     # big rounded afro: the curly recipe with long strands standing out along the normal (volume ~1.6x head)
-    "afro": dict(guides=1000, length=0.13, points=16, radius=0.0012, child=120000,
-                 curl1=dict(radius=0.012, frequency=4.0, guide_distance=0.0),
-                 curl2=dict(radius=0.008, frequency=6.0, guide_distance=0.02),
-                 clump1=dict(guide_distance=0.02, factor=0.6), clump2=dict(guide_distance=0.06, factor=0.8),
-                 noise=dict(scale_along=12, scale=4, offset_per_curve=0.3, distance=0.015, ramp_black=0.3)),
+    "afro": dict(guides=1600, length=0.085, points=14, radius=0.0012, child=150000,
+                 curl1=dict(radius=0.009, frequency=5.0, guide_distance=0.0),
+                 curl2=dict(radius=0.006, frequency=7.0, guide_distance=0.015),
+                 clump1=dict(guide_distance=0.015, factor=0.7), clump2=dict(guide_distance=0.04, factor=0.6),
+                 noise=dict(scale_along=10, scale=3, offset_per_curve=0.15, distance=0.006, ramp_black=0.4)),
     # masterclass: straight shoulder-length; clump 0.04 / 0.02, noise only on a subset
     "straight": dict(guides=600, length=0.22, points=24, radius=0.0008, child=80000, curl1=None, curl2=None,
                      clump1=dict(guide_distance=0.04, factor=0.8), clump2=dict(guide_distance=0.02, factor=0.6),

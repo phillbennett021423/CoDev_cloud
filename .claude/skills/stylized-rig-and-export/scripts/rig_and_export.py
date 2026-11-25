@@ -37,6 +37,7 @@ def parse():
     p.add_argument("--head", help="head mesh if separate (default: a mesh named *head* that is not a proxy)")
     p.add_argument("--name", default="RIG-character")
     p.add_argument("--fingers", action="store_true", help="add 3-bone fingers from GEO-hand.L/R tips")
+    p.add_argument("--rigid", default="", help="extra rigid props as keyword:Bone, e.g. katana:LeftHand,goggle:Head,holster:Hips")
     p.add_argument("--max-influences", type=int, default=4)
     p.add_argument("--out")
     p.add_argument("--pose-test", help="save a copy posed with the QA test pose here")
@@ -189,8 +190,10 @@ def classify(args):
         (o for o in meshes if "head" in o.name.lower() and "proxy" not in o.name.lower()), None)
     if head is None:
         head = next((o for o in meshes if "head" in o.name.lower()), None)
-    hands = [o for o in meshes if "hand" in o.name.lower()]
-    rigid = [o for o in meshes if any(t in o.name.lower() for t in RIGID) and o not in (body, head)]
+    extra = dict(kv.split(":") for kv in (args.rigid or "").split(",") if kv)
+    # a prop named like a body part (GEO-katana-handle) is still a prop
+    hands = [o for o in meshes if "hand" in o.name.lower() and not any(k in o.name.lower() for k in extra)]
+    rigid = [o for o in meshes if any(t in o.name.lower() for t in list(RIGID) + list(extra)) and o not in (body, head)]
     auto = [body] + ([head] if head else []) + hands
     cloth = [o for o in meshes if o not in auto and o not in rigid]
     return body, head, hands, auto, rigid, cloth
@@ -215,10 +218,10 @@ def armature_mod(o, rig):
         o.modifiers.move(o.modifiers.find(m.name), 0)
 
 
-def rigid_to_head(rig, o):
+def rigid_to_head(rig, o, bone="Head"):
     for g in list(o.vertex_groups):
         o.vertex_groups.remove(g)
-    g = o.vertex_groups.new(name="Head")
+    g = o.vertex_groups.new(name=bone)
     g.add(range(len(o.data.vertices)), 1.0, "REPLACE")
     armature_mod(o, rig)
 
@@ -302,8 +305,11 @@ def main():
     L = landmarks(src, hands, head)
     rig = build_rig(args, L, hands)
     parent_auto(rig, auto + ([src] if src is not body else []))
+    extra = dict(kv.split(":") for kv in (args.rigid or "").split(",") if kv)
     for o in rigid:
-        rigid_to_head(rig, o)
+        # props (a sword in the hand, goggles, a holster on the hip) move as one piece with their bone
+        bone = next((b for k, b in extra.items() if k in o.name.lower()), "Head")
+        rigid_to_head(rig, o, bone)
     # groom curves (and their hidden scalps) can't be skinned: bone-parent them to Head so they follow it
     for o in bpy.context.scene.objects:
         if (o.type == "CURVES" or (o.type == "MESH" and "scalp" in o.name.lower())) and o.parent is None:
@@ -320,7 +326,7 @@ def main():
     for o in auto + rigid + cloth:
         rep[o.name] = limit_weights(o, rig, args.max_influences)
     print(f"{rig.name}: {len(rig.data.bones)} deform bones")
-    print("auto:", [o.name for o in auto], "rigid->Head:", [o.name for o in rigid], "transfer:", [o.name for o in cloth])
+    print("auto:", [o.name for o in auto], "rigid:", [o.name for o in rigid], "transfer:", [o.name for o in cloth])
     for n, s in rep.items():
         flag = "  <-- UNWEIGHTED VERTS" if s["unweighted"] else ""
         print(f"  {n}: max influences before limit {s['max_before']}, unweighted {s['unweighted']}{flag}")
