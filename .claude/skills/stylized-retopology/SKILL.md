@@ -63,3 +63,15 @@ of 0.25 mm and p95 of 0.6 mm. The body check found the neck rings (14) and a 12 
 
 ## Scripts
 - `scripts/retopo_auto.py`: QuadriFlow retopo, projection, relax, optional Multires detail, plus Kenny's topology report.
+
+## Fast route for a generated full character (tested on the katana hero, Meshy, 1.6M tris)
+When the whole character comes from image-to-3D and only a game mesh is needed quickly:
+1. **Weld first** (`remove_doubles` 1e-5). Generated meshes split vertices along UV seams; decimating split
+   vertices tears visible cracks down the face (the first try showed a lit/unlit split through the nose).
+2. **Split by budget, not by object**: head+hair (z above the collar) and body as two pieces, each Collapse-
+   decimated to ~19.5k tris, so the face and locs keep their density. A Decimate vertex group does NOT do this.
+3. **Fresh UVs + bake from the full model** (Smart UV Project, then Cycles selected-to-active DIFFUSE color,
+   NORMAL and ROUGHNESS at 2048, cage 0.015, ray 0.06). The generated UVs and normal map stop matching after
+   decimation.
+4. Rig with `rig_and_export.py --body <body> --head <head> --rigid katana:LeftHand`. On a non-welded mesh, bone
+   heat fails; weight a voxel-remeshed proxy (0.012) and Data Transfer the weights instead.
