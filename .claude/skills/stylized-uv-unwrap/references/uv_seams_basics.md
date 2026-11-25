@@ -1,0 +1,3 @@
+## UV basics
+- Limbs are cylinders: one seam around the top, one around the bottom, one along a hidden side (inside the arm/leg, back of the neck). Torso: split front and back with a loop down the sides. Fingers: a seam along the side of each finger separates top and bottom; palm the same. Foot: one loop across the whole foot. Ear separated by its ring + one cut. Face: a seam from the back of the head over the top to the forehead; separate the mouth bag and the eye bag. With no Mirror modifier, mirror the seams (Select Mirror) by hand. Then unwrap, organise, symmetry check, uniform texel density (masterclass ch. 9 has the exact steps).
+

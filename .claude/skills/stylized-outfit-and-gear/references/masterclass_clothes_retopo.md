@@ -1,0 +1,25 @@
+# Masterclass ch8 — Retopology of clothes (09:21:54–10:43:51)
+Kenny calls this "the most important chapter".
+
+## Core rule
+Clothes must have the SAME or SIMILAR topology as the body underneath. If they don't, the clothes clip through the body when it is posed (he demos this on a rigged shirt). A shirt duplicated from the body topology deforms with no clipping.
+
+## 6-step clothes retopo recipe (shirt, skirt and shoes all use it)
+1. **Base topology from body.** Duplicate the retopo'd body and rename it `<part>_topo`. Put it in the `clothes_topology` collection (child of the low_poly collection). Delete the faces the garment doesn't cover (select with L, X > Faces). Remove Subsurf. Add Shrinkwrap with the target set to the cloth sculpt, and **disable Solidify on the sculpt target** so verts land on the outer surface. Delete half and add Mirror (clip on, and on cage). Remove the extra body-only loops by sliding them with Auto Merge Vertices. Smooth with the Relax/Smooth brush in Sculpt (Shift, wireframe on via Object props > Viewport Display > Wireframe). To bake in the shrinkwrap, use "duplicate and apply" the Shrinkwrap (Apply as Shape/Copy) so edit-mode transforms work, then keep going.
+2. **Align to seams.** Put edge loops exactly on the sculpted seams (collar, sleeve cuff, armhole seams). Slide loops so faces aren't compressed. Rebuild regions (sleeve) by deleting and extruding down, then adding 4 loop cuts.
+3. **Align to folds.** Draw annotation lines (placement: Surface) on each fold's HIGH point and LOW point. Snap loops onto those lines. To get more geometry on a fold: select the edges along the high point, then **Bevel with segments = 2**. That makes n-gons and tris at the ends, so slide the end vert in with Auto Merge (G G), then dissolve the leftover edges (Ctrl X) so you are back to quads. To reduce the edge count going down a sleeve, slide or collapse edges onto neighbours with Auto Merge, then dissolve the tris, which leaves a **diamond pattern** at the cuff.
+4. **Reinforce seams.** Select the seam loops and Bevel them, so you get supporting loops on both sides and a crisp seam after subdivision. Where two seams **intersect**: select the crossing vert ring, Scale 0 (with Auto Merge), then select the 2 edges and Ctrl X (dissolve). Leave space between reinforced seams and other loops.
+5. **Thickness.** Apply Mirror. Add Solidify: shirt **0.007**, and preview it with a temporary Subsurf (Ctrl 1) to judge, then remove the Subsurf. Before applying: create vertex groups `shell` and `rim`, and set them in Solidify > Output Vertex Groups (Shell / Rim). Apply Solidify. Add a group `group` = shell + rim, then on the Shrinkwrap set Vertex Group = `group`, **Invert**, so the new thickness isn't re-shrunk onto the sculpt. Round the edges: add a loop at the hem or cuff and press Alt S (shrink/fatten) outward. **Delete hidden inner faces** that will never be seen (keep a little more on skirts because they can be seen from below). Use Mirror Selection Ctrl Shift M with Extend for both sides. For a skirt, use Sculpt > Symmetrize +X→−X.
+6. **Reproject details.** Add a Multires modifier ABOVE the Shrinkwrap and Subdivide ×2 (skirt ×1, then "Delete Higher"). Apply Shrinkwrap. For clothes, **do NOT Apply Base.** Keep the Multires until baking, because the clothes' details are baked to a normal map. Small extra folds can be sculpted on the Multires.
+
+## Part notes
+- **Skirt:** base from the body hips. Extrude rings with E then S (extrude + scale) down to the hem. Leave holes open (don't fill with tris) until there's enough geometry, then fill 4→2 edge holes with two new faces + F. Add 3 loop cuts where needed. Add a loop at the hem bottom to fix shading.
+- **Shoes:** base from the foot (delete the sole, since there's nothing under it). Find the middle of a 14-edge ring to bridge the toe tip (connect symmetric pairs with F). Rip (V) to get rid of a triangle at the back. Fold bevel trick as above. Join pairs with Merge to get rid of diamonds.
+- **Reuse existing modelled parts** (sole, shoe ring/skin-modifier lace ring): duplicate into low_poly, remove colour, apply Subsurf/Skin/Solidify, dissolve the extra loops, then Shift D + Ctrl M X to mirror to the other foot (Auto Merge OFF).
+- **End state rule:** each clothes-topology object has ONLY Multires or Subsurf left. Every other modifier is applied. Mirror the shoes to the other side only after UV unwrap.
+
+## Scriptable translation (for skills)
+- Body-dup → face-delete by mask (vertex group or bounding test vs garment sculpt proximity) → Shrinkwrap(target=garment, wrap_mode='OUTSIDE_SURFACE' or 'ABOVE_SURFACE', offset ~0.001) → apply → Laplacian/relax (bmesh smooth_vert with repeat) → re-shrinkwrap loop ×3.
+- Solidify(thickness=0.007 at 1.7 m scale, shell_vertex_group='shell', rim_vertex_group='rim') → Shrinkwrap vertex_group=shell∪rim, invert_vertex_group=True.
+- Multires above Shrinkwrap, subdivide 2, apply Shrinkwrap → bake normals from Multires (keep the Multires).
+- Delete the interior shell faces whose normals face the body and are fully occluded (raycast test from outside).

@@ -1,0 +1,11 @@
+# Retopology series ch1–3 (gnVeCRQVc-s face 41:33, 5wiu7WvJgw8 body 20:26, k8DdH_wExtE hands/feet 32:55)
+These match masterclass ch6–7. New and confirmed details:
+- **Retopo object setup:** start from a single vertex (or a Circle). Snapping **Face Project** with **Align Rotation + Scale**. Viewport Display **Wireframe** on, **In Front OFF**, object **opacity about 0.5** (Viewport Display colour alpha). Mirror modifier with **Clipping** (on cage). Enable the **F2 add-on** (smart F fill = quads, not tris).
+- **Plan the loops with annotation lines first:** eyes (the eyelid ring), mouth, nose, nasolabial, face outline, ear.
+- Face: **8 edges/verts for every starting ring** (eye, nose, mouth). Extrude rings E then S. Fill with F/F2. Add loop cuts in pairs to **keep counts even**. **Grid Fill (Ctrl F) needs an even count** (ear back 20; adjust Span/Offset in the redo panel). The nose crease gets a supporting loop.
+- Apply the shrinkwrap in edit mode: in object mode, hover the Shrinkwrap modifier, **Shift D (duplicate) then Ctrl A (apply one copy)**, so the projected positions are baked while the live one stays. **Turn snapping OFF before extruding or duplicating**, or verts fly to wrong surfaces.
+- **Alt B clip region** to isolate an area in the viewport. **Shift R repeats the last op** (merge at centre).
+- Relax/Smooth: Sculpt mode, **Shift Space** search > "Relax Slide" brush, plus Smooth for edges.
+- Body: Circle **10 verts** rotated 90° at the shoulder/armpit loop, then the arm loop. The neck ring must match the head ring (15 → remove one at the back → **14**). Add loop cuts on every empty span (3, 5, 7 cuts typical). Elbow: place a loop just above the elbow, **Bevel it (Ctrl B), M > By Distance, Ctrl X dissolve the leftover tris** = the extra-geometry joint patch.
+- Hands: one finger = a box with 1 top loop + 2 side loops, joints at the knuckles. Duplicate it for each finger. **Thumb has 2 joints.** **Two loop cuts at every finger joint.** Palm → wrist reduction: **34 → 22 → 20** (collapse front-to-back loops onto themselves, dissolve the tris, merge by distance). The thumb root ring is **20**. Bridge Edge Loops to the arm.
+- Feet: toes the same as fingers (extrude 2 edges per toe), add 2 side loops, and match the counts to the leg (**26 → 24**). Grid-fill the sole. Bevel+merge+dissolve to add form-following loops under the foot.

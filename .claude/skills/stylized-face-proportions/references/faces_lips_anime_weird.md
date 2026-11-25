@@ -1,0 +1,12 @@
+# Faces, lips, anime, weird faces, sketch-3D, hoodie, mindset videos
+(0cC1VLen45M lazy face, gOqJTzB9oy8 anime face, sHpxe0kJDk4 lips, znN3h5YtWa8 weird faces, o5vh1JSwYPg likeness, sEAWgP8YCE8 sketch 3D, QNbmLgDq1Bs hoodie, VjS-Pn6G37Y keep it simple, mxqLiGzMZPc / ooylx5B-fv4 mindset)
+
+- "Lazy" separate-parts method: the head is a Round Cube (cranium), the jaw is pulled with Grab, the tip of the egg comes forward. Ears and nose are separate objects (ears with a Mirror modifier using the head as the mirror object). Merge + remesh only when forms are right. DON'T remesh at the start; low-poly forms are easier to change (VjS-Pn6G37Y).
+- Eye line = halfway between the top of the head and the chin; Crease Polish marks it; push it in so eyes sit in sockets. Scrape plane for the temple. Brow line on an extra loop.
+- Anime: Extra Mesh Objects add-on (Round Cube). Lens 150 (default 50 distorts). Overlays/gizmos off. Sharp chin. Profile is critical. Remesh 0.03, then 0.01 for the eyes. Draw + Ctrl deepens sockets. The nose is pointed from the top view.
+- Lips: the lips are NOT flat (Clay Strips volume over the muzzle first). Crease Polish marks the chin line, then the mouth corners, then the lip line. Grab pulls the corners in. Inflate the lower lip, Ctrl-Crease under it, corners lead smoothly into the mouth corner. Same for the upper lip. Adjust the nose after. Remesh, re-crease the line and corners. Paint in sculpt mode.
+- Weird/exaggerated faces, 3 steps: big forms (skull + jaw as separate shapes, no resolution added; sketch over refs in PureRef), medium forms (5 head planes; the side of the head is not flat; Round Cube nose/beard), small forms (eyes, nose, mouth, then a step back for cohesion; Pinch marks the beard edge).
+- Likeness: compare chin protrusion and widths constantly against the photo.
+- Sketch-3D (after Jackie Droujko): primitives + Grab only, materials and GP lines early, NO Mirror (too perfect), separate objects, a Lattice modifier to distort the head to match the 2D concept, hand-painted textures (Artist Essentials brushes).
+- Hoodie: mirror + I inset with B for the opening, rotate the sleeve ring, delete the bottom faces, grab/inflate to stop intersection, a separate hood merged, Lasso Mask + Snake Hook (K), Solidify + shade smooth, apply Mirror, Multires + Crease Polish seams.
+- Mindset: systematise each stage (retopo = main loops, then patches, then cleanup). Shrink scope. 30 heads in 30 days, 1–2 h timed sessions; get feedback.
