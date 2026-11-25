@@ -80,3 +80,9 @@ where possible.
 - [ ] Rig: only DEF bones are exported, weights are limited to 4 per vertex, and the shape keys the engine
       supports are kept (Godot: morph targets; Roblox: FACS only).
 - [ ] A turntable or presentation render goes to the owner (`stylized-lighting-and-turntable`).
+
+## Kenny's quick tips (all stages)
+`references/tips_and_workflow_overviews.md` has his 50 tips and the workflow overviews. Ones we always apply:
+silhouette check in black, rim light to separate from the background, eye highlights, no oversaturated
+colours, subtle yellow/red/blue zones across the face, finger bones pre-curved in the bend direction, a blockout
+backup collection before detailing, and compositing the final render.
