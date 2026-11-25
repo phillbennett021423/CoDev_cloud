@@ -69,7 +69,10 @@ When the whole character comes from image-to-3D and only a game mesh is needed q
 1. **Weld first** (`remove_doubles` 1e-5). Generated meshes split vertices along UV seams; decimating split
    vertices tears visible cracks down the face (the first try showed a lit/unlit split through the nose).
 2. **Split by budget, not by object**: head+hair (z above the collar) and body as two pieces, each Collapse-
-   decimated to ~19.5k tris, so the face and locs keep their density. A Decimate vertex group does NOT do this.
+   decimated to ~19k tris, so the face and locs keep their density. A Decimate vertex group does NOT do this.
+   **Lock the cut**: put every vertex except the cut edge (and one ring in) in a Decimate vertex group, so both
+   pieces keep the identical seam. After rigging, **copy the body's weights onto the head's seam vertices**
+   (KD-tree, same position). Without both steps the collar tore open in the posed render (user caught it).
 3. **Fresh UVs + bake from the full model** (Smart UV Project, then Cycles selected-to-active DIFFUSE color,
    NORMAL and ROUGHNESS at 2048, cage 0.015, ray 0.06). The generated UVs and normal map stop matching after
    decimation.
