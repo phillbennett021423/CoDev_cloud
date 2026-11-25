@@ -44,6 +44,7 @@ def parse():
     p.add_argument("--group", help="vertex group on the body that marks the garment area (overrides --garment)")
     p.add_argument("--z", help="custom band: z0,z1 as fractions of height (belt: 0.57,0.6)")
     p.add_argument("--x", type=float, help="custom |x| limit as a fraction of height")
+    p.add_argument("--garment-z", help="override the garment's z0,z1 (fractions of height), e.g. a cropped jacket")
     p.add_argument("--layer", type=int, help="custom layer (0 skin, 1 over layer 0, 2 belts/straps)")
     p.add_argument("--name")
     p.add_argument("--offset", type=float, help="Shrinkwrap offset (m)")
@@ -73,6 +74,8 @@ def region_faces(body, args):
         g = dict(GARMENTS[args.garment]) if args.garment else dict(z=(0.0, 1.0), x=None, layer=0)
         if args.z:
             g["z"] = tuple(float(t) for t in args.z.split(","))
+        if args.garment_z:  # reshape a garment (cropped jacket, capri pants) without turning it into a band
+            g["z"] = tuple(float(t) for t in args.garment_z.split(","))
         if args.x is not None:
             g["x"] = args.x
         lo, hi = z0 + g["z"][0] * h, z0 + g["z"][1] * h

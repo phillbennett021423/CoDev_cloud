@@ -144,8 +144,12 @@ def build_body(args):
     skin.use_smooth_shade = True
     skin.branch_smoothing = 0.6
     sv = me.skin_vertices[0].data
+    # Skin + Subsurf + Relax shrink the rings (measured: limbs come out ~0.75x, torso ~0.9x the table), so the
+    # radii are pre-scaled to land on the proportion table after the modifiers are applied.
+    torso = {J[n] for n in ("pelvis", "waist", "chest", "upchest", "neck0", "neck1")}
     for i, (_, r) in enumerate(V):
-        sv[i].radius = r
+        k = 1.0 if args.subsurf == 0 else (1.10 if i in torso else 1.32)
+        sv[i].radius = (r[0] * k, r[1] * k)
         sv[i].use_root = (i == J["pelvis"])
     ss = ob.modifiers.new("Subsurf", "SUBSURF")
     ss.levels = args.subsurf

@@ -28,6 +28,8 @@ NEEDED = ["Generate Hair Curves", "Interpolate Hair Curves", "Set Hair Curve Pro
           "Clump Hair Curves", "Hair Curves Noise", "Trim Hair Curves", "Frizz Hair Curves"]
 
 # Kenny's numbers. density = guides per m^2 of scalp in Generate; child = Interpolate density.
+AMOUNT = [0.1]  # Interpolate viewport amount; --amount 1 for QA/final renders from the viewport depsgraph
+
 PRESETS = {
     # zV4tnpVhadM: curly hair, no grooming at all
     "curly": dict(guides=800, length=0.06, points=12, radius=0.001, child=100000,
@@ -35,6 +37,12 @@ PRESETS = {
                   curl2=dict(radius=0.01, frequency=3.0, guide_distance=0.015),
                   clump1=dict(guide_distance=0.015, factor=0.7), clump2=dict(guide_distance=0.05, factor=1.0),
                   noise=dict(scale_along=20, scale=5, offset_per_curve=0.2, distance=0.01, ramp_black=0.4)),
+    # big rounded afro: the curly recipe with long strands standing out along the normal (volume ~1.6x head)
+    "afro": dict(guides=1000, length=0.13, points=16, radius=0.0012, child=120000,
+                 curl1=dict(radius=0.012, frequency=4.0, guide_distance=0.0),
+                 curl2=dict(radius=0.008, frequency=6.0, guide_distance=0.02),
+                 clump1=dict(guide_distance=0.02, factor=0.6), clump2=dict(guide_distance=0.06, factor=0.8),
+                 noise=dict(scale_along=12, scale=4, offset_per_curve=0.3, distance=0.015, ramp_black=0.3)),
     # masterclass: straight shoulder-length; clump 0.04 / 0.02, noise only on a subset
     "straight": dict(guides=600, length=0.22, points=24, radius=0.0008, child=80000, curl1=None, curl2=None,
                      clump1=dict(guide_distance=0.04, factor=0.8), clump2=dict(guide_distance=0.02, factor=0.6),
@@ -59,6 +67,7 @@ def parse():
     p.add_argument("--front-y", type=float, default=0.12, help="fraction of head depth from the face that stays bald")
     p.add_argument("--offset", type=float, default=0.0005, help="push the scalp off the head (m)")
     p.add_argument("--scale", type=float, default=1.0)
+    p.add_argument("--amount", type=float, default=0.1, help="viewport child amount (1.0 for QA and final renders)")
     p.add_argument("--color", default="0.05,0.03,0.02", help="EEVEE root colour, linear RGB")
     p.add_argument("--melanin", type=float, default=0.85, help="Cycles: 0.1 blond, 0.5 brown, 0.85 dark, 1 black")
     p.add_argument("--redness", type=float, default=0.3)
@@ -206,7 +215,7 @@ def build_tree(groups, scalp, preset, s, mat):
                                        "Guide Distance": c["guide_distance"] * s, "Existing Guide Map": False})
         nt.links.new(last, n.inputs["Geometry"])
         last = n.outputs["Geometry"]
-    interp = grp("Interpolate Hair Curves", **{"Density": preset["child"], "Viewport Amount": 0.1,
+    interp = grp("Interpolate Hair Curves", **{"Density": preset["child"], "Viewport Amount": AMOUNT[0],
                                                "Interpolation Guides": 4})
     nt.links.new(last, interp.inputs["Geometry"])
     last = interp.outputs["Geometry"]
@@ -255,6 +264,7 @@ def main():
         bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.blend))
     head = bpy.data.objects[args.head]
     preset = PRESETS[args.preset]
+    AMOUNT[0] = args.amount
     groups = load_groups()
     scalp = make_scalp(head, args)
     cd = bpy.data.hair_curves.new("HAIR-" + args.preset)
@@ -274,7 +284,7 @@ def main():
         sc.render.hair_type = "STRIP"
     dg = bpy.context.evaluated_depsgraph_get()
     ev = hair.evaluated_get(dg).data
-    print(f"hair {args.preset}: {len(ev.curves)} curves (viewport amount 0.1), {len(ev.points)} points")
+    print(f"hair {args.preset}: {len(ev.curves)} curves (viewport amount {args.amount}), {len(ev.points)} points")
     if args.out:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(args.out))
     elif args.save:
